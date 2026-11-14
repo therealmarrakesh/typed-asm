@@ -3,6 +3,7 @@ import TypedAsm.Program
 import TypedAsm.Fn
 import TypedAsm.Print
 import TypedAsm.Blocks
+import TypedAsm.Linux
 
 /-!
 # Tactics for typing programs
@@ -805,6 +806,72 @@ private inductive StepResult
   | endOfBlock (instr : Instr)
   | notABlock
 
+/-- Runs a tactic on one goal and returns the goals it leaves. -/
+private def runOn (g : MVarId) (tac : TacticM Unit) : TacticM (List MVarId) := do
+  setGoals [g]
+  -- Without this a failing step is logged and its goal admitted, and the
+  -- caller would carry on as if it had succeeded.
+  Tactic.withoutRecover tac
+  getUnsolvedGoals
+
+/-- The system call number a context puts in `rax`, if it is exactly known. -/
+private def syscallNumber (ctx : Expr) : MetaM (Option Nat) := do
+  let regTy ← whnf (← mkAppM ``CtxOf.regs #[ctx, mkConst ``Reg.rax])
+  unless regTy.isAppOfArity ``Ty.eq 1 do return none
+  let v ← instantiateMVars regTy.appArg!
+  if v.hasExprMVar || v.hasFVar then return none
+  try return some (← evalAddr v) catch _ => return none
+
+/-- Types a `write` or `read` at the head of a block goal, leaving the rest
+of the block as the main goal. -/
+private def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
+  let ctx := (← instantiateMVars (← goal.getType)).getAppArgs[5]!
+  let gs ← try
+      if nr == 1 then
+        runOn goal (do evalTactic (← `(tactic|
+          refine BlockOk.sys rfl (linux_write rfl) ?_)))
+      else
+        runOn goal (do evalTactic (← `(tactic|
+          refine BlockOk.sys rfl
+            (linux_read (fields := ?_) (off := ?_) (len := ?_) rfl ?_ ?_ ?_) ?_)))
+    catch _ => throwError "`syscall`: the operating system here is not the Linux model"
+  let mut rest? : Option MVarId := none
+  let mut left : List MVarId := []
+  -- what the registers must hold first: that settles the buffer and the count
+  for g in gs do
+    if ← g.isAssigned then continue
+    let t ← instantiateMVars (← g.getType)
+    if t.isAppOf ``BlockOk then rest? := some g
+    else if let some (_, lhs, rhs) := t.eq? then
+      try
+        discard <| runOn g (do evalTactic (← `(tactic| rfl)))
+      catch _ =>
+        let reg := (regName? lhs.appArg!).getD "the register"
+        let actual ← g.withContext do ppTy (← reduce (← mkAppM ``CtxOf.regs #[ctx, lhs.appArg!]))
+        if rhs.isAppOf ``Ty.ptr then
+          throwError "`read` needs `{reg}` to hold a writable pointer to the buffer, but its \
+            type is `{actual}`"
+        else
+          throwError "`read` needs the count in `{reg}` to be exactly known, but its type is \
+            `{actual}`"
+  -- then that every field the buffer covers is an integer
+  for g in gs do
+    if ← g.isAssigned then continue
+    let t ← instantiateMVars (← g.getType)
+    if t.isForall then
+      let after ← try
+          runOn g (do evalTactic (← `(tactic| first
+            | (refine ints_of_check ?_; decide)
+            | (intro j hj; refine getElem?_replicate_of_lt ?_; omega))))
+        catch _ =>
+          throwError "`read` could overwrite something that is not an integer: the buffer in \
+            `rsi` does not have room for the count in `rdx` in integer fields"
+      left := left ++ after
+  let some rest := rest? | throwError "ty_block: unexpected goals at `syscall`"
+  setGoals [rest]
+  evalTactic (← `(tactic| ty_normalize))
+  setGoals ((← getGoals) ++ left)
+
 /-- Types the first instruction of a block goal if it is a straight-line
 instruction, leaving the rest of the block as the main goal. -/
 private partial def typeStep (named : Bool := false) : TacticM StepResult := withMainContext do
@@ -831,6 +898,14 @@ private partial def typeStep (named : Bool := false) : TacticM StepResult := wit
   if let some instr ← knownInstr instrTy.getAppArgs[3]! then
     if instr.endsBlock then
       saved.restore
+      -- A system call that returns is a step like any other.
+      if let .syscall := instr then
+        if let some nr ← syscallNumber ty.getAppArgs[5]! then
+          if nr == 0 || nr == 1 then
+            setGoals [goal]
+            typeSyscallStep goal nr
+            setGoals ((← getGoals) ++ others)
+            return .stepped
       return .endOfBlock instr
     -- Registers the rules need to speak of, but which are only known to be
     -- integers, are given names first.
@@ -901,14 +976,6 @@ private def ctorsOfType (ty : Expr) : MetaM (List Name) := do
 private def isComparison (t : Expr) : Bool :=
   t.isAppOf ``LT.lt || t.isAppOf ``LE.le || t.isAppOf ``GT.gt || t.isAppOf ``GE.ge ||
   t.isAppOf ``Eq || t.isAppOf ``Ne || t.isAppOf ``Not
-
-/-- Runs a tactic on one goal and returns the goals it leaves. -/
-private def runOn (g : MVarId) (tac : TacticM Unit) : TacticM (List MVarId) := do
-  setGoals [g]
-  -- Without this a failing step is logged and its goal admitted, and the
-  -- caller would carry on as if it had succeeded.
-  Tactic.withoutRecover tac
-  getUnsolvedGoals
 
 /-- Proves `Φ a Δ` for a labelled program: finds the label whose address is
 `a` and a context allowed there. `check` runs once the context is chosen and
@@ -1097,9 +1164,24 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
     let [acc] := gs | throwError "ty_block: unexpected goals at `jmp`"
     return .done (← proveAccepts acc)
   | .syscall =>
-    let gs ← runOn goal (do evalTactic (← `(tactic| refine BlockOk.last rfl (HasType.syscall ?_))))
-    let [acc] := gs | throwError "ty_block: unexpected goals at `syscall`"
-    return .done (← proveAccepts acc)
+    -- `write` and `read` are typed as steps; what reaches here is `exit`, or
+    -- a call the type system has no rule for.
+    let ctx := (← instantiateMVars (← goal.getType)).getAppArgs[5]!
+    match ← syscallNumber ctx with
+    | some 60 =>
+      let gs ← try
+          runOn goal (do evalTactic (← `(tactic|
+            refine BlockOk.last rfl (HasType.syscallExit (linux_exit rfl)))))
+        catch _ => throwError "`syscall`: the operating system here is not the Linux model"
+      return .done gs
+    | some nr =>
+      throwError "`syscall`: call number {nr} has no rule. The calls that can be typed are \
+        `read` (0), `write` (1) and `exit` (60)"
+    | none =>
+      let actual ← goal.withContext do
+        ppTy (← reduce (← mkAppM ``CtxOf.regs #[ctx, mkConst ``Reg.rax]))
+      throwError "`syscall`: the call number in `rax` must be exactly known, but its type is \
+        `{actual}`"
   | .ret =>
     let gs ← try
         runOn goal (do evalTactic (← `(tactic|

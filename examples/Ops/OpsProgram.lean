@@ -26,8 +26,6 @@ finish:
      mov   rsi, qword ptr [rip + record]
      mov   eax, 60               ; Linux `exit`
      syscall
-spin:
-     jmp   spin
 trap:
      ud2                         ; nothing jumps here
 compute:                         ; rdi = pointer to the record; result in rax
@@ -88,7 +86,7 @@ def field (disp : BitVec 32) : Mem := .sib (some .rdi) none disp
 
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive Label
-  | start | afterCall | finish | spin | trap | compute
+  | start | afterCall | finish | trap | compute
   deriving DecidableEq
 
 /-- The program, given the displacements of its `rip`-relative operands,
@@ -110,8 +108,6 @@ def codeWith (toCompute toFinish toRecordHigh toRecord : BitVec 32) : List (Asm 
   .ins (.mov .w64 (.r_m .rsi (.rip toRecord))),
   .ins (.mov .w32 (.rm_i (.reg .rax) 60)),
   .ins .syscall,
-  .label .spin,
-  .jmp .spin,
   .label .trap,
   .ins .ud2,
   .label .compute,
@@ -154,7 +150,7 @@ def codeWith (toCompute toFinish toRecordHigh toRecord : BitVec 32) : List (Asm 
   .ins (.alu .add .w64 (.rm_i (.reg .rsp) 16)),
   .ins .ret]
 
-def code : List (Asm Label) := codeWith 0x36 2 0xf2d 0xf1a
+def code : List (Asm Label) := codeWith 0x31 2 0xf2d 0xf1a
 
 /-- Where the code is loaded. -/
 def base : BitVec 64 := BitVec.ofNat 64 Elf.codeBase
@@ -174,7 +170,7 @@ def entry : BitVec 64 := Asm.addr code base .start
 #guard Asm.offsetsFit base code
 
 -- The two address computations give the addresses of their labels.
-#guard base + 14 + 0x36 == Asm.addr code base .compute
+#guard base + 14 + 0x31 == Asm.addr code base .compute
 #guard Asm.addr code base .afterCall + 13 + 2 == Asm.addr code base .finish
 
 /-- The record's two fields. -/
@@ -197,16 +193,6 @@ def start : State :=
 
 /-! ## Running it -/
 
-def describe : Outcome → String
-  | .next s => s!"still running at rip = {s.rip.toNat}"
-  | .fault f => s!"fault: {repr f}"
-  | .exit code => s!"exit {code.toNat}"
-  | .stuck => "stuck"
-
-def exitsWith (code : BitVec 32) : Outcome → Bool
-  | .exit c => c == code
-  | _ => false
-
 -- The arithmetic in the listing comes to 120, whether instructions come
 -- from the table or are decoded from memory.
 #guard exitsWith 120 (run fetch linux 100 start)
@@ -214,12 +200,9 @@ def exitsWith (code : BitVec 32) : Outcome → Bool
 
 end Ops
 
-/-- With no arguments, runs the program on the machine with code in memory
-and prints the outcome. With `--elf FILE`, writes the program as a Linux executable. -/
-def main (args : List String) : IO Unit := do
-  match args with
-  | ["--elf", path] =>
-    let bytes := Elf.file Ops.entry.toNat Ops.image Ops.recordBytes (writable := true)
-    IO.FS.writeBinFile path (ByteArray.mk (bytes.map fun b => b.toNat.toUInt8).toArray)
-    IO.println s!"wrote {bytes.length} bytes to {path}"
-  | _ => IO.println (Ops.describe (runMem linux 100 Ops.start))
+/-- With no arguments, runs the program on the machine with code in memory:
+what it writes goes to standard output, how it ended to standard error, and
+its exit status becomes this executable's. With `--elf FILE`, writes the
+program as a Linux executable. -/
+def main (args : List String) : IO UInt32 :=
+  exeMain Ops.entry.toNat Ops.image Ops.recordBytes Ops.start args (writable := true)

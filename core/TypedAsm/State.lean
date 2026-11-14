@@ -56,12 +56,27 @@ def Perm.executable : Perm → Bool
 theorem Perm.readable_of_writable {p : Perm} (h : p.writable = true) : p.readable = true := by
   cases p <;> simp_all [Perm.readable, Perm.writable]
 
+/-- What one `read` from the outside world delivers: some bytes, or an error
+number. -/
+inductive ReadEvent
+  | bytes (data : List (BitVec 8))
+  | error (errno : BitVec 64)
+
+/-- The world outside the machine, as far as a program can observe it: what
+is still to be read, one event per `read`, and everything written so far.
+Only system calls touch it. Nothing is assumed about the input, so a result
+proved for every state holds whatever the program is given to read. -/
+structure World where
+  input : List ReadEvent := []
+  output : List (BitVec 8) := []
+
 structure State where
   regs : Reg → BitVec 64
   flags : Flags
   rip : BitVec 64
   mem : BitVec 64 → BitVec 8
   perm : BitVec 64 → Perm
+  world : World := {}
 
 namespace State
 

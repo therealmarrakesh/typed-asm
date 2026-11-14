@@ -175,6 +175,25 @@ theorem load_setReg (s : State) (r : Reg) (v : BitVec 64) (w : Width) (a : BitVe
 
 /-! ## Checked access -/
 
+/-- Store a list of bytes at consecutive addresses. -/
+def storeBytes (s : State) (a : BitVec 64) (l : List (BitVec 8)) : State :=
+  { s with mem := fun x => if h : (x - a).toNat < l.length then l[(x - a).toNat] else s.mem x }
+
+/-- The `n` bytes starting at `a`. -/
+def loadBytes (s : State) (a : BitVec 64) (n : Nat) : List (BitVec 8) :=
+  (List.range n).map fun i => s.mem (a + BitVec.ofNat 64 i)
+
+/-- Storing bytes leaves a 64-bit value that does not overlap them unchanged. -/
+theorem load64_storeBytes_disjoint (s : State) {a y : BitVec 64} (l : List (BitVec 8))
+    (hlen : l.length < 2 ^ 64) (h1 : BitVec.ofNat 64 l.length ≤ y - a)
+    (h2 : BitVec.ofNat 64 8 ≤ a - y) : (s.storeBytes a l).load64 y = s.load64 y := by
+  generalize hn : l.length = n at hlen h1
+  apply load64_congr <;>
+    (simp only [storeBytes, hn]
+     split
+     · next hx => exact absurd hx (by bv_omega)
+     · rfl)
+
 /-- Whether all `n` bytes starting at `a` are readable. -/
 def canRead (s : State) (a : BitVec 64) (n : Nat) : Bool :=
   (List.range n).all fun i => (s.perm (a + BitVec.ofNat 64 i)).readable

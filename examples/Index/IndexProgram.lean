@@ -20,8 +20,6 @@ afterCall:
      mov   edi, eax
      mov   eax, 60              ; Linux `exit`
      syscall
-spin:
-     jmp   spin
 get:                            ; rdi = array, rsi = length, rdx = index; result in rax
      cmp   rdx, rsi
      jb    inbounds
@@ -45,7 +43,7 @@ namespace Index
 
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive Label
-  | start | afterCall | spin | get | inbounds
+  | start | afterCall | get | inbounds
   deriving DecidableEq
 
 def code : List (Asm Label) := [
@@ -58,8 +56,6 @@ def code : List (Asm Label) := [
   .ins (.mov .w32 (.rm_r (.reg .rdi) .rax)),
   .ins (.mov .w32 (.rm_i (.reg .rax) 60)),
   .ins .syscall,
-  .label .spin,
-  .jmp .spin,
   .label .get,
   .ins (.alu .cmp .w64 (.rm_r (.reg .rdx) .rsi)),
   .jcc .b .inbounds,
@@ -103,28 +99,15 @@ memory and `rip` at the entry. -/
 def start : State :=
   { prepared.loadCode base image with rip := entry }
 
-def describe : Outcome → String
-  | .next s => s!"still running at rip = {s.rip.toNat}"
-  | .fault f => s!"fault: {repr f}"
-  | .exit code => s!"exit {code.toNat}"
-  | .stuck => "stuck"
-
-def exitsWith (code : BitVec 32) : Outcome → Bool
-  | .exit c => c == code
-  | _ => false
-
 -- Element 3 is 40.
 #guard exitsWith 40 (run fetch linux 100 start)
 #guard exitsWith 40 (runMem linux 100 start)
 
 end Index
 
-/-- With no arguments, runs the program on the machine with code in memory
-and prints the outcome. With `--elf FILE`, writes the program as a Linux executable. -/
-def main (args : List String) : IO Unit := do
-  match args with
-  | ["--elf", path] =>
-    let bytes := Elf.file Index.entry.toNat Index.image Index.arrayBytes
-    IO.FS.writeBinFile path (ByteArray.mk (bytes.map fun b => b.toNat.toUInt8).toArray)
-    IO.println s!"wrote {bytes.length} bytes to {path}"
-  | _ => IO.println (Index.describe (runMem linux 100 Index.start))
+/-- With no arguments, runs the program on the machine with code in memory:
+what it writes goes to standard output, how it ended to standard error, and
+its exit status becomes this executable's. With `--elf FILE`, writes the
+program as a Linux executable. -/
+def main (args : List String) : IO UInt32 :=
+  exeMain Index.entry.toNat Index.image Index.arrayBytes Index.start args

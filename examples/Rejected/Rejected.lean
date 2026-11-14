@@ -280,6 +280,57 @@ example : BlockOk Φf flaggedFetch linux Ψ (Asm.addr flagged 0 .overflow) bare 
 
 example : BlockOk Φf flaggedFetch linux Ψ (Asm.addr flagged 0 .carry) bare := by ty_block
 
+/-! ## System calls
+
+A `syscall` is typed only for a call the model covers, with the number in
+`rax` exactly known. A `read` also needs its buffer to lie in integer fields
+of a writable block, for as many bytes as it asks for. -/
+
+inductive Sys
+  | unknown | unmodelled | noBuffer | tooLong | overPointer
+  deriving DecidableEq
+
+def sys : List (Asm Sys) := [
+  .label .unknown, .ins .syscall,
+  .label .unmodelled, .ins (.mov .w32 (.rm_i (.reg .rax) 11)), .ins .syscall,
+  .label .noBuffer, .ins (.alu .xor .w32 (.rm_r (.reg .rax) .rax)),
+    .ins (.mov .w32 (.rm_i (.reg .rdx) 16)), .ins .syscall,
+  .label .tooLong, .ins (.alu .xor .w32 (.rm_r (.reg .rax) .rax)),
+    .ins (.mov .w32 (.rm_i (.reg .rdx) 17)), .ins .syscall,
+  .label .overPointer, .ins (.alu .xor .w32 (.rm_r (.reg .rax) .rax)),
+    .ins (.mov .w32 (.rm_i (.reg .rdx) 16)), .ins .syscall]
+
+def sysFetch : Fetch := Asm.fetch 0 sys
+
+def Φy : CodeTy := fun _ _ => False
+
+/-- `rsi` points to a writable block whose fields have the given types. -/
+def buffer (fields : List Ty) : Ctx :=
+  ⟨fun r => if r = .rsi then .ptr fields true 0 else .int, [], 0, Flags.Any⟩
+
+/-- error: `syscall`: the call number in `rax` must be exactly known, but its type is `int` -/
+#guard_msgs in
+example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .unknown) bare := by ty_block
+
+/-- error: `syscall`: call number 11 has no rule. The calls that can be typed are `read` (0), `write` (1) and `exit` (60) -/
+#guard_msgs in
+example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .unmodelled) bare := by ty_block
+
+/-- error: `read` needs `rsi` to hold a writable pointer to the buffer, but its type is `int` -/
+#guard_msgs in
+example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .noBuffer) bare := by ty_block
+
+/-- error: `read` could overwrite something that is not an integer: the buffer in `rsi` does not have room for the count in `rdx` in integer fields -/
+#guard_msgs in
+example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .tooLong) (buffer [.int, .int]) := by
+  ty_block
+
+/-- error: `read` could overwrite something that is not an integer: the buffer in `rsi` does not have room for the count in `rdx` in integer fields -/
+#guard_msgs in
+example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .overPointer)
+    (buffer [.int, .ptr [.int] false 0]) := by
+  ty_block
+
 /-! ## Accepted, for contrast
 
 Storing a writable pointer into a field typed as a read-only pointer is

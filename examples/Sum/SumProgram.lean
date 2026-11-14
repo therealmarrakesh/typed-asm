@@ -16,18 +16,17 @@ _start:
   17  mov   edi, eax
   19  mov   eax, 60              ; Linux `exit`
   24  syscall
-  26  jmp   26                   ; not reached: `exit` does not return
 sum:                             ; rdi = pointer, rsi = count, result in rax
-  31  xor   eax, eax
-  33  test  rsi, rsi
-  36  je    done
+  26  xor   eax, eax
+  28  test  rsi, rsi
+  31  je    done
 loop:
-  42  add   rax, [rdi]
-  45  add   rdi, 8
-  49  sub   rsi, 1
-  53  jne   loop
+  37  add   rax, [rdi]
+  40  add   rdi, 8
+  44  sub   rsi, 1
+  48  jne   loop
 done:
-  59  ret
+  54  ret
 ```
 
 The numbers are offsets from the start of the code. The program is laid out
@@ -44,7 +43,7 @@ namespace Sum
 
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive Label
-  | start | afterCall | spin | sum | loop | done
+  | start | afterCall | sum | loop | done
   deriving DecidableEq
 
 def code : List (Asm Label) := [
@@ -56,8 +55,6 @@ def code : List (Asm Label) := [
   .ins (.mov .w32 (.rm_r (.reg .rdi) .rax)),
   .ins (.mov .w32 (.rm_i (.reg .rax) 60)),
   .ins .syscall,
-  .label .spin,
-  .jmp .spin,
   .label .sum,
   .ins (.alu .xor .w32 (.rm_r (.reg .rax) .rax)),
   .ins (.test .w64 (.reg .rsi) (.reg .rsi)),
@@ -104,16 +101,6 @@ memory and `rip` at the entry. -/
 def start : State :=
   { prepared.loadCode base image with rip := entry }
 
-def describe : Outcome → String
-  | .next s => s!"still running at rip = {s.rip.toNat}"
-  | .fault f => s!"fault: {repr f}"
-  | .exit code => s!"exit {code.toNat}"
-  | .stuck => "stuck"
-
-def exitsWith (code : BitVec 32) : Outcome → Bool
-  | .exit c => c == code
-  | _ => false
-
 -- The program exits with status 14 = 3 + 1 + 4 + 1 + 5, whether instructions
 -- come from the table or are decoded from memory.
 #guard exitsWith 14 (run fetch linux 100 start)
@@ -121,12 +108,9 @@ def exitsWith (code : BitVec 32) : Outcome → Bool
 
 end Sum
 
-/-- With no arguments, runs the program on the machine with code in memory
-and prints the outcome. With `--elf FILE`, writes the program as a Linux executable. -/
-def main (args : List String) : IO Unit := do
-  match args with
-  | ["--elf", path] =>
-    let bytes := Elf.file Sum.entry.toNat Sum.image Sum.arrayBytes
-    IO.FS.writeBinFile path (ByteArray.mk (bytes.map fun b => b.toNat.toUInt8).toArray)
-    IO.println s!"wrote {bytes.length} bytes to {path}"
-  | _ => IO.println (Sum.describe (runMem linux 100 Sum.start))
+/-- With no arguments, runs the program on the machine with code in memory:
+what it writes goes to standard output, how it ended to standard error, and
+its exit status becomes this executable's. With `--elf FILE`, writes the
+program as a Linux executable. -/
+def main (args : List String) : IO UInt32 :=
+  exeMain Sum.entry.toNat Sum.image Sum.arrayBytes Sum.start args

@@ -53,6 +53,14 @@ theorem Disjoint.mono {a b : BitVec 64} {n m o p n' m' : Nat} (h : Disjoint a n 
   simp only [Disjoint] at *
   constructor <;> bv_omega
 
+/-- A run of 8-byte slots of a region does not overlap a slot outside the run. -/
+theorem disjoint_range_slot {a : BitVec 64} {lo cnt j N : Nat} (hc : 0 < cnt)
+    (hout : j < lo ∨ lo + cnt ≤ j) (hr : 8 * (lo + cnt) ≤ N) (hj : 8 * j + 8 ≤ N)
+    (hN : N < 2 ^ 64) :
+    Disjoint (a + BitVec.ofNat 64 (8 * lo)) (8 * cnt) (a + BitVec.ofNat 64 (8 * j)) 8 := by
+  simp only [Disjoint]
+  constructor <;> bv_omega
+
 /-- Two different 8-byte slots of one region do not overlap. -/
 theorem disjoint_slots {a : BitVec 64} {i j N : Nat} (hij : i ≠ j) (hi : 8 * i + 8 ≤ N)
     (hj : 8 * j + 8 ≤ N) (hN : N < 2 ^ 64) :
@@ -551,6 +559,54 @@ theorem writeInt {a : BitVec 64} {l : Layout} {i : Nat} {s' : State}
           exact h.heap b l' hl' j τ' hj
       · have hd := (hΨ.disjoint a b l l' hl hl' (Ne.symm hab)).mono (o := 8 * i) (p := 8 * j)
           (n' := 8) (m' := 8) hsz (hΨ.size_lt b l' hl') (by simp only [Layout.size]; omega)
+          (by simp only [Layout.size]; omega) (by omega) (by omega)
+        rw [hframe _ hd]
+        exact h.heap b l' hl' j τ' hj
+    stackHeap := fun b l' hl' => by rw [hb]; exact h.stackHeap b l' hl' }
+
+/-- Any change to memory confined to a run of integer fields keeps the state
+well typed. -/
+theorem writeInts {a : BitVec 64} {l : Layout} {lo cnt : Nat} {s' : State}
+    (h : WellTyped fetch sys Ψ ix Γ s) (hΨ : Ψ.WF) (hl : Ψ a = some l) (hc : 0 < cnt)
+    (hle : lo + cnt ≤ l.fields.length)
+    (hi : ∀ j, lo ≤ j → j < lo + cnt → l.fields[j]? = some .int) (hregs : s'.regs = s.regs)
+    (hflags : s'.flags = s.flags) (hperm : s'.perm = s.perm)
+    (hframe : ∀ y, Disjoint (a + BitVec.ofNat 64 (8 * lo)) (8 * cnt) y 8 →
+      s'.load64 y = s.load64 y) :
+    WellTyped fetch sys Ψ ix Γ s' := by
+  have hsz := hΨ.size_lt a l hl
+  have hg : ∀ r, s'.getReg r = s.getReg r := fun r => by simp only [State.getReg, hregs]
+  have hb : stackBase Γ s' = stackBase Γ s := by simp only [stackBase, hg]
+  exact {
+    regs := fun r hr => by rw [hg]; exact h.regs r hr
+    flags := by rw [hflags]; exact h.flags
+    stackPerm := by rw [hb, State.canWrite_congr hperm]; exact h.stackPerm
+    stackSize_lt := h.stackSize_lt
+    stack := fun j τ' hj => by
+      have hjlt : j < Γ.stack.length := (List.getElem?_eq_some_iff.mp hj).1
+      have hd := (h.stackHeap a l hl).symm.mono (o := 8 * lo) (p := 8 * Γ.room + 8 * j)
+        (n' := 8 * cnt) (m' := 8) hsz h.stackSize_lt (by simp only [Layout.size]; omega)
+        (by simp only [stackSize]; omega) (by omega) (by omega)
+      rw [slot_addr] at hd
+      rw [hg, hframe _ hd]
+      exact h.stack j τ' hj
+    heapPerm := fun b l' hl' => by
+      rw [State.canRead_congr hperm, State.canWrite_congr hperm]; exact h.heapPerm b l' hl'
+    heap := fun b l' hl' j τ' hj => by
+      have hjlt : j < l'.fields.length := (List.getElem?_eq_some_iff.mp hj).1
+      by_cases hab : b = a
+      · subst hab
+        have e : l' = l := Option.some.inj (hl'.symm.trans hl)
+        subst e
+        by_cases hin : lo ≤ j ∧ j < lo + cnt
+        · have e : τ' = .int := Option.some.inj (hj.symm.trans (hi j hin.1 hin.2))
+          subst e
+          exact HasTy.int _
+        · rw [hframe _ (disjoint_range_slot (N := l'.size) hc (by omega)
+            (by simp only [Layout.size]; omega) (by simp only [Layout.size]; omega) hsz)]
+          exact h.heap b l' hl' j τ' hj
+      · have hd := (hΨ.disjoint a b l l' hl hl' (Ne.symm hab)).mono (o := 8 * lo) (p := 8 * j)
+          (n' := 8 * cnt) (m' := 8) hsz (hΨ.size_lt b l' hl') (by simp only [Layout.size]; omega)
           (by simp only [Layout.size]; omega) (by omega) (by omega)
         rw [hframe _ hd]
         exact h.heap b l' hl' j τ' hj
@@ -1691,7 +1747,7 @@ theorem SafeUpTo.accepts {n : Nat} (ih : SafeUpTo Φ fetch sys Ψ n) {a : BitVec
 /-- A typed instruction, run in a matching state at the right address, has an
 acceptable outcome, and any state it continues to is safe for the remaining steps. -/
 theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
-    (ht : HasType Φ fetch sys Ψ next Γ i) (hΨ : Ψ.WF) (hsys : SysOk fetch sys Ψ)
+    (ht : HasType Φ fetch sys Ψ next Γ i) (hΨ : Ψ.WF)
     (ih : SafeUpTo Φ fetch sys Ψ n) {s : State}
     (h : WellTyped fetch sys Ψ (n + 1) Γ s) (hrip : s.rip = next) :
     (exec sys i s).isSafe = true ∧ ∀ s', exec sys i s = .next s' → SafeN fetch sys n s' := by
@@ -1758,11 +1814,18 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
     cases heq
     exact hv n (Nat.lt_succ_self n) _ rfl
       (((hw.sub hsub).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
-  | syscall hacc =>
-    obtain ⟨hsafe, hnext⟩ := hsys _ _ _ h
-    refine ⟨hsafe, fun s' heq => ?_⟩
-    obtain ⟨hr, hw⟩ := hnext s' heq
+  | syscall hret hacc =>
+    obtain ⟨s', he, hr, hw⟩ := hret hΨ _ _ h
+    have he' : exec sys .syscall s = .next s' := he
+    rw [he']
+    refine ⟨rfl, fun s'' heq => ?_⟩
+    cases heq
     exact ih.accepts hacc (hr.trans hrip) hw
+  | syscallExit hexit =>
+    obtain ⟨c, he⟩ := hexit _ _ h
+    have he' : exec sys .syscall s = .exit c := he
+    rw [he']
+    exact ⟨rfl, fun s' heq => nomatch heq⟩
   | @jmpInd Γ Δ rm hcode hsub =>
     obtain ⟨v, hv, hp⟩ := hcode.sound h hrip
     rw [hasTy_code] at hp
@@ -1815,7 +1878,7 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
 
 /-- In a well-typed program, every program point is safe for `n` steps from
 any state matching its context at step count `n`. -/
-theorem safeUpTo (hP : ProgramOk Φ fetch sys Ψ) (hΨ : Ψ.WF) (hsys : SysOk fetch sys Ψ) (n : Nat) :
+theorem safeUpTo (hP : ProgramOk Φ fetch sys Ψ) (hΨ : Ψ.WF) (n : Nat) :
     SafeUpTo Φ fetch sys Ψ n := by
   induction n with
   | zero =>
@@ -1830,17 +1893,17 @@ theorem safeUpTo (hP : ProgramOk Φ fetch sys Ψ) (hΨ : Ψ.WF) (hsys : SysOk fe
     · have : k = n + 1 := by omega
       subst this
       obtain ⟨i, len, hf, ht⟩ := hP a Δ hΔ
-      have := ht.sound hΨ hsys ih (s := { s with rip := s.rip + len })
+      have := ht.sound hΨ ih (s := { s with rip := s.rip + len })
         (hw.congr rfl rfl rfl rfl) (by rw [← hr])
       simpa only [SafeN, TypedAsm.step, hr, hf] using this
 
 /-- **Soundness.** A well-typed program, started in a well-typed state, with a
-well-formed memory typing and a well-behaved operating system, is safe: it
+well-formed memory typing, is safe: it
 never gets stuck and never faults: no page fault, no invalid opcode and no
 divide error. -/
-theorem soundness {s : State} (hP : ProgramOk Φ fetch sys Ψ) (hΨ : Ψ.WF) (hsys : SysOk fetch sys Ψ)
+theorem soundness {s : State} (hP : ProgramOk Φ fetch sys Ψ) (hΨ : Ψ.WF)
     (hs : StateOk Φ fetch sys Ψ s) : Safe fetch sys s := by
   obtain ⟨Γ, hΓ, hw⟩ := hs
-  exact safe_of_safeN (fun n => safeUpTo hP hΨ hsys n n (Nat.le_refl n) s.rip Γ hΓ s rfl (hw n))
+  exact safe_of_safeN (fun n => safeUpTo hP hΨ n n (Nat.le_refl n) s.rip Γ hΓ s rfl (hw n))
 
 end TypedAsm

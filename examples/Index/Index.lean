@@ -33,7 +33,6 @@ def fin : Ctx := ⟨fun _ => .int, [], 1, Flags.Any⟩
 inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 1)
   | afterCall : At .afterCall fin
-  | spin : At .spin fin
   | get (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
     (getSig n).CallerOk saved ret rest room → n < 2 ^ 64 →
     At .get ((getSig n).entry saved ret rest room)
@@ -70,7 +69,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_steps
     ty_call (getSig 5)
   | afterCall => ty_block
-  | spin => ty_block
   | get n saved ret rest room hK hn =>
     -- the index is any integer; call it `v`
     ty_name .rdx as v
@@ -103,9 +101,9 @@ never faults: no page fault, no invalid opcode and no divide error. In particula
 indexed load never reads outside the array, whatever index `get` is given. -/
 theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
   .of_safe linux_frame (Asm.loaded h.code)
-    (soundness_blocks blocksOk memOk (linuxOk fetch Ψ) h.stateOk)
+    (soundness_blocks blocksOk memOk h.stateOk)
 
-theorem image_length : image.length = 53 := by decide
+theorem image_length : image.length = 48 := by decide
 
 /-- The starting state used by the simulator meets the entry contract. -/
 theorem start_entry : Entry start :=
@@ -118,6 +116,6 @@ theorem safeMem : SafeMem linux start :=
 
 /-- It is also safe on the table machine, which is what the type system reasons about. -/
 theorem safe : Safe fetch linux start :=
-  soundness_blocks blocksOk memOk (linuxOk fetch Ψ) start_entry.stateOk
+  soundness_blocks blocksOk memOk start_entry.stateOk
 
 end Index

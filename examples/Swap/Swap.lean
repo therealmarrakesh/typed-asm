@@ -28,16 +28,12 @@ def swapSig : FnSig where
 /-- Register types with the pointer in one register and nothing known about the rest. -/
 def only (reg : Reg) : Reg → Ty := fun r => if r = reg then pair else .int
 
-/-- For the last instruction of `_start`: nothing is known about any register. -/
-def done : Ctx := ⟨fun _ => .int, [], 2, Flags.Any⟩
-
 /-- The contexts allowed at each label. -/
 inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 2)
   /-- After the first call the pointer is still in `rbx`. -/
   | afterFirst : At .afterFirst ⟨only .rbx, [], 2, Flags.Any⟩
   | afterSecond : At .afterSecond ⟨only .rbx, [pair], 1, Flags.Any⟩
-  | spin : At .spin done
   | swap (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
     swapSig.CallerOk saved ret rest room → At .swap (swapSig.entry saved ret rest room)
 
@@ -67,7 +63,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_call swapSig
   | afterFirst => ty_block; ty_call swapSig
   | afterSecond => ty_block
-  | spin => ty_block
   | swap saved ret rest room hK => ty_block
 
 /-! ## The memory typing and the entry contract -/
@@ -92,9 +87,9 @@ machine that fetches instructions by decoding memory.** It never gets stuck,
 never faults: no page fault, no invalid opcode and no divide error. -/
 theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
   .of_safe linux_frame (Asm.loaded h.code)
-    (soundness_blocks blocksOk memOk (linuxOk fetch Ψ) h.stateOk)
+    (soundness_blocks blocksOk memOk h.stateOk)
 
-theorem image_length : image.length = 54 := by decide
+theorem image_length : image.length = 49 := by decide
 
 /-- The starting state used by the simulator meets the entry contract. -/
 theorem start_entry : Entry start :=
@@ -107,6 +102,6 @@ theorem safeMem : SafeMem linux start :=
 
 /-- It is also safe on the table machine, which is what the type system reasons about. -/
 theorem safe : Safe fetch linux start :=
-  soundness_blocks blocksOk memOk (linuxOk fetch Ψ) start_entry.stateOk
+  soundness_blocks blocksOk memOk start_entry.stateOk
 
 end Swap

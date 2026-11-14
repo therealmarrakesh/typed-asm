@@ -24,6 +24,10 @@ inductive BlockOk (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) :
   | step {a : BitVec 64} {Γ Γ' : Ctx} {i : Instr} {len : BitVec 64} :
     fetch a = some (i, len) → Straight Ψ (a + len) Γ i Γ' → BlockOk Φ fetch sys Ψ (a + len) Γ' →
     BlockOk Φ fetch sys Ψ a Γ
+  /-- A system call that returns, followed by the rest of the block. -/
+  | sys {a : BitVec 64} {Γ Γ' : Ctx} {len : BitVec 64} :
+    fetch a = some (.syscall, len) → SysReturns fetch sys Ψ Γ Γ' →
+    BlockOk Φ fetch sys Ψ (a + len) Γ' → BlockOk Φ fetch sys Ψ a Γ
   /-- A conditional jump in the middle of a block. The target must accept;
   the block continues with the instruction after it. Each side may assume
   which way the condition went. -/
@@ -71,7 +75,8 @@ theorem HasType.mono (h : ∀ a Γ, Φ a Γ → Φ' a Γ) {next : BitVec 64} {Γ
     exact .jcc hdec (fun f hf hb => (hacc f hf hb).mono h) (fun f hf hb => (hfall f hf hb).mono h)
   | call hroom hret hacc => exact .call hroom (h _ _ hret) (hacc.mono h)
   | ret hst hsub => exact .ret hst hsub
-  | syscall hacc => exact .syscall (hacc.mono h)
+  | syscall hret hacc => exact .syscall hret (hacc.mono h)
+  | syscallExit hexit => exact .syscallExit hexit
   | jmpInd hcode hsub => exact .jmpInd hcode hsub
   | callInd hcode hroom hret hsub => exact .callInd hcode hroom (h _ _ hret) hsub
   | unreachable hun => exact .unreachable hun
@@ -86,6 +91,7 @@ theorem BlocksOk.programOk (h : BlocksOk Φ fetch sys Ψ) :
   intro a Γ hb
   induction hb with
   | step hf hst hrest _ => exact ⟨_, _, hf, .straight hst ⟨_, hrest, CtxSub.refl _⟩⟩
+  | sys hf hret hrest _ => exact ⟨_, _, hf, .syscall hret ⟨_, hrest, CtxSub.refl _⟩⟩
   | branch hf hdec hacc hrest _ =>
     exact ⟨_, _, hf, .jcc hdec (fun f hΓ hb => (hacc f hΓ hb).mono h)
       (fun f hΓ hb => ⟨_, hrest f hΓ hb, CtxSub.refl _⟩)⟩
@@ -164,8 +170,8 @@ end Labels
 
 /-- **Soundness, block by block.** -/
 theorem soundness_blocks {s : State} (hB : BlocksOk Φ fetch sys Ψ)
-    (hΨ : Ψ.WF) (hsys : SysOk fetch sys Ψ) (hs : StateOk Φ fetch sys Ψ s) : Safe fetch sys s :=
+    (hΨ : Ψ.WF) (hs : StateOk Φ fetch sys Ψ s) : Safe fetch sys s :=
   let ⟨Γ, hΓ, hw⟩ := hs
-  soundness hB.programOk hΨ hsys ⟨Γ, hB _ _ hΓ, hw⟩
+  soundness hB.programOk hΨ ⟨Γ, hB _ _ hΓ, hw⟩
 
 end TypedAsm

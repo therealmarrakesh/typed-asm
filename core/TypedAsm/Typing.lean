@@ -550,6 +550,21 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
     Straight Ψ next Γ (.test .w64 (.reg r) (.reg r'))
       { Γ with flags := (· = Flags.ofResult (a &&& b) false false) }
 
+/-! ## System calls
+
+What a system call does is up to the operating system, so a `syscall` is
+typed by a fact about the operating system at that point in the program. -/
+
+/-- From any state matching `Γ`, the system call returns to where it was made
+with a state matching `Γ'`. -/
+def SysReturns (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (Γ Γ' : Ctx) : Prop :=
+  Ψ.WF → ∀ n s, WellTyped fetch sys Ψ n Γ s →
+    ∃ s', sys s = .next s' ∧ s'.rip = s.rip ∧ WellTyped fetch sys Ψ n Γ' s'
+
+/-- From any state matching `Γ`, the system call ends the program. -/
+def SysExits (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (Γ : Ctx) : Prop :=
+  ∀ n s, WellTyped fetch sys Ψ n Γ s → ∃ c, sys s = .exit c
+
 /-! ## All typed instructions -/
 
 /-- `HasType Φ fetch sys Ψ next Γ i`: in a state matching `Γ`, instruction `i`
@@ -577,7 +592,13 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
   popped must match what that code requires. -/
   | ret {Γ Δ : Ctx} {σ : List Ty} : Γ.stack = .code Δ :: σ →
     CtxSub { Γ with stack := σ, room := Γ.room + 1 } Δ → HasType Φ fetch sys Ψ next Γ .ret
-  | syscall {Γ : Ctx} : Accepts Φ next Γ.afterSyscall → HasType Φ fetch sys Ψ next Γ .syscall
+  /-- A system call that returns. It is typed only where the operating
+  system is shown to return to the next instruction with a state matching
+  `Γ'`; there is no rule for a call about which nothing is known. -/
+  | syscall {Γ Γ' : Ctx} : SysReturns fetch sys Ψ Γ Γ' → Accepts Φ next Γ' →
+    HasType Φ fetch sys Ψ next Γ .syscall
+  /-- A system call that ends the program. Nothing after it needs a type. -/
+  | syscallExit {Γ : Ctx} : SysExits fetch sys Ψ Γ → HasType Φ fetch sys Ψ next Γ .syscall
   /-- Jump through a register, field or stack slot holding a code pointer. -/
   | jmpInd {Γ Δ : Ctx} {rm : RM} : CodeAt Ψ next Γ rm Δ → CtxSub Γ Δ →
     HasType Φ fetch sys Ψ next Γ (.jmp (.ind rm))
@@ -623,14 +644,5 @@ def ProgramOk (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) : Prop 
 its `rip`, at every step count. -/
 def StateOk (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (s : State) : Prop :=
   ∃ Γ, Φ s.rip Γ ∧ ∀ n, WellTyped fetch sys Ψ n Γ s
-
-/-- What the type system assumes about the operating system: a system call
-from a well-typed state has an acceptable outcome, and if it returns, it
-returns to the same place with a state that is still well typed, having
-changed at most `rax`, `rcx`, `r11` and the flags as far as types can tell. -/
-def SysOk (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) : Prop :=
-  ∀ n Γ s, WellTyped fetch sys Ψ n Γ s →
-    (sys s).isSafe = true ∧
-    ∀ s', sys s = .next s' → s'.rip = s.rip ∧ WellTyped fetch sys Ψ n Γ.afterSyscall s'
 
 end TypedAsm

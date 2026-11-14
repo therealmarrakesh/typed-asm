@@ -55,6 +55,12 @@ theorem Entry.matches {H : Ty → BitVec 64 → Prop} {s : State}
     exact hint _
   stackHeap := fun a l hl => h.apart (a, l) (MemTy.mem_of_ofList hl)
 
+/-- The entry contract says nothing about the outside world: it holds
+whatever there is to read. -/
+theorem Entry.withWorld {s : State} (h : Entry entry base image blocks room s) (w : World) :
+    Entry entry base image blocks room { s with world := w } :=
+  ⟨h.rip, h.code, h.perms, h.stack, h.apart, h.room_lt⟩
+
 /-- A state built by loading the program into a prepared state meets the
 entry contract, if the prepared state has the blocks and the stack, and both
 lie above the code. -/

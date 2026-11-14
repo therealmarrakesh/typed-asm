@@ -121,28 +121,15 @@ def start : State :=
 
 /-! ## Running it -/
 
-def describe : Outcome → String
-  | .next s => s!"still running at rip = {s.rip.toNat}"
-  | .fault f => s!"fault: {repr f}"
-  | .exit code => s!"exit {code.toNat}"
-  | .stuck => "stuck"
-
-def exitsWith (code : BitVec 32) : Outcome → Bool
-  | .exit c => c == code
-  | _ => false
-
 -- The second field is not zero, so the result is the low byte of the first: 0x34.
 -- (The byte store changed the first field's second byte, not its low byte.)
 #guard exitsWith 0x34 (runMem linux 100 start)
 
 end Frame
 
-/-- With no arguments, runs the program on the machine with code in memory
-and prints the outcome. With `--elf FILE`, writes the program as a Linux executable. -/
-def main (args : List String) : IO Unit := do
-  match args with
-  | ["--elf", path] =>
-    let bytes := Elf.file Frame.entry.toNat Frame.image Frame.recordBytes (writable := true)
-    IO.FS.writeBinFile path (ByteArray.mk (bytes.map fun b => b.toNat.toUInt8).toArray)
-    IO.println s!"wrote {bytes.length} bytes to {path}"
-  | _ => IO.println (Frame.describe (runMem linux 100 Frame.start))
+/-- With no arguments, runs the program on the machine with code in memory:
+what it writes goes to standard output, how it ended to standard error, and
+its exit status becomes this executable's. With `--elf FILE`, writes the
+program as a Linux executable. -/
+def main (args : List String) : IO UInt32 :=
+  exeMain Frame.entry.toNat Frame.image Frame.recordBytes Frame.start args (writable := true)

@@ -12,7 +12,8 @@ acceptable.
 
 Safety is relative to the instructions (`fetch`) and to the operating system
 (`sys`). A system call that itself returns a bad outcome makes a program
-unsafe, so results about safety need an assumption about `sys`.
+unsafe, so a `syscall` is typed only where the operating system is shown to
+behave: see `SysReturns` and `SysExits`.
 -/
 
 namespace TypedAsm

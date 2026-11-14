@@ -41,7 +41,6 @@ inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 4)
   | afterCall : At .afterCall afterCtx
   | finish : At .finish fin
-  | spin : At .spin fin
   /-- No state matches this context: its flags predicate is never true. So
   nothing can jump here, and the `ud2` is never executed. -/
   | trap : At .trap ⟨fun _ => .int, [], 0, fun _ => False⟩
@@ -82,7 +81,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_code_ptr .rcx to fin
     ty_block
   | finish => ty_block
-  | spin => ty_block
   | trap => ty_block
   | compute saved ret rest room hK =>
     -- make the two slots the signature guarantees visible, so the frame can be allocated
@@ -113,9 +111,9 @@ divisions are by constants that are not zero, which is what the typing of a
 divide demands. -/
 theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
   .of_safe linux_frame (Asm.loaded h.code)
-    (soundness_blocks blocksOk memOk (linuxOk fetch Ψ) h.stateOk)
+    (soundness_blocks blocksOk memOk h.stateOk)
 
-theorem image_length : image.length = 198 := by decide +kernel
+theorem image_length : image.length = 193 := by decide +kernel
 
 /-- The starting state used by the simulator meets the entry contract. -/
 theorem start_entry : Entry start :=
@@ -128,6 +126,6 @@ theorem safeMem : SafeMem linux start :=
 
 /-- It is also safe on the table machine, which is what the type system reasons about. -/
 theorem safe : Safe fetch linux start :=
-  soundness_blocks blocksOk memOk (linuxOk fetch Ψ) start_entry.stateOk
+  soundness_blocks blocksOk memOk start_entry.stateOk
 
 end Ops

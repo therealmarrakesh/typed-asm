@@ -20,14 +20,12 @@ _start:
   25  mov   eax, 60              ; Linux `exit`
   30  xor   edi, edi
   32  syscall
-spin:
-  34  jmp   spin                 ; not reached: `exit` does not return
 swap:                            ; rdi = pointer to the record
-  39  mov   rax, [rdi]
-  42  mov   rcx, [rdi+8]
-  46  mov   [rdi], rcx
-  49  mov   [rdi+8], rax
-  53  ret
+  34  mov   rax, [rdi]
+  37  mov   rcx, [rdi+8]
+  41  mov   [rdi], rcx
+  44  mov   [rdi+8], rax
+  48  ret
 ```
 
 The numbers are offsets from the start of the code. The program is laid out
@@ -46,7 +44,7 @@ def field (disp : BitVec 32) : Mem := .sib (some .rdi) none disp
 
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive Label
-  | start | afterFirst | afterSecond | spin | swap
+  | start | afterFirst | afterSecond | swap
   deriving DecidableEq
 
 def code : List (Asm Label) := [
@@ -63,8 +61,6 @@ def code : List (Asm Label) := [
   .ins (.mov .w32 (.rm_i (.reg .rax) 60)),
   .ins (.alu .xor .w32 (.rm_r (.reg .rdi) .rdi)),
   .ins .syscall,
-  .label .spin,
-  .jmp .spin,
   .label .swap,
   .ins (.mov .w64 (.r_m .rax (field 0))),
   .ins (.mov .w64 (.r_m .rcx (field 8))),

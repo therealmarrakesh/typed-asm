@@ -94,7 +94,7 @@ machine that fetches instructions by decoding memory.** It never gets stuck,
 never faults: no page fault, no invalid opcode and no divide error. -/
 theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
   .of_safe linux_frame (Asm.loaded h.code)
-    (soundness_blocks blocksOk memOk (linuxOk fetch Ψ) h.stateOk)
+    (soundness_blocks blocksOk memOk h.stateOk)
 
 theorem image_length : image.length = 88 := by decide
 
@@ -109,6 +109,6 @@ theorem safeMem : SafeMem linux start :=
 
 /-- It is also safe on the table machine, which is what the type system reasons about. -/
 theorem safe : Safe fetch linux start :=
-  soundness_blocks blocksOk memOk (linuxOk fetch Ψ) start_entry.stateOk
+  soundness_blocks blocksOk memOk start_entry.stateOk
 
 end Frame
