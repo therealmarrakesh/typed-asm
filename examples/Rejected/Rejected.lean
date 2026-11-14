@@ -4,7 +4,8 @@ import TypedAsm.Tactic
 /-!
 # Instructions the type system rejects
 
-Each instruction below is unsafe in the given context, or has no typing rule.
+Each instruction below is unsafe in the given context, or uses an operand
+form that has no typing rule.
 The messages are the ones the typing tactic reports; `#guard_msgs` fails the
 build if any of them changes.
 -/
@@ -61,7 +62,7 @@ def Γ : Ctx where
 
 /-- error: at address 0: cannot type `mov qword ptr [rax], rcx` in the current context
 • storeField: `rax` must hold a writable pointer, but its type is `int`
-• storeIntR: `rax` must hold a writable pointer, but its type is `int` -/
+• storeInt: `rax` must hold a writable pointer, but its type is `int` -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i0) Γ := by ty_step
 
@@ -72,7 +73,7 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i1) Γ := by ty_step
 
 /-- error: at address 7: cannot type `mov qword ptr [rsi], rcx` in the current context
 • storeField: `rsi` must hold a writable pointer, but its type is `read-only pointer to [int, int]`
-• storeIntR: `rsi` must hold a writable pointer, but its type is `read-only pointer to [int, int]` -/
+• storeInt: `rsi` must hold a writable pointer, but its type is `read-only pointer to [int, int]` -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i2) Γ := by ty_step
 
@@ -82,7 +83,7 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i2) Γ := by ty_step
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i3) Γ := by ty_step
 
 /-- error: at address 11: cannot type `mov dword ptr [rdx+8], ecx` in the current context
-• storeIntR: the field must have type `int`, but has type `read-only pointer to [int]` -/
+• storeInt: the field must have type `int`, but has type `read-only pointer to [int]` -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i4) Γ := by ty_step
 
@@ -104,7 +105,7 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i8) Γ := by ty_step
 
 /-- error: at address 27: cannot type `mov qword ptr [rdx+8], rdi` in the current context
 • storeField: a value of type `pointer to [int, int]` cannot be stored where `read-only pointer to [int]` is required
-• storeIntR: the field must have type `int`, but has type `read-only pointer to [int]` -/
+• storeInt: the field must have type `int`, but has type `read-only pointer to [int]` -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i9) Γ := by ty_step
 
@@ -112,7 +113,8 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i9) Γ := by ty_step
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i10) Γ := by ty_step
 
-/-- error: at address 32: the type system has no rule for `mov rax, qword ptr [rdi+rcx*8]` -/
+/-- error: at address 32: cannot type `mov rax, qword ptr [rdi+rcx*8]` in the current context
+• loadInt: this form of operand has no rule: a memory operand must be `[register + displacement]` -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i11) Γ := by ty_step
 

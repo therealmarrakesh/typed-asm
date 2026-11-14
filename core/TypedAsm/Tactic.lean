@@ -198,49 +198,43 @@ open Lean Meta Elab Tactic
 informative first. An empty list means the type system has no rule for it. -/
 def Instr.rules : Instr → List Name
   | .nop => [``Straight.nop]
+  -- moves between registers and constants
   | .mov .w64 (.rm_r (.reg _) _) => [``Straight.movRR64]
   | .mov .w32 (.rm_r (.reg _) _) => [``Straight.movRR32]
   | .mov _ (.rm_i (.reg _) _) => [``Straight.movRI]
   | .movAbs _ _ => [``Straight.movAbs]
   | .lea .w64 _ (.rip _) => [``Straight.leaRip, ``Straight.lea]
   | .lea _ _ _ => [``Straight.lea]
-  | .mov .w32 (.r_m _ (.sib (some .rsp) none _)) => [``Straight.loadInt]
-  | .mov .w32 (.rm_r (.mem (.sib (some .rsp) none _)) _) => [``Straight.storeInt]
-  | .mov _ (.rm_i (.mem (.sib (some .rsp) none _)) _) => [``Straight.storeImm]
-  | .store8 (.sib (some .rsp) none _) _ => [``Straight.store8RM]
-  | .movzx _ _ _ (.mem (.sib (some .rsp) none _)) => [``Straight.movzxRM]
-  | .movsx _ _ _ (.mem (.sib (some .rsp) none _)) => [``Straight.movsxRM]
-  | .movzx _ _ _ (.reg _) => [``Straight.movzxRM]
-  | .movsx _ _ _ (.reg _) => [``Straight.movsxRM]
+  -- loads: a whole slot or field keeps its type, anything else is an integer
   | .mov .w64 (.r_m _ (.sib (some .rsp) none _)) => [``Straight.loadStack]
   | .mov .w64 (.r_m _ (.sib (some _) none _)) => [``Straight.loadField]
-  | .mov .w32 (.r_m _ (.sib (some _) none _)) => [``Straight.loadField32]
+  | .mov _ (.r_m _ _) => [``Straight.loadInt]
+  | .movzx _ _ _ _ => [``Straight.movzxRM]
+  | .movsx _ _ _ _ => [``Straight.movsxRM]
+  | .movsxd _ _ => [``Straight.movsxdRM]
+  -- stores
   | .mov .w64 (.rm_r (.mem (.sib (some .rsp) none _)) _) => [``Straight.storeStack]
   | .mov .w64 (.rm_r (.mem (.sib (some _) none _)) _) =>
-    [``Straight.storeField, ``Straight.storeIntR]
-  | .mov .w32 (.rm_r (.mem (.sib (some _) none _)) _) => [``Straight.storeIntR]
-  | .mov _ (.rm_i (.mem (.sib (some _) none _)) _) => [``Straight.storeIntI]
-  | .store8 (.sib (some _) none _) _ => [``Straight.store8Field]
-  | .movzx _ _ _ (.mem (.sib (some _) none _)) => [``Straight.movzxField]
-  | .movsx _ _ _ (.mem (.sib (some _) none _)) => [``Straight.movsxField]
+    [``Straight.storeField, ``Straight.storeInt]
+  | .mov _ (.rm_r (.mem _) _) => [``Straight.storeInt]
+  | .mov _ (.rm_i (.mem _) _) => [``Straight.storeImm]
+  | .store8 _ _ => [``Straight.store8RM]
   | .push _ => [``Straight.push]
   | .pop _ => [``Straight.pop]
+  -- arithmetic
   | .alu .sub .w64 (.rm_i (.reg .rsp) _) => [``Straight.allocFrame]
   | .alu .add .w64 (.rm_i (.reg .rsp) _) => [``Straight.freeFrame']
   | .alu _ .w64 (.rm_i (.reg _) _) => [``Straight.aluExact, ``Straight.addPtr, ``Straight.aluRI]
   | .alu _ _ (.rm_i (.reg _) _) => [``Straight.aluRI]
   | .alu _ .w64 (.rm_r (.reg _) _) => [``Straight.aluExactRR, ``Straight.aluRR]
   | .alu _ _ (.rm_r (.reg _) _) => [``Straight.aluRR]
-  | .alu _ .w64 (.r_m _ (.sib (some .rsp) none _)) => [``Straight.aluLoad]
-  | .alu _ .w64 (.r_m _ (.sib (some _) none _)) => [``Straight.aluMem]
   | .alu _ _ (.r_m _ _) => [``Straight.aluLoad]
   | .alu op _ (.rm_r (.mem _) _) =>
     if op.writesDst then [``Straight.aluStoreR] else [``Straight.cmpR]
   | .alu op _ (.rm_i (.mem _) _) =>
     if op.writesDst then [``Straight.aluStoreI] else [``Straight.cmpI]
-  | .test .w64 (.reg _) (.reg _) => [``Straight.testExact, ``Straight.test]
-  | .test _ (.reg _) _ => [``Straight.test]
-  | .test _ (.mem _) _ => [``Straight.testRM]
+  | .test .w64 (.reg _) (.reg _) => [``Straight.testExact, ``Straight.testRM]
+  | .test _ _ _ => [``Straight.testRM]
   | .unary .neg _ _ => [``Straight.negRM]
   | .unary .not _ _ => [``Straight.notRM]
   | .shift _ _ _ _ => [``Straight.shiftRM]
@@ -254,9 +248,9 @@ def Instr.rules : Instr → List Name
   | .bswap _ _ => [``Straight.bswap]
   | .cdq => [``Straight.cdq]
   | .cqo => [``Straight.cqo]
-  | .movsxd _ _ => [``Straight.movsxdRM]
   | .cmov _ _ _ _ => [``Straight.cmovRM]
   | .setcc _ _ => [``Straight.setccRM]
+  -- control transfers end a block and are not typed by a straight-line rule
   | _ => []
 
 /-- Whether the instruction can send control somewhere other than the next
@@ -266,7 +260,7 @@ def Instr.endsBlock : Instr → Bool
   | _ => false
 
 /-- Every straight-line rule, for instructions whose shape is not known. -/
-def allStraightRules : List Name := [``Straight.movRR64, ``Straight.movRR32, ``Straight.movRI, ``Straight.movAbs, ``Straight.leaRip, ``Straight.lea, ``Straight.loadStack, ``Straight.loadField, ``Straight.storeStack, ``Straight.storeField, ``Straight.storeIntR, ``Straight.storeIntI, ``Straight.store8Field, ``Straight.push, ``Straight.pop, ``Straight.allocFrame, ``Straight.freeFrame', ``Straight.aluExact, ``Straight.aluExactRR, ``Straight.loadField32, ``Straight.movzxField, ``Straight.movsxField, ``Straight.addPtr, ``Straight.aluMem, ``Straight.aluRR, ``Straight.aluRI, ``Straight.testExact, ``Straight.test, ``Straight.nop, ``Straight.aluStoreR, ``Straight.aluStoreI, ``Straight.cmpR, ``Straight.cmpI, ``Straight.aluLoad, ``Straight.testRM, ``Straight.negRM, ``Straight.notRM, ``Straight.shiftRM, ``Straight.mulRM, ``Straight.imulRM, ``Straight.divRM, ``Straight.idivRM, ``Straight.imul2RM, ``Straight.imul3RM, ``Straight.popcntRM, ``Straight.bswap, ``Straight.cdq, ``Straight.cqo, ``Straight.movsxdRM, ``Straight.cmovRM, ``Straight.setccRM, ``Straight.movzxRM, ``Straight.movsxRM, ``Straight.loadInt, ``Straight.storeInt, ``Straight.storeImm, ``Straight.store8RM]
+def allStraightRules : List Name := [``Straight.movRR64, ``Straight.movRR32, ``Straight.movRI, ``Straight.movAbs, ``Straight.leaRip, ``Straight.lea, ``Straight.loadStack, ``Straight.loadField, ``Straight.storeStack, ``Straight.storeField, ``Straight.push, ``Straight.pop, ``Straight.allocFrame, ``Straight.freeFrame', ``Straight.aluExact, ``Straight.aluExactRR, ``Straight.addPtr, ``Straight.aluRR, ``Straight.aluRI, ``Straight.testExact, ``Straight.nop, ``Straight.aluStoreR, ``Straight.aluStoreI, ``Straight.cmpR, ``Straight.cmpI, ``Straight.aluLoad, ``Straight.testRM, ``Straight.negRM, ``Straight.notRM, ``Straight.shiftRM, ``Straight.mulRM, ``Straight.imulRM, ``Straight.divRM, ``Straight.idivRM, ``Straight.imul2RM, ``Straight.imul3RM, ``Straight.popcntRM, ``Straight.bswap, ``Straight.cdq, ``Straight.cqo, ``Straight.movsxdRM, ``Straight.cmovRM, ``Straight.setccRM, ``Straight.movzxRM, ``Straight.movsxRM, ``Straight.loadInt, ``Straight.storeInt, ``Straight.storeImm, ``Straight.store8RM]
 
 private unsafe def evalInstrUnsafe (e : Expr) : MetaM Instr :=
   evalExpr Instr (mkConst ``Instr) e

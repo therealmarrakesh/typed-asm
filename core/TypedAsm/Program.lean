@@ -64,7 +64,6 @@ theorem HasType.mono (h : ∀ a Γ, Φ a Γ → Φ' a Γ) {next : BitVec 64} {Γ
   | jmp hacc => exact .jmp (hacc.mono h)
   | jcc hdec hacc hfall =>
     exact .jcc hdec (fun f hf hb => (hacc f hf hb).mono h) (fun f hf hb => (hfall f hf hb).mono h)
-  | jmpReg hr hΓ hsub => exact .jmpReg hr hΓ hsub
   | call hroom hret hacc => exact .call hroom (h _ _ hret) (hacc.mono h)
   | ret hst hsub => exact .ret hst hsub
   | syscall hacc => exact .syscall (hacc.mono h)
