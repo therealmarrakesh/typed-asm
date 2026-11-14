@@ -5,6 +5,7 @@ import TypedAsm.Memory
 import TypedAsm.Step
 import TypedAsm.Safety
 import TypedAsm.Types
+import TypedAsm.Typing
 
 /-!
 # TypedAsm
