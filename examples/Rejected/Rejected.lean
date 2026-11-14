@@ -398,4 +398,39 @@ theorem divide_ok : BlocksOk Φd divideFetch linux Ψ := by
     ty_block
   | out => ty_block
 
+/-! A signed divide. `cqo` sign-extends `rax` into `rdx`; with the divisor
+known to be neither zero nor minus one, the divide cannot raise a divide error. -/
+
+inductive Signed
+  | start | out
+  deriving DecidableEq
+
+def signed : List (Asm Signed) := [
+  .label .start,
+  .ins .cqo,
+  .ins (.mulDiv .idiv .w64 (.reg .rcx)),
+  .label .out, .jmp .out]
+
+def signedFetch : Fetch := Asm.fetch 0 signed
+
+inductive AtSigned : Signed → Ctx → Prop
+  | start (a v : BitVec 64) : v ≠ 0 → v ≠ -1 →
+    AtSigned .start ⟨fun r => if r = .rax then .eq a else if r = .rcx then .eq v else .int,
+      [], 0, Flags.Any⟩
+  | out : AtSigned .out bare
+
+def Φs : CodeTy := .ofLabels signed 0 AtSigned
+
+theorem signed_ok : BlocksOk Φs signedFetch linux Ψ := by
+  refine BlocksOk.of_labels ?_
+  intro l Γ h
+  cases h with
+  | start a v hv hv1 =>
+    ty_step
+    ty_step_with Straight.idivSafe
+    ty_block
+    -- the quotient fits: the divisor is not minus one
+    exact .inr hv1
+  | out => ty_block
+
 end Rejected

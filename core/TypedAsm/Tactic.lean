@@ -190,6 +190,20 @@ theorem Straight.divSafe {Ψ : MemTy} {next : BitVec 64} {Γ : Ctx} {w : Width} 
         flags := (· = Flags.unknown) } :=
   .mulDivExact hr hΓa hΓd hΓr (by rw [hd]; exact MulDivOp.eval_div _ _ hb)
 
+/-- A signed divide whose dividend has been sign-extended into `rdx` (as
+`cqo` and `cdq` do) and whose divisor is known not to be zero cannot raise a
+divide error, unless it is the most negative number divided by minus one. -/
+theorem Straight.idivSafe {Ψ : MemTy} {next : BitVec 64} {Γ : Ctx} {w : Width} {r : Reg}
+    {a d b : BitVec 64} (hr : r ≠ .rsp) (hΓa : Γ.regs .rax = .eq a) (hΓd : Γ.regs .rdx = .eq d)
+    (hΓr : Γ.regs r = .eq b) (hd : d.setWidth w.bits = signFill (a.setWidth w.bits))
+    (hb : b.setWidth w.bits ≠ 0)
+    (hov : a.setWidth w.bits ≠ BitVec.intMin w.bits ∨ b.setWidth w.bits ≠ -1#w.bits) :
+    Straight Ψ next Γ (.mulDiv .idiv w (.reg r))
+      { (Γ.setReg .rax (.eq (((a.setWidth w.bits).sdiv (b.setWidth w.bits)).setWidth 64))).setReg
+          .rdx (.eq (((a.setWidth w.bits).srem (b.setWidth w.bits)).setWidth 64)) with
+        flags := (· = Flags.unknown) } :=
+  .mulDivExact hr hΓa hΓd hΓr (by rw [hd]; exact MulDivOp.eval_idiv _ _ hb hov)
+
 theorem Flags.cf_isSome_of_known {f : Flags} (h : Flags.Known f) : f.cf.isSome = true := by
   simp only [Flags.Known, Flags.defined, Bool.and_eq_true] at h
   exact h.1.1.1
@@ -452,7 +466,7 @@ def Instr.rules : Instr → List Name
   | .mulDiv .imul _ _ => [``Straight.imulRM]
   | .mulDiv .div _ (.reg _) => [``Straight.mulDivExact, ``Straight.divSafe, ``Straight.divRM]
   | .mulDiv .div _ _ => [``Straight.divRM]
-  | .mulDiv .idiv _ (.reg _) => [``Straight.mulDivExact, ``Straight.idivRM]
+  | .mulDiv .idiv _ (.reg _) => [``Straight.mulDivExact, ``Straight.idivSafe, ``Straight.idivRM]
   | .mulDiv .idiv _ _ => [``Straight.idivRM]
   | .imul2 _ _ (.reg _) => [``Straight.imul2Exact, ``Straight.imul2RM]
   | .imul2 _ _ _ => [``Straight.imul2RM]
@@ -477,7 +491,7 @@ since the general rule's reason is the one that matters. -/
 def sharpeningRules : List Name := [``Straight.mov32Exact, ``Straight.aluExact32,
   ``Straight.aluExactRR32, ``Straight.shiftExact, ``Straight.leaExactB, ``Straight.leaExactBI,
   ``Straight.negExact, ``Straight.notExact, ``Straight.imul2Exact, ``Straight.imul3Exact,
-  ``Straight.mulDivExact, ``Straight.divSafe, ``Straight.cdqExact, ``Straight.cqoExact,
+  ``Straight.mulDivExact, ``Straight.divSafe, ``Straight.idivSafe, ``Straight.cdqExact, ``Straight.cqoExact,
   ``Straight.movsxdExact, ``Straight.movzxExact, ``Straight.movsxExact, ``Straight.popcntExact,
   ``Straight.bswapExact, ``Straight.cmovExact, ``Straight.setccExact]
 
