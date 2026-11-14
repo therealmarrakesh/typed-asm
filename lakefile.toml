@@ -1,6 +1,6 @@
 name = "typed-assembly"
 version = "0.1.0"
-defaultTargets = ["TypedAsm", "Sum", "Swap", "Frame", "Rejected", "sum", "swap", "frame"]
+defaultTargets = ["TypedAsm", "Sum", "Swap", "Frame", "Ops", "Rejected", "sum", "swap", "frame", "ops"]
 testDriver = "tests"
 
 # The core library: machine model, instruction set, semantics, type system.
@@ -47,6 +47,16 @@ roots = ["Frame", "FrameProgram"]
 name = "frame"
 root = "FrameProgram"
 srcDir = "examples/Frame"
+
+[[lean_lib]]
+name = "Ops"
+srcDir = "examples/Ops"
+roots = ["Ops", "OpsProgram"]
+
+[[lean_exe]]
+name = "ops"
+root = "OpsProgram"
+srcDir = "examples/Ops"
 
 # Not a program to run: instructions the type system rejects, with the
 # messages it gives, checked at build time.
