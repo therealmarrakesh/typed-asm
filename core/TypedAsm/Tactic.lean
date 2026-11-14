@@ -14,7 +14,7 @@ needs an argument, typically a fact about values at a branch.
 * `ty_block` types a whole block of a labelled program, finding jump targets
   by label. `ty_call sig` types a call. These are the usual entry points.
 * `ty_steps` types the straight-line instructions at the start of a block.
-* `ty_step` types one.
+* `ty_step` types one. `ty_step_with r` types one with a rule you name.
 * `ty_straight` types a single instruction; the two above are built on it.
 * `ty_code_ptr r to Δ` turns a register holding a label's address into a
   code pointer, for indirect jumps and calls.
@@ -117,6 +117,17 @@ theorem getElem?_replicate_of_lt {n i : Nat} {τ : Ty} (h : i < n) :
 theorem Sub.of_eq {a b : BitVec 64} (h : a = b) : Sub (.eq a) (.eq b) :=
   h ▸ .refl _
 
+/-- An unsigned divide whose dividend has a zero upper half and whose divisor
+is known not to be zero cannot raise a divide error. -/
+theorem Straight.divSafe {Ψ : MemTy} {next : BitVec 64} {Γ : Ctx} {w : Width} {r : Reg}
+    {a d b : BitVec 64} (hr : r ≠ .rsp) (hΓa : Γ.regs .rax = .eq a) (hΓd : Γ.regs .rdx = .eq d)
+    (hΓr : Γ.regs r = .eq b) (hd : d.setWidth w.bits = 0) (hb : b.setWidth w.bits ≠ 0) :
+    Straight Ψ next Γ (.mulDiv .div w (.reg r))
+      { (Γ.setReg .rax (.eq ((a.setWidth w.bits / b.setWidth w.bits).setWidth 64))).setReg .rdx
+          (.eq ((a.setWidth w.bits % b.setWidth w.bits).setWidth 64)) with
+        flags := (· = Flags.unknown) } :=
+  .mulDivExact hr hΓa hΓd hΓr (by rw [hd]; exact MulDivOp.eval_div _ _ hb)
+
 theorem Flags.cf_isSome_of_known {f : Flags} (h : Flags.Known f) : f.cf.isSome = true := by
   simp only [Flags.Known, Flags.defined, Bool.and_eq_true] at h
   exact h.1.1.1
@@ -205,6 +216,11 @@ macro "ty_decided" : tactic => do
     | (rintro f $subst:ident; exact ⟨_, rfl⟩)
     | (refine Cond.decided_of_defined _ ?_; decide))
 
+/-- Proves that exactly known flags give a condition a particular answer. -/
+macro "ty_cond_value" : tactic => do
+  let subst := Lean.mkIdent `rfl
+  `(tactic| (rintro f $subst:ident; rfl))
+
 /-- Proves a side condition of a typing rule, or fails. -/
 syntax "ty_side" : tactic
 
@@ -241,6 +257,7 @@ macro_rules
       | ty_sub
       | ty_carry
       | ty_decided
+      | ty_cond_value
       | ty_operand)
 
 macro_rules
@@ -252,6 +269,7 @@ context in a record update that mentions it once per field, so without this
 the context would multiply in size with every instruction. -/
 macro "ty_normalize" : tactic =>
   `(tactic| try dsimp only [CtxOf.setReg, CtxOf.afterAlu, CtxOf.afterSyscall, CtxOf.afterMulDiv,
+      ShiftOp.apply, Scale.shift,
       ShiftOp.flagsAfter, Width.bits, Nat.reduceEqDiff, Nat.reduceBEq, ↓reduceIte,
       AluOp.writesDst, List.set_cons_zero, List.set_cons_succ,
       Bool.cond_true, Bool.cond_false, Nat.add_zero, Nat.zero_add, BitVec.reduceToNat, Nat.reduceDiv,
@@ -286,18 +304,23 @@ def Instr.rules : Instr → List Name
   | .nop => [``Straight.nop]
   -- moves between registers and constants
   | .mov .w64 (.rm_r (.reg _) _) => [``Straight.movRR64]
-  | .mov .w32 (.rm_r (.reg _) _) => [``Straight.movRR32]
+  | .mov .w32 (.rm_r (.reg _) _) => [``Straight.mov32Exact, ``Straight.movRR32]
   | .mov _ (.rm_i (.reg _) _) => [``Straight.movRI]
   | .movAbs _ _ => [``Straight.movAbs]
   | .lea .w64 _ (.rip _) => [``Straight.leaRip, ``Straight.lea]
+  | .lea .w64 _ (.sib (some _) none _) => [``Straight.leaExactB, ``Straight.lea]
+  | .lea .w64 _ (.sib (some _) (some _) _) => [``Straight.leaExactBI, ``Straight.lea]
   | .lea _ _ _ => [``Straight.lea]
   -- loads: a whole slot or field keeps its type, anything else is an integer
   | .mov .w64 (.r_m _ (.sib (some .rsp) none _)) => [``Straight.loadStack]
   | .mov .w64 (.r_m _ (.sib (some _) none _)) => [``Straight.loadField]
   | .mov .w64 (.r_m _ (.rip _)) => [``Straight.loadGlobal_of]
   | .mov _ (.r_m _ _) => [``Straight.loadInt]
+  | .movzx _ _ _ (.reg _) => [``Straight.movzxExact, ``Straight.movzxRM]
   | .movzx _ _ _ _ => [``Straight.movzxRM]
+  | .movsx _ _ _ (.reg _) => [``Straight.movsxExact, ``Straight.movsxRM]
   | .movsx _ _ _ _ => [``Straight.movsxRM]
+  | .movsxd _ (.reg _) => [``Straight.movsxdExact, ``Straight.movsxdRM]
   | .movsxd _ _ => [``Straight.movsxdRM]
   -- stores
   | .mov .w64 (.rm_r (.mem (.sib (some .rsp) none _)) _) => [``Straight.storeStack]
@@ -313,9 +336,15 @@ def Instr.rules : Instr → List Name
   | .alu .sub .w64 (.rm_i (.reg .rsp) _) => [``Straight.allocFrame]
   | .alu .add .w64 (.rm_i (.reg .rsp) _) => [``Straight.freeFrame']
   | .alu _ .w64 (.rm_i (.reg _) _) => [``Straight.aluExact, ``Straight.addPtr, ``Straight.aluRI]
-  | .alu _ _ (.rm_i (.reg _) _) => [``Straight.aluRI]
+  | .alu _ _ (.rm_i (.reg _) _) => [``Straight.aluExact32, ``Straight.aluRI]
+  | .alu .xor w (.rm_r (.reg d) s) =>
+    -- `xor r, r` clears `r` whatever it held
+    if d = s then [``Straight.xorSelf]
+    else match w with
+      | .w64 => [``Straight.aluExactRR, ``Straight.aluRR]
+      | .w32 => [``Straight.aluExactRR32, ``Straight.aluRR]
   | .alu _ .w64 (.rm_r (.reg _) _) => [``Straight.aluExactRR, ``Straight.aluRR]
-  | .alu _ _ (.rm_r (.reg _) _) => [``Straight.aluRR]
+  | .alu _ _ (.rm_r (.reg _) _) => [``Straight.aluExactRR32, ``Straight.aluRR]
   | .alu _ _ (.r_m _ _) => [``Straight.aluLoad]
   | .alu op _ (.rm_r (.mem _) _) =>
     if op.writesDst then [``Straight.aluStoreR] else [``Straight.cmpR]
@@ -323,24 +352,47 @@ def Instr.rules : Instr → List Name
     if op.writesDst then [``Straight.aluStoreI] else [``Straight.cmpI]
   | .test .w64 (.reg _) (.reg _) => [``Straight.testExact, ``Straight.testRM]
   | .test _ _ _ => [``Straight.testRM]
+  | .unary .neg _ (.reg _) => [``Straight.negExact, ``Straight.negRM]
   | .unary .neg _ _ => [``Straight.negRM]
+  | .unary .not _ (.reg _) => [``Straight.notExact, ``Straight.notRM]
   | .unary .not _ _ => [``Straight.notRM]
+  | .shift _ _ (.reg _) (.imm _) => [``Straight.shiftExact, ``Straight.shiftImm]
   | .shift _ _ _ (.imm _) => [``Straight.shiftImm]
   | .shift _ _ _ .cl => [``Straight.shiftCl]
+  | .mulDiv .mul _ (.reg _) => [``Straight.mulDivExact, ``Straight.mulRM]
   | .mulDiv .mul _ _ => [``Straight.mulRM]
+  | .mulDiv .imul _ (.reg _) => [``Straight.mulDivExact, ``Straight.imulRM]
   | .mulDiv .imul _ _ => [``Straight.imulRM]
+  | .mulDiv .div _ (.reg _) => [``Straight.mulDivExact, ``Straight.divSafe, ``Straight.divRM]
   | .mulDiv .div _ _ => [``Straight.divRM]
+  | .mulDiv .idiv _ (.reg _) => [``Straight.mulDivExact, ``Straight.idivRM]
   | .mulDiv .idiv _ _ => [``Straight.idivRM]
+  | .imul2 _ _ (.reg _) => [``Straight.imul2Exact, ``Straight.imul2RM]
   | .imul2 _ _ _ => [``Straight.imul2RM]
+  | .imul3 _ _ (.reg _) _ => [``Straight.imul3Exact, ``Straight.imul3RM]
   | .imul3 _ _ _ _ => [``Straight.imul3RM]
+  | .popcnt _ _ (.reg _) => [``Straight.popcntExact, ``Straight.popcntRM]
   | .popcnt _ _ _ => [``Straight.popcntRM]
-  | .bswap _ _ => [``Straight.bswap]
-  | .cdq => [``Straight.cdq]
-  | .cqo => [``Straight.cqo]
+  | .bswap _ _ => [``Straight.bswapExact, ``Straight.bswap]
+  | .cdq => [``Straight.cdqExact, ``Straight.cdq]
+  | .cqo => [``Straight.cqoExact, ``Straight.cqo]
+  | .cmov _ _ _ (.reg _) => [``Straight.cmovExact, ``Straight.cmovRM]
   | .cmov _ _ _ _ => [``Straight.cmovRM]
+  | .setcc _ (.reg _) => [``Straight.setccExact, ``Straight.setccRM]
   | .setcc _ _ => [``Straight.setccRM]
   -- control transfers end a block and are not typed by a straight-line rule
   | _ => []
+
+/-- Rules that only sharpen what a more general rule for the same
+instruction already gives: they apply when values are exactly known. When an
+instruction cannot be typed, why one of these did not apply is not reported,
+since the general rule's reason is the one that matters. -/
+def sharpeningRules : List Name := [``Straight.mov32Exact, ``Straight.aluExact32,
+  ``Straight.aluExactRR32, ``Straight.shiftExact, ``Straight.leaExactB, ``Straight.leaExactBI,
+  ``Straight.negExact, ``Straight.notExact, ``Straight.imul2Exact, ``Straight.imul3Exact,
+  ``Straight.mulDivExact, ``Straight.divSafe, ``Straight.cdqExact, ``Straight.cqoExact,
+  ``Straight.movsxdExact, ``Straight.movzxExact, ``Straight.movsxExact, ``Straight.popcntExact,
+  ``Straight.bswapExact, ``Straight.cmovExact, ``Straight.setccExact]
 
 /-- Whether the instruction can send control somewhere other than the next
 instruction, which is where a block ends. -/
@@ -349,7 +401,7 @@ def Instr.endsBlock : Instr → Bool
   | _ => false
 
 /-- Every straight-line rule, for instructions whose shape is not known. -/
-def allStraightRules : List Name := [``Straight.movRR64, ``Straight.movRR32, ``Straight.movRI, ``Straight.movAbs, ``Straight.leaRip, ``Straight.lea, ``Straight.loadStack, ``Straight.loadField, ``Straight.storeStack, ``Straight.storeField, ``Straight.push, ``Straight.pop, ``Straight.allocFrame, ``Straight.freeFrame', ``Straight.aluExact, ``Straight.aluExactRR, ``Straight.addPtr, ``Straight.aluRR, ``Straight.aluRI, ``Straight.testExact, ``Straight.nop, ``Straight.aluStoreR, ``Straight.aluStoreI, ``Straight.cmpR, ``Straight.cmpI, ``Straight.aluLoad, ``Straight.testRM, ``Straight.negRM, ``Straight.notRM, ``Straight.shiftImm, ``Straight.shiftCl, ``Straight.mulRM, ``Straight.imulRM, ``Straight.divRM, ``Straight.idivRM, ``Straight.imul2RM, ``Straight.imul3RM, ``Straight.popcntRM, ``Straight.bswap, ``Straight.cdq, ``Straight.cqo, ``Straight.movsxdRM, ``Straight.cmovRM, ``Straight.setccRM, ``Straight.movzxRM, ``Straight.movsxRM, ``Straight.loadInt, ``Straight.storeInt, ``Straight.storeImm, ``Straight.store8RM, ``Straight.loadGlobal_of, ``Straight.storeGlobal_of]
+def allStraightRules : List Name := sharpeningRules ++ [``Straight.movRR64, ``Straight.movRR32, ``Straight.movRI, ``Straight.movAbs, ``Straight.leaRip, ``Straight.lea, ``Straight.loadStack, ``Straight.loadField, ``Straight.storeStack, ``Straight.storeField, ``Straight.push, ``Straight.pop, ``Straight.allocFrame, ``Straight.freeFrame', ``Straight.aluExact, ``Straight.aluExactRR, ``Straight.addPtr, ``Straight.aluRR, ``Straight.aluRI, ``Straight.testExact, ``Straight.nop, ``Straight.aluStoreR, ``Straight.aluStoreI, ``Straight.cmpR, ``Straight.cmpI, ``Straight.aluLoad, ``Straight.testRM, ``Straight.negRM, ``Straight.notRM, ``Straight.shiftImm, ``Straight.shiftCl, ``Straight.mulRM, ``Straight.imulRM, ``Straight.divRM, ``Straight.idivRM, ``Straight.imul2RM, ``Straight.imul3RM, ``Straight.popcntRM, ``Straight.bswap, ``Straight.cdq, ``Straight.cqo, ``Straight.movsxdRM, ``Straight.cmovRM, ``Straight.setccRM, ``Straight.movzxRM, ``Straight.movsxRM, ``Straight.loadInt, ``Straight.storeInt, ``Straight.storeImm, ``Straight.store8RM, ``Straight.loadGlobal_of, ``Straight.storeGlobal_of, ``Straight.xorSelf]
 
 private unsafe def evalInstrUnsafe (e : Expr) : MetaM Instr :=
   evalExpr Instr (mkConst ``Instr) e
@@ -555,7 +607,8 @@ def typeStraight : TacticM Unit := withMainContext do
   if rules.isEmpty then
     throwError "the type system has no rule for {shown}"
   let mut msg := m!"cannot type {shown} in the current context"
-  for rule in rules do
+  let general := rules.filter (!sharpeningRules.contains ·)
+  for rule in (if general.isEmpty then rules else general) do
     msg := msg ++ m!"\n• {← explainRule rule}"
   throwError msg
 
@@ -799,6 +852,34 @@ private def goalNamed (gs : List MVarId) (name : Name) : TacticM MVarId := do
     let tag := (← g.getTag).eraseMacroScopes
     if !tag.isAnonymous && tag.components.getLast! == name then return g
   throwError "ty_block: internal error, no goal named {name}"
+
+/-- `ty_step_with r` types one straight-line instruction with the rule `r`,
+for a rule the tactics would not choose or could not finish: typically one
+with a premise about values, such as a divisor not being zero. Premises that
+are not routine are left as goals, after the rest of the block. -/
+elab "ty_step_with " r:term : tactic => withMainContext do
+  let goal ← getMainGoal
+  let others := (← getGoals).drop 1
+  let gs ← try
+      runOn goal (do evalTactic (← `(tactic| refine BlockOk.step (Γ' := ?_) rfl ?instr ?rest)))
+    catch _ => throwError "ty_step_with: there is no instruction at this address"
+  let instr ← goalNamed gs `instr
+  let rest ← goalNamed gs `rest
+  let premises ← try
+      runOn instr (do evalTactic (← `(tactic| refine' $r ..)))
+    catch e => throwError "ty_step_with: the rule does not fit this instruction\n{e.toMessageData}"
+  let mut left : List MVarId := []
+  for pass in [0, 1] do
+    for p in premises do
+      if ← p.isAssigned then continue
+      unless ← isProp (← p.getType) do continue
+      let after ← try
+          runOn p (do evalTactic (← `(tactic| first | ty_side | assumption)))
+        catch _ => pure [p]
+      if pass == 1 then left := left ++ after
+  setGoals [rest]
+  evalTactic (← `(tactic| ty_normalize))
+  setGoals ((← getGoals) ++ left ++ others)
 
 /-- What ending a block did. -/
 private inductive Finish

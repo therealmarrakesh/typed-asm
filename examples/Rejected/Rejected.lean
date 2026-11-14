@@ -313,4 +313,71 @@ example : ∃ Γ', Straight Ψ 10 Γ₃ (.movsx .w64 .rax .w8 (.mem (.sib (some 
 example : ∃ Γ', Straight Ψ 10 Γ₃ (.mov .w32 (.rm_r (.mem (.sib (some .rsp) none 4)) .rax)) Γ' :=
   ⟨_, by ty_straight⟩
 
+/-! ## Exactly known values
+
+When the registers an instruction reads hold exactly known values, so does
+the one it writes. The block below computes `(6 << 2) / 3 = 8` and from it
+an address-style sum `8 + 3 * 8 + 1`. Every value along the way is known, so
+the divide is shown not to raise a divide error, and the context at `out`,
+which demands that `rsi` be exactly 33, is met with nothing left to prove. -/
+
+inductive Exact
+  | start | out
+  deriving DecidableEq
+
+def exact : List (Asm Exact) := [
+  .label .start,
+  .ins (.mov .w32 (.rm_i (.reg .rax) 6)),
+  .ins (.shift .shl .w32 (.reg .rax) (.imm 2)),
+  .ins (.mov .w32 (.rm_i (.reg .rcx) 3)),
+  .ins (.alu .xor .w32 (.rm_r (.reg .rdx) .rdx)),
+  .ins (.mulDiv .div .w32 (.reg .rcx)),
+  .ins (.lea .w64 .rsi (.sib (some .rax) (some (.rcx, .s8)) 1)),
+  .ins (.test .w64 (.reg .rsi) (.reg .rsi)),
+  .jcc .e .out,
+  .label .out, .jmp .out]
+
+def exactFetch : Fetch := Asm.fetch 0 exact
+
+/-- At `out`, `rsi` is exactly `8 + 3 * 8 + 1`. -/
+def Φe : CodeTy := .ofLabels exact 0
+  (fun _ Δ => Δ = ⟨fun r => if r = .rsi then .eq 33 else .int, [], 0, Flags.Any⟩)
+
+example : BlockOk Φe exactFetch linux Ψ (Asm.addr exact 0 .start) bare := by
+  ty_block
+
+/-! A divisor that is not a constant, but is known not to be zero. The
+context is indexed by the value `v` in `rcx`; `rdx` has just been cleared. -/
+
+inductive Divide
+  | start | out
+  deriving DecidableEq
+
+def divide : List (Asm Divide) := [
+  .label .start,
+  .ins (.alu .xor .w32 (.rm_r (.reg .rdx) .rdx)),
+  .ins (.mulDiv .div .w64 (.reg .rcx)),
+  .label .out, .jmp .out]
+
+def divideFetch : Fetch := Asm.fetch 0 divide
+
+inductive AtDivide : Divide → Ctx → Prop
+  | start (a v : BitVec 64) : v ≠ 0 →
+    AtDivide .start ⟨fun r => if r = .rax then .eq a else if r = .rcx then .eq v else .int,
+      [], 0, Flags.Any⟩
+  | out : AtDivide .out bare
+
+def Φd : CodeTy := .ofLabels divide 0 AtDivide
+
+theorem divide_ok : BlocksOk Φd divideFetch linux Ψ := by
+  refine BlocksOk.of_labels ?_
+  intro l Γ h
+  cases h with
+  | start a v hv =>
+    ty_step
+    ty_step_with Straight.divSafe
+    -- the divisor is not zero: the tactic finds `hv` among the hypotheses
+    ty_block
+  | out => ty_block
+
 end Rejected
