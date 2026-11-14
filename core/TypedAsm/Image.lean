@@ -25,6 +25,13 @@ def State.HasCode (s : State) (a : BitVec 64) (bytes : List Byte) : Prop :=
   ∀ k (hk : k < bytes.length),
     s.mem (a + BitVec.ofNat 64 k) = bytes[k] ∧ s.perm (a + BitVec.ofNat 64 k) = .rx
 
+/-- Holding code depends only on memory and permissions. -/
+theorem State.HasCode.congr {s t : State} {a : BitVec 64} {bytes : List Byte}
+    (h : t.HasCode a bytes) (hm : s.mem = t.mem) (hp : s.perm = t.perm) : s.HasCode a bytes := by
+  intro k hk
+  rw [hm, hp]
+  exact h k hk
+
 /-- Every instruction in the list is paired with its true length. -/
 def LengthsOk (items : List (Instr × BitVec 64)) : Prop :=
   ∀ p ∈ items, p.2 = BitVec.ofNat 64 p.1.length
@@ -112,5 +119,38 @@ theorem State.hasCode_loadCode (s : State) (a : BitVec 64) (bytes : List Byte)
   intro k hk
   have e : (a + BitVec.ofNat 64 k - a).toNat = k := by bv_omega
   simp only [State.loadCode, e, hk, dite_true, ite_true, and_self]
+
+/-- Loading code does not change permissions outside the code. -/
+theorem State.perm_loadCode_outside {s : State} {a x : BitVec 64} {bytes : List Byte}
+    (h : bytes.length ≤ (x - a).toNat) : (s.loadCode a bytes).perm x = s.perm x := by
+  simp only [State.loadCode, Nat.not_lt.mpr h, ↓reduceIte]
+
+/-- Loading code does not change what is readable outside the code. -/
+theorem State.canRead_loadCode {s : State} {a b : BitVec 64} {bytes : List Byte} {n : Nat}
+    (h : ∀ k, k < n → bytes.length ≤ (b + BitVec.ofNat 64 k - a).toNat) :
+    (s.loadCode a bytes).canRead b n = s.canRead b n := by
+  rw [Bool.eq_iff_iff]
+  simp only [State.canRead, List.all_eq_true, List.mem_range]
+  constructor
+  · intro hh k hk
+    have := hh k hk
+    rwa [State.perm_loadCode_outside (h k hk)] at this
+  · intro hh k hk
+    rw [State.perm_loadCode_outside (h k hk)]
+    exact hh k hk
+
+/-- Loading code does not change what is writable outside the code. -/
+theorem State.canWrite_loadCode {s : State} {a b : BitVec 64} {bytes : List Byte} {n : Nat}
+    (h : ∀ k, k < n → bytes.length ≤ (b + BitVec.ofNat 64 k - a).toNat) :
+    (s.loadCode a bytes).canWrite b n = s.canWrite b n := by
+  rw [Bool.eq_iff_iff]
+  simp only [State.canWrite, List.all_eq_true, List.mem_range]
+  constructor
+  · intro hh k hk
+    have := hh k hk
+    rwa [State.perm_loadCode_outside (h k hk)] at this
+  · intro hh k hk
+    rw [State.perm_loadCode_outside (h k hk)]
+    exact hh k hk
 
 end TypedAsm

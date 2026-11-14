@@ -1,4 +1,5 @@
 import TypedAsm.Soundness
+import TypedAsm.Frame
 
 /-!
 # A small model of Linux
@@ -26,5 +27,12 @@ theorem linuxOk (fetch : Fetch) (Ψ : MemTy) : SysOk fetch linux Ψ := by
     cases he
     exact ⟨rfl, (((h.setReg (by decide) (HasTy.int _)).setReg (by decide) (HasTy.int _)).setReg
       (by decide) (HasTy.int _)).setFlags (P := Flags.Any) trivial⟩
+
+/-- The Linux model changes no memory and no permission. -/
+theorem linux_frame (s : State) : (linux s).All (Frame s) := by
+  unfold linux
+  split
+  · trivial
+  · exact Frame.of_eq rfl rfl
 
 end TypedAsm

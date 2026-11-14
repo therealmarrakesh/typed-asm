@@ -52,6 +52,15 @@ step with an acceptable outcome. -/
 def SafeMem (sys : Syscall) (s : State) : Prop :=
   ∀ s', StepsMem sys s s' → (stepMem sys s').isSafe = true
 
+/-- Take up to `n` steps on the machine with code in memory, stopping early
+at a fault, at exit, or when stuck. -/
+def runMem (sys : Syscall) : Nat → State → Outcome
+  | 0, s => .next s
+  | n + 1, s =>
+    match stepMem sys s with
+    | .next s => runMem sys n s
+    | o => o
+
 /-! ## A program loaded in memory -/
 
 /-- `Loaded fetch s`: wherever the table has an instruction, memory holds its
