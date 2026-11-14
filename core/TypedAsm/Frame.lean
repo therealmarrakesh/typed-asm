@@ -78,6 +78,18 @@ theorem write8_frame (s : State) (a : BitVec 64) (v : BitVec 8) : (s.write8 a v)
     simp only [mem_store8, hne, ite_false]
   · trivial
 
+theorem write16_frame (s : State) (a : BitVec 64) (v : BitVec 16) :
+    (s.write16 a v).All (Frame s) := by
+  unfold write16
+  split
+  · next hc =>
+    refine ⟨rfl, fun x hx => ?_⟩
+    have h := outside_of_not_writable (n := 2) (by decide) hc hx
+    have h1 : x ≠ a := by intro e; subst e; simp at h
+    have h2 : x ≠ a + 1 := by intro e; subst e; revert h; simp; bv_omega
+    simp only [store16, mem_store8, h1, h2, ite_false]
+  · trivial
+
 theorem writeRM_frame (s : State) (w : Width) (dst : RM) (v : BitVec w.bits) :
     (s.writeRM w dst v).All (Frame s) := by
   cases dst with
@@ -109,6 +121,7 @@ macro "frame_steps" : tactic =>
       | exact State.writeRM_frame _ _ _ _
       | exact State.writeRM8_frame _ _ _
       | exact State.write8_frame _ _ _
+      | exact State.write16_frame _ _ _
       | exact State.push64_frame _ _
       | (refine Result.All.mono (State.writeRM_frame _ _ _ _) ?_; intro _ hF; exact hF.congr rfl rfl)
       | (refine Result.All.mono (State.writeRM8_frame _ _ _) ?_; intro _ hF; exact hF.congr rfl rfl)

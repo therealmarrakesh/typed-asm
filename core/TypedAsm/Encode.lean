@@ -171,6 +171,7 @@ def Instr.encode : Instr → List Byte
   | .mov w (.rm_i dst imm) => encodeOp w.rexW [0xC7] 0 false dst ++ le32 imm
   | .movAbs dst imm => rex true false false dst.ext ++ [byte (0xB8 + dst.low)] ++ le64 imm
   | .store8 dst src => encodeOp false [0x88] src.num src.ext (.mem dst) (force := src.byteNeedsRex)
+  | .store16 dst src => encodeOp false [0x89] src.num src.ext (.mem dst) (pre := [0x66])
   | .movzx w dst .w8 src =>
     encodeOp w.rexW [0x0F, 0xB6] dst.num dst.ext src (force := src.byteNeedsRex)
   | .movzx w dst .w16 src => encodeOp w.rexW [0x0F, 0xB7] dst.num dst.ext src

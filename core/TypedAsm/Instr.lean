@@ -122,6 +122,7 @@ inductive Instr
   | mov (w : Width) (ops : Operands)
   | movAbs (dst : Reg) (imm : BitVec 64)
   | store8 (dst : Mem) (src : Reg)
+  | store16 (dst : Mem) (src : Reg)
   | movzx (w : Width) (dst : Reg) (sw : NarrowW) (src : RM)
   | movsx (w : Width) (dst : Reg) (sw : NarrowW) (src : RM)
   | movsxd (dst : Reg) (src : RM)

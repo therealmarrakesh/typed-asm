@@ -1005,6 +1005,14 @@ theorem State.load64_store8_inner (s : State) {base y : BitVec 64} {k : Nat} (v 
   simp only [Disjoint] at hd
   exact State.load64_store8_disjoint s v (by bv_omega)
 
+/-- A 16-bit store inside one 8-byte slot leaves every other slot unchanged. -/
+theorem State.load64_store16_inner (s : State) {base y : BitVec 64} {k : Nat} (v : BitVec 16)
+    (hk : k + 2 ≤ 8) (hd : Disjoint base 8 y 8) :
+    (s.store16 (base + BitVec.ofNat 64 k) v).load64 y = s.load64 y := by
+  have e : base + BitVec.ofNat 64 k + 1 = base + BitVec.ofNat 64 (k + 1) := by bv_omega
+  rw [State.store16, e, State.load64_store8_inner _ _ (by omega) hd,
+    State.load64_store8_inner _ _ (by omega) hd]
+
 /-- Byte `k` of slot `i`, as an offset from the start of the slot. -/
 theorem inner_split (a : BitVec 64) (i k : Nat) :
     a + BitVec.ofNat 64 (8 * i + k) = a + BitVec.ofNat 64 (8 * i) + BitVec.ofNat 64 k := by
@@ -1219,6 +1227,55 @@ theorem WriteIntOk.writeRM8 {rm : RM} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 1 
       h.writeSlotInt hΨ hilt rfl rfl rfl (fun y hd => by
         rw [inner_split]; exact State.load64_store8_inner s _ hk hd)⟩
     simp only [State.writeRM8, hea, State.write8, hc, ite_true]
+
+/-- Writing any 16-bit value to a writable memory operand succeeds likewise. -/
+theorem WriteIntOk.write16 {m : Mem} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 2 (.mem m) Γ')
+    (h : WellTyped fetch sys Ψ ix Γ s) (hΨ : Ψ.WF) (hrip : s.rip = next) (v : BitVec 16) :
+    ∃ s', s.write16 (s.ea m) v = .next s' ∧ s'.rip = s.rip ∧ WellTyped fetch sys Ψ ix Γ' s' := by
+  cases hw with
+  | @indexed b x sc fields off i k disp c hb hΓ hΓx hD hi hk =>
+    have hp := h.regs b hb
+    rw [hΓ] at hp
+    obtain ⟨a, l, hl, rfl, hwr, hva⟩ := hasTy_ptr.mp hp
+    have hilt : off + i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
+    have hx := h.eqReg x.toReg_ne_rsp hΓx
+    have hea : s.ea (.sib (some b) (some (x, sc)) disp)
+        = a + BitVec.ofNat 64 (8 * (off + i) + k) := by
+      rw [State.ea_indexed s hx hD, hva, slot_add_inner]
+    have hc := h.canWrite_inner (m := 2) hl (hwr rfl) hilt hk
+    refine ⟨s.store16 (a + BitVec.ofNat 64 (8 * (off + i) + k)) v, ?_, rfl,
+      h.writeInt hΨ hl hi rfl rfl rfl (fun y hd => by
+        rw [inner_split]; exact State.load64_store16_inner s _ hk hd)⟩
+    simp only [hea, State.write16, hc, ite_true]
+  | @global base l i k disp hl hwr haddr hi hk =>
+    have hilt : i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
+    have hea : s.ea (.rip disp) = base + BitVec.ofNat 64 (8 * i + k) := by
+      simp only [State.ea, hrip, haddr]
+    have hc := h.canWrite_inner (m := 2) hl hwr hilt hk
+    refine ⟨s.store16 (base + BitVec.ofNat 64 (8 * i + k)) v, ?_, rfl,
+      h.writeInt hΨ hl hi rfl rfl rfl (fun y hd => by
+        rw [inner_split]; exact State.load64_store16_inner s _ hk hd)⟩
+    simp only [hea, State.write16, hc, ite_true]
+  | @field b fields off i k disp hb hΓ hdisp hi hk =>
+    have hp := h.regs b hb
+    rw [hΓ] at hp
+    obtain ⟨a, l, hl, rfl, hwr, hva⟩ := hasTy_ptr.mp hp
+    have hilt : off + i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
+    have hea : s.ea (.sib (some b) none disp) = a + BitVec.ofNat 64 (8 * (off + i) + k) := by
+      rw [State.ea_inner s b hdisp, hva, slot_add_inner]
+    have hc := h.canWrite_inner (m := 2) hl (hwr rfl) hilt hk
+    refine ⟨s.store16 (a + BitVec.ofNat 64 (8 * (off + i) + k)) v, ?_, rfl,
+      h.writeInt hΨ hl hi rfl rfl rfl (fun y hd => by
+        rw [inner_split]; exact State.load64_store16_inner s _ hk hd)⟩
+    simp only [hea, State.write16, hc, ite_true]
+  | @slot i k disp τ hdisp hi hk =>
+    have hilt : i < Γ.stack.length := (List.getElem?_eq_some_iff.mp hi).1
+    have hea := State.ea_inner s .rsp hdisp
+    have hc := h.canWrite_slot_inner (m := 2) hilt hk
+    refine ⟨s.store16 (s.getReg .rsp + BitVec.ofNat 64 (8 * i + k)) v, ?_, rfl,
+      h.writeSlotInt hΨ hilt rfl rfl rfl (fun y hd => by
+        rw [inner_split]; exact State.load64_store16_inner s _ hk hd)⟩
+    simp only [hea, State.write16, hc, ite_true]
 
 /-- An operand holding a code pointer can be read, and what is read is a code pointer. -/
 theorem Holds.sound {rm : RM} {τ : Ty} (hc : Holds Ψ next Γ rm τ)
@@ -1677,6 +1734,9 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
   | @storeImm Γ₁ w dst imm hw =>
     obtain ⟨s', hs', hrip', hwt⟩ := hw.writeRM h hΨ hrip (imm.signExtend w.bits)
     exact ⟨s', by simp [exec, Operands.src, Operands.dst, hs'], hrip', hwt⟩
+  | @store16RM Γ₁ m src hw =>
+    obtain ⟨s', hs', hrip', hwt⟩ := hw.write16 h hΨ hrip ((s.getReg src).setWidth 16)
+    exact ⟨s', by simp [exec, hs'], hrip', hwt⟩
   | @store8RM Γ₁ m src hw =>
     obtain ⟨s', hs', hrip', hwt⟩ := hw.writeRM8 h hΨ hrip ((s.getReg src).setWidth 8)
     simp only [State.writeRM8] at hs'

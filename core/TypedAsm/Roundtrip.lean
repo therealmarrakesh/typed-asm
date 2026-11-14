@@ -414,6 +414,18 @@ theorem decodeFrom_store8 (dst : Mem) (src : Reg) (rest : List Byte) :
   rw [decodeFrom_rex _ _ _ _ _ (by decide)]
   rt_decode
 
+/-- Decoding after the operand-size prefix. -/
+theorem decodeFrom_66 (t : List Byte) :
+    decodeFrom ((0x66 : Byte) :: t) = decodeOp false Rex.none 0x66 t := by
+  simp [decodeFrom, takeRex]
+
+theorem decodeFrom_store16 (dst : Mem) (src : Reg) (rest : List Byte) :
+    decodeFrom ((Instr.store16 dst src).encode ++ rest) = some (.store16 dst src, rest) := by
+  rt_shape
+  rw [decodeFrom_66]
+  simp [decodeOp, Rex.none, takeRex_rex _ _ _ _ _ (show PlainOp 137#8 by decide), takeMem,
+    takeOperand_encode, Reg.ofNum_low_ext]
+
 theorem decodeFrom_movzx (w : Width) (dst : Reg) (sw : NarrowW) (src : RM) (rest : List Byte) :
     decodeFrom ((Instr.movzx w dst sw src).encode ++ rest) = some (.movzx w dst sw src, rest) := by
   cases sw with
@@ -501,6 +513,7 @@ theorem decodeFrom_encode (i : Instr) (rest : List Byte) :
     | rm_i dst imm => exact decodeFrom_mov_rm_i w dst imm rest
   | movAbs dst imm => exact decodeFrom_movAbs dst imm rest
   | store8 dst src => exact decodeFrom_store8 dst src rest
+  | store16 dst src => exact decodeFrom_store16 dst src rest
   | movzx w dst sw src => exact decodeFrom_movzx w dst sw src rest
   | movsx w dst sw src => exact decodeFrom_movsx w dst sw src rest
   | movsxd dst src => exact decodeFrom_movsxd dst src rest

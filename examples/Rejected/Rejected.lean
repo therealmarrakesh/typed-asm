@@ -173,6 +173,12 @@ def maybe : Ctx :=
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i1) maybe := by ty_step
 
+/-- error: cannot type `mov word ptr [rdi+7], ax` in the current context
+• store16RM: the access would cross the end of an 8-byte field -/
+#guard_msgs in
+example : ∃ Γ', Straight Ψ 10 Γ (.store16 (.sib (some .rdi) none 7) .rax) Γ' :=
+  ⟨_, by ty_straight⟩
+
 /-! ## Control transfers
 
 A small labelled program, for jumps and returns the tactic refuses. -/
@@ -377,6 +383,14 @@ example : ∃ Γ', Straight Ψ 10 Γ₃ (.movsx .w64 .rax .w8 (.mem (.sib (some 
   ⟨_, by ty_straight⟩
 
 example : ∃ Γ', Straight Ψ 10 Γ₃ (.mov .w32 (.rm_r (.mem (.sib (some .rsp) none 4)) .rax)) Γ' :=
+  ⟨_, by ty_straight⟩
+
+/-! A 16-bit store, into a field and into a stack slot. -/
+
+example : ∃ Γ', Straight Ψ 10 Γ₃ (.store16 (.sib (some .rdi) none 6) .rax) Γ' :=
+  ⟨_, by ty_straight⟩
+
+example : ∃ Γ', Straight Ψ 10 Γ₃ (.store16 (.sib (some .rsp) none 2) .rax) Γ' :=
   ⟨_, by ty_straight⟩
 
 /-! Through an index: a store into an array of integers, and a load from

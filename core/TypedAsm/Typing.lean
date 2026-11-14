@@ -474,6 +474,9 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
   /-- A byte store. -/
   | store8RM {Γ Γ' : Ctx} {m : Mem} {s : Reg} :
     WriteIntOk Ψ next Γ 1 (.mem m) Γ' → Straight Ψ next Γ (.store8 m s) Γ'
+  /-- A 16-bit store. -/
+  | store16RM {Γ Γ' : Ctx} {m : Mem} {s : Reg} :
+    WriteIntOk Ψ next Γ 2 (.mem m) Γ' → Straight Ψ next Γ (.store16 m s) Γ'
   -- The rules below compute with exactly known values: when every register
   -- an instruction reads holds a known value, so does the one it writes.
   -- At 32 bits a value is cut to its low half first, and the result is

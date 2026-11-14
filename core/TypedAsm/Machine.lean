@@ -155,6 +155,7 @@ theorem Instr.length_le (i : Instr) : i.length ≤ maxInstrLength := by
     | rm_i dst imm => cases w <;> cases dst <;> simp only [Instr.encode] <;> len_bound
   | movAbs dst imm => simp only [Instr.encode]; len_bound
   | store8 dst src => simp only [Instr.encode]; len_bound
+  | store16 dst src => simp only [Instr.encode]; len_bound
   | movzx w dst sw src => cases sw <;> simp only [Instr.encode] <;> len_bound
   | movsx w dst sw src => cases sw <;> simp only [Instr.encode] <;> len_bound
   | movsxd dst src => simp only [Instr.encode]; len_bound

@@ -110,6 +110,7 @@ def Instr.toAsm : Instr → String
   | .mov w ops => s!"mov {ops.toAsm w}"
   | .movAbs dst imm => s!"movabs {dst.name64}, {imm.toNat}"
   | .store8 dst src => s!"mov byte ptr {dst.toAsm}, {src.name8}"
+  | .store16 dst src => s!"mov word ptr {dst.toAsm}, {src.name16}"
   | .movzx w dst sw (.reg r) =>
     s!"movzx {dst.name w}, {match sw with | .w8 => r.name8 | .w16 => r.name16}"
   | .movzx w dst sw (.mem m) => s!"movzx {dst.name w}, {sw.ptr}{m.toAsm}"

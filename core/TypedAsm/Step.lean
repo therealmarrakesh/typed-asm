@@ -289,6 +289,7 @@ def exec (sys : Syscall) (i : Instr) (s : State) : Outcome :=
     s.writeRM w ops.dst (← ops.src s w)
   | .movAbs dst imm => .next (s.setReg dst imm)
   | .store8 dst src => s.write8 (s.ea dst) ((s.getReg src).setWidth 8)
+  | .store16 dst src => s.write16 (s.ea dst) ((s.getReg src).setWidth 16)
   | .movzx w dst sw src => do
     return s.writeReg w dst ((← s.readNarrow sw src).setWidth w.bits)
   | .movsx w dst sw src => do

@@ -265,6 +265,16 @@ def decodeOp (f3 : Bool) (rx : Rex) (op : Nat) (bs : List Byte) : Option (Instr 
       if reg = 2 then some (.call (.ind rm), bs)
       else if reg = 4 then some (.jmp (.ind rm), bs)
       else none
+  else if op = 0x66 ∧ rx.present = false then
+    -- The operand-size prefix. The only instruction with it is the 16-bit
+    -- store; its own `REX` prefix, if any, comes after.
+    let (rx', bs) := takeRex bs
+    match bs with
+    | o :: bs =>
+      if o.toNat = 0x89 ∧ rx'.w = false then
+        (takeMem rx' bs).map fun (reg, m, bs) => (.store16 m (Reg.ofNum (reg + extBit rx'.r)), bs)
+      else none
+    | [] => none
   else none
 
 /-- Decodes one instruction from the front of a byte sequence, returning it

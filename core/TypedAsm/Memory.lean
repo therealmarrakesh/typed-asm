@@ -239,6 +239,9 @@ def read (s : State) (w : Width) (a : BitVec 64) : Result (BitVec w.bits) :=
 def write8 (s : State) (a : BitVec 64) (v : BitVec 8) : Result State :=
   if s.canWrite a 1 then .next (s.store8 a v) else .fault .pageFault
 
+def write16 (s : State) (a : BitVec 64) (v : BitVec 16) : Result State :=
+  if s.canWrite a 2 then .next (s.store16 a v) else .fault .pageFault
+
 def write64 (s : State) (a : BitVec 64) (v : BitVec 64) : Result State :=
   if s.canWrite a 8 then .next (s.store64 a v) else .fault .pageFault
 
