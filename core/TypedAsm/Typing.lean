@@ -95,9 +95,21 @@ def CtxOf.afterAlu (Γ : Ctx) (op : AluOp) (d : Reg) : Ctx :=
 def CtxOf.afterSyscall (Γ : Ctx) : Ctx :=
   { ((Γ.setReg .rax .int).setReg .rcx .int).setReg .r11 .int with flags := Flags.Any }
 
-/-- The displacement that addresses 8-byte slot `i`. -/
-def slotDisp (i : Nat) (disp : BitVec 32) : Prop :=
-  disp = BitVec.ofNat 32 (8 * i) ∧ 8 * i < 2 ^ 31
+/-- The displacement `disp` addresses 8-byte slot `i`. (A structure, not a
+definition, so that it is never confused with `innerDisp` by unfolding.) -/
+structure slotDisp (i : Nat) (disp : BitVec 32) : Prop where
+  eq : disp = BitVec.ofNat 32 (8 * i)
+  lt : 8 * i < 2 ^ 31
+
+/-- The displacement `disp` addresses byte `k` of 8-byte slot `i`. -/
+structure innerDisp (i k : Nat) (disp : BitVec 32) : Prop where
+  eq : disp = BitVec.ofNat 32 (8 * i + k)
+  lt : 8 * i + k < 2 ^ 31
+
+/-- The number of bytes in a narrow value. -/
+def NarrowW.bytes : NarrowW → Nat
+  | .w8 => 1
+  | .w16 => 2
 
 /-! ## Instructions that continue to the next one -/
 
@@ -139,8 +151,8 @@ inductive Straight : Ctx → Instr → Ctx → Prop
     d ≠ .rsp → Γ.stack[i]? = some τ → slotDisp i disp →
     Straight Γ (.mov .w64 (.r_m d (.sib (some .rsp) none disp))) (Γ.setReg d τ)
   /-- Store into stack slot `i`. The slot takes the type of the stored value. -/
-  | storeStack {Γ : Ctx} {s : Reg} {i : Nat} {disp : BitVec 32} :
-    s ≠ .rsp → i < Γ.stack.length → slotDisp i disp →
+  | storeStack {Γ : Ctx} {s : Reg} {i : Nat} {disp : BitVec 32} {τ : Ty} :
+    s ≠ .rsp → Γ.stack[i]? = some τ → slotDisp i disp →
     Straight Γ (.mov .w64 (.rm_r (.mem (.sib (some .rsp) none disp)) s))
       { Γ with stack := Γ.stack.set i (Γ.regs s) }
   | push {Γ : Ctx} {r : Reg} {n : Nat} : r ≠ .rsp → Γ.room = n + 1 →
@@ -167,6 +179,40 @@ inductive Straight : Ctx → Instr → Ctx → Prop
     Straight Γ (.alu op .w64 (.rm_i (.reg d) imm))
       { (if op.writesDst then Γ.setReg d (.eq (op.apply a (imm.signExtend 64)).1) else Γ) with
         flags := (· = (op.apply a (imm.signExtend 64)).2) }
+  /-- Arithmetic between two exactly known values. -/
+  | aluExactRR {Γ : Ctx} {op : AluOp} {d s : Reg} {a b : BitVec 64} :
+    d ≠ .rsp → s ≠ .rsp → Γ.regs d = .eq a → Γ.regs s = .eq b → op.readsCarry = false →
+    Straight Γ (.alu op .w64 (.rm_r (.reg d) s))
+      { (if op.writesDst then Γ.setReg d (.eq (op.apply a b).1) else Γ) with
+        flags := (· = (op.apply a b).2) }
+  /-- Reserve `k` stack slots. Their contents are unknown, so they are integers. -/
+  | allocFrame {Γ : Ctx} {k m : Nat} {imm : BitVec 32} :
+    slotDisp k imm → Γ.room = m + k →
+    Straight Γ (.alu .sub .w64 (.rm_i (.reg .rsp) imm))
+      { Γ with stack := List.replicate k .int ++ Γ.stack, room := m, flags := Flags.Known }
+  /-- Release the top `k` stack slots. -/
+  | freeFrame {Γ : Ctx} {k : Nat} {imm : BitVec 32} {top rest : List Ty} :
+    slotDisp k imm → Γ.stack = top ++ rest → top.length = k →
+    Straight Γ (.alu .add .w64 (.rm_i (.reg .rsp) imm))
+      { Γ with stack := rest, room := Γ.room + k, flags := Flags.Known }
+  /-- A 32-bit load from inside a field. The result is an integer whatever the field holds. -/
+  | loadField32 {Γ : Ctx} {d b : Reg} {fields : List Ty} {writable : Bool} {off i k : Nat}
+      {disp : BitVec 32} {τ : Ty} :
+    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .ptr fields writable off → fields[off + i]? = some τ →
+    innerDisp i k disp → k + 4 ≤ 8 →
+    Straight Γ (.mov .w32 (.r_m d (.sib (some b) none disp))) (Γ.setReg d .int)
+  /-- A zero-extending 8- or 16-bit load from inside a field. -/
+  | movzxField {Γ : Ctx} {w : Width} {sw : NarrowW} {d b : Reg} {fields : List Ty}
+      {writable : Bool} {off i k : Nat} {disp : BitVec 32} {τ : Ty} :
+    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .ptr fields writable off → fields[off + i]? = some τ →
+    innerDisp i k disp → k + sw.bytes ≤ 8 →
+    Straight Γ (.movzx w d sw (.mem (.sib (some b) none disp))) (Γ.setReg d .int)
+  /-- A sign-extending 8- or 16-bit load from inside a field. -/
+  | movsxField {Γ : Ctx} {w : Width} {sw : NarrowW} {d b : Reg} {fields : List Ty}
+      {writable : Bool} {off i k : Nat} {disp : BitVec 32} {τ : Ty} :
+    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .ptr fields writable off → fields[off + i]? = some τ →
+    innerDisp i k disp → k + sw.bytes ≤ 8 →
+    Straight Γ (.movsx w d sw (.mem (.sib (some b) none disp))) (Γ.setReg d .int)
   /-- Advancing a pointer by whole slots keeps it a pointer into the same block. -/
   | addPtr {Γ : Ctx} {d : Reg} {fields : List Ty} {writable : Bool} {off k : Nat}
       {imm : BitVec 32} :

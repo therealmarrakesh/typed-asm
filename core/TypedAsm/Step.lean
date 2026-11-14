@@ -171,7 +171,7 @@ def bswap (w : Width) (v : BitVec w.bits) : BitVec w.bits :=
 def signFill {n : Nat} (a : BitVec n) : BitVec n :=
   if a.msb then BitVec.allOnes n else 0
 
-def NarrowW.bits : NarrowW → Nat
+@[reducible] def NarrowW.bits : NarrowW → Nat
   | .w8 => 8
   | .w16 => 16
 
