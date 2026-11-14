@@ -12,7 +12,15 @@ continue to the next one, and says how they change the context. `HasType`
 adds the instructions that transfer control, and checks every possible
 successor address against the code typing.
 
-Field and stack-slot accesses are 64-bit and at fixed offsets.
+A memory operand is `[register + constant]`: a field of a typed pointer or a
+stack slot. A whole 8-byte field or slot keeps its type when loaded or
+stored at 64 bits; any other access, narrower or inside a field, reads and
+writes integers. Indexed and `rip`-relative data operands have no rule.
+
+Every instruction of the machine has a rule. What the rules do not track:
+the results of multiplies, divides, shifts and the like are plain integers,
+the flags after a shift are unknown, and a divide is not shown free of a
+divide error, which safety permits.
 -/
 
 namespace TypedAsm
@@ -110,6 +118,60 @@ structure innerDisp (i k : Nat) (disp : BitVec 32) : Prop where
 def NarrowW.bytes : NarrowW → Nat
   | .w8 => 1
   | .w16 => 2
+
+/-! ## Operands
+
+Three judgments about an operand, each covering a register, a field of a
+block reached through a pointer, and a stack slot. They let one rule serve
+every instruction that takes such an operand. `n` is the access size in bytes. -/
+
+/-- `ReadOk Γ n rm`: reading `n` bytes from `rm` is safe. For memory, the
+bytes must lie inside one field or one stack slot. -/
+inductive ReadOk (Γ : Ctx) (n : Nat) : RM → Prop
+  | reg (r : Reg) : ReadOk Γ n (.reg r)
+  | field {b : Reg} {fields : List Ty} {writable : Bool} {off i k : Nat} {disp : BitVec 32}
+      {τ : Ty} :
+    b ≠ .rsp → Γ.regs b = .ptr fields writable off → innerDisp i k disp →
+    fields[off + i]? = some τ → k + n ≤ 8 → ReadOk Γ n (.mem (.sib (some b) none disp))
+  | slot {i k : Nat} {disp : BitVec 32} {τ : Ty} :
+    innerDisp i k disp → Γ.stack[i]? = some τ → k + n ≤ 8 →
+    ReadOk Γ n (.mem (.sib (some .rsp) none disp))
+
+/-- `WriteIntOk Γ n rm Γ'`: overwriting `n` bytes of `rm` with an arbitrary
+value is safe and leaves a state matching `Γ'`. A register or stack slot
+becomes an integer. A field must already be an integer field of a writable
+block, since a field's type cannot change. -/
+inductive WriteIntOk (Γ : Ctx) (n : Nat) : RM → Ctx → Prop
+  | reg {d : Reg} : d ≠ .rsp → WriteIntOk Γ n (.reg d) (Γ.setReg d .int)
+  | field {b : Reg} {fields : List Ty} {off i k : Nat} {disp : BitVec 32} :
+    b ≠ .rsp → Γ.regs b = .ptr fields true off → innerDisp i k disp →
+    fields[off + i]? = some .int → k + n ≤ 8 →
+    WriteIntOk Γ n (.mem (.sib (some b) none disp)) Γ
+  | slot {i k : Nat} {disp : BitVec 32} {τ : Ty} :
+    innerDisp i k disp → Γ.stack[i]? = some τ → k + n ≤ 8 →
+    WriteIntOk Γ n (.mem (.sib (some .rsp) none disp)) { Γ with stack := Γ.stack.set i .int }
+
+/-- `CodeAt Γ rm Δ`: `rm` holds a pointer to code that expects `Δ`. -/
+inductive CodeAt (Γ : Ctx) : RM → Ctx → Prop
+  | reg {r : Reg} {Δ : Ctx} : r ≠ .rsp → Γ.regs r = .code Δ → CodeAt Γ (.reg r) Δ
+  | field {b : Reg} {fields : List Ty} {writable : Bool} {off i : Nat} {disp : BitVec 32}
+      {Δ : Ctx} :
+    b ≠ .rsp → Γ.regs b = .ptr fields writable off → slotDisp i disp →
+    fields[off + i]? = some (.code Δ) → CodeAt Γ (.mem (.sib (some b) none disp)) Δ
+  | slot {i : Nat} {disp : BitVec 32} {Δ : Ctx} :
+    slotDisp i disp → Γ.stack[i]? = some (.code Δ) →
+    CodeAt Γ (.mem (.sib (some .rsp) none disp)) Δ
+
+/-- The two instructions that can raise a divide error. -/
+def Instr.isDivide : Instr → Bool
+  | .mulDiv .div _ _ => true
+  | .mulDiv .idiv _ _ => true
+  | _ => false
+
+/-- The context after a multiply or divide: `rax` and `rdx` hold the result,
+and the flags are not all defined. -/
+def CtxOf.afterMulDiv (Γ : Ctx) : Ctx :=
+  { (Γ.setReg .rax .int).setReg .rdx .int with flags := Flags.Any }
 
 /-! ## Instructions that continue to the next one -/
 
@@ -242,6 +304,95 @@ inductive Straight (next : BitVec 64) : Ctx → Instr → Ctx → Prop
     d ≠ .rsp → Γ.regs d = .ptr fields writable off → slotDisp k imm →
     Straight next Γ (.alu .add .w64 (.rm_i (.reg d) imm))
       { Γ.setReg d (.ptr fields writable (off + k)) with flags := Flags.Known }
+  -- The rules below are stated over operands, so each covers registers,
+  -- fields and stack slots at once. Where an operand is written, its new
+  -- contents are an integer.
+  /-- Arithmetic that writes its destination, with a register source. -/
+  | aluStoreR {Γ Γ' : Ctx} {op : AluOp} {w : Width} {dst : RM} {s : Reg} :
+    op.writesDst = true → ReadOk Γ w.bytes.toNat dst → WriteIntOk Γ w.bytes.toNat dst Γ' →
+    (op.readsCarry = true → ∀ f, Γ.flags f → f.cf.isSome = true) →
+    Straight next Γ (.alu op w (.rm_r dst s)) { Γ' with flags := Flags.Known }
+  /-- Arithmetic that writes its destination, with a constant source. -/
+  | aluStoreI {Γ Γ' : Ctx} {op : AluOp} {w : Width} {dst : RM} {imm : BitVec 32} :
+    op.writesDst = true → ReadOk Γ w.bytes.toNat dst → WriteIntOk Γ w.bytes.toNat dst Γ' →
+    (op.readsCarry = true → ∀ f, Γ.flags f → f.cf.isSome = true) →
+    Straight next Γ (.alu op w (.rm_i dst imm)) { Γ' with flags := Flags.Known }
+  /-- A comparison with a register. -/
+  | cmpR {Γ : Ctx} {op : AluOp} {w : Width} {dst : RM} {s : Reg} :
+    op.writesDst = false → ReadOk Γ w.bytes.toNat dst →
+    Straight next Γ (.alu op w (.rm_r dst s)) { Γ with flags := Flags.Known }
+  /-- A comparison with a constant. -/
+  | cmpI {Γ : Ctx} {op : AluOp} {w : Width} {dst : RM} {imm : BitVec 32} :
+    op.writesDst = false → ReadOk Γ w.bytes.toNat dst →
+    Straight next Γ (.alu op w (.rm_i dst imm)) { Γ with flags := Flags.Known }
+  /-- Arithmetic into a register from memory. -/
+  | aluLoad {Γ : Ctx} {op : AluOp} {w : Width} {d : Reg} {m : Mem} :
+    d ≠ .rsp → ReadOk Γ w.bytes.toNat (.mem m) →
+    (op.readsCarry = true → ∀ f, Γ.flags f → f.cf.isSome = true) →
+    Straight next Γ (.alu op w (.r_m d m)) (Γ.afterAlu op d)
+  | testRM {Γ : Ctx} {w : Width} {dst : RM} {src : RI} : ReadOk Γ w.bytes.toNat dst →
+    Straight next Γ (.test w dst src) { Γ with flags := Flags.Known }
+  | negRM {Γ Γ' : Ctx} {w : Width} {dst : RM} :
+    ReadOk Γ w.bytes.toNat dst → WriteIntOk Γ w.bytes.toNat dst Γ' →
+    Straight next Γ (.unary .neg w dst) { Γ' with flags := Flags.Known }
+  /-- `not` leaves the flags alone. -/
+  | notRM {Γ Γ' : Ctx} {w : Width} {dst : RM} :
+    ReadOk Γ w.bytes.toNat dst → WriteIntOk Γ w.bytes.toNat dst Γ' →
+    Straight next Γ (.unary .not w dst) Γ'
+  /-- A shift or rotate. Afterwards nothing is known about the flags: some
+  are undefined, and a count of zero leaves them as they were. -/
+  | shiftRM {Γ Γ' : Ctx} {op : ShiftOp} {w : Width} {dst : RM} {c : Count} :
+    ReadOk Γ w.bytes.toNat dst → WriteIntOk Γ w.bytes.toNat dst Γ' →
+    Straight next Γ (.shift op w dst c) { Γ' with flags := Flags.Any }
+  | mulRM {Γ : Ctx} {w : Width} {src : RM} : ReadOk Γ w.bytes.toNat src →
+    Straight next Γ (.mulDiv .mul w src) Γ.afterMulDiv
+  | imulRM {Γ : Ctx} {w : Width} {src : RM} : ReadOk Γ w.bytes.toNat src →
+    Straight next Γ (.mulDiv .imul w src) Γ.afterMulDiv
+  /-- A divide may raise a divide error, which is an acceptable outcome; if
+  it does not, execution continues. -/
+  | divRM {Γ : Ctx} {w : Width} {src : RM} : ReadOk Γ w.bytes.toNat src →
+    Straight next Γ (.mulDiv .div w src) Γ.afterMulDiv
+  | idivRM {Γ : Ctx} {w : Width} {src : RM} : ReadOk Γ w.bytes.toNat src →
+    Straight next Γ (.mulDiv .idiv w src) Γ.afterMulDiv
+  | imul2RM {Γ : Ctx} {w : Width} {d : Reg} {src : RM} : d ≠ .rsp → ReadOk Γ w.bytes.toNat src →
+    Straight next Γ (.imul2 w d src) { Γ.setReg d .int with flags := Flags.Any }
+  | imul3RM {Γ : Ctx} {w : Width} {d : Reg} {src : RM} {imm : BitVec 32} :
+    d ≠ .rsp → ReadOk Γ w.bytes.toNat src →
+    Straight next Γ (.imul3 w d src imm) { Γ.setReg d .int with flags := Flags.Any }
+  | popcntRM {Γ : Ctx} {w : Width} {d : Reg} {src : RM} : d ≠ .rsp → ReadOk Γ w.bytes.toNat src →
+    Straight next Γ (.popcnt w d src) { Γ.setReg d .int with flags := Flags.Known }
+  | bswap {Γ : Ctx} {w : Width} {r : Reg} : r ≠ .rsp →
+    Straight next Γ (.bswap w r) (Γ.setReg r .int)
+  | cdq {Γ : Ctx} : Straight next Γ .cdq (Γ.setReg .rdx .int)
+  | cqo {Γ : Ctx} : Straight next Γ .cqo (Γ.setReg .rdx .int)
+  | movsxdRM {Γ : Ctx} {d : Reg} {src : RM} : d ≠ .rsp → ReadOk Γ 4 src →
+    Straight next Γ (.movsxd d src) (Γ.setReg d .int)
+  /-- A conditional move needs flags that decide the condition. The
+  destination is an integer afterwards whichever way it went. -/
+  | cmovRM {Γ : Ctx} {c : Cond} {w : Width} {d : Reg} {src : RM} :
+    d ≠ .rsp → ReadOk Γ w.bytes.toNat src → (∀ f, Γ.flags f → ∃ b, c.eval f = some b) →
+    Straight next Γ (.cmov c w d src) (Γ.setReg d .int)
+  | setccRM {Γ Γ' : Ctx} {c : Cond} {dst : RM} :
+    WriteIntOk Γ 1 dst Γ' → (∀ f, Γ.flags f → ∃ b, c.eval f = some b) →
+    Straight next Γ (.setcc c dst) Γ'
+  | movzxRM {Γ : Ctx} {w : Width} {d : Reg} {sw : NarrowW} {src : RM} :
+    d ≠ .rsp → ReadOk Γ sw.bytes src → Straight next Γ (.movzx w d sw src) (Γ.setReg d .int)
+  | movsxRM {Γ : Ctx} {w : Width} {d : Reg} {sw : NarrowW} {src : RM} :
+    d ≠ .rsp → ReadOk Γ sw.bytes src → Straight next Γ (.movsx w d sw src) (Γ.setReg d .int)
+  /-- A load of any width, as an integer. The 64-bit loads of a whole field
+  or slot above keep its type instead. -/
+  | loadInt {Γ : Ctx} {w : Width} {d : Reg} {m : Mem} :
+    d ≠ .rsp → ReadOk Γ w.bytes.toNat (.mem m) →
+    Straight next Γ (.mov w (.r_m d m)) (Γ.setReg d .int)
+  /-- A store of any width, of a register, treated as an integer. -/
+  | storeInt {Γ Γ' : Ctx} {w : Width} {dst : RM} {s : Reg} :
+    WriteIntOk Γ w.bytes.toNat dst Γ' → Straight next Γ (.mov w (.rm_r dst s)) Γ'
+  /-- A store of a constant. -/
+  | storeImm {Γ Γ' : Ctx} {w : Width} {dst : RM} {imm : BitVec 32} :
+    WriteIntOk Γ w.bytes.toNat dst Γ' → Straight next Γ (.mov w (.rm_i dst imm)) Γ'
+  /-- A byte store. -/
+  | store8RM {Γ Γ' : Ctx} {m : Mem} {s : Reg} :
+    WriteIntOk Γ 1 (.mem m) Γ' → Straight next Γ (.store8 m s) Γ'
   | test {Γ : Ctx} {w : Width} {r : Reg} {src : RI} :
     Straight next Γ (.test w (.reg r) src) { Γ with flags := Flags.Known }
   /-- Testing two exactly known values gives exactly known flags. -/
@@ -281,6 +432,25 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
   | ret {Γ Δ : Ctx} {σ : List Ty} : Γ.stack = .code Δ :: σ →
     CtxSub { Γ with stack := σ, room := Γ.room + 1 } Δ → HasType Φ fetch sys Ψ next Γ .ret
   | syscall {Γ : Ctx} : Accepts Φ next Γ.afterSyscall → HasType Φ fetch sys Ψ next Γ .syscall
+  /-- Jump through a register, field or stack slot holding a code pointer. -/
+  | jmpInd {Γ Δ : Ctx} {rm : RM} : CodeAt Γ rm Δ → CtxSub Γ Δ →
+    HasType Φ fetch sys Ψ next Γ (.jmp (.ind rm))
+  /-- Call through a register, field or stack slot holding a code pointer.
+  The callee sees the return address on top of the stack. -/
+  | callInd {Γ Δ ret : Ctx} {rm : RM} {n : Nat} : CodeAt Γ rm Δ → Γ.room = n + 1 → Φ next ret →
+    CtxSub { Γ with stack := .code ret :: Γ.stack, room := n } Δ →
+    HasType Φ fetch sys Ψ next Γ (.call (.ind rm))
+  /-- Any instruction is well typed in a context no state can match. This is
+  how code that is never reached, such as a `ud2` after an impossible branch,
+  is typed. -/
+  | unreachable {Γ : Ctx} {i : Instr} : (∀ n s, ¬WellTyped fetch sys Ψ n Γ s) →
+    HasType Φ fetch sys Ψ next Γ i
+  /-- A register holding exactly the address of typed code may be treated as
+  a pointer to that code. This is how a code pointer that is not a return
+  address comes into being. -/
+  | codePtr {Γ Δ : Ctx} {i : Instr} {r : Reg} {a : BitVec 64} :
+    r ≠ .rsp → Γ.regs r = .eq a → Φ a Δ →
+    HasType Φ fetch sys Ψ next (Γ.setReg r (.code Δ)) i → HasType Φ fetch sys Ψ next Γ i
   /-- The rule of consequence: an instruction typed in `Γ'` is typed in any
   context whose matching states all match `Γ'`. This is the escape from the
   syntactic rules to an arbitrary argument about states. -/

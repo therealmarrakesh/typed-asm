@@ -37,6 +37,11 @@ inductive BlockOk (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) :
   | weaken {a : BitVec 64} {Γ Γ' : Ctx} :
     (∀ n s, WellTyped fetch sys Ψ n Γ s → WellTyped fetch sys Ψ n Γ' s) →
     BlockOk Φ fetch sys Ψ a Γ' → BlockOk Φ fetch sys Ψ a Γ
+  /-- A register holding exactly the address of typed code may be treated as
+  a pointer to that code from here on. -/
+  | codePtr {a : BitVec 64} {Γ Δ : Ctx} {r : Reg} {v : BitVec 64} :
+    r ≠ .rsp → Γ.regs r = .eq v → Φ v Δ → BlockOk Φ fetch sys Ψ a (Γ.setReg r (.code Δ)) →
+    BlockOk Φ fetch sys Ψ a Γ
   /-- The last instruction of the block. -/
   | last {a : BitVec 64} {Γ : Ctx} {i : Instr} {len : BitVec 64} :
     fetch a = some (i, len) → HasType Φ fetch sys Ψ (a + len) Γ i → BlockOk Φ fetch sys Ψ a Γ
@@ -63,6 +68,10 @@ theorem HasType.mono (h : ∀ a Γ, Φ a Γ → Φ' a Γ) {next : BitVec 64} {Γ
   | call hroom hret hacc => exact .call hroom (h _ _ hret) (hacc.mono h)
   | ret hst hsub => exact .ret hst hsub
   | syscall hacc => exact .syscall (hacc.mono h)
+  | jmpInd hcode hsub => exact .jmpInd hcode hsub
+  | callInd hcode hroom hret hsub => exact .callInd hcode hroom (h _ _ hret) hsub
+  | unreachable hun => exact .unreachable hun
+  | codePtr hr hΓ hΦ _ ih => exact .codePtr hr hΓ (h _ _ hΦ) ih
   | weaken hsem _ ih => exact .weaken hsem ih
 
 /-- A program typed block by block is well typed instruction by instruction,
@@ -78,6 +87,9 @@ theorem BlocksOk.programOk (h : BlocksOk Φ fetch sys Ψ) :
   | weaken hsem _ ih =>
     obtain ⟨i, len, hf, ht⟩ := ih
     exact ⟨i, len, hf, .weaken hsem ht⟩
+  | codePtr hr hΓ hΦ _ ih =>
+    obtain ⟨i, len, hf, ht⟩ := ih
+    exact ⟨i, len, hf, .codePtr hr hΓ (h _ _ hΦ) ht⟩
   | last hf ht => exact ⟨_, _, hf, ht.mono h⟩
 
 /-- A register holding exactly the address of a field of a memory block may

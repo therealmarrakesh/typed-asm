@@ -572,6 +572,61 @@ theorem retype {r : Reg} {τ : Ty} (h : WellTyped fetch sys Ψ ix Γ s) (hr : r 
   · next h' => rw [h']
   · rfl
 
+/-- Any `m` bytes inside stack slot `i` are writable. -/
+theorem canWrite_slot_inner {i k m : Nat} (h : WellTyped fetch sys Ψ ix Γ s)
+    (hi : i < Γ.stack.length) (hk : k + m ≤ 8) :
+    s.canWrite (s.getReg .rsp + BitVec.ofNat 64 (8 * i + k)) m = true := by
+  have := State.canWrite_sub h.stackPerm (o := 8 * Γ.room + (8 * i + k)) (m := m)
+    (by simp only [stackSize]; omega)
+  have e : stackBase Γ s + BitVec.ofNat 64 (8 * Γ.room + (8 * i + k))
+      = s.getReg .rsp + BitVec.ofNat 64 (8 * i + k) := by
+    simp only [stackBase]; bv_omega
+  rwa [e] at this
+
+/-- Any change to memory confined to one stack slot keeps the state well
+typed, with that slot now an integer. -/
+theorem writeSlotInt {i : Nat} {s' : State} (h : WellTyped fetch sys Ψ ix Γ s) (hΨ : Ψ.WF)
+    (hi : i < Γ.stack.length) (hregs : s'.regs = s.regs) (hflags : s'.flags = s.flags)
+    (hperm : s'.perm = s.perm)
+    (hframe : ∀ y, Disjoint (s.getReg .rsp + BitVec.ofNat 64 (8 * i)) 8 y 8 →
+      s'.load64 y = s.load64 y) :
+    WellTyped fetch sys Ψ ix { Γ with stack := Γ.stack.set i .int } s' := by
+  have hg : ∀ r, s'.getReg r = s.getReg r := fun r => by simp only [State.getReg, hregs]
+  have hz : stackSize { Γ with stack := Γ.stack.set i .int } = stackSize Γ := by
+    simp only [stackSize, List.length_set]
+  have hb : stackBase { Γ with stack := Γ.stack.set i .int } s' = stackBase Γ s := by
+    simp only [stackBase, hg]
+  have hlt := h.stackSize_lt
+  simp only [stackSize] at hlt
+  exact {
+    regs := fun r hr => by rw [hg]; exact h.regs r hr
+    flags := by rw [hflags]; exact h.flags
+    stackPerm := by rw [hb, hz, State.canWrite_congr hperm]; exact h.stackPerm
+    stackSize_lt := by rw [hz]; exact h.stackSize_lt
+    stack := fun j τ' hj => by
+      rw [hg]
+      by_cases hji : j = i
+      · subst hji
+        rw [List.getElem?_set_self hi] at hj
+        cases hj
+        exact HasTy.int _
+      · rw [List.getElem?_set_ne (Ne.symm hji)] at hj
+        have hjlt : j < Γ.stack.length := (List.getElem?_eq_some_iff.mp hj).1
+        rw [hframe _ (disjoint_slots (N := 8 * Γ.stack.length) (Ne.symm hji) (by omega) (by omega)
+          (by omega))]
+        exact h.stack j τ' hj
+    heapPerm := fun b l' hl' => by
+      rw [State.canRead_congr hperm, State.canWrite_congr hperm]; exact h.heapPerm b l' hl'
+    heap := fun b l' hl' j τ' hj => by
+      have hjlt : j < l'.fields.length := (List.getElem?_eq_some_iff.mp hj).1
+      have hd := (h.stackHeap b l' hl').mono (o := 8 * Γ.room + 8 * i) (p := 8 * j)
+        (n' := 8) (m' := 8) h.stackSize_lt (hΨ.size_lt b l' hl') (by simp only [stackSize]; omega)
+        (by simp only [Layout.size]; omega) (by omega) (by omega)
+      rw [slot_addr] at hd
+      rw [hframe _ hd]
+      exact h.heap b l' hl' j τ' hj
+    stackHeap := fun b l' hl' => by rw [hb, hz]; exact h.stackHeap b l' hl' }
+
 /-- After a two-operand operation on register `d` that left known flags. -/
 theorem afterAlu {op : AluOp} {d : Reg} {fl : Flags} (h : WellTyped fetch sys Ψ ix Γ s) (hd : d ≠ .rsp)
     (hdef : fl.defined = true) (v : BitVec 64) :
@@ -727,12 +782,326 @@ theorem slot_add (a : BitVec 64) (off i : Nat) :
 
 /-! ## Instructions that continue to the next one -/
 
-/-- A straight-line typed instruction, run in a matching state, continues to
-the next instruction and leaves a state matching the rule's result context. -/
-theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr} (ht : Straight next Γ i Γ')
+/-! ## Operands -/
+
+section Operands
+
+variable {Γ : Ctx} {s : State}
+
+theorem subBorrow_defined {n : Nat} (a b : BitVec n) (c : Bool) :
+    (subBorrow a b c).2.defined = true :=
+  Flags.ofResult_defined _ _ _
+
+/-- A readable memory operand's bytes are readable. -/
+theorem ReadOk.canRead {n : Nat} {m : Mem} (hr : ReadOk Γ n (.mem m))
+    (h : WellTyped fetch sys Ψ ix Γ s) : s.canRead (s.ea m) n = true := by
+  cases hr with
+  | @field b fields writable off i k disp τ hb hΓ hdisp hi hk =>
+    have hp := h.regs b hb
+    rw [hΓ] at hp
+    obtain ⟨a, l, hl, rfl, -, hva⟩ := hasTy_ptr.mp hp
+    have hilt : off + i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
+    rw [State.ea_inner s b hdisp, hva, slot_add_inner]
+    exact h.canRead_inner hl hilt hk
+  | @slot i k disp τ hdisp hi hk =>
+    have hilt : i < Γ.stack.length := (List.getElem?_eq_some_iff.mp hi).1
+    rw [State.ea_inner s .rsp hdisp]
+    exact State.canRead_of_canWrite (h.canWrite_slot_inner hilt hk)
+
+/-- Reading a readable operand succeeds. -/
+theorem ReadOk.readRM {w : Width} {rm : RM} (hr : ReadOk Γ w.bytes.toNat rm)
+    (h : WellTyped fetch sys Ψ ix Γ s) : ∃ v, s.readRM w rm = .next v := by
+  cases rm with
+  | reg r => exact ⟨_, rfl⟩
+  | mem m =>
+    refine ⟨s.load w (s.ea m), ?_⟩
+    simp only [State.readRM, State.read, hr.canRead h, ite_true]
+
+/-- Reading a readable narrow operand succeeds. -/
+theorem ReadOk.readNarrow {sw : NarrowW} {rm : RM} (hr : ReadOk Γ sw.bytes rm)
+    (h : WellTyped fetch sys Ψ ix Γ s) : ∃ v, s.readNarrow sw rm = .next v := by
+  cases rm with
+  | reg r => exact ⟨_, rfl⟩
+  | mem m =>
+    cases sw with
+    | w8 =>
+      have hc : s.canRead (s.ea m) 1 = true := hr.canRead h
+      refine ⟨s.load8 (s.ea m), ?_⟩
+      simp only [State.readNarrow, State.read8, hc, ite_true]
+    | w16 =>
+      have hc : s.canRead (s.ea m) 2 = true := hr.canRead h
+      refine ⟨s.load16 (s.ea m), ?_⟩
+      simp only [State.readNarrow, State.read16, hc, ite_true]
+
+/-- Writing any value to a writable operand succeeds and leaves a state
+matching the judgment's result context. -/
+theorem WriteIntOk.writeRM {w : Width} {rm : RM} {Γ' : Ctx}
+    (hw : WriteIntOk Γ w.bytes.toNat rm Γ') (h : WellTyped fetch sys Ψ ix Γ s) (hΨ : Ψ.WF)
+    (v : BitVec w.bits) :
+    ∃ s', s.writeRM w rm v = .next s' ∧ s'.rip = s.rip ∧ WellTyped fetch sys Ψ ix Γ' s' := by
+  cases hw with
+  | @reg d hd => exact ⟨s.writeReg w d v, rfl, rfl, h.setReg hd (HasTy.int _)⟩
+  | @field b fields off i k disp hb hΓ hdisp hi hk =>
+    have hp := h.regs b hb
+    rw [hΓ] at hp
+    obtain ⟨a, l, hl, rfl, hwr, hva⟩ := hasTy_ptr.mp hp
+    have hilt : off + i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
+    have hea : s.ea (.sib (some b) none disp) = a + BitVec.ofNat 64 (8 * (off + i) + k) := by
+      rw [State.ea_inner s b hdisp, hva, slot_add_inner]
+    have hc := h.canWrite_inner (m := w.bytes.toNat) hl (hwr rfl) hilt hk
+    refine ⟨s.store w (a + BitVec.ofNat 64 (8 * (off + i) + k)) v, ?_, State.rip_store _ _ _ _,
+      h.writeInt hΨ hl hi (State.regs_store _ _ _ _) (State.flags_store _ _ _ _)
+        (State.perm_store _ _ _ _) (fun y hd => by
+          rw [inner_split]; exact State.load64_store_inner s w _ hk hd)⟩
+    simp only [State.writeRM, hea, State.write, hc, ite_true]
+  | @slot i k disp τ hdisp hi hk =>
+    have hilt : i < Γ.stack.length := (List.getElem?_eq_some_iff.mp hi).1
+    have hea := State.ea_inner s .rsp hdisp
+    have hc := h.canWrite_slot_inner (m := w.bytes.toNat) hilt hk
+    refine ⟨s.store w (s.getReg .rsp + BitVec.ofNat 64 (8 * i + k)) v, ?_, State.rip_store _ _ _ _,
+      h.writeSlotInt hΨ hilt (State.regs_store _ _ _ _) (State.flags_store _ _ _ _)
+        (State.perm_store _ _ _ _) (fun y hd => by
+          rw [inner_split]; exact State.load64_store_inner s w _ hk hd)⟩
+    simp only [State.writeRM, hea, State.write, hc, ite_true]
+
+/-- Writing any byte to a writable operand succeeds likewise. -/
+theorem WriteIntOk.writeRM8 {rm : RM} {Γ' : Ctx} (hw : WriteIntOk Γ 1 rm Γ')
+    (h : WellTyped fetch sys Ψ ix Γ s) (hΨ : Ψ.WF) (v : BitVec 8) :
+    ∃ s', s.writeRM8 rm v = .next s' ∧ s'.rip = s.rip ∧ WellTyped fetch sys Ψ ix Γ' s' := by
+  cases hw with
+  | @reg d hd => exact ⟨_, rfl, rfl, h.setReg hd (HasTy.int _)⟩
+  | @field b fields off i k disp hb hΓ hdisp hi hk =>
+    have hp := h.regs b hb
+    rw [hΓ] at hp
+    obtain ⟨a, l, hl, rfl, hwr, hva⟩ := hasTy_ptr.mp hp
+    have hilt : off + i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
+    have hea : s.ea (.sib (some b) none disp) = a + BitVec.ofNat 64 (8 * (off + i) + k) := by
+      rw [State.ea_inner s b hdisp, hva, slot_add_inner]
+    have hc := h.canWrite_inner (m := 1) hl (hwr rfl) hilt hk
+    refine ⟨s.store8 (a + BitVec.ofNat 64 (8 * (off + i) + k)) v, ?_, rfl,
+      h.writeInt hΨ hl hi rfl rfl rfl (fun y hd => by
+        rw [inner_split]; exact State.load64_store8_inner s _ hk hd)⟩
+    simp only [State.writeRM8, hea, State.write8, hc, ite_true]
+  | @slot i k disp τ hdisp hi hk =>
+    have hilt : i < Γ.stack.length := (List.getElem?_eq_some_iff.mp hi).1
+    have hea := State.ea_inner s .rsp hdisp
+    have hc := h.canWrite_slot_inner (m := 1) hilt hk
+    refine ⟨s.store8 (s.getReg .rsp + BitVec.ofNat 64 (8 * i + k)) v, ?_, rfl,
+      h.writeSlotInt hΨ hilt rfl rfl rfl (fun y hd => by
+        rw [inner_split]; exact State.load64_store8_inner s _ hk hd)⟩
+    simp only [State.writeRM8, hea, State.write8, hc, ite_true]
+
+/-- An operand holding a code pointer can be read, and what is read is a code pointer. -/
+theorem CodeAt.sound {rm : RM} {Δ : Ctx} (hc : CodeAt Γ rm Δ) (h : WellTyped fetch sys Ψ ix Γ s) :
+    ∃ v, s.readRM .w64 rm = .next v ∧ HasTy fetch sys Ψ ix (.code Δ) v := by
+  cases hc with
+  | @reg r Δ hr hΓ =>
+    refine ⟨s.getReg r, ?_, by have := h.regs r hr; rwa [hΓ] at this⟩
+    simp [State.readRM, State.readReg_w64]
+  | @field b fields writable off i disp Δ hb hΓ hdisp hi =>
+    have hp := h.regs b hb
+    rw [hΓ] at hp
+    obtain ⟨a, l, hl, rfl, -, hva⟩ := hasTy_ptr.mp hp
+    have hilt : off + i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
+    have hea : s.ea (.sib (some b) none disp) = a + BitVec.ofNat 64 (8 * (off + i)) := by
+      rw [State.ea_slot s b hdisp, hva, slot_add]
+    refine ⟨s.load64 (a + BitVec.ofNat 64 (8 * (off + i))), ?_, h.heap _ l hl (off + i) _ hi⟩
+    simp [State.readRM, hea, State.read_w64 (h.canRead_field hl hilt)]
+  | @slot i disp Δ hdisp hi =>
+    have hilt : i < Γ.stack.length := (List.getElem?_eq_some_iff.mp hi).1
+    refine ⟨s.load64 (s.getReg .rsp + BitVec.ofNat 64 (8 * i)), ?_, h.stack i _ hi⟩
+    simp [State.readRM, State.ea_slot s .rsp hdisp,
+      State.read_w64 (State.canRead_of_canWrite (h.canWrite_slot hilt))]
+
+end Operands
+
+/-! ## Multiply and divide -/
+
+/-- A multiply or divide either produces a result or raises a divide error. -/
+theorem MulDivOp.eval_cases {n : Nat} (op : MulDivOp) (hi lo src : BitVec n) :
+    (∃ x, op.eval hi lo src = .next x) ∨ op.eval hi lo src = .fault .divideError := by
+  cases op
+  · exact .inl ⟨_, rfl⟩
+  · exact .inl ⟨_, rfl⟩
+  · simp only [MulDivOp.eval]
+    split
+    · exact .inr rfl
+    · exact .inl ⟨_, rfl⟩
+  · simp only [MulDivOp.eval]
+    split
+    · exact .inr rfl
+    · exact .inl ⟨_, rfl⟩
+
+/-- A multiply or divide that produces a result continues, with `rax` and
+`rdx` integers. -/
+theorem mulDiv_next {Γ : Ctx} {s : State} {op : MulDivOp} {w : Width} {src : RM}
+    (hr : ReadOk Γ w.bytes.toNat src) (h : WellTyped fetch sys Ψ ix Γ s)
+    (hx : ∀ a, ∃ x, op.eval (s.readReg w .rdx) (s.readReg w .rax) a = .next x) :
+    ∃ s', exec sys (.mulDiv op w src) s = .next s' ∧ s'.rip = s.rip ∧
+      WellTyped fetch sys Ψ ix Γ.afterMulDiv s' := by
+  obtain ⟨a, ha⟩ := hr.readRM h
+  obtain ⟨⟨lo, hi, fl⟩, hx⟩ := hx a
+  refine ⟨{ (s.writeReg w .rax lo).writeReg w .rdx hi with flags := fl }, ?_, rfl,
+    ((h.setReg (by decide) (HasTy.int _)).setReg (by decide) (HasTy.int _)).setFlags
+      (P := Flags.Any) trivial⟩
+  simp [exec, ha, hx]
+
+/-- A divide either raises a divide error or continues. -/
+theorem mulDiv_sound {Γ : Ctx} {s : State} {op : MulDivOp} {w : Width} {src : RM}
+    (hr : ReadOk Γ w.bytes.toNat src) (h : WellTyped fetch sys Ψ ix Γ s) :
+    (exec sys (.mulDiv op w src) s).isSafe = true ∧
+      ∀ s', exec sys (.mulDiv op w src) s = .next s' →
+        s'.rip = s.rip ∧ WellTyped fetch sys Ψ ix Γ.afterMulDiv s' := by
+  obtain ⟨a, ha⟩ := hr.readRM h
+  rcases op.eval_cases (s.readReg w .rdx) (s.readReg w .rax) a with ⟨⟨lo, hi, fl⟩, hx⟩ | hx
+  · have he : exec sys (.mulDiv op w src) s
+        = .next { (s.writeReg w .rax lo).writeReg w .rdx hi with flags := fl } := by
+      simp [exec, ha, hx]
+    rw [he]
+    refine ⟨rfl, fun s' heq => ?_⟩
+    cases heq
+    exact ⟨rfl, ((h.setReg (by decide) (HasTy.int _)).setReg (by decide) (HasTy.int _)).setFlags
+      (P := Flags.Any) trivial⟩
+  · have he : exec sys (.mulDiv op w src) s = .fault .divideError := by
+      simp [exec, ha, hx]
+    rw [he]
+    exact ⟨rfl, fun s' heq => nomatch heq⟩
+
+/-- A straight-line typed instruction other than a divide, run in a matching
+state, continues to the next instruction and leaves a state matching the
+rule's result context. -/
+theorem Straight.sound_next {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
+    (ht : Straight next Γ i Γ') (hnd : i.isDivide = false)
     (hΨ : Ψ.WF) {s : State} (h : WellTyped fetch sys Ψ ix Γ s) (hrip : s.rip = next) :
     ∃ s', exec sys i s = .next s' ∧ s'.rip = s.rip ∧ WellTyped fetch sys Ψ ix Γ' s' := by
   cases ht with
+  | @aluStoreR Γ₁ op w dst src hwd hr hw hc =>
+    obtain ⟨a, ha⟩ := hr.readRM h
+    obtain ⟨r, fl, he, hdef⟩ := op.eval_some (cf := s.flags.cf) a (s.readReg w src)
+      (fun hrc => hc hrc _ h.flags)
+    obtain ⟨s', hs', hrip', hwt⟩ := hw.writeRM h hΨ r
+    refine ⟨{ s' with flags := fl }, ?_, hrip', hwt.setFlags (P := Flags.Known) hdef⟩
+    simp [exec, Operands.src, Operands.dst, ha, he, Result.ofOption, hwd, hs']
+  | @aluStoreI Γ₁ op w dst imm hwd hr hw hc =>
+    obtain ⟨a, ha⟩ := hr.readRM h
+    obtain ⟨r, fl, he, hdef⟩ := op.eval_some (cf := s.flags.cf) a (imm.signExtend w.bits)
+      (fun hrc => hc hrc _ h.flags)
+    obtain ⟨s', hs', hrip', hwt⟩ := hw.writeRM h hΨ r
+    refine ⟨{ s' with flags := fl }, ?_, hrip', hwt.setFlags (P := Flags.Known) hdef⟩
+    simp [exec, Operands.src, Operands.dst, ha, he, Result.ofOption, hwd, hs']
+  | @cmpR op w dst src hwd hr =>
+    obtain ⟨a, ha⟩ := hr.readRM h
+    obtain ⟨r, fl, he, hdef⟩ := op.eval_some (cf := s.flags.cf) a (s.readReg w src)
+      (fun hrc => absurd hrc (by cases op <;> simp_all [AluOp.writesDst, AluOp.readsCarry]))
+    refine ⟨{ s with flags := fl }, ?_, rfl, h.setFlags (P := Flags.Known) hdef⟩
+    simp [exec, Operands.src, Operands.dst, ha, he, Result.ofOption, hwd]
+  | @cmpI op w dst imm hwd hr =>
+    obtain ⟨a, ha⟩ := hr.readRM h
+    obtain ⟨r, fl, he, hdef⟩ := op.eval_some (cf := s.flags.cf) a (imm.signExtend w.bits)
+      (fun hrc => absurd hrc (by cases op <;> simp_all [AluOp.writesDst, AluOp.readsCarry]))
+    refine ⟨{ s with flags := fl }, ?_, rfl, h.setFlags (P := Flags.Known) hdef⟩
+    simp [exec, Operands.src, Operands.dst, ha, he, Result.ofOption, hwd]
+  | @aluLoad op w d m hd hr hc =>
+    obtain ⟨b, hb⟩ := hr.readRM h
+    simp only [State.readRM] at hb
+    obtain ⟨r, fl, he, hdef⟩ := op.eval_some (cf := s.flags.cf) (s.readReg w d) b
+      (fun hrc => hc hrc _ h.flags)
+    refine ⟨{ (if op.writesDst then s.setReg d (r.setWidth 64) else s) with flags := fl }, ?_, ?_,
+      h.afterAlu hd hdef _⟩
+    · cases hwd : op.writesDst <;>
+        simp [exec, State.readRM, State.writeRM, Operands.src, Operands.dst, hb, he,
+          Result.ofOption, hwd, State.writeReg]
+    · cases op.writesDst <;> rfl
+  | @testRM w dst src hr =>
+    obtain ⟨a, ha⟩ := hr.readRM h
+    refine ⟨{ s with flags := .ofResult (a &&& s.readRI w src) false false }, ?_, rfl,
+      h.setFlags (P := Flags.Known) (Flags.ofResult_defined _ _ _)⟩
+    simp [exec, ha]
+  | @negRM Γ₁ w dst hr hw =>
+    obtain ⟨a, ha⟩ := hr.readRM h
+    obtain ⟨s', hs', hrip', hwt⟩ := hw.writeRM h hΨ (subBorrow (0#w.bits) a false).1
+    refine ⟨{ s' with flags := (subBorrow (0#w.bits) a false).2 }, ?_, hrip',
+      hwt.setFlags (P := Flags.Known) (subBorrow_defined _ _ _)⟩
+    simp [exec, ha, hs']
+  | @notRM Γ₁ w dst hr hw =>
+    obtain ⟨a, ha⟩ := hr.readRM h
+    obtain ⟨s', hs', hrip', hwt⟩ := hw.writeRM h hΨ (~~~a)
+    exact ⟨s', by simp [exec, ha, hs'], hrip', hwt⟩
+  | @shiftRM Γ₁ op w dst c hr hw =>
+    obtain ⟨a, ha⟩ := hr.readRM h
+    generalize hrf : op.eval s.flags a (s.shiftCount w c) = rf
+    obtain ⟨r, fl⟩ := rf
+    obtain ⟨s', hs', hrip', hwt⟩ := hw.writeRM h hΨ r
+    refine ⟨{ s' with flags := fl }, ?_, hrip', hwt.setFlags (P := Flags.Any) trivial⟩
+    simp [exec, ha, hrf, hs']
+  | @mulRM w src hr => exact mulDiv_next hr h (fun _ => ⟨_, rfl⟩)
+  | @imulRM w src hr => exact mulDiv_next hr h (fun _ => ⟨_, rfl⟩)
+  | divRM => exact absurd hnd (by simp [Instr.isDivide])
+  | idivRM => exact absurd hnd (by simp [Instr.isDivide])
+  | @imul2RM w d src hd hr =>
+    obtain ⟨a, ha⟩ := hr.readRM h
+    generalize hrf : imulTrunc (s.readReg w d) a = rf
+    obtain ⟨r, fl⟩ := rf
+    refine ⟨{ s.writeReg w d r with flags := fl }, ?_, rfl,
+      (h.setReg hd (HasTy.int _)).setFlags (P := Flags.Any) trivial⟩
+    simp [exec, ha, hrf]
+  | @imul3RM w d src imm hd hr =>
+    obtain ⟨a, ha⟩ := hr.readRM h
+    generalize hrf : imulTrunc a (imm.signExtend w.bits) = rf
+    obtain ⟨r, fl⟩ := rf
+    refine ⟨{ s.writeReg w d r with flags := fl }, ?_, rfl,
+      (h.setReg hd (HasTy.int _)).setFlags (P := Flags.Any) trivial⟩
+    simp [exec, ha, hrf]
+  | @popcntRM w d src hd hr =>
+    obtain ⟨a, ha⟩ := hr.readRM h
+    refine ⟨{ s.writeReg w d (popcount a) with
+        flags := ⟨some false, some (a == 0), some false, some false⟩ }, ?_, rfl,
+      (h.setReg hd (HasTy.int _)).setFlags (P := Flags.Known) rfl⟩
+    simp [exec, ha]
+  | @bswap w r hr =>
+    exact ⟨s.writeReg w r (TypedAsm.bswap w (s.readReg w r)), by simp [exec], rfl,
+      h.setReg hr (HasTy.int _)⟩
+  | cdq =>
+    exact ⟨s.writeReg .w32 .rdx (signFill (s.readReg .w32 .rax)), by simp [exec], rfl,
+      h.setReg (by decide) (HasTy.int _)⟩
+  | cqo =>
+    exact ⟨s.writeReg .w64 .rdx (signFill (s.readReg .w64 .rax)), by simp [exec], rfl,
+      h.setReg (by decide) (HasTy.int _)⟩
+  | @movsxdRM d src hd hr =>
+    obtain ⟨a, ha⟩ := ReadOk.readRM (w := .w32) hr h
+    exact ⟨s.setReg d (a.signExtend 64), by simp [exec, ha], rfl, h.setReg hd (HasTy.int _)⟩
+  | @cmovRM c w d src hd hr hdec =>
+    obtain ⟨a, ha⟩ := hr.readRM h
+    obtain ⟨b, hb⟩ := hdec _ h.flags
+    exact ⟨s.writeReg w d (if b then a else s.readReg w d),
+      by simp [exec, ha, hb, Result.ofOption], rfl, h.setReg hd (HasTy.int _)⟩
+  | @setccRM Γ₁ c dst hw hdec =>
+    obtain ⟨b, hb⟩ := hdec _ h.flags
+    obtain ⟨s', hs', hrip', hwt⟩ := hw.writeRM8 h hΨ (if b then 1#8 else 0#8)
+    exact ⟨s', by simp [exec, hb, Result.ofOption, hs'], hrip', hwt⟩
+  | @movzxRM w d sw src hd hr =>
+    obtain ⟨a, ha⟩ := hr.readNarrow h
+    exact ⟨s.writeReg w d (a.setWidth w.bits), by simp [exec, ha], rfl,
+      h.setReg hd (HasTy.int _)⟩
+  | @movsxRM w d sw src hd hr =>
+    obtain ⟨a, ha⟩ := hr.readNarrow h
+    exact ⟨s.writeReg w d (a.signExtend w.bits), by simp [exec, ha], rfl,
+      h.setReg hd (HasTy.int _)⟩
+  | @loadInt w d m hd hr =>
+    obtain ⟨a, ha⟩ := hr.readRM h
+    simp only [State.readRM] at ha
+    exact ⟨s.writeReg w d a, by simp [exec, Operands.src, Operands.dst, State.writeRM, ha], rfl,
+      h.setReg hd (HasTy.int _)⟩
+  | @storeInt Γ₁ w dst src hw =>
+    obtain ⟨s', hs', hrip', hwt⟩ := hw.writeRM h hΨ (s.readReg w src)
+    exact ⟨s', by simp [exec, Operands.src, Operands.dst, hs'], hrip', hwt⟩
+  | @storeImm Γ₁ w dst imm hw =>
+    obtain ⟨s', hs', hrip', hwt⟩ := hw.writeRM h hΨ (imm.signExtend w.bits)
+    exact ⟨s', by simp [exec, Operands.src, Operands.dst, hs'], hrip', hwt⟩
+  | @store8RM Γ₁ m src hw =>
+    obtain ⟨s', hs', hrip', hwt⟩ := hw.writeRM8 h hΨ ((s.getReg src).setWidth 8)
+    simp only [State.writeRM8] at hs'
+    exact ⟨s', by simp [exec, hs'], hrip', hwt⟩
   | nop =>
     refine ⟨s, ?_, rfl, h⟩
     simp [exec]
@@ -1008,6 +1377,25 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr} (ht : Strai
       h.setFlags (P := (· = Flags.ofResult (a &&& b) false false)) rfl⟩
     simp [exec, State.readRM, State.readRI, State.readReg_w64, hp, hp']
 
+/-- A straight-line typed instruction, run in a matching state, has an
+acceptable outcome, and if it continues, it continues to the next instruction
+in a state matching the rule's result context. (A divide may instead raise a
+divide error.) -/
+theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr} (ht : Straight next Γ i Γ')
+    (hΨ : Ψ.WF) {s : State} (h : WellTyped fetch sys Ψ ix Γ s) (hrip : s.rip = next) :
+    (exec sys i s).isSafe = true ∧
+      ∀ s', exec sys i s = .next s' → s'.rip = s.rip ∧ WellTyped fetch sys Ψ ix Γ' s' := by
+  cases hd : i.isDivide
+  · obtain ⟨s', he, hr, hw⟩ := ht.sound_next hd hΨ h hrip
+    rw [he]
+    refine ⟨rfl, fun s'' heq => ?_⟩
+    cases heq
+    exact ⟨hr, hw⟩
+  · cases ht with
+    | divRM hr => exact mulDiv_sound hr h
+    | idivRM hr => exact mulDiv_sound hr h
+    | _ => simp [Instr.isDivide] at hd
+
 /-! ## All typed instructions -/
 
 /-- What the induction on step count provides: every program point is safe
@@ -1033,10 +1421,9 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
   induction ht generalizing s with
   | weaken hsem _ ihw => exact ihw (hsem _ _ h) hrip
   | straight hst hacc =>
-    obtain ⟨s', he, hr, hw⟩ := hst.sound hΨ h hrip
-    rw [he]
-    refine ⟨rfl, fun s'' heq => ?_⟩
-    cases heq
+    obtain ⟨hsafe, hnext⟩ := hst.sound hΨ h hrip
+    refine ⟨hsafe, fun s' heq => ?_⟩
+    obtain ⟨hr, hw⟩ := hnext s' heq
     exact ih.accepts hacc (hr.trans hrip) hw
   | @jmp Γ d hacc =>
     refine ⟨rfl, fun s' heq => ?_⟩
@@ -1108,6 +1495,50 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
     refine ⟨hsafe, fun s' heq => ?_⟩
     obtain ⟨hr, hw⟩ := hnext s' heq
     exact ih.accepts hacc (hr.trans hrip) hw
+  | @jmpInd Γ Δ rm hcode hsub =>
+    obtain ⟨v, hv, hp⟩ := hcode.sound h
+    rw [hasTy_code] at hp
+    have he : exec sys (.jmp (.ind rm)) s = .next { s with rip := v } := by
+      simp [exec, hv]
+    rw [he]
+    refine ⟨rfl, fun s' heq => ?_⟩
+    cases heq
+    exact hp n (Nat.lt_succ_self n) _ rfl
+      (((h.sub hsub).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
+  | @callInd Γ Δ ret rm m hcode hroom hret hsub =>
+    obtain ⟨v, hv, hp⟩ := hcode.sound h
+    rw [hasTy_code] at hp
+    have hw : (s.setReg .rsp (s.getReg .rsp - 8)).canWrite (s.getReg .rsp - 8) 8 = true :=
+      h.canWrite_push hroom
+    have hra : HasTy fetch sys Ψ (n + 1) (.code ret) s.rip := by
+      rw [hasTy_code]
+      intro k hk t ht hwt
+      exact ih k (by omega) next ret hret t (ht.trans hrip) hwt
+    have he : exec sys (.call (.ind rm)) s
+        = .next { (s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip with
+            rip := v } := by
+      have hpush : s.push64 s.rip
+          = .next ((s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip) := by
+        simp only [State.push64, State.write64, hw, ite_true]
+      simp [exec, hv, hpush]
+    have hw' := h.push hΨ hroom hra
+    generalize (s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip = s₁
+      at he hw'
+    rw [he]
+    refine ⟨rfl, fun s' heq => ?_⟩
+    cases heq
+    exact hp n (Nat.lt_succ_self n) _ rfl
+      (((hw'.sub hsub).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
+  | @unreachable Γ i hun => exact absurd h (hun _ _)
+  | @codePtr Γ Δ i r a hr hΓ hΦ _ ihc =>
+    have hp := h.regs r hr
+    rw [hΓ, hasTy_eq] at hp
+    -- By the induction hypothesis the code at `a` is safe in any state matching `Δ`.
+    have hv : HasTy fetch sys Ψ (n + 1) (.code Δ) (s.getReg r) := by
+      rw [hasTy_code]
+      intro k hk t ht hwt
+      exact ih k (by omega) a Δ hΦ t (ht.trans hp) hwt
+    exact ihc (h.retype hr hv) hrip
 
 /-! ## Programs -/
 
