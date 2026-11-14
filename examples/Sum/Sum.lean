@@ -53,12 +53,12 @@ inductive At : Label → Ctx → Prop
     (sumSig n).CallerOk saved ret rest room → At .done ((sumSig n).exit saved ret rest room)
 
 /-- The code typing: those contexts, at the addresses of their labels. -/
-def Φ : CodeTy := .ofLabels code 0 At
+def Φ : CodeTy := .ofLabels code base At
 
 def arrayLayout : Layout := ⟨List.replicate 5 .int, false⟩
 
 /-- One memory block: the array. -/
-def blocks : List (BitVec 64 × Layout) := [(0x1000, arrayLayout)]
+def blocks : List (BitVec 64 × Layout) := [(dataBase, arrayLayout)]
 
 def Ψ : MemTy := .ofList blocks
 
@@ -86,7 +86,7 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     -- lea rdi, [rip + array]; mov esi, 5
     ty_steps
     -- `rdi` holds exactly the array's address, so it is a pointer to its first element
-    refine BlockOk.castPtr (r := .rdi) (base := 0x1000) (i := 0) (w := false) (by decide) rfl rfl
+    refine BlockOk.castPtr (r := .rdi) (base := dataBase) (i := 0) (w := false) (by decide) rfl rfl
       (by decide) (fun h => absurd h (by decide)) ?_
     ty_call (sumSig 5)
   | afterCall => ty_block
@@ -113,24 +113,90 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
 
 theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 
-theorem startOk : StateOk Φ fetch linux Ψ start := by
-  refine ⟨_, .intro At.start, fun n => Matches.ofCheck (by decide) ?_ trivial ?_ ?_⟩
-  · intro r _
-    exact HasTy.int _
-  · intro i τ h; simp [fin] at h
-  · intro x hx i τ hi
-    simp only [blocks, List.mem_singleton] at hx
-    subst hx
-    have : τ = .int := by simpa [arrayLayout] using List.mem_of_getElem? hi
-    subst this
-    exact HasTy.int _
+/-- What the program needs of the state it starts in. This is the contract
+with whatever loads it: for the ELF file, with the Linux kernel. -/
+structure Entry (s : State) : Prop where
+  /-- Execution starts at the entry point. -/
+  rip : s.rip = entry
+  /-- The program's bytes are in executable memory. -/
+  code : s.HasCode base image
+  /-- The array is readable. -/
+  data : s.canRead dataBase 40 = true
+  /-- There is room to push one return address. -/
+  stack : s.canWrite (s.getReg .rsp - 8) 8 = true
+  /-- That stack slot is not part of the array. -/
+  apart : Disjoint (s.getReg .rsp - 8) 8 dataBase 40
+
+/-- Any state meeting the entry contract is well typed. Nothing is assumed
+about the registers other than `rsp`, or about the contents of the array. -/
+theorem Entry.stateOk {s : State} (h : Entry s) : StateOk Φ fetch linux Ψ s := by
+  refine ⟨fin, by rw [h.rip]; exact .intro At.start, fun n => ?_⟩
+  have hblock : ∀ a l, Ψ a = some l → a = dataBase ∧ l = arrayLayout := by
+    intro a l hl
+    have := MemTy.mem_of_ofList hl
+    simpa [blocks] using this
+  exact {
+    regs := fun _ _ => HasTy.int _
+    flags := trivial
+    stackPerm := h.stack
+    stackSize_lt := by decide
+    stack := fun i τ hi => by simp [fin] at hi
+    heapPerm := fun a l hl => by
+      obtain ⟨rfl, rfl⟩ := hblock a l hl
+      exact ⟨h.data, fun hw => absurd hw (by decide)⟩
+    heap := fun a l hl i τ hi => by
+      obtain ⟨rfl, rfl⟩ := hblock a l hl
+      have : τ = .int := by simpa [arrayLayout] using List.mem_of_getElem? hi
+      subst this
+      exact HasTy.int _
+    stackHeap := fun a l hl => by
+      obtain ⟨rfl, rfl⟩ := hblock a l hl
+      exact h.apart }
 
 /-! ## Safety -/
 
-/-- The program never gets stuck, never page-faults and never executes an
-invalid opcode. In particular every array access is in bounds. -/
+/-- **From any state meeting the entry contract, the program is safe on the
+machine that fetches instructions by decoding memory.** It never gets stuck,
+never page-faults and never executes an invalid opcode; in particular every
+array access is in bounds. -/
+theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
+  .of_safe linux_frame (Asm.loaded h.code)
+    (soundness_blocks blocksOk memOk (linuxOk fetch Ψ) h.stateOk)
+
+/-- The program is 60 bytes long. -/
+theorem image_length : image.length = 60 := by decide
+
+theorem base_eq : base = 0x4000b0 := by decide
+
+theorem dataBase_eq : dataBase = 0x401000 := by decide
+
+theorem start_rsp : start.getReg .rsp = 0x80000000 := by decide
+
+/-- The starting state used by the simulator meets the entry contract. The
+facts about the array and the stack are checked on the state before the
+program is loaded, and carried over because the program is nowhere near them. -/
+theorem start_entry : Entry start where
+  rip := rfl
+  code := (State.hasCode_loadCode prepared base image (by rw [image_length]; decide)).congr rfl rfl
+  data := by
+    rw [State.canRead_congr (s := prepared.loadCode base image) (t := start) rfl,
+      State.canRead_loadCode (fun k hk => by rw [image_length, base_eq, dataBase_eq]; bv_omega)]
+    decide
+  stack := by
+    rw [start_rsp, State.canWrite_congr (s := prepared.loadCode base image) (t := start) rfl,
+      State.canWrite_loadCode (fun k hk => by rw [image_length, base_eq]; bv_omega)]
+    decide
+  apart := by
+    rw [start_rsp, dataBase_eq]
+    decide
+
+/-- The simulator's run is safe, with instructions decoded from memory. -/
+theorem safeMem : SafeMem linux start :=
+  safeMem_of_entry start_entry
+
+/-- It is also safe on the table machine, which is what the type system reasons about. -/
 theorem safe : Safe fetch linux start :=
-  soundness_blocks blocksOk memOk (linuxOk fetch Ψ) startOk
+  soundness_blocks blocksOk memOk (linuxOk fetch Ψ) start_entry.stateOk
 
 /-- So running it for any number of steps gives an acceptable outcome. -/
 theorem run_safe (n : Nat) : (run fetch linux n start).isSafe = true :=
