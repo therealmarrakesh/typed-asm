@@ -164,6 +164,15 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i18) Γ := by ty_block
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i19) Γ := by ty_step
 
+/-- `rdi` holds a pointer to three integers, or null. -/
+def maybe : Ctx :=
+  ⟨fun r => if r = .rdi then .nullable (.ptr [.int, .int, .int] false 0) else .int, [], 0, Flags.Any⟩
+
+/-- error: at address 3: cannot type `mov rax, qword ptr [rdi+16]` in the current context
+• loadField: `rdi` must hold a pointer, but its type is `read-only pointer to [int, int, int] or null`: it must be tested for null first, and `ty_null` then gives the two cases -/
+#guard_msgs in
+example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i1) maybe := by ty_step
+
 /-! ## Control transfers
 
 A small labelled program, for jumps and returns the tactic refuses. -/

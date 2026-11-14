@@ -14,12 +14,18 @@ variable {Φ : CodeTy} {Ψ : MemTy} {fetch : Fetch} {sys : Syscall} {ix : Nat}
 
 theorem HasTy.sub {τ υ : Ty} {v : BitVec 64} (h : Sub τ υ) (hv : HasTy fetch sys Ψ ix τ v) :
     HasTy fetch sys Ψ ix υ v := by
-  cases h with
+  induction h generalizing v with
   | refl => exact hv
   | int => exact HasTy.int v
   | readOnly fields w index =>
     obtain ⟨a, l, hl, hf, hw, hva⟩ := hasTy_ptr.mp hv
     exact hasTy_ptr.mpr ⟨a, l, hl, hf, fun _ => hw rfl, hva⟩
+  | refReadOnly tag w index =>
+    obtain ⟨a, l, hl, ht, hw, hva⟩ := hasTy_ref.mp hv
+    exact hasTy_ref.mpr ⟨a, l, hl, ht, fun _ => hw rfl, hva⟩
+  | nullable _ ih => exact hasTy_nullable.mpr (.inr (ih hv))
+  | null τ => exact hasTy_nullable.mpr (.inl (hasTy_eq.mp hv))
+  | nullableMono _ ih => exact hasTy_nullable.mpr ((hasTy_nullable.mp hv).imp id ih)
 
 theorem SubList.length_eq {σ ρ : List Ty} (h : SubList σ ρ) : σ.length = ρ.length := by
   induction h with

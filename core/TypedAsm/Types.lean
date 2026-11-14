@@ -43,6 +43,14 @@ inductive Ty
   called by any caller that meets the signature, whatever that caller's own
   stack and whatever it keeps in the preserved registers. -/
   | fn (args results : Reg → Ty) (preserved : Reg → Bool) (need : Nat)
+  /-- The address of field `index` of a memory block of the kind named
+  `tag`. The type does not spell out the block's fields, so a field of a
+  block may have this type with the block's own tag: that is how a record
+  points to another of its kind. To use the pointer it is first opened into
+  a `ptr`, with the fields that blocks of that kind have. -/
+  | ref (tag : Nat) (writable : Bool) (index : Nat)
+  /-- Zero, or a value of type `τ`. -/
+  | nullable (τ : Ty)
 
 /-- A description of the machine at one program point. -/
 abbrev Ctx := CtxOf Ty
@@ -51,6 +59,8 @@ abbrev Ctx := CtxOf Ty
 structure Layout where
   fields : List Ty
   writable : Bool
+  /-- The kind of block this is, for blocks that `Ty.ref` pointers refer to. -/
+  tag : Option Nat
 
 /-- The size of a block in bytes. -/
 def Layout.size (l : Layout) : Nat :=
@@ -85,6 +95,13 @@ inductive Sub : Ty → Ty → Prop
   /-- A writable pointer may be used as a read-only one. -/
   | readOnly (fields : List Ty) (writable : Bool) (index : Nat) :
     Sub (.ptr fields true index) (.ptr fields writable index)
+  | refReadOnly (tag : Nat) (writable : Bool) (index : Nat) :
+    Sub (.ref tag true index) (.ref tag writable index)
+  /-- A value may be used where it or zero is expected. -/
+  | nullable {τ υ : Ty} : Sub τ υ → Sub τ (.nullable υ)
+  /-- So may zero. -/
+  | null (τ : Ty) : Sub (.eq 0) (.nullable τ)
+  | nullableMono {τ υ : Ty} : Sub τ υ → Sub (.nullable τ) (.nullable υ)
 
 /-- Subtyping slot by slot, for two stacks of the same length. -/
 inductive SubList : List Ty → List Ty → Prop
@@ -215,6 +232,10 @@ def HasTy (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) : Nat → Ty → BitVec 6
   | n, .code pre, v =>
     ∀ k, (hk : k < n) → ∀ s : State, s.rip = v →
       Matches (fun τ w => HasTy fetch sys Ψ k τ w) Ψ pre s → SafeN fetch sys k s
+  | _, .ref tag writable index, v =>
+    ∃ a l, Ψ a = some l ∧ l.tag = some tag ∧ (writable = true → l.writable = true) ∧
+      v = a + BitVec.ofNat 64 (8 * index)
+  | n, .nullable τ, v => v = 0 ∨ HasTy fetch sys Ψ n τ v
   | n, .fn args results preserved need, v =>
     ∀ k, (hk : k < n) → ∀ (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat),
       FnSig.CallerOk ⟨args, results, preserved, need⟩ saved ret rest room →
@@ -222,7 +243,7 @@ def HasTy (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) : Nat → Ty → BitVec 6
       Matches (fun τ w => HasTy fetch sys Ψ k τ w) Ψ
         (FnSig.entry ⟨args, results, preserved, need⟩ saved ret rest room) s →
       SafeN fetch sys k s
-termination_by n => n
+termination_by n τ => (n, τ)
 
 /-- `WellTyped fetch sys Ψ n Γ s`: the state `s` matches the context `Γ`, at step count `n`. -/
 abbrev WellTyped (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (n : Nat) (Γ : Ctx) (s : State) :
@@ -250,6 +271,16 @@ theorem hasTy_code {pre : Ctx} {v : BitVec 64} :
       ∀ k, k < n → ∀ s : State, s.rip = v → WellTyped fetch sys Ψ k pre s → SafeN fetch sys k s := by
   rw [HasTy]
 
+theorem hasTy_ref {tag : Nat} {writable : Bool} {index : Nat} {v : BitVec 64} :
+    HasTy fetch sys Ψ n (.ref tag writable index) v ↔
+      ∃ a l, Ψ a = some l ∧ l.tag = some tag ∧ (writable = true → l.writable = true) ∧
+        v = a + BitVec.ofNat 64 (8 * index) := by
+  simp [HasTy]
+
+theorem hasTy_nullable {τ : Ty} {v : BitVec 64} :
+    HasTy fetch sys Ψ n (.nullable τ) v ↔ v = 0 ∨ HasTy fetch sys Ψ n τ v := by
+  rw [HasTy]
+
 /-- A value is a pointer to a function if entering it, from any caller that
 meets the signature, is safe for any smaller number of steps. -/
 theorem hasTy_fn {sig : FnSig} {v : BitVec 64} :
@@ -263,6 +294,10 @@ theorem hasTy_fn {sig : FnSig} {v : BitVec 64} :
 theorem HasTy.mono {m : Nat} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys Ψ n τ v)
     (hle : m ≤ n) : HasTy fetch sys Ψ m τ v := by
   cases τ with
+  | ref tag writable index => exact hasTy_ref.mpr (hasTy_ref.mp h)
+  | nullable τ =>
+    rw [hasTy_nullable] at h ⊢
+    exact h.imp id (fun h' => HasTy.mono h' hle)
   | int => exact HasTy.int v
   | eq x => exact hasTy_eq.mpr (hasTy_eq.mp h)
   | ptr fields writable index => exact hasTy_ptr.mpr (hasTy_ptr.mp h)
@@ -273,6 +308,7 @@ theorem HasTy.mono {m : Nat} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys Ψ n
     have e : Ty.fn args results preserved need = FnSig.ty ⟨args, results, preserved, need⟩ := rfl
     rw [e, hasTy_fn] at h ⊢
     exact fun k hk => h k (by omega)
+termination_by sizeOf τ
 
 /-- Matching a context carries over to any weaker notion of "has type". -/
 theorem Matches.imp {H H' : Ty → BitVec 64 → Prop} {Γ : Ctx} {s : State}

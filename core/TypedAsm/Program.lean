@@ -143,6 +143,53 @@ theorem BlockOk.name {a : BitVec 64} {Γ : Ctx} {r : Reg} (hr : r ≠ .rsp)
   .cover (Γ' := fun v => Γ.setReg r (.eq v))
     (fun _ s h => ⟨s.getReg r, h.retype hr (hasTy_eq.mpr rfl)⟩) hrest
 
+/-! ## Blocks of a kind, and values that may be null -/
+
+/-- Every block of kind `tag` has these fields. A pointer of type `Ty.ref`
+says only which kind of block it points to; this is the fact that says what
+such a block contains. It is a property of the memory typing, proved once
+for a program. -/
+def MemTy.TagFields (Ψ : MemTy) (tag : Nat) (fields : List Ty) : Prop :=
+  ∀ a l, Ψ a = some l → l.tag = some tag → l.fields = fields
+
+/-- A pointer to a block of a kind may be used as a pointer to a block with
+that kind's fields. -/
+theorem BlockOk.openRef {a : BitVec 64} {Γ : Ctx} {r : Reg} {tag : Nat} {w : Bool} {i : Nat}
+    {fields : List Ty} (hr : r ≠ .rsp) (hΓ : Γ.regs r = .ref tag w i)
+    (ht : Ψ.TagFields tag fields)
+    (hrest : BlockOk Φ fetch sys Ψ a (Γ.setReg r (.ptr fields w i))) : BlockOk Φ fetch sys Ψ a Γ :=
+  .weaken (fun n s h => h.retype hr (by
+    have hp := h.regs r hr
+    rw [hΓ] at hp
+    obtain ⟨b, l, hl, htag, hw, hv⟩ := hasTy_ref.mp hp
+    exact hasTy_ptr.mpr ⟨b, l, hl, ht b l hl htag, hw, hv⟩)) hrest
+
+/-- A register holding exactly the address of a field of a block of a kind
+may be treated as a pointer to a block of that kind. -/
+theorem BlockOk.castRef {a : BitVec 64} {Γ : Ctx} {r : Reg} {v base : BitVec 64} {l : Layout}
+    {tag i : Nat} {w : Bool} (hr : r ≠ .rsp) (hΓ : Γ.regs r = .eq v) (hl : Ψ base = some l)
+    (htag : l.tag = some tag) (hv : v = base + BitVec.ofNat 64 (8 * i))
+    (hw : w = true → l.writable = true)
+    (hrest : BlockOk Φ fetch sys Ψ a (Γ.setReg r (.ref tag w i))) : BlockOk Φ fetch sys Ψ a Γ :=
+  .weaken (fun n s h => h.retype hr (hasTy_ref.mpr ⟨base, l, hl, htag, hw, by
+    have := h.regs r hr
+    rw [hΓ, hasTy_eq] at this
+    rw [this, hv]⟩)) hrest
+
+/-- A value that may be null is null or it is not: the rest of the block is
+typed once for each case. -/
+theorem BlockOk.splitNull {a : BitVec 64} {Γ : Ctx} {r : Reg} {τ : Ty} (hr : r ≠ .rsp)
+    (hΓ : Γ.regs r = .nullable τ) (hnull : BlockOk Φ fetch sys Ψ a (Γ.setReg r (.eq 0)))
+    (hvalue : BlockOk Φ fetch sys Ψ a (Γ.setReg r τ)) : BlockOk Φ fetch sys Ψ a Γ :=
+  .cover (ι := Bool) (Γ' := fun b => if b then Γ.setReg r (.eq 0) else Γ.setReg r τ)
+    (fun n s h => by
+      have hp := h.regs r hr
+      rw [hΓ, hasTy_nullable] at hp
+      rcases hp with h0 | hτ
+      · exact ⟨true, h.retype hr (hasTy_eq.mpr h0)⟩
+      · exact ⟨false, h.retype hr hτ⟩)
+    (fun b => by cases b <;> assumption)
+
 /-! ## Contexts attached to labels -/
 
 section Labels

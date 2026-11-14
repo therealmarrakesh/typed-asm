@@ -32,14 +32,27 @@ namespace TypedAsm
 theorem Sub.rfl {τ : Ty} : Sub τ τ := .refl τ
 
 theorem Sub.trans {τ υ φ : Ty} (h₁ : Sub τ υ) (h₂ : Sub υ φ) : Sub τ φ := by
-  cases h₁ with
-  | refl => exact h₂
-  | int => cases h₂ <;> exact .int _
+  induction h₂ generalizing τ with
+  | refl => exact h₁
+  | int => exact .int _
   | readOnly fields w index =>
-    cases h₂ with
+    cases h₁ with
     | refl => exact .readOnly fields w index
-    | int => exact .int _
-    | readOnly => exact .readOnly fields _ index
+    | readOnly => exact .readOnly fields w index
+  | refReadOnly tag w index =>
+    cases h₁ with
+    | refl => exact .refReadOnly tag w index
+    | refReadOnly => exact .refReadOnly tag w index
+  | nullable _ ih => exact .nullable (ih h₁)
+  | null τ' =>
+    cases h₁ with
+    | refl => exact .null τ'
+  | nullableMono h ih =>
+    cases h₁ with
+    | refl => exact .nullableMono h
+    | nullable h' => exact .nullable (ih h')
+    | null => exact .null _
+    | nullableMono h' => exact .nullableMono (ih h')
 
 theorem SubList.refl : ∀ σ : List Ty, SubList σ σ
   | [] => .nil

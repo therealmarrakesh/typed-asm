@@ -47,7 +47,7 @@ inductive At : Label → Ctx → Prop
 /-- The code typing: those contexts, at the addresses of their labels. -/
 def Φ : CodeTy := .ofLabels code base At
 
-def tableLayout : Layout := ⟨[unary.ty, unary.ty], false⟩
+def tableLayout : Layout := ⟨[unary.ty, unary.ty], false, none⟩
 
 /-- One memory block: the table. -/
 def blocks : List (BitVec 64 × Layout) := [(dataBase, tableLayout)]

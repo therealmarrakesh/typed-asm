@@ -224,12 +224,19 @@ carries on, so a `first` would not move on to its next alternative. Instead
 each side condition becomes a goal and is proved by a following tactic. -/
 
 /-- Proves `Sub τ υ` when it holds for a structural reason. -/
-macro "ty_sub" : tactic =>
-  `(tactic| first
-    | exact Sub.refl _
-    | exact Sub.int _
-    | exact Sub.readOnly _ _ _
-    | (refine Sub.of_eq ?_; first | assumption | rfl))
+syntax "ty_sub" : tactic
+
+macro_rules
+  | `(tactic| ty_sub) =>
+    `(tactic| first
+      | exact Sub.refl _
+      | exact Sub.int _
+      | exact Sub.readOnly _ _ _
+      | exact Sub.refReadOnly _ _ _
+      | exact Sub.null _
+      | (refine Sub.nullableMono ?_; ty_sub)
+      | (refine Sub.nullable ?_; ty_sub)
+      | (refine Sub.of_eq ?_; first | assumption | rfl))
 
 /-- Compares register types one register at a time. Registers it cannot
 settle are left as goals. -/
@@ -376,6 +383,9 @@ integer, for example one just loaded from memory, before testing it or
 computing with it, so that what is learnt about the value can be used. -/
 syntax "ty_name " term " as " ident : tactic
 
+syntax "ty_open " term " using " term : tactic
+syntax "ty_null " term : tactic
+
 /-! ## Choosing the rule from the instruction
 
 The tactics below are metaprograms. They look at the instruction, try only
@@ -426,6 +436,41 @@ def nameRegister (r : Term) (v : Ident) : TacticM Unit := do
 
 elab_rules : tactic
   | `(tactic| ty_name $r as $v) => nameRegister r v
+
+/-- Applies a rule that turns the main block goal into one or more block
+goals, proving its side condition that a register is not `rsp`. The new
+block goals come back simplified and in order. -/
+def refineBlocks (tac : TSyntax `tactic) : TacticM Unit := do
+  let goal ← getMainGoal
+  let others := (← getGoals).drop 1
+  setGoals [goal]
+  evalTactic tac
+  let mut blocks : List MVarId := []
+  for g in ← getGoals do
+    if ← g.isAssigned then continue
+    let t ← instantiateMVars (← g.getType)
+    if t.isAppOf ``BlockOk then
+      setGoals [g]
+      evalTactic (← `(tactic| ty_normalize))
+      blocks := blocks ++ (← getGoals)
+    else
+      setGoals [g]
+      evalTactic (← `(tactic| decide))
+  setGoals (blocks ++ others)
+
+/-- `ty_open r using h`: register `r` holds a pointer to a block of some
+kind, and `h` says what fields blocks of that kind have. From here on `r`
+is an ordinary pointer to those fields, which can be loaded from and stored to. -/
+elab_rules : tactic
+  | `(tactic| ty_open $r using $h) => do
+    refineBlocks (← `(tactic| refine BlockOk.openRef (r := $r) ?_ rfl $h ?_))
+
+/-- `ty_null r`: register `r` holds a value that may be null. Two goals
+follow: the rest of the block with `r` exactly zero, then with `r` a value
+of the type itself. A test of `r` then decides in each which way it goes. -/
+elab_rules : tactic
+  | `(tactic| ty_null $r) => do
+    refineBlocks (← `(tactic| refine BlockOk.splitNull (r := $r) ?_ rfl ?_ ?_))
 
 /-- The rules whose premises are proved in order, stopping at the first that
 fails: those for operands, whose premises each depend on the ones before. -/
@@ -614,6 +659,13 @@ private partial def ppTy (e : Expr) : MetaM String := do
   if e.isAppOfArity ``Ty.eq 1 then return s!"exactly {← ppClean e.appArg!}"
   if e.isAppOfArity ``Ty.code 1 then return "code pointer"
   if e.isAppOf ``Ty.fn || e.isAppOf ``FnSig.ty then return "function pointer"
+  if e.isAppOfArity ``Ty.nullable 1 then return s!"{← ppTy e.appArg!} or null"
+  if e.isAppOfArity ``Ty.ref 3 then
+    let args := e.getAppArgs
+    let kind := if args[1]!.isConstOf ``Bool.true then "pointer" else "read-only pointer"
+    let index ← ppClean args[2]!
+    return s!"{kind} to a block of kind {← ppClean args[0]!}" ++
+      (if index == "0" then "" else s!", at field {index}")
   if e.isAppOfArity ``Ty.ptr 3 then
     let args := e.getAppArgs
     let kind := if args[1]!.isConstOf ``Bool.true then "pointer" else "read-only pointer"
@@ -661,7 +713,14 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
         else if rhs.isAppOf ``Ty.code then "a code pointer"
         else if rhs.isAppOf ``Ty.fn || rhs.isAppOf ``FnSig.ty then "a function pointer"
         else "a value of another type"
-      return m!"`{reg}` must hold {wanted}, but its type is `{actual}`"
+      let held ← reduce lhs
+      let hint :=
+        if held.isAppOf ``Ty.nullable then
+          ": it must be tested for null first, and `ty_null` then gives the two cases"
+        else if held.isAppOf ``Ty.ref && rhs.isAppOf ``Ty.ptr then
+          ": `ty_open` turns it into a pointer to that kind's fields"
+        else ""
+      return m!"`{reg}` must hold {wanted}, but its type is `{actual}`{hint}"
     if lhs.isAppOf ``MemTy.locate then
       return m!"the address is not inside any memory block"
     if lhs.isAppOf ``AluOp.readsCarry then
@@ -1107,6 +1166,19 @@ private def introBranch : TacticM Unit := do
   let subst := mkIdent `rfl
   evalTactic (← `(tactic| first | rintro f $subst:ident $hcond:ident | intro f _ $hcond:ident))
 
+/-- Closes a goal reached under an assumption about a condition that the
+exactly known flags contradict. Returns whether it did. -/
+private def closeIfImpossible (g : MVarId) : TacticM Bool := do
+  let saved ← saveState
+  try
+    setGoals [g]
+    Tactic.withoutRecover do
+      evalTactic (← `(tactic| (refine absurd $(mkIdent `hcond) ?_; decide)))
+    return (← getUnsolvedGoals).isEmpty
+  catch _ =>
+    saved.restore
+    return false
+
 /-- Shows the flags decide a condition. -/
 private def decideCond : TacticM Unit := do
   let subst := mkIdent `rfl
@@ -1232,8 +1304,10 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
     catch _ =>
       throwError "`{instr.toAsm}`: the flags known here do not decide the condition"
     let [takenAcc] ← runOn taken introBranch | throwError "unexpected goals"
-    let leftTaken ← proveAccepts takenAcc
+    -- A side that the exactly known flags rule out needs nothing more.
+    let leftTaken ← if ← closeIfImpossible takenAcc then pure [] else proveAccepts takenAcc
     let [rest'] ← runOn rest introBranch | throwError "unexpected goals"
+    if ← closeIfImpossible rest' then return .done leftTaken
     return .continues rest' leftTaken
   | .jmp (.ind _) =>
     let before ← saveState
