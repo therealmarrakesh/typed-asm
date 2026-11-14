@@ -45,25 +45,25 @@ inductive Label
 
 def code : List (Asm Label) := [
   .label .start,
-  .ins (.mov .w64 (.rm_r (.reg .rbx) .rdi)) 3,
+  .ins (.mov .w64 (.rm_r (.reg .rbx) .rdi)),
   .call .swap,
   .label .afterFirst,
-  .ins (.push .rbx) 1,
-  .ins (.mov .w64 (.rm_r (.reg .rdi) .rbx)) 3,
+  .ins (.push .rbx),
+  .ins (.mov .w64 (.rm_r (.reg .rdi) .rbx)),
   .call .swap,
   .label .afterSecond,
-  .ins (.pop .rdi) 1,
-  .ins (.mov .w32 (.rm_i (.reg .rax) 60)) 5,
-  .ins (.alu .xor .w32 (.rm_r (.reg .rdi) .rdi)) 2,
-  .ins .syscall 2,
+  .ins (.pop .rdi),
+  .ins (.mov .w32 (.rm_i (.reg .rax) 60)),
+  .ins (.alu .xor .w32 (.rm_r (.reg .rdi) .rdi)),
+  .ins .syscall,
   .label .spin,
   .jmp .spin,
   .label .swap,
-  .ins (.mov .w64 (.r_m .rax (field 0))) 3,
-  .ins (.mov .w64 (.r_m .rcx (field 8))) 4,
-  .ins (.mov .w64 (.rm_r (.mem (field 0)) .rcx)) 3,
-  .ins (.mov .w64 (.rm_r (.mem (field 8)) .rax)) 4,
-  .ins .ret 1]
+  .ins (.mov .w64 (.r_m .rax (field 0))),
+  .ins (.mov .w64 (.r_m .rcx (field 8))),
+  .ins (.mov .w64 (.rm_r (.mem (field 0)) .rcx)),
+  .ins (.mov .w64 (.rm_r (.mem (field 8)) .rax)),
+  .ins .ret]
 
 def fetch : Fetch := Asm.fetch 0 code
 

@@ -44,26 +44,26 @@ inductive Label
 
 def code : List (Asm Label) := [
   .label .start,
-  .ins (.lea .w64 .rdi (.rip 0xff9)) 7,
-  .ins (.mov .w32 (.rm_i (.reg .rsi) 5)) 5,
+  .ins (.lea .w64 .rdi (.rip 0xff9)),
+  .ins (.mov .w32 (.rm_i (.reg .rsi) 5)),
   .call .sum,
   .label .afterCall,
-  .ins (.mov .w32 (.rm_r (.reg .rdi) .rax)) 2,
-  .ins (.mov .w32 (.rm_i (.reg .rax) 60)) 5,
-  .ins .syscall 2,
+  .ins (.mov .w32 (.rm_r (.reg .rdi) .rax)),
+  .ins (.mov .w32 (.rm_i (.reg .rax) 60)),
+  .ins .syscall,
   .label .spin,
   .jmp .spin,
   .label .sum,
-  .ins (.alu .xor .w32 (.rm_r (.reg .rax) .rax)) 2,
-  .ins (.test .w64 (.reg .rsi) (.reg .rsi)) 3,
+  .ins (.alu .xor .w32 (.rm_r (.reg .rax) .rax)),
+  .ins (.test .w64 (.reg .rsi) (.reg .rsi)),
   .jcc .e .done,
   .label .loop,
-  .ins (.alu .add .w64 (.r_m .rax (.sib (some .rdi) none 0))) 3,
-  .ins (.alu .add .w64 (.rm_i (.reg .rdi) 8)) 4,
-  .ins (.alu .sub .w64 (.rm_i (.reg .rsi) 1)) 4,
+  .ins (.alu .add .w64 (.r_m .rax (.sib (some .rdi) none 0))),
+  .ins (.alu .add .w64 (.rm_i (.reg .rdi) 8)),
+  .ins (.alu .sub .w64 (.rm_i (.reg .rsi) 1)),
   .jcc .ne .loop,
   .label .done,
-  .ins .ret 1]
+  .ins .ret]
 
 def fetch : Fetch := Asm.fetch 0 code
 
