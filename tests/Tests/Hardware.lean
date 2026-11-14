@@ -107,7 +107,9 @@ def single : List Instr :=
     (conds.flatMap fun c => [Instr.cmov c w .rax (.reg .rcx), .cmov c w .rax (.mem m0)])) ++
   [.cdq, .cqo, .movsxd .rax (.reg .rcx), .movsxd .rax (.mem (.sib (some .rbx) none 4)),
    .movAbs .rax 0x123456789abcdef0, .store8 (.sib (some .rbx) none 7) .rcx,
-   .store8 (.sib (some .rbx) (some (.r10, .s4)) 0) .rax, .nop] ++
+   .store8 (.sib (some .rbx) (some (.r10, .s4)) 0) .rax,
+   .store16 (.sib (some .rbx) none 6) .rcx,
+   .store16 (.sib (some .rbx) (some (.r10, .s4)) 0) .rdx, .nop] ++
   (conds.flatMap fun c =>
     [Instr.setcc c (.reg .rax), .setcc c (.mem (.sib (some .rbx) none 5))]) ++
   ([Reg.rax, .rcx, .rdx, .rbx, .rsp].map Instr.push) ++

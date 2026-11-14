@@ -66,7 +66,7 @@ def instrs : List Instr :=
       (aluOps.flatMap fun op => imms.map fun i => Instr.alu op w (.rm_i (.reg r) i)))) ++
   -- memory forms
   (mems.flatMap fun m => ([Reg.rax, .rsi, .r9].flatMap fun r =>
-    [Instr.store8 m r] ++ (widths.flatMap fun w => [
+    [Instr.store8 m r, .store16 m r] ++ (widths.flatMap fun w => [
       Instr.alu .add w (.rm_r (.mem m) r), .alu .sub w (.r_m r m), .mov w (.rm_r (.mem m) r),
       .mov w (.r_m r m), .test w (.mem m) (.reg r), .imul2 w r (.mem m),
       .imul3 w r (.mem m) (-7), .popcnt w r (.mem m), .movzx w r .w8 (.mem m),
