@@ -7,6 +7,7 @@ import TypedAsm.Safety
 import TypedAsm.Types
 import TypedAsm.Typing
 import TypedAsm.Soundness
+import TypedAsm.Asm
 
 /-!
 # TypedAsm
