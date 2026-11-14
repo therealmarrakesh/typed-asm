@@ -1,22 +1,20 @@
 import TypedAsm.Step
+import TypedAsm.Encode
 
 /-!
 # Programs with labels
 
 A program written as a list of lines, where jumps and calls name a label
-instead of giving a byte offset. The offsets are computed from the lengths
-of the instructions in between.
-
-Instruction lengths are still supplied by hand, since there is no encoder.
-Jumps and calls to labels use the lengths of their 32-bit-offset encodings.
+instead of giving a byte offset. Every length comes from the encoder, and
+the offsets are computed from the lengths of the instructions in between.
 -/
 
 namespace TypedAsm
 
 /-- One line of a program. `L` is the type of labels. -/
 inductive Asm (L : Type)
-  /-- An instruction and its length in bytes. -/
-  | ins (i : Instr) (len : Nat)
+  /-- An instruction. -/
+  | ins (i : Instr)
   /-- A label, naming the address of the next instruction. -/
   | label (l : L)
   | jmp (l : L)
@@ -27,13 +25,14 @@ namespace Asm
 
 variable {L : Type} [DecidableEq L]
 
-/-- The number of bytes a line occupies. -/
+/-- The number of bytes a line occupies. A jump or call has the same length
+whatever its offset, so the length is taken from one with offset zero. -/
 def len : Asm L → Nat
-  | .ins _ n => n
+  | .ins i => i.length
   | .label _ => 0
-  | .jmp _ => 5
-  | .jcc _ _ => 6
-  | .call _ => 5
+  | .jmp _ => (Instr.jmp (.rel 0)).length
+  | .jcc c _ => (Instr.jcc c 0).length
+  | .call _ => (Instr.call (.rel 0)).length
 
 /-- The address of a label, in a program whose first line is at address `a`. -/
 def find (l : L) : BitVec 64 → List (Asm L) → Option (BitVec 64)
@@ -58,11 +57,12 @@ def resolve (target : L → BitVec 64) : BitVec 64 → List (Asm L) → List (In
   | a, x :: rest =>
     let next := a + BitVec.ofNat 64 x.len
     match x with
-    | .ins i n => (i, BitVec.ofNat 64 n) :: resolve target next rest
+    | .ins i => (i, BitVec.ofNat 64 x.len) :: resolve target next rest
     | .label _ => resolve target next rest
-    | .jmp l => (.jmp (.rel (offset next (target l))), 5) :: resolve target next rest
-    | .jcc c l => (.jcc c (offset next (target l)), 6) :: resolve target next rest
-    | .call l => (.call (.rel (offset next (target l))), 5) :: resolve target next rest
+    | .jmp l => (.jmp (.rel (offset next (target l))), BitVec.ofNat 64 x.len) :: resolve target next rest
+    | .jcc c l => (.jcc c (offset next (target l)), BitVec.ofNat 64 x.len) :: resolve target next rest
+    | .call l =>
+      (.call (.rel (offset next (target l))), BitVec.ofNat 64 x.len) :: resolve target next rest
 
 /-- The instruction table of a program loaded at `base`. -/
 def fetch (base : BitVec 64) (prog : List (Asm L)) : Fetch :=
