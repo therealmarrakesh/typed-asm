@@ -1,4 +1,5 @@
 import TypedAsm.Instr
+import TypedAsm.Print
 import TypedAsm.Result
 import TypedAsm.State
 import TypedAsm.Memory
