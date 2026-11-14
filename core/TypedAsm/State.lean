@@ -36,6 +36,9 @@ inductive Perm
   | ro
   /-- Readable and writable. -/
   | rw
+  /-- Readable and executable: this is where code lives. There is no
+  permission that is both writable and executable, so code cannot be changed. -/
+  | rx
   deriving DecidableEq, Repr
 
 def Perm.readable : Perm → Bool
@@ -44,6 +47,10 @@ def Perm.readable : Perm → Bool
 
 def Perm.writable : Perm → Bool
   | .rw => true
+  | _ => false
+
+def Perm.executable : Perm → Bool
+  | .rx => true
   | _ => false
 
 theorem Perm.readable_of_writable {p : Perm} (h : p.writable = true) : p.readable = true := by

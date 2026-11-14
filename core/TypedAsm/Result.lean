@@ -62,6 +62,39 @@ def ofOption {α : Type} : Option α → Result α
 @[simp] theorem stuck_bind {α β : Type} (f : α → Result β) :
     (Result.stuck >>= f) = .stuck := rfl
 
+/-- `x.All P`: if the computation continues with a value, the value satisfies `P`. -/
+def All {α : Type} (P : α → Prop) : Result α → Prop
+  | .next a => P a
+  | _ => True
+
+@[simp] theorem all_next {α : Type} (P : α → Prop) (a : α) : (Result.next a).All P ↔ P a := Iff.rfl
+
+@[simp] theorem all_pure {α : Type} (P : α → Prop) (a : α) : (pure a : Result α).All P ↔ P a :=
+  Iff.rfl
+
+@[simp] theorem all_fault {α : Type} (P : α → Prop) (e : Fault) : (Result.fault e : Result α).All P :=
+  trivial
+
+@[simp] theorem all_stuck {α : Type} (P : α → Prop) : (Result.stuck : Result α).All P := trivial
+
+@[simp] theorem all_exit {α : Type} (P : α → Prop) (c : BitVec 32) :
+    (Result.exit c : Result α).All P := trivial
+
+/-- A property of the final value is a property of each step's value in turn. -/
+@[simp] theorem all_bind {α β : Type} (x : Result α) (f : α → Result β) (P : β → Prop) :
+    (x >>= f).All P ↔ x.All (fun a => (f a).All P) := by
+  cases x <;> rfl
+
+theorem All.of_forall {α : Type} {P : α → Prop} {x : Result α} (h : ∀ a, P a) : x.All P := by
+  cases x <;> first | exact h _ | trivial
+
+theorem All.mono {α : Type} {P Q : α → Prop} {x : Result α} (h : x.All Q) (hqp : ∀ a, Q a → P a) :
+    x.All P := by
+  cases x <;> first | exact hqp _ h | trivial
+
+theorem all_iff {α : Type} {P : α → Prop} {x : Result α} : x.All P ↔ ∀ a, x = .next a → P a := by
+  cases x <;> simp [All]
+
 end Result
 
 end TypedAsm
