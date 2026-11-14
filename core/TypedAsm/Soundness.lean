@@ -2117,8 +2117,8 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
     rw [he]
     refine ⟨rfl, fun s' heq => ?_⟩
     cases heq
-    exact hp n (Nat.lt_succ_self n) Γ.regs ret Γ.stack m ⟨hback, hneed⟩ _ rfl
-      (((hw'.sub (Δ := sig.entry Γ.regs ret Γ.stack m)
+    exact hp n (Nat.lt_succ_self n) (Γ.moveSp (-8)).regs ret Γ.stack m ⟨hback, hneed⟩ _ rfl
+      (((hw'.sub (Δ := sig.entry (Γ.moveSp (-8)).regs ret Γ.stack m)
         ⟨fun r hr => by
             show Sub ((Γ.moveSp (-8)).regs r) _
             rw [CtxOf.moveSp_regs hr]

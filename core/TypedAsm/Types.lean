@@ -94,6 +94,10 @@ def Ty.shift (τ : Ty) (d : BitVec 64) : Ty :=
   | .eq v => .eq (v + d)
   | _ => .int
 
+/-- Two moves of the stack pointer are one move by the sum. -/
+theorem Ty.shift_shift (τ : Ty) (a b : BitVec 64) : (τ.shift a).shift b = τ.shift (a + b) := by
+  cases τ <;> simp [Ty.shift, BitVec.add_assoc]
+
 /-! ## Subtyping -/
 
 /-- `Sub τ υ`: every value of type `τ` also has type `υ`. -/
@@ -160,9 +164,21 @@ def entry (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room 
 def exit (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) : Ctx :=
   ⟨sig.regsOut saved, .code ret :: rest, room, Flags.Any⟩
 
-/-- The context the caller is in once the function has returned. -/
+/-- The context the caller is in once the function has returned. The stack
+pointer is 8 above where it was at the function's `ret`, having popped the
+return address; so a function that leaves the stack pointer's type as it
+found it has, for its caller, put the stack pointer back. -/
 def returned (sig : FnSig) (saved : Reg → Ty) (rest : List Ty) (room : Nat) : Ctx :=
-  ⟨sig.regsOut saved, rest, room + 1, Flags.Any⟩
+  ⟨fun r => if r = .rsp then (sig.regsOut saved .rsp).shift 8 else sig.regsOut saved r, rest,
+    room + 1, Flags.Any⟩
+
+theorem returned_regs {sig : FnSig} {saved : Reg → Ty} {rest : List Ty} {room : Nat} {r : Reg}
+    (hr : r ≠ .rsp) : (sig.returned saved rest room).regs r = sig.regsOut saved r := by
+  simp only [returned, hr, ↓reduceIte]
+
+theorem returned_sp (sig : FnSig) (saved : Reg → Ty) (rest : List Ty) (room : Nat) :
+    (sig.returned saved rest room).regs .rsp = (sig.regsOut saved .rsp).shift 8 := by
+  simp only [returned, ↓reduceIte]
 
 /-- What a function needs of its caller: the state it returns must be
 acceptable where it returns to, and there must be enough stack. -/

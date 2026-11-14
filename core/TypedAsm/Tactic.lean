@@ -248,22 +248,70 @@ each side condition becomes a goal and is proved by a following tactic. -/
 /-- Proves `Sub τ υ` when it holds for a structural reason. -/
 syntax "ty_sub" : tactic
 
+/-- A `Sub` goal restated with both types reduced to their outermost form,
+and whether both are exactly known values. Comparing the reduced types
+keeps the comparison from wandering into whatever the unreduced ones
+mention along the way. -/
+private def headForm? (g : Lean.MVarId) : Lean.Meta.MetaM (Option (Lean.MVarId × Bool)) :=
+  g.withContext do
+    let t := (← Lean.instantiateMVars (← g.getType)).consumeMData
+    unless t.isAppOfArity ``Sub 2 do return none
+    let a ← Lean.Meta.whnf t.appFn!.appArg!
+    let b ← Lean.Meta.whnf t.appArg!
+    let g' ← g.change (Lean.mkApp2 (Lean.mkConst ``Sub) a b)
+    return some (g', a.isAppOfArity ``Ty.eq 1 && b.isAppOfArity ``Ty.eq 1)
+
+open Lean Meta Elab Tactic in
+/-- Compares two exactly known values. They are never compared by unfolding
+arithmetic, which runs away when a variable has a large constant added to
+it: values with no variables in them are compared by computing, and others
+as written, then from the hypotheses, then by bit-vector arithmetic. -/
+elab "ty_sub_exact" : tactic => do
+  let some (g, true) ← headForm? (← getMainGoal) | throwError "not two exactly known values"
+  let t ← g.getType
+  let closed := !(t.hasFVar || t.hasExprMVar)
+  replaceMainGoal [g]
+  if closed then
+    evalTactic (← `(tactic| (refine Sub.of_eq ?_; first | rfl | decide)))
+  else
+    -- Constants added one after another are first added up, so that a value
+    -- moved down and back up is seen to be the value it was.
+    evalTactic (← `(tactic|
+      try simp only [BitVec.add_assoc, BitVec.reduceNeg, BitVec.reduceAdd, BitVec.add_zero]))
+    evalTactic (← `(tactic| first
+      | (with_reducible exact Sub.refl _)
+      | (refine Sub.of_eq ?_; first | assumption | bv_omega)))
+
+open Lean Meta Elab Tactic in
+/-- Restates the goal with both types in their outermost form. Fails when
+both are exactly known values, which `ty_sub_exact` owns. -/
+elab "ty_sub_other" : tactic => do
+  match ← headForm? (← getMainGoal) with
+  | some (_, true) => throwError "two exactly known values"
+  | some (g, false) => replaceMainGoal [g]
+  | none => pure ()
+
 macro_rules
   | `(tactic| ty_sub) =>
     `(tactic| first
-      | exact Sub.refl _
-      | exact Sub.int _
-      | exact Sub.readOnly _ _ _
-      | exact Sub.refReadOnly _ _ _
-      | exact Sub.null _
-      | (refine Sub.nullableMono ?_; ty_sub)
-      | (refine Sub.nullable ?_; ty_sub)
-      | (refine Sub.of_eq ?_; first | assumption | rfl))
+      | ty_sub_exact
+      | (ty_sub_other
+         first
+         | exact Sub.refl _
+         | exact Sub.int _
+         | exact Sub.readOnly _ _ _
+         | exact Sub.refReadOnly _ _ _
+         | exact Sub.null _
+         | (refine Sub.nullableMono ?_; ty_sub)
+         | (refine Sub.nullable ?_; ty_sub)
+         -- the stack pointer's type after moves that cancel or add up
+         | (simp only [Ty.shift_shift]
+            first | exact Sub.refl _ | (refine Sub.shift_congr ?_; decide))))
 
 /-- Compares register types one register at a time. Registers it cannot
 settle are left as goals. -/
 macro "sub_regs" : tactic =>
-  `(tactic| (intro r _; cases r <;> try ty_sub))
+  `(tactic| (intro r hr; cases r <;> first | exact absurd rfl hr | (try ty_sub)))
 
 /-- Compares two stacks slot by slot. -/
 macro "ty_stack" : tactic =>
@@ -962,7 +1010,7 @@ private def typeReadStack (goal : MVarId) : TacticM MVarId := do
     let t ← instantiateMVars (← g.getType)
     if t.isAppOf ``BlockOk then rest? := some g
     else if t.isForall then
-      discard <| runOn g (do evalTactic (← `(tactic| (refine ints_of_check ?_; (try dsimp only); decide))))
+      discard <| runOn g (do evalTactic (← `(tactic| (refine ints_of_check ?_; first | ((try dsimp only); decide) | rfl))))
     else if (← isProp t) then
       discard <| runOn g (do evalTactic (← `(tactic| decide)))
   let some rest := rest? | throwError "unexpected goals"
@@ -1016,7 +1064,7 @@ private def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
     if t.isForall then
       let after ← try
           runOn g (do evalTactic (← `(tactic| first
-            | (refine ints_of_check ?_; (try dsimp only); decide)
+            | (refine ints_of_check ?_; first | ((try dsimp only); decide) | rfl)
             | (intro j hj; refine getElem?_replicate_of_lt ?_; omega))))
         catch _ =>
           throwError "`read` could overwrite something that is not an integer: the buffer in \

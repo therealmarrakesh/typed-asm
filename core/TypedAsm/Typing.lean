@@ -84,6 +84,10 @@ theorem CtxOf.moveSp_sp (Γ : Ctx) (d : BitVec 64) :
     (Γ.moveSp d).regs .rsp = (Γ.regs .rsp).shift d := by
   simp only [CtxOf.moveSp, ↓reduceIte]
 
+/-- Moving by amounts that are equal gives the same type. -/
+theorem Sub.shift_congr {τ : Ty} {a b : BitVec 64} (h : a = b) : Sub (τ.shift a) (τ.shift b) :=
+  h ▸ .refl _
+
 /-- Comparing a context whose stack pointer has just moved with another. -/
 theorem CtxSub.ofMoved {Γ Δ : Ctx} {d : BitVec 64} {stack : List Ty} {room : Nat}
     (hregs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (Δ.regs r)) (hstack : SubList stack Δ.stack)
@@ -650,9 +654,9 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
   pointer. The conditions are those of a direct call to that function. -/
   | callFn {Γ ret : Ctx} {rm : RM} {sig : FnSig} {m : Nat} :
     Holds Ψ next Γ rm sig.ty → Γ.room = m + 1 → Φ next ret →
-    (∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn Γ.regs r)) →
-    Sub ((Γ.regs .rsp).shift (-8)) (sig.regsIn Γ.regs .rsp) →
-    CtxSub (sig.returned Γ.regs Γ.stack m) ret → sig.need ≤ m →
+    (∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn (Γ.moveSp (-8)).regs r)) →
+    Sub ((Γ.regs .rsp).shift (-8)) (sig.regsIn (Γ.moveSp (-8)).regs .rsp) →
+    CtxSub (sig.returned (Γ.moveSp (-8)).regs Γ.stack m) ret → sig.need ≤ m →
     HasType Φ fetch sys Ψ next Γ (.call (.ind rm))
   /-- Jump to a function through a pointer to it: a tail call, made on
   behalf of the caller the current function would have returned to. -/
