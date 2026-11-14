@@ -13,13 +13,14 @@ adds the instructions that transfer control, and checks every possible
 successor address against the code typing.
 
 A memory operand is `[register + constant]`, a field of a typed pointer or a
-stack slot, or `[rip + constant]`, a field of a block at a fixed address. A whole 8-byte field or slot keeps its type when loaded or
-stored at 64 bits; any other access, narrower or inside a field, reads and
-writes integers. Indexed operands have no rule.
+stack slot, or `[rip + constant]`, a field of a block at a fixed address. A
+whole 8-byte field or slot keeps its type when loaded or stored at 64 bits;
+any other access, narrower or inside a field, reads and writes integers.
+Indexed operands have no rule.
 
 Every instruction of the machine has a rule. What the rules do not track:
-the results of multiplies, divides, shifts and the like are plain integers,
-and a divide is not shown free of a
+an operation on values that are not exactly known gives a plain integer,
+and a divide of such values is not shown free of a
 divide error, which safety permits.
 -/
 
@@ -205,6 +206,16 @@ def ShiftOp.flagsAfter (op : ShiftOp) (c : Nat) (old : Flags → Prop) : Flags �
   match op with
   | .shl | .shr | .sar => Flags.Defined true true true (c == 1)
   | .rol | .ror => Flags.Defined true false false (c == 1)
+
+/-- The value a shift or rotate by `c` produces, where `c` has been reduced
+modulo the operand width. -/
+def ShiftOp.apply {n : Nat} (op : ShiftOp) (a : BitVec n) (c : Nat) : BitVec n :=
+  match op with
+  | .shl => a <<< c
+  | .shr => a >>> c
+  | .sar => a.sshiftRight c
+  | .rol => a.rotateLeft c
+  | .ror => a.rotateRight c
 
 /-- After a multiply, only carry and overflow are defined. -/
 abbrev Flags.AfterMul : Flags → Prop := Flags.Defined true false false true
@@ -410,6 +421,104 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
   /-- A byte store. -/
   | store8RM {Γ Γ' : Ctx} {m : Mem} {s : Reg} :
     WriteIntOk Ψ next Γ 1 (.mem m) Γ' → Straight Ψ next Γ (.store8 m s) Γ'
+  -- The rules below compute with exactly known values: when every register
+  -- an instruction reads holds a known value, so does the one it writes.
+  -- At 32 bits a value is cut to its low half first, and the result is
+  -- extended with zeros, as the machine does.
+  /-- Clearing a register by `xor` with itself. -/
+  | xorSelf {Γ : Ctx} {w : Width} {d : Reg} : d ≠ .rsp →
+    Straight Ψ next Γ (.alu .xor w (.rm_r (.reg d) d))
+      { Γ.setReg d (.eq 0) with flags := (· = Flags.ofResult (0 : BitVec w.bits) false false) }
+  | mov32Exact {Γ : Ctx} {d s : Reg} {a : BitVec 64} : d ≠ .rsp → s ≠ .rsp → Γ.regs s = .eq a →
+    Straight Ψ next Γ (.mov .w32 (.rm_r (.reg d) s)) (Γ.setReg d (.eq ((a.setWidth 32).setWidth 64)))
+  | aluExact32 {Γ : Ctx} {op : AluOp} {d : Reg} {imm : BitVec 32} {a : BitVec 64} :
+    d ≠ .rsp → Γ.regs d = .eq a → op.readsCarry = false →
+    Straight Ψ next Γ (.alu op .w32 (.rm_i (.reg d) imm))
+      { (bif op.writesDst then
+          Γ.setReg d (.eq ((op.apply (a.setWidth 32) (imm.signExtend 32)).1.setWidth 64))
+        else Γ) with
+        flags := (· = (op.apply (a.setWidth 32) (imm.signExtend 32)).2) }
+  | aluExactRR32 {Γ : Ctx} {op : AluOp} {d s : Reg} {a b : BitVec 64} :
+    d ≠ .rsp → s ≠ .rsp → Γ.regs d = .eq a → Γ.regs s = .eq b → op.readsCarry = false →
+    Straight Ψ next Γ (.alu op .w32 (.rm_r (.reg d) s))
+      { (bif op.writesDst then
+          Γ.setReg d (.eq ((op.apply (a.setWidth 32) (b.setWidth 32)).1.setWidth 64))
+        else Γ) with
+        flags := (· = (op.apply (a.setWidth 32) (b.setWidth 32)).2) }
+  | shiftExact {Γ : Ctx} {op : ShiftOp} {w : Width} {d : Reg} {n : BitVec 8} {a : BitVec 64} :
+    d ≠ .rsp → Γ.regs d = .eq a →
+    Straight Ψ next Γ (.shift op w (.reg d) (.imm n))
+      { Γ.setReg d (.eq ((op.apply (a.setWidth w.bits) (n.toNat % w.bits)).setWidth 64)) with
+        flags := op.flagsAfter (n.toNat % w.bits) Γ.flags }
+  /-- An address computed from an exactly known base. -/
+  | leaExactB {Γ : Ctx} {d b : Reg} {disp : BitVec 32} {a : BitVec 64} :
+    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .eq a →
+    Straight Ψ next Γ (.lea .w64 d (.sib (some b) none disp))
+      (Γ.setReg d (.eq (a + disp.signExtend 64)))
+  /-- An address computed from an exactly known base and index. -/
+  | leaExactBI {Γ : Ctx} {d b : Reg} {x : IndexReg} {sc : Scale} {disp : BitVec 32}
+      {a c : BitVec 64} :
+    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .eq a → Γ.regs x.toReg = .eq c →
+    Straight Ψ next Γ (.lea .w64 d (.sib (some b) (some (x, sc)) disp))
+      (Γ.setReg d (.eq (a + (c <<< sc.shift) + disp.signExtend 64)))
+  | negExact {Γ : Ctx} {w : Width} {d : Reg} {a : BitVec 64} : d ≠ .rsp → Γ.regs d = .eq a →
+    Straight Ψ next Γ (.unary .neg w (.reg d))
+      { Γ.setReg d (.eq ((subBorrow 0 (a.setWidth w.bits) false).1.setWidth 64)) with
+        flags := (· = (subBorrow 0 (a.setWidth w.bits) false).2) }
+  | notExact {Γ : Ctx} {w : Width} {d : Reg} {a : BitVec 64} : d ≠ .rsp → Γ.regs d = .eq a →
+    Straight Ψ next Γ (.unary .not w (.reg d))
+      (Γ.setReg d (.eq ((~~~(a.setWidth w.bits)).setWidth 64)))
+  | imul2Exact {Γ : Ctx} {w : Width} {d r : Reg} {a b : BitVec 64} :
+    d ≠ .rsp → r ≠ .rsp → Γ.regs d = .eq a → Γ.regs r = .eq b →
+    Straight Ψ next Γ (.imul2 w d (.reg r))
+      { Γ.setReg d (.eq ((imulTrunc (a.setWidth w.bits) (b.setWidth w.bits)).1.setWidth 64)) with
+        flags := (· = (imulTrunc (a.setWidth w.bits) (b.setWidth w.bits)).2) }
+  | imul3Exact {Γ : Ctx} {w : Width} {d r : Reg} {imm : BitVec 32} {b : BitVec 64} :
+    d ≠ .rsp → r ≠ .rsp → Γ.regs r = .eq b →
+    Straight Ψ next Γ (.imul3 w d (.reg r) imm)
+      { Γ.setReg d (.eq ((imulTrunc (b.setWidth w.bits) (imm.signExtend w.bits)).1.setWidth 64)) with
+        flags := (· = (imulTrunc (b.setWidth w.bits) (imm.signExtend w.bits)).2) }
+  /-- A multiply or divide of exactly known values that is known to produce
+  a result. For a divide this is how the divide error is ruled out. -/
+  | mulDivExact {Γ : Ctx} {op : MulDivOp} {w : Width} {r : Reg} {a d b : BitVec 64}
+      {lo hi : BitVec w.bits} {fl : Flags} :
+    r ≠ .rsp → Γ.regs .rax = .eq a → Γ.regs .rdx = .eq d → Γ.regs r = .eq b →
+    op.eval (d.setWidth w.bits) (a.setWidth w.bits) (b.setWidth w.bits) = .next (lo, hi, fl) →
+    Straight Ψ next Γ (.mulDiv op w (.reg r))
+      { (Γ.setReg .rax (.eq (lo.setWidth 64))).setReg .rdx (.eq (hi.setWidth 64)) with
+        flags := (· = fl) }
+  | cdqExact {Γ : Ctx} {a : BitVec 64} : Γ.regs .rax = .eq a →
+    Straight Ψ next Γ .cdq (Γ.setReg .rdx (.eq ((signFill (a.setWidth 32)).setWidth 64)))
+  | cqoExact {Γ : Ctx} {a : BitVec 64} : Γ.regs .rax = .eq a →
+    Straight Ψ next Γ .cqo (Γ.setReg .rdx (.eq (signFill a)))
+  | movsxdExact {Γ : Ctx} {d r : Reg} {a : BitVec 64} : d ≠ .rsp → r ≠ .rsp → Γ.regs r = .eq a →
+    Straight Ψ next Γ (.movsxd d (.reg r)) (Γ.setReg d (.eq ((a.setWidth 32).signExtend 64)))
+  | movzxExact {Γ : Ctx} {w : Width} {sw : NarrowW} {d r : Reg} {a : BitVec 64} :
+    d ≠ .rsp → r ≠ .rsp → Γ.regs r = .eq a →
+    Straight Ψ next Γ (.movzx w d sw (.reg r))
+      (Γ.setReg d (.eq (((a.setWidth sw.bits).setWidth w.bits).setWidth 64)))
+  | movsxExact {Γ : Ctx} {w : Width} {sw : NarrowW} {d r : Reg} {a : BitVec 64} :
+    d ≠ .rsp → r ≠ .rsp → Γ.regs r = .eq a →
+    Straight Ψ next Γ (.movsx w d sw (.reg r))
+      (Γ.setReg d (.eq (((a.setWidth sw.bits).signExtend w.bits).setWidth 64)))
+  | popcntExact {Γ : Ctx} {w : Width} {d r : Reg} {a : BitVec 64} :
+    d ≠ .rsp → r ≠ .rsp → Γ.regs r = .eq a →
+    Straight Ψ next Γ (.popcnt w d (.reg r))
+      { Γ.setReg d (.eq ((popcount (a.setWidth w.bits)).setWidth 64)) with
+        flags := (· = ⟨some false, some (a.setWidth w.bits == 0), some false, some false⟩) }
+  | bswapExact {Γ : Ctx} {w : Width} {r : Reg} {a : BitVec 64} : r ≠ .rsp → Γ.regs r = .eq a →
+    Straight Ψ next Γ (.bswap w r) (Γ.setReg r (.eq ((TypedAsm.bswap w (a.setWidth w.bits)).setWidth 64)))
+  /-- A conditional move between exactly known values, when the flags say
+  which way it goes. -/
+  | cmovExact {Γ : Ctx} {c : Cond} {w : Width} {d r : Reg} {x a : BitVec 64} {b : Bool} :
+    d ≠ .rsp → r ≠ .rsp → Γ.regs d = .eq x → Γ.regs r = .eq a →
+    (∀ f, Γ.flags f → c.eval f = some b) →
+    Straight Ψ next Γ (.cmov c w d (.reg r))
+      (Γ.setReg d (.eq ((if b then a.setWidth w.bits else x.setWidth w.bits).setWidth 64)))
+  | setccExact {Γ : Ctx} {c : Cond} {d : Reg} {x : BitVec 64} {b : Bool} :
+    d ≠ .rsp → Γ.regs d = .eq x → (∀ f, Γ.flags f → c.eval f = some b) →
+    Straight Ψ next Γ (.setcc c (.reg d))
+      (Γ.setReg d (.eq ((x &&& ~~~0xff) ||| (if b then (1 : BitVec 8) else 0).setWidth 64)))
   /-- Testing two exactly known values gives exactly known flags. -/
   | testExact {Γ : Ctx} {r r' : Reg} {a b : BitVec 64} :
     r ≠ .rsp → r' ≠ .rsp → Γ.regs r = .eq a → Γ.regs r' = .eq b →

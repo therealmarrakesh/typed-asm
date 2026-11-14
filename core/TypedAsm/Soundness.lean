@@ -978,6 +978,72 @@ theorem CodeAt.sound {rm : RM} {Δ : Ctx} (hc : CodeAt Ψ next Γ rm Δ)
 
 end Operands
 
+/-! ## Exactly known values -/
+
+/-- A register typed as exactly `a` holds `a`. -/
+theorem WellTyped.eqReg {Γ : Ctx} {s : State} {r : Reg} {a : BitVec 64}
+    (h : WellTyped fetch sys Ψ ix Γ s) (hr : r ≠ .rsp) (hΓ : Γ.regs r = .eq a) :
+    s.getReg r = a := by
+  have := h.regs r hr
+  rwa [hΓ, hasTy_eq] at this
+
+theorem State.readReg_of {s : State} {r : Reg} {a : BitVec 64} (hp : s.getReg r = a) (w : Width) :
+    s.readReg w r = a.setWidth w.bits := by
+  rw [State.readReg, hp]
+
+theorem IndexReg.toReg_ne_rsp (x : IndexReg) : x.toReg ≠ .rsp := by
+  cases x <;> decide
+
+/-- The value a shift or rotate produces does not depend on the flags. -/
+theorem ShiftOp.eval_fst {n : Nat} (op : ShiftOp) (old : Flags) (a : BitVec n) (c : Nat) :
+    (op.eval old a c).1 = op.apply a c := by
+  simp only [ShiftOp.eval, ShiftOp.apply]
+  by_cases hc : c = 0
+  · subst hc
+    cases op <;> simp only [↓reduceIte, BitVec.shiftLeft_zero, BitVec.ushiftRight_zero,
+      BitVec.sshiftRight_zero]
+    · ext i hi; simp [BitVec.getElem_rotateLeft]
+    · ext i hi; simp [BitVec.getElem_rotateRight, hi]
+  · simp only [hc, ↓reduceIte]
+    cases op <;> rfl
+
+/-- An unsigned divide of a dividend whose upper half is zero, by a divisor
+that is not zero, raises no divide error. -/
+theorem MulDivOp.eval_div {n : Nat} (a b : BitVec n) (hb : b ≠ 0) :
+    MulDivOp.eval .div 0 a b = .next (a / b, a % b, .unknown) := by
+  have hbn : b.toNat ≠ 0 := fun h0 => hb (BitVec.eq_of_toNat_eq (by simpa using h0))
+  have hbpos : 0 < b.toNat := Nat.pos_of_ne_zero hbn
+  have ha := a.isLt
+  have hb' := b.isLt
+  have hpow : 2 ^ n ≤ 2 ^ (n + n) := Nat.pow_le_pow_right (by decide) (Nat.le_add_right n n)
+  have hdiv : a.toNat / b.toNat < 2 ^ n := Nat.lt_of_le_of_lt (Nat.div_le_self _ _) ha
+  have hmod : a.toNat % b.toNat < 2 ^ n := Nat.lt_of_lt_of_le (Nat.mod_lt _ hbpos) (Nat.le_of_lt hb')
+  have hdvd : ((0 : BitVec n) ++ a).toNat = a.toNat := by
+    simp [BitVec.toNat_append]
+  have hbw : (b.setWidth (n + n)).toNat = b.toNat := by
+    simp only [BitVec.toNat_setWidth]; exact Nat.mod_eq_of_lt (by omega)
+  have hq : (((0 : BitVec n) ++ a) / b.setWidth (n + n)).toNat = a.toNat / b.toNat := by
+    rw [BitVec.toNat_udiv, hdvd, hbw]
+  have hr : (((0 : BitVec n) ++ a) % b.setWidth (n + n)).toNat = a.toNat % b.toNat := by
+    rw [BitVec.toNat_umod, hdvd, hbw]
+  have hb0 : (b == 0) = false := by simpa using hb
+  have hfit : ((((0 : BitVec n) ++ a) / b.setWidth (n + n)).setWidth n).setWidth (n + n)
+      = ((0 : BitVec n) ++ a) / b.setWidth (n + n) := by
+    apply BitVec.eq_of_toNat_eq
+    simp only [BitVec.toNat_setWidth, hq]
+    rw [Nat.mod_eq_of_lt hdiv, Nat.mod_eq_of_lt (by omega)]
+  have hlo : (((0 : BitVec n) ++ a) / b.setWidth (n + n)).setWidth n = a / b := by
+    apply BitVec.eq_of_toNat_eq
+    simp only [BitVec.toNat_setWidth, hq, BitVec.toNat_udiv]
+    exact Nat.mod_eq_of_lt hdiv
+  have hhi : (((0 : BitVec n) ++ a) % b.setWidth (n + n)).setWidth n = a % b := by
+    apply BitVec.eq_of_toNat_eq
+    simp only [BitVec.toNat_setWidth, hr, BitVec.toNat_umod]
+    exact Nat.mod_eq_of_lt hmod
+  rw [hlo] at hfit
+  simp only [MulDivOp.eval, hb0, hlo, hhi, hfit, bne_self_eq_false, Bool.or_self,
+    Bool.false_eq_true, ↓reduceIte]
+
 /-! ## Multiply and divide -/
 
 /-- A multiply or divide either produces a result or raises a divide error. -/
@@ -1009,6 +1075,26 @@ theorem mulDiv_next {Γ : Ctx} {s : State} {op : MulDivOp} {w : Width} {src : RM
     ((h.setReg (by decide) (HasTy.int _)).setReg (by decide) (HasTy.int _)).setFlags
       (P := P) hP⟩
   simp [exec, ha, hx]
+
+/-- A multiply or divide of exactly known values that produces a result
+continues, with exactly known results. -/
+theorem mulDivExact_next {Γ : Ctx} {s : State} {op : MulDivOp} {w : Width} {r : Reg}
+    {a d b : BitVec 64} {lo hi : BitVec w.bits} {fl : Flags}
+    (h : WellTyped fetch sys Ψ ix Γ s) (hr : r ≠ .rsp) (hΓa : Γ.regs .rax = .eq a)
+    (hΓd : Γ.regs .rdx = .eq d) (hΓr : Γ.regs r = .eq b)
+    (hev : op.eval (d.setWidth w.bits) (a.setWidth w.bits) (b.setWidth w.bits)
+      = .next (lo, hi, fl)) :
+    ∃ s', exec sys (.mulDiv op w (.reg r)) s = .next s' ∧ s'.rip = s.rip ∧
+      WellTyped fetch sys Ψ ix
+        { (Γ.setReg .rax (.eq (lo.setWidth 64))).setReg .rdx (.eq (hi.setWidth 64)) with
+          flags := (· = fl) } s' := by
+  have ha := h.eqReg (by decide) hΓa
+  have hd := h.eqReg (by decide) hΓd
+  have hb := h.eqReg hr hΓr
+  refine ⟨{ (s.writeReg w .rax lo).writeReg w .rdx hi with flags := fl }, ?_, rfl,
+    ((h.setReg (by decide) (hasTy_eq.mpr rfl)).setReg (by decide) (hasTy_eq.mpr rfl)).setFlags
+      (P := (· = fl)) rfl⟩
+  simp [exec, State.readRM, State.readReg_of ha, State.readReg_of hd, State.readReg_of hb, hev]
 
 /-- A divide either raises a divide error or continues. -/
 theorem mulDiv_sound {Γ : Ctx} {s : State} {op : MulDivOp} {w : Width} {src : RM}
@@ -1111,6 +1197,142 @@ theorem Straight.sound_next {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
   | @imulRM w src hr => exact mulDiv_next hr h hrip (fun _ => ⟨_, rfl, Flags.ofMul_defined _⟩)
   | divRM => exact absurd hnd (by simp [Instr.isDivide])
   | idivRM => exact absurd hnd (by simp [Instr.isDivide])
+  | mulDivExact hr hΓa hΓd hΓr hev => exact mulDivExact_next h hr hΓa hΓd hΓr hev
+  | @xorSelf w d hd =>
+    refine ⟨{ s.setReg d 0 with flags := .ofResult (0 : BitVec w.bits) false false }, ?_, rfl,
+      (h.setReg hd (hasTy_eq.mpr rfl)).setFlags (P := (· = _)) rfl⟩
+    simp [exec, State.readRM, State.writeRM, Operands.src, Operands.dst, AluOp.eval,
+      Result.ofOption, AluOp.writesDst, State.writeReg]
+  | @mov32Exact d src a hd hs hΓ =>
+    have hp := h.eqReg hs hΓ
+    refine ⟨s.writeReg .w32 d (a.setWidth 32), ?_, rfl, h.setReg hd (hasTy_eq.mpr rfl)⟩
+    simp [exec, State.writeRM, Operands.src, Operands.dst, State.readReg_of hp]
+  | @aluExact32 op d imm a hd hΓ hnc =>
+    have hp := h.eqReg hd hΓ
+    generalize hrf : op.apply (a.setWidth 32) (imm.signExtend 32) = rf
+    obtain ⟨r, fl⟩ := rf
+    have he' : op.eval s.flags.cf (s.readReg .w32 d) (imm.signExtend 32) = some (r, fl) := by
+      rw [State.readReg_of hp, AluOp.eval_eq_apply hnc]
+      exact congrArg some hrf
+    have himm : imm.signExtend 32 = imm := by simp
+    rw [himm] at he'
+    refine ⟨{ (if op.writesDst then s.setReg d (r.setWidth 64) else s) with flags := fl }, ?_, ?_, ?_⟩
+    · cases hwd : op.writesDst <;>
+        simp [exec, State.readRM, State.writeRM, Operands.src, Operands.dst, he',
+          Result.ofOption, hwd, State.writeReg]
+    · cases op.writesDst <;> rfl
+    · cases hwd : op.writesDst
+      · simp only [Bool.cond_false]
+        exact h.setFlags (P := (· = fl)) rfl
+      · simp only [Bool.cond_true]
+        exact (h.setReg hd (hasTy_eq.mpr rfl)).setFlags (P := (· = fl)) rfl
+  | @aluExactRR32 op d src a b hd hs hΓ hΓ' hnc =>
+    have hp := h.eqReg hd hΓ
+    have hp' := h.eqReg hs hΓ'
+    generalize hrf : op.apply (a.setWidth 32) (b.setWidth 32) = rf
+    obtain ⟨r, fl⟩ := rf
+    have he' : op.eval s.flags.cf (s.readReg .w32 d) (s.readReg .w32 src) = some (r, fl) := by
+      rw [State.readReg_of hp, State.readReg_of hp', AluOp.eval_eq_apply hnc]
+      exact congrArg some hrf
+    refine ⟨{ (if op.writesDst then s.setReg d (r.setWidth 64) else s) with flags := fl }, ?_, ?_, ?_⟩
+    · cases hwd : op.writesDst <;>
+        simp [exec, State.readRM, State.writeRM, Operands.src, Operands.dst, he',
+          Result.ofOption, hwd, State.writeReg]
+    · cases op.writesDst <;> rfl
+    · cases hwd : op.writesDst
+      · simp only [Bool.cond_false]
+        exact h.setFlags (P := (· = fl)) rfl
+      · simp only [Bool.cond_true]
+        exact (h.setReg hd (hasTy_eq.mpr rfl)).setFlags (P := (· = fl)) rfl
+  | @shiftExact op w d n a hd hΓ =>
+    have hp := h.eqReg hd hΓ
+    have hfl := op.eval_flagsAfter h.flags (a.setWidth w.bits) (n.toNat % w.bits)
+    have hv := op.eval_fst s.flags (a.setWidth w.bits) (n.toNat % w.bits)
+    generalize hrf : op.eval s.flags (a.setWidth w.bits) (n.toNat % w.bits) = rf at hfl hv
+    obtain ⟨r, fl⟩ := rf
+    have hv' : r = op.apply (a.setWidth w.bits) (n.toNat % w.bits) := hv
+    refine ⟨{ s.writeReg w d r with flags := fl }, ?_, rfl,
+      (h.setReg hd (hasTy_eq.mpr (by rw [hv']))).setFlags hfl⟩
+    simp [exec, State.readRM, State.writeRM, State.readReg_of hp, State.shiftCount, hrf]
+  | @leaExactB d b disp a hd hb hΓ =>
+    have hp := h.eqReg hb hΓ
+    refine ⟨s.writeReg .w64 d ((s.ea (.sib (some b) none disp)).setWidth 64), ?_, rfl,
+      h.setReg hd (hasTy_eq.mpr (by simp [State.ea, hp]))⟩
+    simp [exec]
+  | @leaExactBI d b x sc disp a c hd hb hΓ hΓ' =>
+    have hp := h.eqReg hb hΓ
+    have hp' := h.eqReg x.toReg_ne_rsp hΓ'
+    refine ⟨s.writeReg .w64 d ((s.ea (.sib (some b) (some (x, sc)) disp)).setWidth 64), ?_, rfl,
+      h.setReg hd (hasTy_eq.mpr (by simp [State.ea, hp, hp']))⟩
+    simp [exec]
+  | @negExact w d a hd hΓ =>
+    have hp := h.eqReg hd hΓ
+    refine ⟨{ s.writeReg w d (subBorrow (0#w.bits) (a.setWidth w.bits) false).1 with
+        flags := (subBorrow (0#w.bits) (a.setWidth w.bits) false).2 }, ?_, rfl,
+      (h.setReg hd (hasTy_eq.mpr rfl)).setFlags (P := (· = _)) rfl⟩
+    simp [exec, State.readRM, State.writeRM, State.readReg_of hp]
+  | @notExact w d a hd hΓ =>
+    have hp := h.eqReg hd hΓ
+    exact ⟨s.writeReg w d (~~~(a.setWidth w.bits)),
+      by simp [exec, State.readRM, State.writeRM, State.readReg_of hp], rfl,
+      h.setReg hd (hasTy_eq.mpr rfl)⟩
+  | @imul2Exact w d r a b hd hr hΓ hΓ' =>
+    have hp := h.eqReg hd hΓ
+    have hp' := h.eqReg hr hΓ'
+    refine ⟨{ s.writeReg w d (imulTrunc (a.setWidth w.bits) (b.setWidth w.bits)).1 with
+        flags := (imulTrunc (a.setWidth w.bits) (b.setWidth w.bits)).2 }, ?_, rfl,
+      (h.setReg hd (hasTy_eq.mpr rfl)).setFlags (P := (· = _)) rfl⟩
+    simp [exec, State.readRM, State.readReg_of hp, State.readReg_of hp']
+  | @imul3Exact w d r imm b hd hr hΓ =>
+    have hp := h.eqReg hr hΓ
+    refine ⟨{ s.writeReg w d (imulTrunc (b.setWidth w.bits) (imm.signExtend w.bits)).1 with
+        flags := (imulTrunc (b.setWidth w.bits) (imm.signExtend w.bits)).2 }, ?_, rfl,
+      (h.setReg hd (hasTy_eq.mpr rfl)).setFlags (P := (· = _)) rfl⟩
+    simp [exec, State.readRM, State.readReg_of hp]
+  | @cdqExact a hΓ =>
+    have hp := h.eqReg (by decide) hΓ
+    exact ⟨s.writeReg .w32 .rdx (signFill (a.setWidth 32)), by simp [exec, State.readReg_of hp],
+      rfl, h.setReg (by decide) (hasTy_eq.mpr rfl)⟩
+  | @cqoExact a hΓ =>
+    have hp := h.eqReg (by decide) hΓ
+    exact ⟨s.writeReg .w64 .rdx (signFill (s.readReg .w64 .rax)), by simp [exec], rfl,
+      h.setReg (by decide) (hasTy_eq.mpr (by simp [State.readReg_w64, hp]))⟩
+  | @movsxdExact d r a hd hr hΓ =>
+    have hp := h.eqReg hr hΓ
+    exact ⟨s.setReg d ((a.setWidth 32).signExtend 64),
+      by simp [exec, State.readRM, State.readReg_of hp], rfl, h.setReg hd (hasTy_eq.mpr rfl)⟩
+  | @movzxExact w sw d r a hd hr hΓ =>
+    have hp := h.eqReg hr hΓ
+    exact ⟨s.writeReg w d ((a.setWidth sw.bits).setWidth w.bits),
+      by simp [exec, State.readNarrow, hp], rfl, h.setReg hd (hasTy_eq.mpr rfl)⟩
+  | @movsxExact w sw d r a hd hr hΓ =>
+    have hp := h.eqReg hr hΓ
+    exact ⟨s.writeReg w d ((a.setWidth sw.bits).signExtend w.bits),
+      by simp [exec, State.readNarrow, hp], rfl, h.setReg hd (hasTy_eq.mpr rfl)⟩
+  | @popcntExact w d r a hd hr hΓ =>
+    have hp := h.eqReg hr hΓ
+    refine ⟨{ s.writeReg w d (popcount (a.setWidth w.bits)) with
+        flags := ⟨some false, some (a.setWidth w.bits == 0), some false, some false⟩ }, ?_, rfl,
+      (h.setReg hd (hasTy_eq.mpr rfl)).setFlags (P := (· = _)) rfl⟩
+    simp [exec, State.readRM, State.readReg_of hp]
+  | @bswapExact w r a hr hΓ =>
+    have hp := h.eqReg hr hΓ
+    exact ⟨s.writeReg w r (TypedAsm.bswap w (a.setWidth w.bits)),
+      by simp [exec, State.readReg_of hp], rfl, h.setReg hr (hasTy_eq.mpr rfl)⟩
+  | @cmovExact c w d r x a b hd hr hΓ hΓ' hdec =>
+    have hpx := h.eqReg hd hΓ
+    have hpa := h.eqReg hr hΓ'
+    have hb := hdec _ h.flags
+    exact ⟨s.writeReg w d (if b then a.setWidth w.bits else x.setWidth w.bits),
+      by simp [exec, State.readRM, State.readReg_of hpa, State.readReg_of hpx, hb, Result.ofOption],
+      rfl, h.setReg hd (hasTy_eq.mpr rfl)⟩
+  | @setccExact c d x b hd hΓ hdec =>
+    have hp := h.eqReg hd hΓ
+    have hb := hdec _ h.flags
+    refine ⟨s.setReg d ((x &&& ~~~0xff) ||| (if b then (1 : BitVec 8) else 0).setWidth 64), ?_,
+      rfl, h.setReg hd (hasTy_eq.mpr rfl)⟩
+    simp only [exec, hb, Result.ofOption, State.writeRM8, hp]
+    rfl
   | @imul2RM w d src hd hr =>
     obtain ⟨a, ha⟩ := hr.readRM h hrip
     have hfl : Flags.AfterMul (imulTrunc (s.readReg w d) a).2 := Flags.ofMul_defined _
@@ -1377,6 +1599,12 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr} (ht : Strai
   · cases ht with
     | divRM hr => exact mulDiv_sound hr h hrip
     | idivRM hr => exact mulDiv_sound hr h hrip
+    | mulDivExact hr hΓa hΓd hΓr hev =>
+      obtain ⟨s', he, hr', hw⟩ := mulDivExact_next h hr hΓa hΓd hΓr hev
+      rw [he]
+      refine ⟨rfl, fun s'' heq => ?_⟩
+      cases heq
+      exact ⟨hr', hw⟩
     | _ => simp [Instr.isDivide] at hd
 
 /-! ## All typed instructions -/
