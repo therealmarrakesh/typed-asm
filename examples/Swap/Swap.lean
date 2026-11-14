@@ -5,24 +5,28 @@ import TypedAsm
 
 A complete program that is type-checked and then proved safe by the soundness
 theorem. A function that swaps the two fields of a record is typed once and
-called from two places whose stacks differ.
+called from two places whose stacks differ. The caller keeps its pointer in
+`rbx` across both calls, relying on `swap` to preserve that register.
 
 ```asm
 _start:                       ; rdi = pointer to a record of two integers
-   0  call  swap              ; called with an empty stack
-   5  push  rdi
-   6  call  swap              ; called with one slot on the stack
-  11  pop   rdi
-  12  mov   eax, 60           ; Linux `exit`
-  17  xor   edi, edi
-  19  syscall
-  21  jmp   21                ; not reached: `exit` does not return
-swap:
-  26  mov   rax, [rdi]
-  29  mov   rcx, [rdi+8]
-  33  mov   [rdi], rcx
-  36  mov   [rdi+8], rax
-  40  ret
+   0  mov   rbx, rdi          ; keep the pointer in a callee-saved register
+   3  call  swap              ; called with an empty stack
+   8  push  rbx
+   9  mov   rdi, rbx          ; rbx is still a pointer after the call
+  12  call  swap              ; called with one slot on the stack
+  17  pop   rdi
+  18  mov   eax, 60           ; Linux `exit`
+  23  xor   edi, edi
+  25  syscall
+spin:
+  27  jmp   spin              ; not reached: `exit` does not return
+swap:                         ; rdi = pointer to the record
+  32  mov   rax, [rdi]
+  35  mov   rcx, [rdi+8]
+  39  mov   [rdi], rcx
+  42  mov   [rdi+8], rax
+  46  ret
 ```
 -/
 
@@ -39,8 +43,10 @@ inductive Label
   deriving DecidableEq
 
 def code : List (Asm Label) := [
+  .ins (.mov .w64 (.rm_r (.reg .rbx) .rdi)) 3,
   .call .swap,
-  .ins (.push .rdi) 1,
+  .ins (.push .rbx) 1,
+  .ins (.mov .w64 (.rm_r (.reg .rdi) .rbx)) 3,
   .call .swap,
   .ins (.pop .rdi) 1,
   .ins (.mov .w32 (.rm_i (.reg .rax) 60)) 5,
@@ -68,36 +74,29 @@ def start : State :=
 /-- A pointer to a writable record of two integers. -/
 def pair : Ty := .ptr [.int, .int] true 0
 
-/-- Register types while `rdi` points to the record. -/
-def ptrRegs : Reg → Ty := fun r => if r = .rdi then pair else .int
+/-- `swap` takes the pointer in `rdi`, promises nothing about the registers
+it uses, and preserves the callee-saved registers. -/
+def swapSig : FnSig where
+  args := fun r => if r = .rdi then pair else .int
+  results := fun _ => .int
+  preserved := calleeSaved
+  need := 0
 
-/-- A context in which `rdi` points to the record. -/
-def withPtr (stack : List Ty) (room : Nat) : Ctx := ⟨ptrRegs, stack, room, Flags.Any⟩
+/-- Register types with the pointer in one register and nothing known about the rest. -/
+def only (reg : Reg) : Reg → Ty := fun r => if r = reg then pair else .int
 
-/-- For the last part of `_start`: nothing is known about any register. -/
+/-- For the last instruction of `_start`: nothing is known about any register. -/
 def done : Ctx := ⟨fun _ => .int, [], 2, Flags.Any⟩
 
-/-- The context inside `swap`, for a caller that expects `ret` on return and
-has `rest` on its stack. This is where `swap` is polymorphic: it is typed for
-every such caller at once. -/
-def swapCtx (ret : Ctx) (rest : List Ty) (room : Nat) : Ctx :=
-  withPtr (.code ret :: rest) room
-
-/-- What `swap` needs of its caller: the state it returns (pointer still in
-`rdi`, the caller's stack untouched) must be acceptable to the caller. -/
-def CallerOk (ret : Ctx) (rest : List Ty) (room : Nat) : Prop :=
-  CtxSub (withPtr rest (room + 1)) ret
-
-def swapBody : List (BitVec 64) := [26, 29, 33, 36, 40]
-
+/-- Contexts are given only where control arrives from elsewhere. -/
 inductive Φ : BitVec 64 → Ctx → Prop
-  | start : Φ 0 (withPtr [] 2)
-  | afterFirst : Φ 5 (withPtr [] 2)
-  | second : Φ 6 (withPtr [pair] 1)
-  | afterSecond : Φ 11 (withPtr [pair] 1)
-  | done (a : BitVec 64) : a ∈ [12, 17, 19, 21] → Φ a done
-  | swap (a : BitVec 64) (ret : Ctx) (rest : List Ty) (room : Nat) :
-    a ∈ swapBody → CallerOk ret rest room → Φ a (swapCtx ret rest room)
+  | start : Φ 0 ⟨only .rdi, [], 2, Flags.Any⟩
+  /-- After the first call the pointer is still in `rbx`. -/
+  | afterFirst : Φ 8 ⟨only .rbx, [], 2, Flags.Any⟩
+  | afterSecond : Φ 17 ⟨only .rbx, [pair], 1, Flags.Any⟩
+  | spin : Φ 27 done
+  | swap (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+    swapSig.CallerOk saved ret rest room → Φ 32 (swapSig.entry saved ret rest room)
 
 def recordLayout : Layout := ⟨[.int, .int], true⟩
 
@@ -108,93 +107,40 @@ def Ψ : MemTy := .ofList blocks
 
 /-! ## The program is well typed -/
 
-theorem subDone (Γ : Ctx) (hs : Γ.stack = []) (hm : Γ.room = 2) : CtxSub Γ done :=
-  ⟨fun _ _ => .int _, by rw [hs]; exact .nil, hm, fun _ _ => trivial⟩
-
-theorem accDone {a : BitVec 64} (ha : a ∈ [12, 17, 19, 21]) (Γ : Ctx) (hs : Γ.stack = [])
-    (hm : Γ.room = 2) : Accepts Φ a Γ :=
-  ⟨done, .done a ha, subDone Γ hs hm⟩
-
-/-- Inside `swap`, a context that still has the pointer in `rdi` and the same
-stack is accepted at any later instruction of `swap`. -/
-theorem accSwap {a : BitVec 64} {ret : Ctx} {rest : List Ty} {room : Nat} (ha : a ∈ swapBody)
-    (hK : CallerOk ret rest room) (Γ : Ctx) (hr : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (ptrRegs r))
-    (hs : Γ.stack = .code ret :: rest) (hm : Γ.room = room) : Accepts Φ a Γ :=
-  ⟨swapCtx ret rest room, .swap a ret rest room ha hK,
-    ⟨hr, by rw [hs]; exact .refl _, hm, fun _ _ => trivial⟩⟩
-
-/-- Setting a register other than `rdi` to an integer keeps the pointer in `rdi`. -/
-theorem setInt (Γ : Ctx) (hΓ : Γ.regs = ptrRegs) (d : Reg) (hd : d ≠ .rdi) :
-    ∀ r, r ≠ .rsp → Sub ((Γ.setReg d .int).regs r) (ptrRegs r) := by
-  intro r _
-  simp only [CtxOf.setReg, hΓ]
-  split
-  · next h => subst h; simp only [ptrRegs, hd, ite_false]; exact .refl _
-  · exact .refl _
-
-/-- `swap` is well typed for every caller. -/
-theorem swapOk {a : BitVec 64} {ret : Ctx} {rest : List Ty} {room : Nat} (ha : a ∈ swapBody)
-    (hK : CallerOk ret rest room) :
-    ∃ i len, fetch a = some (i, len) ∧ HasType Φ (a + len) (swapCtx ret rest room) i := by
-  have : a = 26 ∨ a = 29 ∨ a = 33 ∨ a = 36 ∨ a = 40 := by simpa [swapBody] using ha
-  rcases this with rfl | rfl | rfl | rfl | rfl
-  · -- mov rax, [rdi]
-    exact ⟨_, _, rfl, .straight
-      (.loadField (i := 0) (by decide) (by decide) rfl rfl ⟨rfl, by decide⟩)
-      (accSwap (by decide) hK _ (setInt _ rfl .rax (by decide)) rfl rfl)⟩
-  · -- mov rcx, [rdi+8]
-    exact ⟨_, _, rfl, .straight
-      (.loadField (i := 1) (by decide) (by decide) rfl rfl ⟨rfl, by decide⟩)
-      (accSwap (by decide) hK _ (setInt _ rfl .rcx (by decide)) rfl rfl)⟩
-  · -- mov [rdi], rcx
-    exact ⟨_, _, rfl, .straight
-      (.storeField (i := 0) (by decide) (by decide) rfl rfl (.refl _) ⟨rfl, by decide⟩)
-      (accSwap (by decide) hK _ (fun _ _ => .refl _) rfl rfl)⟩
-  · -- mov [rdi+8], rax
-    exact ⟨_, _, rfl, .straight
-      (.storeField (i := 1) (by decide) (by decide) rfl rfl (.refl _) ⟨rfl, by decide⟩)
-      (accSwap (by decide) hK _ (fun _ _ => .refl _) rfl rfl)⟩
-  · -- ret: the caller's requirement is exactly what the rule asks for
-    exact ⟨_, _, rfl, .ret rfl hK⟩
-
-theorem programOk : ProgramOk Φ fetch := by
+theorem blocksOk : BlocksOk Φ fetch := by
   intro a Γ h
   cases h with
-  | start => -- call swap, from an empty stack
-    exact ⟨_, _, rfl, .call (n := 1) rfl Φ.afterFirst
-      ⟨_, .swap 26 (withPtr [] 2) [] 1 (by decide) (CtxSub.refl _), CtxSub.refl _⟩⟩
-  | afterFirst => -- push rdi
-    exact ⟨_, _, rfl, .straight (.push (n := 1) (by decide) rfl) ⟨_, Φ.second, CtxSub.refl _⟩⟩
-  | second => -- call swap, with one slot on the stack
-    exact ⟨_, _, rfl, .call (n := 0) rfl Φ.afterSecond
-      ⟨_, .swap 26 (withPtr [pair] 1) [pair] 0 (by decide) (CtxSub.refl _), CtxSub.refl _⟩⟩
-  | afterSecond => -- pop rdi
-    exact ⟨_, _, rfl, .straight (.pop (by decide) rfl) (accDone (by decide) _ rfl rfl)⟩
-  | done a ha =>
-    have : a = 12 ∨ a = 17 ∨ a = 19 ∨ a = 21 := by simpa using ha
-    rcases this with rfl | rfl | rfl | rfl
-    · -- mov eax, 60
-      exact ⟨_, _, rfl, .straight (.movRI (by decide)) (accDone (by decide) _ rfl rfl)⟩
-    · -- xor edi, edi
-      exact ⟨_, _, rfl, .straight (.aluRR (by decide) (fun h => absurd h (by decide)))
-        (accDone (by decide) _ rfl rfl)⟩
-    · -- syscall
-      exact ⟨_, _, rfl, .syscall (accDone (by decide) _ rfl rfl)⟩
-    · -- jmp 21
-      exact ⟨_, _, rfl, .jmp (accDone (by decide) _ rfl rfl)⟩
-  | swap a ret rest room ha hK => exact swapOk ha hK
+  | start =>
+    -- mov rbx, rdi; call swap
+    ty_steps
+    exact .last rfl (FnSig.call_ok (sig := swapSig) (fun _ _ _ _ hK => .swap _ _ _ _ hK) rfl
+      Φ.afterFirst (by sub_regs) (by ctx_sub) (by decide))
+  | afterFirst =>
+    -- push rbx; mov rdi, rbx; call swap
+    ty_steps
+    exact .last rfl (FnSig.call_ok (sig := swapSig) (fun _ _ _ _ hK => .swap _ _ _ _ hK) rfl
+      Φ.afterSecond (by sub_regs) (by ctx_sub) (by decide))
+  | afterSecond =>
+    -- pop rdi; mov eax, 60; xor edi, edi; syscall
+    ty_steps
+    exact .last rfl (.syscall (by ty_accept Φ.spin))
+  | spin => exact .last rfl (.jmp (by ty_accept Φ.spin))
+  | swap saved ret rest room hK =>
+    -- the four moves, then ret
+    ty_steps
+    exact .last rfl (FnSig.ret_of hK (by sub_regs) rfl rfl)
 
 /-! ## The memory typing and the starting state -/
 
 theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 
 theorem startOk : StateOk Φ fetch linux Ψ start := by
-  refine ⟨withPtr [] 2, Φ.start, fun n => Matches.ofCheck (by decide) ?_ trivial ?_ ?_⟩
+  refine ⟨_, Φ.start, fun n => Matches.ofCheck (by decide) ?_ trivial ?_ ?_⟩
   · intro r _
     cases r <;> first
       | exact HasTy.int _
       | exact hasTy_ptr.mpr ⟨0x1000, recordLayout, rfl, rfl, fun _ => rfl, by decide⟩
-  · intro i τ h; simp [withPtr] at h
+  · intro i τ h; simp at h
   · intro x hx i τ hi
     simp only [blocks, List.mem_singleton] at hx
     subst hx
@@ -206,7 +152,7 @@ theorem startOk : StateOk Φ fetch linux Ψ start := by
 
 /-- The program never gets stuck, never page-faults and never executes an invalid opcode. -/
 theorem safe : Safe fetch linux start :=
-  soundness programOk memOk (linuxOk fetch Ψ) startOk
+  soundness_blocks blocksOk memOk (linuxOk fetch Ψ) startOk
 
 /-- So running it for any number of steps gives an acceptable outcome. -/
 theorem run_safe (n : Nat) : (run fetch linux n start).isSafe = true :=
@@ -224,15 +170,15 @@ def recordIs (x y : BitVec 64) : Outcome → Bool
   | .next s => s.load64 0x1000 == x && s.load64 0x1008 == y
   | _ => false
 
--- After the first call returns (six steps) the fields are exchanged, and
--- after the second (seven more) they are back.
-#guard recordIs 5 3 (run fetch linux 6 start)
-#guard recordIs 3 5 (run fetch linux 13 start)
+-- After the first call returns (seven steps) the fields are exchanged, and
+-- after the second (eight more) they are back.
+#guard recordIs 5 3 (run fetch linux 7 start)
+#guard recordIs 3 5 (run fetch linux 15 start)
 
 end Swap
 
 def main : IO Unit := do
   IO.println (Swap.describe (run Swap.fetch linux 0 Swap.start))
-  IO.println (Swap.describe (run Swap.fetch linux 6 Swap.start))
-  IO.println (Swap.describe (run Swap.fetch linux 13 Swap.start))
+  IO.println (Swap.describe (run Swap.fetch linux 7 Swap.start))
+  IO.println (Swap.describe (run Swap.fetch linux 15 Swap.start))
   IO.println (Swap.describe (run Swap.fetch linux 100 Swap.start))

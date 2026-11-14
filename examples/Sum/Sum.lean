@@ -76,54 +76,40 @@ def start : State :=
 /-- A pointer to element `i` of a read-only array of `n` integers. -/
 def elem (n i : Nat) : Ty := .ptr (List.replicate n .int) false i
 
-/-- Register types with given types for the pointer and the counter. -/
-def regsWith (ptr count : Ty) : Reg → Ty :=
-  fun r => if r = .rdi then ptr else if r = .rsi then count else .int
+/-- The counter after `i` of `n` elements have been consumed. -/
+def left (n i : Nat) : BitVec 64 := BitVec.ofNat 64 (n - i)
+
+/-- Register types inside `sum` after `i` elements: the pointer is at element
+`i`, the counter is exactly `n - i`, and the callee-saved registers have
+whatever types the caller gave them. -/
+def sumRegs (n i : Nat) (saved : Reg → Ty) : Reg → Ty :=
+  fun r => if calleeSaved r then saved r
+    else if r = .rdi then elem n i else if r = .rsi then .eq (left n i) else .int
+
+/-- `sum` takes a pointer to `n` integers in `rdi` and exactly `n` in `rsi`,
+and preserves the callee-saved registers. -/
+def sumSig (n : Nat) : FnSig where
+  args := sumRegs n 0 (fun _ => .int)
+  results := fun _ => .int
+  preserved := calleeSaved
+  need := 0
 
 /-- For the last part of `_start`: nothing is known about any register. -/
 def fin : Ctx := ⟨fun _ => .int, [], 1, Flags.Any⟩
 
-/-- A context inside `sum`, for a caller that expects `ret` on return and has
-`rest` on its stack. -/
-def inSum (ret : Ctx) (rest : List Ty) (room : Nat) (ptr count : Ty) (flags : Flags → Prop) :
-    Ctx :=
-  ⟨regsWith ptr count, .code ret :: rest, room, flags⟩
-
-/-- What `sum` needs of its caller: the state it returns (nothing known about
-any register, the caller's stack untouched) must be acceptable to the caller. -/
-def CallerOk (ret : Ctx) (rest : List Ty) (room : Nat) : Prop :=
-  CtxSub ⟨fun _ => .int, rest, room + 1, Flags.Any⟩ ret
-
-/-- The counter after `i` of `n` elements have been consumed. -/
-def left (n i : Nat) : BitVec 64 := BitVec.ofNat 64 (n - i)
-
-/-- The flags after `test rsi, rsi` on entry. -/
-def testFlags (n : Nat) : Flags := .ofResult (left n 0 &&& left n 0) false false
-
-/-- The counter and flags after `sub rsi, 1` in iteration `i`. -/
-def decr (n i : Nat) : BitVec 64 × Flags := subBorrow (left n i) ((1 : BitVec 32).signExtend 64) false
-
+/-- Contexts are given only where control arrives from elsewhere. -/
 inductive Φ : BitVec 64 → Ctx → Prop
-  | start : Φ 0 ⟨regsWith (elem 5 0) .int, [], 1, Flags.Any⟩
-  | counted : Φ 5 ⟨regsWith (elem 5 0) (.eq 5), [], 1, Flags.Any⟩
-  | fin (a : BitVec 64) : a ∈ [10, 12, 17, 19] → Φ a fin
-  /-- On entry to `sum`: the pointer is at element 0 and the counter is exactly `n`. -/
-  | entry (a : BitVec 64) (ret : Ctx) (rest : List Ty) (room n : Nat) :
-    a ∈ [24, 26] → CallerOk ret rest room →
-    Φ a (inSum ret rest room (elem n 0) (.eq (left n 0)) Flags.Any)
-  | tested (ret : Ctx) (rest : List Ty) (room n : Nat) : CallerOk ret rest room →
-    Φ 29 (inSum ret rest room (elem n 0) (.eq (left n 0)) (· = testFlags n))
-  /-- The loop invariant: after `i` elements, with `i < n`, the pointer is at
-  element `i` and the counter is exactly `n - i`. -/
-  | loop (a : BitVec 64) (ret : Ctx) (rest : List Ty) (room n i : Nat) :
-    a ∈ [35, 38] → CallerOk ret rest room → i < n →
-    Φ a (inSum ret rest room (elem n i) (.eq (left n i)) Flags.Any)
-  | advanced (ret : Ctx) (rest : List Ty) (room n i : Nat) : CallerOk ret rest room → i < n →
-    Φ 42 (inSum ret rest room (elem n (i + 1)) (.eq (left n i)) Flags.Any)
-  | decremented (ret : Ctx) (rest : List Ty) (room n i : Nat) : CallerOk ret rest room → i < n →
-    Φ 46 (inSum ret rest room (elem n (i + 1)) (.eq (decr n i).1) (· = (decr n i).2))
-  | done (ret : Ctx) (rest : List Ty) (room n : Nat) : CallerOk ret rest room →
-    Φ 52 ⟨fun _ => .int, .code ret :: rest, room, Flags.Any⟩
+  | start : Φ 0 ⟨fun r => if r = .rdi then elem 5 0 else .int, [], 1, Flags.Any⟩
+  | afterCall : Φ 10 fin
+  | spin : Φ 19 fin
+  | sum (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+    (sumSig n).CallerOk saved ret rest room → Φ 24 ((sumSig n).entry saved ret rest room)
+  /-- The loop invariant, for `i < n` elements consumed. -/
+  | loop (n i : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+    (sumSig n).CallerOk saved ret rest room → i < n →
+    Φ 35 ⟨sumRegs n i saved, .code ret :: rest, room, Flags.Any⟩
+  | done (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+    (sumSig n).CallerOk saved ret rest room → Φ 52 ((sumSig n).exit saved ret rest room)
 
 def arrayLayout : Layout := ⟨List.replicate 5 .int, false⟩
 
@@ -139,127 +125,58 @@ theorem left_ne_zero {n i : Nat} (h : left n i ≠ 0) : i < n := by
   intro h0
   exact h (by simp [left, h0])
 
-theorem decr_fst {n i : Nat} (hi : i < n) : (decr n i).1 = left n (i + 1) := by
+/-- Decrementing the counter gives the counter for one more element consumed. -/
+theorem decr {n i : Nat} (hi : i < n) :
+    (AluOp.apply .sub (left n i) ((1 : BitVec 32).signExtend 64)).1 = left n (i + 1) := by
   have h1 : ((1 : BitVec 32).signExtend 64) = 1 := by decide
-  simp only [decr, subBorrow_fst, h1, left]
+  simp only [AluOp.apply, subBorrow_fst, h1, left]
   bv_omega
 
 /-! ## The program is well typed -/
 
-/-- Every register type is an integer type. -/
-theorem subInt (Γ : Ctx) : ∀ r, r ≠ .rsp → Sub (Γ.regs r) Ty.int := fun _ _ => .int _
-
-theorem accFin {a : BitVec 64} (ha : a ∈ [10, 12, 17, 19]) (Γ : Ctx) (hs : Γ.stack = [])
-    (hm : Γ.room = 1) : Accepts Φ a Γ :=
-  ⟨fin, .fin a ha, ⟨subInt Γ, by rw [hs]; exact .nil, hm, fun _ _ => trivial⟩⟩
-
-/-- Register types are compared one register at a time. -/
-macro "regs_sub" : tactic =>
-  `(tactic| (intro r _; cases r <;> first | exact Sub.refl _ | exact Sub.int _))
-
-/-- `sum` is well typed for every caller and every array length. -/
-theorem sumOk {a : BitVec 64} {Γ : Ctx} (h : Φ a Γ) (ha : 24 ≤ a) :
-    ∃ i len, fetch a = some (i, len) ∧ HasType Φ (a + len) Γ i := by
+theorem blocksOk : BlocksOk Φ fetch := by
+  intro a Γ h
   cases h with
-  | start => exact absurd ha (by decide)
-  | counted => exact absurd ha (by decide)
-  | fin a h =>
-    have : a = 10 ∨ a = 12 ∨ a = 17 ∨ a = 19 := by simpa using h
-    rcases this with rfl | rfl | rfl | rfl <;> exact absurd ha (by decide)
-  | entry a ret rest room n h hK =>
-    have : a = 24 ∨ a = 26 := by simpa using h
-    rcases this with rfl | rfl
-    · -- xor eax, eax
-      exact ⟨_, _, rfl, .straight (.aluRR (by decide) (fun h => absurd h (by decide)))
-        ⟨_, .entry 26 ret rest room n (by decide) hK, ⟨by regs_sub, .refl _, rfl, fun _ _ => trivial⟩⟩⟩
-    · -- test rsi, rsi: the flags now say exactly whether the count is zero
-      exact ⟨_, _, rfl, .straight (.testExact (by decide) (by decide) rfl rfl)
-        ⟨_, .tested ret rest room n hK, CtxSub.refl _⟩⟩
-  | tested ret rest room n hK =>
-    -- je done
-    refine ⟨_, _, rfl, .jcc ?_ ?_ ?_⟩
+  | start =>
+    -- mov esi, 5; call sum
+    ty_steps
+    exact .last rfl (FnSig.call_ok (sig := sumSig 5) (fun _ _ _ _ hK => .sum 5 _ _ _ _ hK) rfl
+      Φ.afterCall (by sub_regs) (by ctx_sub) (by decide))
+  | afterCall =>
+    -- mov edi, eax; mov eax, 60; syscall
+    ty_steps
+    exact .last rfl (.syscall (by ty_accept Φ.spin))
+  | spin => exact .last rfl (.jmp (by ty_accept Φ.spin))
+  | sum n saved ret rest room hK =>
+    -- xor eax, eax; test rsi, rsi; je done
+    ty_steps
+    refine .last rfl (.jcc ?_ ?_ ?_)
     · rintro f rfl; exact ⟨_, rfl⟩
-    · -- taken: nothing more is needed at `done`
-      rintro f rfl -
-      exact ⟨_, .done ret rest room n hK, ⟨subInt _, .refl _, rfl, fun _ _ => trivial⟩⟩
-    · -- not taken: the count is not zero, so the loop invariant holds with `i = 0`
+    · rintro f rfl -
+      ty_accept (Φ.done n saved ret rest room hK)
+    · -- not taken: the count is not zero, so the invariant holds with `i = 0`
       rintro f rfl hne
-      have h0 : left n 0 ≠ 0 := by
-        intro h0
-        simp [Cond.eval, testFlags, Flags.ofResult, h0] at hne
-      exact ⟨_, .loop 35 ret rest room n 0 (by decide) hK (left_ne_zero h0),
-        ⟨fun _ _ => .refl _, .refl _, rfl, fun _ _ => trivial⟩⟩
-  | loop a ret rest room n i h hK hi =>
-    have : a = 35 ∨ a = 38 := by simpa using h
-    rcases this with rfl | rfl
-    · -- add rax, [rdi]: in bounds because `i < n`
-      exact ⟨_, _, rfl, .straight
-        (.aluMem (i := 0) (τ := .int) (by decide) (by decide) rfl
-          (by simp [hi]) ⟨rfl, by decide⟩ (fun h => absurd h (by decide)))
-        ⟨_, .loop 38 ret rest room n i (by decide) hK hi,
-          ⟨by regs_sub, .refl _, rfl, fun _ _ => trivial⟩⟩⟩
-    · -- add rdi, 8: still a pointer into the array, one element on
-      exact ⟨_, _, rfl, .straight (.addPtr (k := 1) (by decide) rfl ⟨rfl, by decide⟩)
-        ⟨_, .advanced ret rest room n i hK hi, ⟨by regs_sub, .refl _, rfl, fun _ _ => trivial⟩⟩⟩
-  | advanced ret rest room n i hK hi =>
-    -- sub rsi, 1: the counter and the flags are known exactly
-    exact ⟨_, _, rfl, .straight (.aluExact (by decide) rfl rfl)
-      ⟨_, .decremented ret rest room n i hK hi, ⟨by regs_sub, .refl _, rfl, fun _ h => h⟩⟩⟩
-  | decremented ret rest room n i hK hi =>
-    -- jne loop
-    refine ⟨_, _, rfl, .jcc ?_ ?_ ?_⟩
+      ty_accept (Φ.loop n 0 saved ret rest room hK ?_)
+      apply left_ne_zero
+      intro h0
+      simp [Cond.eval, Flags.ofResult, h0] at hne
+  | loop n i saved ret rest room hK hi =>
+    -- add rax, [rdi]; add rdi, 8; sub rsi, 1; jne loop
+    ty_steps
+    refine .last rfl (.jcc ?_ ?_ ?_)
     · rintro f rfl; exact ⟨_, rfl⟩
     · -- taken: the counter is not zero, so `i + 1 < n` and the invariant holds again
       rintro f rfl hne
-      have hd := decr_fst (n := n) hi
       have h0 : left n (i + 1) ≠ 0 := by
         intro h0
-        rw [← hd] at h0
-        simp [Cond.eval, decr, subBorrow_zf] at hne
-        exact hne (by simpa [decr] using h0)
-      refine ⟨_, .loop 35 ret rest room n (i + 1) (by decide) hK (left_ne_zero h0),
-        ⟨?_, .refl _, rfl, fun _ _ => trivial⟩⟩
-      intro r _
-      cases r <;> first | exact Sub.refl _ | exact Sub.int _ | exact hd ▸ Sub.refl _
-    · -- not taken: fall through to `done`
-      rintro f rfl -
-      exact ⟨_, .done ret rest room n hK, ⟨subInt _, .refl _, rfl, fun _ _ => trivial⟩⟩
-  | done ret rest room n hK =>
-    -- ret
-    exact ⟨_, _, rfl, .ret rfl hK⟩
-
-theorem programOk : ProgramOk Φ fetch := by
-  intro a Γ h
-  by_cases ha : 24 ≤ a
-  · exact sumOk h ha
-  · cases h with
-    | start => -- mov esi, 5
-      exact ⟨_, _, rfl, .straight (.movRI (by decide))
-        ⟨_, .counted, ⟨by regs_sub, .nil, rfl, fun _ _ => trivial⟩⟩⟩
-    | counted => -- call sum
-      exact ⟨_, _, rfl, .call (n := 0) rfl (Φ.fin 10 (by decide))
-        ⟨_, .entry 24 fin [] 0 5 (by decide) (CtxSub.refl _), CtxSub.refl _⟩⟩
-    | fin a h =>
-      have : a = 10 ∨ a = 12 ∨ a = 17 ∨ a = 19 := by simpa using h
-      rcases this with rfl | rfl | rfl | rfl
-      · -- mov edi, eax
-        exact ⟨_, _, rfl, .straight (.movRR32 (by decide)) (accFin (by decide) _ rfl rfl)⟩
-      · -- mov eax, 60
-        exact ⟨_, _, rfl, .straight (.movRI (by decide)) (accFin (by decide) _ rfl rfl)⟩
-      · -- syscall
-        exact ⟨_, _, rfl, .syscall (accFin (by decide) _ rfl rfl)⟩
-      · -- jmp 19
-        exact ⟨_, _, rfl, .jmp (accFin (by decide) _ rfl rfl)⟩
-    | entry a _ _ _ _ h =>
-      have : a = 24 ∨ a = 26 := by simpa using h
-      rcases this with rfl | rfl <;> exact absurd (by decide) ha
-    | tested => exact absurd (by decide) ha
-    | loop a _ _ _ _ _ h =>
-      have : a = 35 ∨ a = 38 := by simpa using h
-      rcases this with rfl | rfl <;> exact absurd (by decide) ha
-    | advanced => exact absurd (by decide) ha
-    | decremented => exact absurd (by decide) ha
-    | done => exact absurd (by decide) ha
+        rw [← decr hi] at h0
+        simp [Cond.eval, AluOp.apply, subBorrow_zf] at hne
+        exact hne (by simpa [AluOp.apply] using h0)
+      ty_accept (Φ.loop n (i + 1) saved ret rest room hK (left_ne_zero h0))
+      exact Sub.of_eq (decr hi)
+    · rintro f rfl -
+      ty_accept (Φ.done n saved ret rest room hK)
+  | done n saved ret rest room hK => exact .last rfl (FnSig.ret_ok hK)
 
 /-! ## The memory typing and the starting state -/
 
@@ -284,7 +201,7 @@ theorem startOk : StateOk Φ fetch linux Ψ start := by
 /-- The program never gets stuck, never page-faults and never executes an
 invalid opcode. In particular every array access is in bounds. -/
 theorem safe : Safe fetch linux start :=
-  soundness programOk memOk (linuxOk fetch Ψ) startOk
+  soundness_blocks blocksOk memOk (linuxOk fetch Ψ) startOk
 
 /-- So running it for any number of steps gives an acceptable outcome. -/
 theorem run_safe (n : Nat) : (run fetch linux n start).isSafe = true :=
