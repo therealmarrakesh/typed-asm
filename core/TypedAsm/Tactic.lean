@@ -213,15 +213,22 @@ premises are attempted in order and then again, because proving one can
 determine what an earlier one refers to. -/
 syntax "ty_rule " term : tactic
 
+/-- Like `ty_rule`, but proves the premises strictly in order and gives up
+at the first that fails. For rules whose first premise computes what the
+others refer to, where carrying on after a failure would be slow. -/
+syntax "ty_rule_ordered " term : tactic
+
 /-- Proves that an operand can be read, can be written, or holds a code
 pointer: it is a register, a stack slot, a field of a pointer, or a field
 of a block at a fixed address. -/
 macro "ty_operand" : tactic =>
   `(tactic| first
-    | ty_rule ReadOk.reg | ty_rule ReadOk.slot | ty_rule ReadOk.field | ty_rule ReadOk.global_of
+    | ty_rule ReadOk.reg | ty_rule ReadOk.slot | ty_rule ReadOk.field
+    | ty_rule_ordered ReadOk.global_of
     | ty_rule WriteIntOk.reg | ty_rule WriteIntOk.slot | ty_rule WriteIntOk.field
-    | ty_rule WriteIntOk.global_of
-    | ty_rule CodeAt.reg | ty_rule CodeAt.slot | ty_rule CodeAt.field | ty_rule CodeAt.global_of)
+    | ty_rule_ordered WriteIntOk.global_of
+    | ty_rule CodeAt.reg | ty_rule CodeAt.slot | ty_rule CodeAt.field
+    | ty_rule_ordered CodeAt.global_of)
 
 macro_rules
   | `(tactic| ty_side) =>
@@ -257,6 +264,21 @@ the rules written for its shape, and when none applies they say which
 premise of each stood in the way. -/
 
 open Lean Meta Elab Tactic
+
+elab_rules : tactic
+  | `(tactic| ty_rule_ordered $r) => Tactic.withoutRecover do
+    evalTactic (← `(tactic| refine' $r ..))
+    for g in ← getGoals do
+      if ← g.isAssigned then continue
+      unless ← isProp (← g.getType) do continue
+      setGoals [g]
+      evalTactic (← `(tactic| ty_side))
+      unless (← getUnsolvedGoals).isEmpty do throwError "premise not proved"
+    setGoals []
+
+/-- The rules whose premises must be proved in order. -/
+def orderedRules : List Name := [``Straight.loadGlobal_of, ``Straight.storeGlobal_of,
+  ``ReadOk.global_of, ``WriteIntOk.global_of, ``CodeAt.global_of]
 
 /-- The straight-line rules that can type an instruction of this shape, most
 informative first. An empty list means the type system has no rule for it. -/
@@ -354,7 +376,10 @@ private def knownInstr (e : Expr) : MetaM (Option Instr) := do
 private def tryRule (rule : Name) : TacticM Bool := do
   let saved ← saveState
   try
-    evalTactic (← `(tactic| ty_rule $(mkIdent rule)))
+    if orderedRules.contains rule then
+      evalTactic (← `(tactic| ty_rule_ordered $(mkIdent rule)))
+    else
+      evalTactic (← `(tactic| ty_rule $(mkIdent rule)))
     return true
   catch _ =>
     saved.restore
@@ -479,8 +504,12 @@ private partial def explainPremises (rule : Name) : TacticM (Option MessageData)
         catch _ =>
           attempt.restore
           pure false
-      if !ok && pass == 1 then
-        failed := failed.push (g, ← instantiateMVars (← g.getType))
+      if !ok then
+        let ty ← instantiateMVars (← g.getType)
+        -- Nothing after a failed block lookup can be judged.
+        if let some (_, lhs, _) := ty.eq? then
+          if lhs.isAppOf ``MemTy.locate then return some (← describePremise ty)
+        if pass == 1 then failed := failed.push (g, ty)
   -- A premise about the displacement is reported first: the others cannot
   -- be judged until it holds. After that, prefer a premise with no unknowns.
   let isDisp (e : MVarId × Expr) : Bool := e.2.isAppOf ``slotDisp || e.2.isAppOf ``innerDisp
