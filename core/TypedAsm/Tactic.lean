@@ -835,7 +835,7 @@ private def explainRule (rule : Name) : TacticM MessageData := do
 /-- Types the instruction in a `Straight Ψ next Γ i ?Γ'` goal, or explains why not. -/
 def typeStraight : TacticM Unit := withMainContext do
   let goal ← getMainGoal
-  let ty ← instantiateMVars (← goal.getType)
+  let ty := (← instantiateMVars (← goal.getType)).consumeMData
   unless ty.isAppOfArity ``Straight 5 do
     throwError "ty_straight: the goal is not of the form `Straight Ψ next Γ i Γ'`"
   let instrExpr := ty.getAppArgs[3]!
@@ -888,7 +888,7 @@ private def syscallNumber (ctx : Expr) : MetaM (Option Nat) := do
 /-- Types a `write` or `read` at the head of a block goal, leaving the rest
 of the block as the main goal. -/
 private def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
-  let ctx := (← instantiateMVars (← goal.getType)).getAppArgs[5]!
+  let ctx := (← instantiateMVars (← goal.getType)).consumeMData.getAppArgs[5]!
   let gs ← try
       if nr == 1 then
         runOn goal (do evalTactic (← `(tactic|
@@ -939,7 +939,7 @@ private def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
 instruction, leaving the rest of the block as the main goal. -/
 private partial def typeStep (named : Bool := false) : TacticM StepResult := withMainContext do
   let goal ← getMainGoal
-  let ty ← instantiateMVars (← goal.getType)
+  let ty := (← instantiateMVars (← goal.getType)).consumeMData
   unless ty.isAppOf ``BlockOk do return .notABlock
   let saved ← saveState
   let others := (← getGoals).drop 1
@@ -1242,7 +1242,7 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
   | .syscall =>
     -- `write` and `read` are typed as steps; what reaches here is `exit`, or
     -- a call the type system has no rule for.
-    let ctx := (← instantiateMVars (← goal.getType)).getAppArgs[5]!
+    let ctx := (← instantiateMVars (← goal.getType)).consumeMData.getAppArgs[5]!
     match ← syscallNumber ctx with
     | some 60 =>
       let gs ← try
@@ -1483,7 +1483,20 @@ elab "ty_call " sig:term : tactic => do
     else if t.isForall then
       left := left ++ (← runOn g (do evalTactic (← `(tactic| sub_regs))))
     else if t.isAppOf ``LE.le then
-      left := left ++ (← runOn g (do evalTactic (← `(tactic| first | decide | omega))))
+      -- The stack the function needs is a field of its signature: the
+      -- signature is unfolded so that arithmetic can see the number.
+      let sigName? := (t.appFn!.appArg!.getAppArgs.back?.bind (·.getAppFn.constName?))
+      let after ← try
+          runOn g (do evalTactic (← `(tactic| first | decide | omega)))
+        catch e =>
+          match sigName? with
+          | some c =>
+            try
+              runOn g (do evalTactic (← `(tactic|
+                (unfold $(mkIdent c); dsimp only; first | decide | omega))))
+            catch _ => throw e
+          | none => throw e
+      left := left ++ after
   setGoals (left ++ others)
 
 /-- `ty_code_ptr r to Δ`: register `r` holds exactly the address of a label
