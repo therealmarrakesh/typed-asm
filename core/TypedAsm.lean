@@ -8,6 +8,7 @@ import TypedAsm.Types
 import TypedAsm.Typing
 import TypedAsm.Soundness
 import TypedAsm.Fn
+import TypedAsm.Program
 import TypedAsm.Asm
 import TypedAsm.Linux
 import TypedAsm.Blocks
