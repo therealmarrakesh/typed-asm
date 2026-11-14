@@ -45,7 +45,7 @@ def recordLayout : Layout := ⟨[.int, .int], true, none⟩
 /-- One memory block: the record. -/
 def blocks : List (BitVec 64 × Layout) := [(dataBase, recordLayout)]
 
-def Ψ : MemTy := .ofList blocks
+def Ψ : MemTy := .ofList blocks []
 
 /-! ## The program is well typed -/
 

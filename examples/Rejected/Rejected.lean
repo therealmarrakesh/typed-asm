@@ -46,7 +46,7 @@ def fetch : Fetch := Asm.fetch 0 code
 
 /-- No address may be jumped to, and there are no memory blocks. -/
 def Φ : CodeTy := fun _ _ => False
-def Ψ : MemTy := .ofList []
+def Ψ : MemTy := .ofList [] []
 
 /-- `rdi`: a writable record of two integers. `rsi`: the same, read-only.
 `rdx`: a writable record whose second field is a pointer. Everything else
@@ -327,7 +327,7 @@ def buffer (fields : List Ty) : Ctx :=
 #guard_msgs in
 example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .unknown) bare := by ty_block
 
-/-- error: `syscall`: call number 11 has no rule. The calls that can be typed are `read` (0), `write` (1) and `exit` (60) -/
+/-- error: `syscall`: call number 11 has no rule. The calls that can be typed are `read` (0), `write` (1), `mmap` (9) and `exit` (60) -/
 #guard_msgs in
 example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .unmodelled) bare := by ty_block
 
@@ -345,6 +345,67 @@ example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .tooLong) (buffer [.int,
 example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .overPointer)
     (buffer [.int, .ptr [.int] false 0]) := by
   ty_block
+
+/-! ## Asking for memory
+
+An `mmap` is typed only in the form that gives fresh private memory, for a
+block whose fields fit in the length asked for and all admit zero. What it
+hands back may be an error number, so it cannot be used as a pointer before
+it has been tested. -/
+
+inductive Map
+  | unchecked | notZero | tooShort | shared | noKind
+  deriving DecidableEq
+
+/-- The arguments of an `mmap` of `len` bytes with the given flags, and the call. -/
+def mmapCall (len flags : BitVec 32) : List (Asm Map) := [
+  .ins (.mov .w32 (.rm_i (.reg .rax) 9)), .ins (.mov .w32 (.rm_i (.reg .rsi) len)),
+  .ins (.mov .w32 (.rm_i (.reg .rdx) 3)), .ins (.mov .w32 (.rm_i (.reg .r10) flags)),
+  .ins .syscall]
+
+def maps : List (Asm Map) :=
+  [.label .unchecked] ++ mmapCall 16 0x22 ++
+    [.ins (.mov .w64 (.r_m .rdx (.sib (some .rax) none 0))), .ins .ud2] ++
+  [.label .notZero] ++ mmapCall 16 0x22 ++ [.ins .ud2] ++
+  [.label .tooShort] ++ mmapCall 8 0x22 ++ [.ins .ud2] ++
+  [.label .shared] ++ mmapCall 16 0x21 ++ [.ins .ud2] ++
+  [.label .noKind] ++ mmapCall 16 0x22 ++ [.ins .ud2]
+
+def mapFetch : Fetch := Asm.fetch 0 maps
+
+/--
+error: at address 23: cannot type `mov rdx, qword ptr [rax]` in the current context
+• loadField: `rax` must hold a pointer, but its type is `pointer to [int, int] or an error number`: it must be tested for an error first, and `ty_err` then gives the two cases
+-/
+#guard_msgs in
+example : BlockOk Φy mapFetch linux Ψ (Asm.addr maps 0 .unchecked) bare := by
+  ty_steps
+  ty_mmap [.int, .int]
+  ty_block
+
+/-- error: `mmap`: every field of the new block must admit zero, since that is what fresh memory holds: an integer, or a value that may be null -/
+#guard_msgs in
+example : BlockOk Φy mapFetch linux Ψ (Asm.addr maps 0 .notZero) bare := by
+  ty_steps
+  ty_mmap [.int, .ptr [.int] true 0]
+
+/-- error: `mmap`: the block's fields do not fit in the length in `rsi` -/
+#guard_msgs in
+example : BlockOk Φy mapFetch linux Ψ (Asm.addr maps 0 .tooShort) bare := by
+  ty_steps
+  ty_mmap [.int, .int]
+
+/-- error: `mmap` is typed only for private memory that is not a file: `r10` must hold exactly 0x22, but its type is `exactly 0x21` -/
+#guard_msgs in
+example : BlockOk Φy mapFetch linux Ψ (Asm.addr maps 0 .shared) bare := by
+  ty_steps
+  ty_mmap [.int, .int]
+
+/-- error: `mmap`: the memory typing declares no kind 7 -/
+#guard_msgs in
+example : BlockOk Φy mapFetch linux Ψ (Asm.addr maps 0 .noKind) bare := by
+  ty_steps
+  ty_mmap_kind 7
 
 /-! ## Accepted, for contrast
 

@@ -59,7 +59,7 @@ def arrayLayout : Layout := ⟨List.replicate 5 .int, false, none⟩
 /-- One memory block: the array. -/
 def blocks : List (BitVec 64 × Layout) := [(dataBase, arrayLayout)]
 
-def Ψ : MemTy := .ofList blocks
+def Ψ : MemTy := .ofList blocks []
 
 /-! ## Arithmetic facts the loop relies on -/
 

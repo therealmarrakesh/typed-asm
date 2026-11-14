@@ -39,6 +39,12 @@ def exitsWith (code : BitVec 32) : Outcome → Bool
 def wroteAndExited (out : String) (code : BitVec 32) (r : State × Outcome) : Bool :=
   r.1.world.output == bytesOf out && exitsWith code r.2
 
+/-- Where the model puts the memory of each request when a program is run
+from the command line: 256 MiB apart, well away from the program and its
+stack. A request for more than that runs into the next and is refused. -/
+def defaultPlace : Nat → Option (BitVec 64) :=
+  fun i => some (BitVec.ofNat 64 (0x100000000000 + 0x10000000 * i))
+
 private partial def readAll (h : IO.FS.Stream) (acc : ByteArray) : IO ByteArray := do
   let chunk ← h.read 4096
   if chunk.isEmpty then return acc else readAll h (acc ++ chunk)
@@ -67,6 +73,7 @@ def exeMain (entry : Nat) (image data : List Byte) (start : State) (args : List 
         let bytes := input.toList.map fun b => BitVec.ofNat 8 b.toNat
         pure { start with world := { start.world with input := [.bytes bytes] } }
       else pure start
+    let start := { start with world := { start.world with place := defaultPlace } }
     let (final, outcome) := runMemFinal linux fuel start
     let out ← IO.getStdout
     out.write (ByteArray.mk (final.world.output.map fun b => b.toNat.toUInt8).toArray)

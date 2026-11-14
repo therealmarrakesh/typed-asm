@@ -53,6 +53,12 @@ theorem Sub.trans {τ υ φ : Ty} (h₁ : Sub τ υ) (h₂ : Sub υ φ) : Sub τ
     | nullable h' => exact .nullable (ih h')
     | null => exact .null _
     | nullableMono h' => exact .nullableMono (ih h')
+  | orErr _ ih => exact .orErr (ih h₁)
+  | orErrMono h ih =>
+    cases h₁ with
+    | refl => exact .orErrMono h
+    | orErr h' => exact .orErr (ih h')
+    | orErrMono h' => exact .orErrMono (ih h')
 
 theorem SubList.refl : ∀ σ : List Ty, SubList σ σ
   | [] => .nil
@@ -586,20 +592,152 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
     Straight Ψ next Γ (.test .w64 (.reg r) (.reg r'))
       { Γ with flags := (· = Flags.ofResult (a &&& b) false false) }
 
+/-! ## Rules keep holding when the memory typing grows
+
+A rule looks at the memory typing only to find a block at a known address,
+and a block that was there still is. -/
+
+theorem ReadOk.ext {Ψ Ψ' : MemTy} {next : BitVec 64} {Γ : Ctx} {n : Nat} {rm : RM}
+    (h : ReadOk Ψ next Γ n rm) (he : Ψ.Ext Ψ') : ReadOk Ψ' next Γ n rm := by
+  cases h with
+  | global hl => apply ReadOk.global (he.blocks _ _ hl) <;> assumption
+  | _ =>
+    first
+    | exact .reg _
+    | (apply ReadOk.field <;> assumption)
+    | (apply ReadOk.slot <;> assumption)
+    | (apply ReadOk.indexed <;> assumption)
+
+theorem WriteIntOk.ext {Ψ Ψ' : MemTy} {next : BitVec 64} {Γ Γ' : Ctx} {n : Nat} {rm : RM}
+    (h : WriteIntOk Ψ next Γ n rm Γ') (he : Ψ.Ext Ψ') : WriteIntOk Ψ' next Γ n rm Γ' := by
+  cases h with
+  | global hl => apply WriteIntOk.global (he.blocks _ _ hl) <;> assumption
+  | _ =>
+    first
+    | (apply WriteIntOk.reg <;> assumption)
+    | (apply WriteIntOk.field <;> assumption)
+    | (apply WriteIntOk.slot <;> assumption)
+    | (apply WriteIntOk.indexed <;> assumption)
+
+theorem Holds.ext {Ψ Ψ' : MemTy} {next : BitVec 64} {Γ : Ctx} {rm : RM} {τ : Ty}
+    (h : Holds Ψ next Γ rm τ) (he : Ψ.Ext Ψ') : Holds Ψ' next Γ rm τ := by
+  cases h with
+  | global hl => apply Holds.global (he.blocks _ _ hl) <;> assumption
+  | _ =>
+    first
+    | (apply Holds.reg <;> assumption)
+    | (apply Holds.field <;> assumption)
+    | (apply Holds.slot <;> assumption)
+    | (apply Holds.indexed <;> assumption)
+
+/-- Closes a premise of a rule being carried to a larger memory typing. -/
+local macro "ext_premise" : tactic =>
+  `(tactic| first
+    | assumption
+    | exact ReadOk.ext (by assumption) (by assumption)
+    | exact WriteIntOk.ext (by assumption) (by assumption))
+
+/-- Carries a rule, whichever it is, to a larger memory typing. -/
+local macro "ext_rule" : tactic =>
+  `(tactic| first
+    | (apply Straight.nop <;> ext_premise)
+    | (apply Straight.movRR64 <;> ext_premise)
+    | (apply Straight.movRR32 <;> ext_premise)
+    | (apply Straight.movRI <;> ext_premise)
+    | (apply Straight.movAbs <;> ext_premise)
+    | (apply Straight.leaRip <;> ext_premise)
+    | (apply Straight.leaSp <;> ext_premise)
+    | (apply Straight.lea <;> ext_premise)
+    | (apply Straight.loadField <;> ext_premise)
+    | (apply Straight.storeField <;> ext_premise)
+    | (apply Straight.loadIndexed <;> ext_premise)
+    | (apply Straight.storeIndexed <;> ext_premise)
+    | (apply Straight.loadStack <;> ext_premise)
+    | (apply Straight.storeStack <;> ext_premise)
+    | (apply Straight.push <;> ext_premise)
+    | (apply Straight.pop <;> ext_premise)
+    | (apply Straight.aluRR <;> ext_premise)
+    | (apply Straight.aluRI <;> ext_premise)
+    | (apply Straight.aluExact <;> ext_premise)
+    | (apply Straight.aluExactRR <;> ext_premise)
+    | (apply Straight.allocFrame <;> ext_premise)
+    | (apply Straight.freeFrame <;> ext_premise)
+    | (apply Straight.addPtr <;> ext_premise)
+    | (apply Straight.aluStoreR <;> ext_premise)
+    | (apply Straight.aluStoreI <;> ext_premise)
+    | (apply Straight.cmpR <;> ext_premise)
+    | (apply Straight.cmpI <;> ext_premise)
+    | (apply Straight.aluLoad <;> ext_premise)
+    | (apply Straight.testRM <;> ext_premise)
+    | (apply Straight.negRM <;> ext_premise)
+    | (apply Straight.notRM <;> ext_premise)
+    | (apply Straight.shiftImm <;> ext_premise)
+    | (apply Straight.shiftCl <;> ext_premise)
+    | (apply Straight.mulRM <;> ext_premise)
+    | (apply Straight.imulRM <;> ext_premise)
+    | (apply Straight.imul2RM <;> ext_premise)
+    | (apply Straight.imul3RM <;> ext_premise)
+    | (apply Straight.popcntRM <;> ext_premise)
+    | (apply Straight.bswap <;> ext_premise)
+    | (apply Straight.cdq <;> ext_premise)
+    | (apply Straight.cqo <;> ext_premise)
+    | (apply Straight.movsxdRM <;> ext_premise)
+    | (apply Straight.cmovRM <;> ext_premise)
+    | (apply Straight.setccRM <;> ext_premise)
+    | (apply Straight.movzxRM <;> ext_premise)
+    | (apply Straight.movsxRM <;> ext_premise)
+    | (apply Straight.loadInt <;> ext_premise)
+    | (apply Straight.storeInt <;> ext_premise)
+    | (apply Straight.storeImm <;> ext_premise)
+    | (apply Straight.store8RM <;> ext_premise)
+    | (apply Straight.store16RM <;> ext_premise)
+    | (apply Straight.xorSelf <;> ext_premise)
+    | (apply Straight.mov32Exact <;> ext_premise)
+    | (apply Straight.aluExact32 <;> ext_premise)
+    | (apply Straight.aluExactRR32 <;> ext_premise)
+    | (apply Straight.shiftExact <;> ext_premise)
+    | (apply Straight.leaExactB <;> ext_premise)
+    | (apply Straight.leaExactBI <;> ext_premise)
+    | (apply Straight.negExact <;> ext_premise)
+    | (apply Straight.notExact <;> ext_premise)
+    | (apply Straight.imul2Exact <;> ext_premise)
+    | (apply Straight.imul3Exact <;> ext_premise)
+    | (apply Straight.mulDivExact <;> ext_premise)
+    | (apply Straight.cdqExact <;> ext_premise)
+    | (apply Straight.cqoExact <;> ext_premise)
+    | (apply Straight.movsxdExact <;> ext_premise)
+    | (apply Straight.movzxExact <;> ext_premise)
+    | (apply Straight.movsxExact <;> ext_premise)
+    | (apply Straight.popcntExact <;> ext_premise)
+    | (apply Straight.bswapExact <;> ext_premise)
+    | (apply Straight.cmovExact <;> ext_premise)
+    | (apply Straight.setccExact <;> ext_premise)
+    | (apply Straight.testExact <;> ext_premise))
+
+theorem Straight.ext {Ψ Ψ' : MemTy} {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
+    (h : Straight Ψ next Γ i Γ') (he : Ψ.Ext Ψ') : Straight Ψ' next Γ i Γ' := by
+  cases h with
+  | loadGlobal hd hl haddr hi => exact .loadGlobal hd (he.blocks _ _ hl) haddr hi
+  | storeGlobal hs hl hwr haddr hi hsub => exact .storeGlobal hs (he.blocks _ _ hl) hwr haddr hi hsub
+  | _ => ext_rule
+
 /-! ## System calls
 
 What a system call does is up to the operating system, so a `syscall` is
 typed by a fact about the operating system at that point in the program. -/
 
 /-- From any state matching `Γ`, the system call returns to where it was made
-with a state matching `Γ'`. -/
+with a state matching `Γ'`. The memory typing may have grown by then, both
+before the call (`Ψ₁`) and because of it (`Ψ₂`): this is how a call that
+allocates memory is typed. -/
 def SysReturns (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (Γ Γ' : Ctx) : Prop :=
-  Ψ.WF → ∀ n s, WellTyped fetch sys Ψ n Γ s →
-    ∃ s', sys s = .next s' ∧ s'.rip = s.rip ∧ WellTyped fetch sys Ψ n Γ' s'
+  ∀ Ψ₁ : MemTy, Ψ.Ext Ψ₁ → Ψ₁.WF → ∀ n s, WellTyped fetch sys Ψ₁ n Γ s →
+    ∃ s', sys s = .next s' ∧ s'.rip = s.rip ∧
+      ∃ Ψ₂ : MemTy, Ψ₁.Ext Ψ₂ ∧ Ψ₂.WF ∧ WellTyped fetch sys Ψ₂ n Γ' s'
 
 /-- From any state matching `Γ`, the system call ends the program. -/
 def SysExits (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (Γ : Ctx) : Prop :=
-  ∀ n s, WellTyped fetch sys Ψ n Γ s → ∃ c, sys s = .exit c
+  ∀ Ψ₁ : MemTy, Ψ.Ext Ψ₁ → Ψ₁.WF → ∀ n s, WellTyped fetch sys Ψ₁ n Γ s → ∃ c, sys s = .exit c
 
 /-! ## All typed instructions -/
 
@@ -667,7 +805,8 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
   /-- Any instruction is well typed in a context no state can match. This is
   how code that is never reached, such as a `ud2` after an impossible branch,
   is typed. -/
-  | unreachable {Γ : Ctx} {i : Instr} : (∀ n s, ¬WellTyped fetch sys Ψ n Γ s) →
+  | unreachable {Γ : Ctx} {i : Instr} :
+    (∀ Ψ₁ : MemTy, Ψ.Ext Ψ₁ → Ψ₁.WF → ∀ n s, ¬WellTyped fetch sys Ψ₁ n Γ s) →
     HasType Φ fetch sys Ψ next Γ i
   /-- A register holding exactly the address of typed code may be treated as
   a pointer to that code. This is how a code pointer that is not a return
@@ -680,13 +819,15 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
   typed in `Γ`. This is how a value that is only known to be an integer gets
   a name: the family has one context for each value it could be. -/
   | cover {ι : Type} {Γ : Ctx} {Γ' : ι → Ctx} {i : Instr} :
-    (∀ n s, WellTyped fetch sys Ψ n Γ s → ∃ x, WellTyped fetch sys Ψ n (Γ' x) s) →
+    (∀ Ψ₁ : MemTy, Ψ.Ext Ψ₁ → Ψ₁.WF →
+      ∀ n s, WellTyped fetch sys Ψ₁ n Γ s → ∃ x, WellTyped fetch sys Ψ₁ n (Γ' x) s) →
     (∀ x, HasType Φ fetch sys Ψ next (Γ' x) i) → HasType Φ fetch sys Ψ next Γ i
   /-- The rule of consequence: an instruction typed in `Γ'` is typed in any
   context whose matching states all match `Γ'`. This is the escape from the
   syntactic rules to an arbitrary argument about states. -/
   | weaken {Γ Γ' : Ctx} {i : Instr} :
-    (∀ n s, WellTyped fetch sys Ψ n Γ s → WellTyped fetch sys Ψ n Γ' s) →
+    (∀ Ψ₁ : MemTy, Ψ.Ext Ψ₁ → Ψ₁.WF →
+      ∀ n s, WellTyped fetch sys Ψ₁ n Γ s → WellTyped fetch sys Ψ₁ n Γ' s) →
     HasType Φ fetch sys Ψ next Γ' i → HasType Φ fetch sys Ψ next Γ i
 
 /-! ## Programs and states -/

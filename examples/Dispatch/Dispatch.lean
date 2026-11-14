@@ -52,7 +52,7 @@ def tableLayout : Layout := ⟨[unary.ty, unary.ty], false, none⟩
 /-- One memory block: the table. -/
 def blocks : List (BitVec 64 × Layout) := [(dataBase, tableLayout)]
 
-def Ψ : MemTy := .ofList blocks
+def Ψ : MemTy := .ofList blocks []
 
 /-! ## The program is well typed -/
 
@@ -103,12 +103,12 @@ theorem Entry.stateOk {s : State} (h : Entry s) : StateOk Φ fetch linux Ψ s :=
       cases hi
       have e : word64 tableBytes (8 * 0) = Asm.addr code base .double := by decide +kernel
       rw [h.data.load64 (i := 8 * 0) (by decide), e]
-      exact blocksOk.hasTy_fn memOk (FnSig.at_label At.double) n
+      exact blocksOk.hasTy_fn (FnSig.at_label At.double) n
     | 1, hi =>
       cases hi
       have e : word64 tableBytes (8 * 1) = Asm.addr code base .square := by decide +kernel
       rw [h.data.load64 (i := 8 * 1) (by decide), e]
-      exact blocksOk.hasTy_fn memOk (FnSig.at_label At.square) n
+      exact blocksOk.hasTy_fn (FnSig.at_label At.square) n
     | i + 2, hi => simp [tableLayout] at hi)⟩
 
 /-! ## Safety -/

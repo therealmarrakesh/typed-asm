@@ -168,7 +168,7 @@ theorem regs_store (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) :
 /-- A store does not change any permission. -/
 theorem perm_store (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) :
     (s.store w a v).perm = s.perm := by
-  cases w <;> simp only [store, store64, store32, store16, store8]
+  cases w <;> simp only [store, store64, store32, store16, store8, State.perm]
 
 /-- A store does not change any register. -/
 theorem getReg_store (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) (r : Reg) :
@@ -217,6 +217,152 @@ def canRead (s : State) (a : BitVec 64) (n : Nat) : Bool :=
 /-- Whether all `n` bytes starting at `a` are writable. -/
 def canWrite (s : State) (a : BitVec 64) (n : Nat) : Bool :=
   (List.range n).all fun i => (s.perm (a + BitVec.ofNat 64 i)).writable
+
+/-- Whether `p` holds of every number below `n`. -/
+def allBelow (p : Nat → Bool) : Nat → Bool
+  | 0 => true
+  | n + 1 => if p n then allBelow p n else false
+
+theorem allBelow_iff {p : Nat → Bool} {n : Nat} :
+    allBelow p n = true ↔ ∀ i, i < n → p i = true := by
+  induction n with
+  | zero => simp [allBelow]
+  | succ n ih =>
+    simp only [allBelow]
+    constructor
+    · intro h i hi
+      split at h
+      · next hp =>
+        by_cases hin : i = n
+        · rw [hin]; exact hp
+        · exact ih.mp h i (by omega)
+      · cases h
+    · intro h
+      simp only [h n (by omega), ↓reduceIte]
+      exact ih.mpr (fun i hi => h i (by omega))
+
+/-- Whether none of the `n` bytes starting at `a` is accessible. It is asked
+page by page of the pages handed out since the start. Of the permissions
+there were to begin with it is asked byte by byte, unless the whole range
+lies where nothing was accessible to begin with. `unmapped_iff` says that
+this is the same as asking every byte. -/
+def unmapped (s : State) (a : BitVec 64) (n : Nat) : Bool :=
+  Pages.noneIn s.perms.pages (a.toNat / 4096) ((n + 4095) / 4096) &&
+  (decide (s.perms.clearFrom ≤ a.toNat) ||
+    allBelow (fun i => decide (s.perms.initial (a + BitVec.ofNat 64 i) = .none)) n)
+
+theorem unmapped_iff {s : State} {a : BitVec 64} {n : Nat} (hal : a.toNat % 4096 = 0)
+    (hfit : a.toNat + n ≤ 2 ^ 64) :
+    s.unmapped a n = true ↔ ∀ i, i < n → s.perm (a + BitVec.ofNat 64 i) = .none := by
+  simp only [unmapped, Bool.and_eq_true, Bool.or_eq_true, Pages.noneIn_iff, allBelow_iff,
+    decide_eq_true_eq]
+  have hnat : ∀ i, i < n → (a + BitVec.ofNat 64 i).toNat = a.toNat + i := by
+    intro i hi
+    rw [BitVec.toNat_add, BitVec.toNat_ofNat]
+    omega
+  have hpg : ∀ i, i < n → (a + BitVec.ofNat 64 i).toNat / 4096 = a.toNat / 4096 + i / 4096 := by
+    intro i hi
+    rw [hnat i hi]
+    omega
+  constructor
+  · rintro ⟨hp, hi⟩ i hin
+    show s.perms.get _ = _
+    simp only [Perms.get, hpg i hin, hp (i / 4096) (by omega), Bool.false_eq_true, ↓reduceIte]
+    rcases hi with hclear | hi
+    · exact s.perms.clear _ (by rw [hnat i hin]; omega)
+    · exact hi i hin
+  · intro h
+    constructor
+    · intro j hj
+      have hlt : j * 4096 < n := by omega
+      have hperm : s.perms.get (a + BitVec.ofNat 64 (j * 4096)) = .none := h (j * 4096) hlt
+      simp only [Perms.get, hpg _ hlt] at hperm
+      rw [show a.toNat / 4096 + j * 4096 / 4096 = a.toNat / 4096 + j by omega] at hperm
+      cases hc : s.perms.pages.contains (a.toNat / 4096 + j) with
+      | false => rfl
+      | true => simp [hc] at hperm
+    · right
+      intro i hin
+      have hperm : s.perms.get (a + BitVec.ofNat 64 i) = .none := h i hin
+      simp only [Perms.get] at hperm
+      split at hperm
+      · cases hperm
+      · exact hperm
+
+/-- Make the `size` bytes starting at `a` readable and writable, holding zero.
+This is what the kernel does when it hands a program fresh memory. It is
+meant for whole pages: the facts below are for a range that starts on a
+page, is a whole number of pages, and does not wrap. -/
+def mapZero (s : State) (a : BitVec 64) (size : Nat) : State :=
+  { s with perms := s.perms.mapRange a size, memory := s.memory.zero a size }
+
+section MapZero
+
+variable (s : State) {a : BitVec 64} {size : Nat} (hal : a.toNat % 4096 = 0)
+  (hsz : size % 4096 = 0) (hfit : a.toNat + size ≤ 2 ^ 64)
+
+include hal hsz hfit
+
+theorem perm_mapZero (x : BitVec 64) :
+    (s.mapZero a size).perm x = if (x - a).toNat < size then .rw else s.perm x :=
+  Perms.get_mapRange _ x hal hsz hfit
+
+theorem mem_mapZero (x : BitVec 64) :
+    (s.mapZero a size).mem x = if (x - a).toNat < size then 0 else s.mem x :=
+  Memory.get_zero _ x hal hsz hfit
+
+/-- A 64-bit value keeps its value when none of its bytes is in the fresh memory. -/
+theorem load64_mapZero_out {y : BitVec 64}
+    (h : ∀ j : BitVec 64, j < 8 → ¬ ((y + j) - a).toNat < size) :
+    (s.mapZero a size).load64 y = s.load64 y := by
+  refine load64_congr ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ <;> rw [mem_mapZero s hal hsz hfit]
+  · split
+    · next hc => exact absurd hc (by simpa using h 0 (by decide))
+    · rfl
+  · split
+    · next hc => exact absurd hc (h 1 (by decide))
+    · rfl
+  · split
+    · next hc => exact absurd hc (h 2 (by decide))
+    · rfl
+  · split
+    · next hc => exact absurd hc (by have := h 3 (by decide); rwa [show y + 3 = y + 2 + 1 by bv_omega] at this)
+    · rfl
+  · split
+    · next hc => exact absurd hc (h 4 (by decide))
+    · rfl
+  · split
+    · next hc => exact absurd hc (by have := h 5 (by decide); rwa [show y + 5 = y + 4 + 1 by bv_omega] at this)
+    · rfl
+  · split
+    · next hc => exact absurd hc (by have := h 6 (by decide); rwa [show y + 6 = y + 4 + 2 by bv_omega] at this)
+    · rfl
+  · split
+    · next hc => exact absurd hc (by have := h 7 (by decide); rwa [show y + 7 = y + 4 + 2 + 1 by bv_omega] at this)
+    · rfl
+
+/-- A 64-bit value that lies in the fresh memory is zero. -/
+theorem load64_mapZero_in {y : BitVec 64}
+    (h : ∀ j : BitVec 64, j < 8 → ((y + j) - a).toNat < size) :
+    (s.mapZero a size).load64 y = 0 := by
+  have h0 := h 0 (by decide)
+  have h1 := h 1 (by decide)
+  have h2 := h 2 (by decide)
+  have h3 := h 3 (by decide)
+  have h4 := h 4 (by decide)
+  have h5 := h 5 (by decide)
+  have h6 := h 6 (by decide)
+  have h7 := h 7 (by decide)
+  rw [show y + 0 = y by simp] at h0
+  rw [show y + 3 = y + 2 + 1 by bv_omega] at h3
+  rw [show y + 5 = y + 4 + 1 by bv_omega] at h5
+  rw [show y + 6 = y + 4 + 2 by bv_omega] at h6
+  rw [show y + 7 = y + 4 + 2 + 1 by bv_omega] at h7
+  simp only [load64, load32, load16, load8, mem_mapZero s hal hsz hfit, h0, h1, h2, h3, h4, h5,
+    h6, h7, ↓reduceIte]
+  rfl
+
+end MapZero
 
 theorem canRead_of_canWrite {s : State} {a : BitVec 64} {n : Nat} (h : s.canWrite a n = true) :
     s.canRead a n = true := by

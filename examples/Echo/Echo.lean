@@ -28,7 +28,7 @@ def bufferLayout : Layout := ⟨[.int, .int], true, none⟩
 
 def blocks : List (BitVec 64 × Layout) := [(dataBase, bufferLayout)]
 
-def Ψ : MemTy := .ofList blocks
+def Ψ : MemTy := .ofList blocks []
 
 /-! ## The program is well typed -/
 

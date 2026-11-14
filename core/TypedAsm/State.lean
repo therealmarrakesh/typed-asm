@@ -81,6 +81,12 @@ structure World where
   /-- How many bytes each coming `write` will accept at most, one entry per
   call. When none is left a `write` accepts everything it is given. -/
   writeCaps : List Nat := []
+  /-- Where the kernel would put the memory of each request for some, by the
+  number of the request, or `none` to refuse it. Nothing is assumed about
+  the choice; the model of `mmap` refuses a place that is not free. -/
+  place : Nat → Option (BitVec 64) := fun _ => none
+  /-- How many requests for memory have been made. -/
+  asked : Nat := 0
 
 /-- Everything written so far, in the order it was written. -/
 def World.output (w : World) : List (BitVec 8) :=
@@ -135,27 +141,246 @@ theorem get_set (f : RegFile) (r r' : Reg) (v : BitVec 64) :
 
 end RegFile
 
+/-! ## Sets of pages
+
+Memory that a program is given while it runs comes in whole pages. Which
+pages those are is kept as an ordered set of page numbers, so that asking
+about one costs the same however many there are. -/
+
+/-- The number of bytes in a page. -/
+def pageSize : Nat := 4096
+
+namespace Pages
+
+/-- Add the numbers `first`, …, `first + count - 1`. -/
+def insertRange (t : Std.TreeMap Nat Unit) (first : Nat) : Nat → Std.TreeMap Nat Unit
+  | 0 => t
+  | n + 1 => insertRange (t.insert (first + n) ()) first n
+
+theorem contains_insertRange (t : Std.TreeMap Nat Unit) (first n k : Nat) :
+    (insertRange t first n).contains k = (t.contains k || decide (first ≤ k ∧ k < first + n)) := by
+  induction n generalizing t with
+  | zero =>
+    have h0 : ¬ (first ≤ k ∧ k < first + 0) := by omega
+    show t.contains k = _
+    rw [decide_eq_false h0, Bool.or_false]
+  | succ n ih =>
+    rw [insertRange, ih, Std.TreeMap.contains_insert]
+    by_cases h : first + n = k
+    · subst h
+      simp
+    · have hc : (compare (first + n) k == Ordering.eq) = false := by
+        simp [h]
+      rw [hc, Bool.false_or]
+      congr 1
+      apply decide_eq_decide.mpr
+      omega
+
+/-- Whether none of the numbers `first`, …, `first + count - 1` is there. -/
+def noneIn (t : Std.TreeMap Nat Unit) (first : Nat) : Nat → Bool
+  | 0 => true
+  | n + 1 => if t.contains (first + n) then false else noneIn t first n
+
+theorem noneIn_iff (t : Std.TreeMap Nat Unit) (first n : Nat) :
+    noneIn t first n = true ↔ ∀ j, j < n → t.contains (first + j) = false := by
+  induction n with
+  | zero => simp [noneIn]
+  | succ n ih =>
+    simp only [noneIn]
+    constructor
+    · intro h j hj
+      split at h
+      · cases h
+      · next hc =>
+        by_cases hjn : j = n
+        · rw [hjn]; exact (Bool.not_eq_true _).mp hc
+        · exact ih.mp h j (by omega)
+    · intro h
+      simp only [h n (by omega), Bool.false_eq_true, ↓reduceIte]
+      exact ih.mpr (fun j hj => h j (by omega))
+
+/-- Remove the keys `first`, …, `first + count - 1`. -/
+def eraseRange (t : Std.TreeMap Nat (BitVec 8)) (first : Nat) : Nat → Std.TreeMap Nat (BitVec 8)
+  | 0 => t
+  | n + 1 => eraseRange (t.erase (first + n)) first n
+
+theorem contains_eraseRange (t : Std.TreeMap Nat (BitVec 8)) (first n k : Nat) :
+    (eraseRange t first n).contains k = (t.contains k && !decide (first ≤ k ∧ k < first + n)) := by
+  induction n generalizing t with
+  | zero =>
+    have h0 : ¬ (first ≤ k ∧ k < first + 0) := by omega
+    show t.contains k = _
+    rw [decide_eq_false h0, Bool.not_false, Bool.and_true]
+  | succ n ih =>
+    rw [eraseRange, ih, Std.TreeMap.contains_erase]
+    by_cases h : first + n = k
+    · subst h
+      simp
+    · have hc : (compare (first + n) k != Ordering.eq) = true := by
+        simp [h]
+      rw [hc, Bool.true_and]
+      congr 2
+      apply decide_eq_decide.mpr
+      omega
+
+theorem getD_eraseRange (t : Std.TreeMap Nat (BitVec 8)) (first n k : Nat) (d : BitVec 8) :
+    (eraseRange t first n).getD k d = if first ≤ k ∧ k < first + n then d else t.getD k d := by
+  induction n generalizing t with
+  | zero =>
+    have h0 : ¬ (first ≤ k ∧ k < first + 0) := by omega
+    show t.getD k d = _
+    simp only [h0, ↓reduceIte]
+  | succ n ih =>
+    rw [eraseRange, ih, Std.TreeMap.getD_erase]
+    by_cases h : first + n = k
+    · subst h
+      simp
+    · have hc : ¬ compare (first + n) k = Ordering.eq := by
+        simp [h]
+      simp only [hc, ↓reduceIte]
+      by_cases h1 : first ≤ k ∧ k < first + n
+      · simp only [h1, and_self, ↓reduceIte, show first ≤ k ∧ k < first + (n + 1) from ⟨h1.1, by omega⟩]
+      · have h2 : ¬ (first ≤ k ∧ k < first + (n + 1)) := by omega
+        simp only [h1, h2, ↓reduceIte]
+
+/-- A byte is among the `size` bytes from `a` exactly when its page is among
+the pages from `a`'s, provided the range is whole pages and does not wrap. -/
+theorem in_range_iff {a x : BitVec 64} {size : Nat} (hal : a.toNat % 4096 = 0)
+    (hsz : size % 4096 = 0) (hfit : a.toNat + size ≤ 2 ^ 64) :
+    (a.toNat / 4096 ≤ x.toNat / 4096 ∧ x.toNat / 4096 < a.toNat / 4096 + size / 4096) ↔
+      (x - a).toNat < size := by
+  have := x.isLt
+  have := a.isLt
+  rw [BitVec.toNat_sub]
+  omega
+
+end Pages
+
+/-- The permission of every byte: what it was to begin with, and the pages
+made readable and writable since. `clearFrom` is an address from which
+nothing was accessible to begin with; knowing one lets a whole range be
+found free without asking about each of its bytes. -/
+structure Perms where
+  initial : BitVec 64 → Perm
+  pages : Std.TreeMap Nat Unit := {}
+  clearFrom : Nat := 2 ^ 64
+  clear : ∀ x : BitVec 64, clearFrom ≤ x.toNat → initial x = .none := by
+    intro x h; exact absurd x.isLt (by omega)
+
+namespace Perms
+
+@[inline] def get (p : Perms) (x : BitVec 64) : Perm :=
+  if p.pages.contains (x.toNat / 4096) then .rw else p.initial x
+
+/-- The permissions given by a function. -/
+def ofFun (f : BitVec 64 → Perm) : Perms :=
+  { initial := f }
+
+@[simp] theorem get_ofFun (f : BitVec 64 → Perm) (x : BitVec 64) : (ofFun f).get x = f x := by
+  simp [get, ofFun]
+
+/-- No byte is accessible. -/
+def none : Perms :=
+  { initial := fun _ => .none, clearFrom := 0, clear := fun _ _ => rfl }
+
+@[simp] theorem get_none (x : BitVec 64) : none.get x = .none := by
+  simp [get, none]
+
+/-- Give the bytes that `inRange` picks out the permission `q`. All of them
+lie below `top`, which keeps track of where nothing is accessible. -/
+@[inline] def override (p : Perms) (inRange : BitVec 64 → Bool) (q : Perm) (top : Nat)
+    (htop : ∀ x : BitVec 64, inRange x = true → x.toNat < top) : Perms :=
+  if p.pages.isEmpty then
+    { initial := fun x => if inRange x then q else p.initial x
+      clearFrom := max p.clearFrom top
+      clear := fun x hx => by
+        have h1 : inRange x = false := by
+          cases hr : inRange x with
+          | false => rfl
+          | true => have := htop x hr; omega
+        simp only [h1, Bool.false_eq_true, ↓reduceIte]
+        exact p.clear x (by omega) }
+  else ofFun fun x => if inRange x then q else p.get x
+
+theorem get_override (p : Perms) (inRange : BitVec 64 → Bool) (q : Perm) (top : Nat)
+    (htop : ∀ x : BitVec 64, inRange x = true → x.toNat < top) (x : BitVec 64) :
+    (p.override inRange q top htop).get x = if inRange x then q else p.get x := by
+  unfold override
+  split
+  · next he =>
+    have hc : ∀ k, p.pages.contains k = false := fun k => Std.TreeMap.contains_of_isEmpty he
+    simp only [get, hc, Std.TreeMap.contains_emptyc, Bool.false_eq_true, ↓reduceIte]
+  · exact get_ofFun _ _
+
+/-- Make the pages of the `size` bytes starting at `a` readable and writable. -/
+def mapRange (p : Perms) (a : BitVec 64) (size : Nat) : Perms :=
+  { p with pages := Pages.insertRange p.pages (a.toNat / 4096) (size / 4096) }
+
+theorem get_mapRange (p : Perms) {a : BitVec 64} {size : Nat} (x : BitVec 64)
+    (hal : a.toNat % 4096 = 0) (hsz : size % 4096 = 0) (hfit : a.toNat + size ≤ 2 ^ 64) :
+    (p.mapRange a size).get x = if (x - a).toNat < size then .rw else p.get x := by
+  have key := Pages.in_range_iff (x := x) hal hsz hfit
+  simp only [get, mapRange, Pages.contains_insertRange]
+  by_cases h : (x - a).toNat < size
+  · have hp := key.mpr h
+    simp only [hp, and_self, decide_true, Bool.or_true, ↓reduceIte, h]
+  · have h' := mt key.mp h
+    simp only [h', decide_false, Bool.or_false, h, ↓reduceIte]
+
+end Perms
+
 /-- The contents of memory: the bytes written so far, over what was there to
-begin with. -/
+begin with. Pages handed out fresh are kept apart: they start as zero, and
+what is written to them goes in a table of its own, so that making a page
+fresh never has to look for bytes written there before. -/
 structure Memory where
   initial : BitVec 64 → BitVec 8
   written : Std.TreeMap Nat (BitVec 8) := {}
+  /-- The pages handed out fresh. -/
+  zeroed : Std.TreeMap Nat Unit := {}
+  /-- The bytes written to fresh pages. -/
+  fresh : Std.TreeMap Nat (BitVec 8) := {}
+  /-- Only fresh pages have bytes in `fresh`. -/
+  inv : ∀ k, fresh.contains k = true → zeroed.contains (k / 4096) = true := by
+    intro k h; simp at h
 
 namespace Memory
 
 def get (m : Memory) (x : BitVec 64) : BitVec 8 :=
-  m.written.getD x.toNat (m.initial x)
+  if m.zeroed.contains (x.toNat / 4096) then m.fresh.getD x.toNat 0
+  else m.written.getD x.toNat (m.initial x)
 
 def set (m : Memory) (a : BitVec 64) (v : BitVec 8) : Memory :=
-  { m with written := m.written.insert a.toNat v }
+  if h : m.zeroed.contains (a.toNat / 4096) = true then
+    { m with
+      fresh := m.fresh.insert a.toNat v
+      inv := fun k hk => by
+        rw [Std.TreeMap.contains_insert] at hk
+        by_cases hka : a.toNat = k
+        · rw [← hka]; exact h
+        · have hc : (compare a.toNat k == Ordering.eq) = false := by
+            simp [hka]
+          rw [hc, Bool.false_or] at hk
+          exact m.inv k hk }
+  else { m with written := m.written.insert a.toNat v }
 
 theorem get_set (m : Memory) (a x : BitVec 64) (v : BitVec 8) :
     (m.set a v).get x = if x = a then v else m.get x := by
-  simp only [get, set, Std.TreeMap.getD_insert]
-  by_cases h : x = a
-  · simp [h]
-  · have h' : ¬ a.toNat = x.toNat := fun e => h (BitVec.eq_of_toNat_eq e.symm)
-    simp [h, h']
+  have hne : x ≠ a → ¬ a.toNat = x.toNat := fun h e => h (BitVec.eq_of_toNat_eq e.symm)
+  unfold set
+  split
+  · next hz =>
+    simp only [get, Std.TreeMap.getD_insert]
+    by_cases h : x = a
+    · subst h
+      simp [hz]
+    · simp [h, hne h]
+  · next hz =>
+    simp only [get, Std.TreeMap.getD_insert]
+    by_cases h : x = a
+    · subst h
+      simp [hz]
+    · simp [h, hne h]
 
 /-- Write a list of bytes at consecutive addresses. -/
 def setBytes (m : Memory) (a : BitVec 64) : List (BitVec 8) → Memory
@@ -184,11 +409,67 @@ theorem get_setBytes (m : Memory) (a x : BitVec 64) (l : List (BitVec 8)) (hlen 
       rw [h1]
       simp [hxa]
 
+/-- Make the pages of the `size` bytes starting at `a` fresh: all zero. Bytes
+written to a page that was already fresh are removed; for a page that was
+not, there are none to remove. -/
+def zero (m : Memory) (a : BitVec 64) (size : Nat) : Memory :=
+  { m with
+    zeroed := Pages.insertRange m.zeroed (a.toNat / 4096) (size / 4096)
+    fresh :=
+      if Pages.noneIn m.zeroed (a.toNat / 4096) (size / 4096) then m.fresh
+      else Pages.eraseRange m.fresh a.toNat size
+    inv := fun k hk => by
+      rw [Pages.contains_insertRange]
+      have hold : m.fresh.contains k = true := by
+        split at hk
+        · exact hk
+        · rw [Pages.contains_eraseRange] at hk
+          exact (Bool.and_eq_true _ _ ▸ hk).1
+      simp [m.inv k hold] }
+
+theorem get_zero (m : Memory) {a : BitVec 64} {size : Nat} (x : BitVec 64)
+    (hal : a.toNat % 4096 = 0) (hsz : size % 4096 = 0) (hfit : a.toNat + size ≤ 2 ^ 64) :
+    (m.zero a size).get x = if (x - a).toNat < size then 0 else m.get x := by
+  have key := Pages.in_range_iff (x := x) hal hsz hfit
+  have hx := x.isLt
+  have ha := a.isLt
+  simp only [get, zero, Pages.contains_insertRange]
+  by_cases h : (x - a).toNat < size
+  · -- a byte of the range: its page is fresh, and nothing is written there
+    have hpage := key.mpr h
+    have hin : a.toNat ≤ x.toNat ∧ x.toNat < a.toNat + size := by
+      rw [BitVec.toNat_sub] at h
+      omega
+    simp only [hpage, and_self, decide_true, Bool.or_true, ↓reduceIte, h]
+    split
+    · next hnone =>
+      -- the page was not fresh before, so it had no bytes in `fresh`
+      have hz := (Pages.noneIn_iff _ _ _).mp hnone (x.toNat / 4096 - a.toNat / 4096) (by omega)
+      rw [show a.toNat / 4096 + (x.toNat / 4096 - a.toNat / 4096) = x.toNat / 4096 by omega] at hz
+      apply Std.TreeMap.getD_eq_fallback_of_contains_eq_false
+      cases hc : m.fresh.contains x.toNat with
+      | false => rfl
+      | true => rw [m.inv _ hc] at hz; cases hz
+    · rw [Pages.getD_eraseRange]
+      simp only [hin, and_self, ↓reduceIte]
+  · have hpage := mt key.mp h
+    have hout : ¬ (a.toNat ≤ x.toNat ∧ x.toNat < a.toNat + size) := by
+      rw [BitVec.toNat_sub] at h
+      omega
+    simp only [hpage, decide_false, Bool.or_false, h, ↓reduceIte]
+    by_cases hz : m.zeroed.contains (x.toNat / 4096) = true
+    · simp only [hz, ↓reduceIte]
+      split
+      · rfl
+      · rw [Pages.getD_eraseRange]
+        simp only [hout, ↓reduceIte]
+    · simp only [hz, Bool.false_eq_true, ↓reduceIte]
+
 end Memory
 
--- How memory is stored is nobody's business but the three facts above:
--- sealing it keeps proofs from wandering into the table.
-attribute [irreducible] Memory.get Memory.set Memory.setBytes
+-- How memory is stored is nobody's business but the facts above:
+-- sealing it keeps proofs from wandering into the tables.
+attribute [irreducible] Memory.get Memory.set Memory.setBytes Memory.zero
 
 
 structure State where
@@ -196,7 +477,7 @@ structure State where
   flags : Flags
   rip : BitVec 64
   memory : Memory
-  perm : BitVec 64 → Perm
+  perms : Perms
   world : World := {}
 
 /-- The value of each register. -/
@@ -207,6 +488,10 @@ def State.regs (s : State) : Reg → BitVec 64 :=
 def State.mem (s : State) : BitVec 64 → BitVec 8 :=
   s.memory.get
 
+/-- What a program may do with the byte at each address. -/
+def State.perm (s : State) : BitVec 64 → Perm :=
+  s.perms.get
+
 namespace State
 
 /-- A state with every register and memory byte zero, every flag clear, and
@@ -216,11 +501,25 @@ def init : State where
   flags := ⟨some false, some false, some false, some false⟩
   rip := 0
   memory := { initial := fun _ => 0 }
-  perm := fun _ => .none
+  perms := .none
 
 /-- Set the permission of the `len` bytes starting at `base`. -/
 def setPerm (s : State) (base len : BitVec 64) (p : Perm) : State :=
-  { s with perm := fun x => if x - base < len then p else s.perm x }
+  { s with
+    perms := s.perms.override (fun x => decide (x - base < len)) p
+      (if base.toNat + len.toNat ≤ 2 ^ 64 then base.toNat + len.toNat else 2 ^ 64)
+      (fun x hx => by
+        have hx' : x - base < len := of_decide_eq_true hx
+        split
+        · rw [BitVec.lt_def, BitVec.toNat_sub] at hx'
+          have := x.isLt
+          have := base.isLt
+          omega
+        · exact x.isLt) }
+
+theorem perm_setPerm (s : State) (base len x : BitVec 64) (p : Perm) :
+    (s.setPerm base len p).perm x = if x - base < len then p else s.perm x := by
+  simp only [State.perm, setPerm, Perms.get_override, decide_eq_true_eq]
 
 /-- Read a full 64-bit register. -/
 def getReg (s : State) (r : Reg) : BitVec 64 :=

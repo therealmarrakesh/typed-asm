@@ -30,7 +30,7 @@ def recordLayout : Layout := ⟨[.int, .int], true, none⟩
 
 def blocks : List (BitVec 64 × Layout) := [(dataBase, tableLayout), (recordAddr, recordLayout)]
 
-def Ψ : MemTy := .ofList blocks
+def Ψ : MemTy := .ofList blocks []
 
 /-! ## The program is well typed -/
 

@@ -39,14 +39,8 @@ def Φ : CodeTy := .ofLabels code base At
 def blocks : List (BitVec 64 × Layout) :=
   [(dataBase, nodeLayout), (dataBase + 16, nodeLayout), (dataBase + 32, nodeLayout)]
 
-def Ψ : MemTy := .ofList blocks
-
-/-- Every block of kind 1 is a node. -/
-theorem nodes : Ψ.TagFields 1 nodeFields := by
-  intro a l hl _
-  have hmem := MemTy.mem_of_ofList hl
-  simp only [blocks, List.mem_cons, List.not_mem_nil, or_false, Prod.mk.injEq] at hmem
-  rcases hmem with ⟨-, rfl⟩ | ⟨-, rfl⟩ | ⟨-, rfl⟩ <;> rfl
+/-- The blocks, and the one kind of block there is: kind 1 is a node. -/
+def Ψ : MemTy := .ofList blocks [(1, nodeFields)]
 
 /-! ## The program is well typed -/
 
@@ -61,7 +55,7 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     refine BlockOk.castRef (r := .rdi) (base := dataBase) (i := 0) (w := false) (tag := 1)
       (by decide) rfl rfl rfl rfl (fun h => absurd h (by decide)) ?_
     -- and a node has a value and a link
-    ty_open .rdi using nodes
+    ty_open .rdi
     ty_block
   | loop =>
     -- the link in `rdi` is zero or it is a node
@@ -69,7 +63,7 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     -- zero: the test sends control to `done`, and what follows is not reached
     · ty_block
     -- a node: it may be read, and its link goes round the loop
-    · ty_open .rdi using nodes
+    · ty_open .rdi
       ty_block
   | done => ty_block
 

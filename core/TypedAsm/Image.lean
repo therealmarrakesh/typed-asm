@@ -112,7 +112,16 @@ def State.loadCode (s : State) (a : BitVec 64) (bytes : List Byte) : State :=
   let n := bytes.length
   { s with
     memory := s.memory.setBytes a bytes
-    perm := fun x => if (x - a).toNat < n then .rx else s.perm x }
+    perms := s.perms.override (fun x => decide ((x - a).toNat < n)) .rx
+      (if a.toNat + n ≤ 2 ^ 64 then a.toNat + n else 2 ^ 64)
+      (fun x hx => by
+        have hx' : (x - a).toNat < n := of_decide_eq_true hx
+        split
+        · rw [BitVec.toNat_sub] at hx'
+          have := x.isLt
+          have := a.isLt
+          omega
+        · exact x.isLt) }
 
 /-- Loading bytes changes the addresses they cover and no other. -/
 theorem State.mem_loadCode (s : State) (a x : BitVec 64) (bytes : List Byte)
@@ -128,12 +137,13 @@ theorem State.hasCode_loadCode (s : State) (a : BitVec 64) (bytes : List Byte)
   refine ⟨?_, ?_⟩
   · rw [State.mem_loadCode s a _ bytes hlen, e, List.getElem?_eq_getElem hk]
     rfl
-  · simp only [State.loadCode, e, hk, ite_true]
+  · simp only [State.loadCode, State.perm, Perms.get_override, e, hk, decide_true, ite_true]
 
 /-- Loading code does not change permissions outside the code. -/
 theorem State.perm_loadCode_outside {s : State} {a x : BitVec 64} {bytes : List Byte}
     (h : bytes.length ≤ (x - a).toNat) : (s.loadCode a bytes).perm x = s.perm x := by
-  simp only [State.loadCode, Nat.not_lt.mpr h, ↓reduceIte]
+  simp only [State.loadCode, State.perm, Perms.get_override, Nat.not_lt.mpr h, decide_false,
+    Bool.false_eq_true, ↓reduceIte]
 
 /-- Loading code does not change what is readable outside the code. -/
 theorem State.canRead_loadCode {s : State} {a b : BitVec 64} {bytes : List Byte} {n : Nat}

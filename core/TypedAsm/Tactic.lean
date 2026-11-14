@@ -16,17 +16,23 @@ needs an argument, typically a fact about values at a branch.
   by label. `ty_call sig` types a call. These are the usual entry points.
 * `ty_steps` types the straight-line instructions at the start of a block.
 * `ty_step` types one. `ty_step_with r` types one with a rule you name.
+* `ty_branch` types a conditional jump and leaves the side that carries on.
 * `ty_straight` types a single instruction; the two above are built on it.
 * `ty_name r as v` gives the value in a register a name; `ty_name_slot i as v`
   does the same for a stack slot.
-* `ty_open r using h` and `ty_null r` open a pointer to a kind of block and
+* `ty_open r` and `ty_null r` open a pointer to a kind of block and
   split a value that may be null.
+* `ty_mmap fields` and `ty_mmap_kind tag` type an `mmap` for fresh memory;
+  `ty_err r as e` then splits what it handed back into an error number and
+  a pointer.
 * `ty_fn_ptr r to sig` turns a register holding a function's address into a
   pointer to that function.
 * `ty_code_ptr r to Δ` turns a register holding a label's address into a
   code pointer, for indirect jumps and calls.
 * `ty_accept h` shows the current context is accepted at an address, given
   the fact `h` that the code typing allows some context there.
+* `ty_into h` types one instruction and ends the block there, handing over
+  to the label that follows.
 * `ctx_sub` and `sub_regs` compare contexts.
 -/
 
@@ -72,47 +78,47 @@ def MemTy.locate (bs : List (BitVec 64 × Layout)) (a : BitVec 64) :
 
 section Globals
 
-variable {bs : List (BitVec 64 × Layout)} {next base : BitVec 64} {Γ : Ctx} {l : Layout}
-  {i k n : Nat} {disp : BitVec 32} {τ : Ty}
+variable {bs : List (BitVec 64 × Layout)} {kinds : List (Nat × List Ty)} {next base : BitVec 64}
+  {Γ : Ctx} {l : Layout} {i k n : Nat} {disp : BitVec 32} {τ : Ty}
 
 theorem ReadOk.global_of
     (_ : MemTy.locate bs (next + disp.signExtend 64) = some (base, i, k))
-    (hl : MemTy.ofList bs base = some l)
+    (hl : MemTy.ofList bs kinds base = some l)
     (haddr : next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i + k))
     (hi : l.fields[i]? = some τ) (hk : k + n ≤ 8) :
-    ReadOk (MemTy.ofList bs) next Γ n (.mem (.rip disp)) :=
+    ReadOk (MemTy.ofList bs kinds) next Γ n (.mem (.rip disp)) :=
   .global hl haddr hi hk
 
 theorem WriteIntOk.global_of
     (_ : MemTy.locate bs (next + disp.signExtend 64) = some (base, i, k))
-    (hl : MemTy.ofList bs base = some l) (hw : l.writable = true)
+    (hl : MemTy.ofList bs kinds base = some l) (hw : l.writable = true)
     (haddr : next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i + k))
     (hi : l.fields[i]? = some .int) (hk : k + n ≤ 8) :
-    WriteIntOk (MemTy.ofList bs) next Γ n (.mem (.rip disp)) Γ :=
+    WriteIntOk (MemTy.ofList bs kinds) next Γ n (.mem (.rip disp)) Γ :=
   .global hl hw haddr hi hk
 
 theorem Holds.global_of
     (_ : MemTy.locate bs (next + disp.signExtend 64) = some (base, i, 0))
-    (hl : MemTy.ofList bs base = some l)
+    (hl : MemTy.ofList bs kinds base = some l)
     (haddr : next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i))
     (hi : l.fields[i]? = some τ) :
-    Holds (MemTy.ofList bs) next Γ (.mem (.rip disp)) τ :=
+    Holds (MemTy.ofList bs kinds) next Γ (.mem (.rip disp)) τ :=
   .global hl haddr hi
 
 theorem Straight.loadGlobal_of {d : Reg} (hd : d ≠ .rsp)
     (_ : MemTy.locate bs (next + disp.signExtend 64) = some (base, i, 0))
-    (hl : MemTy.ofList bs base = some l)
+    (hl : MemTy.ofList bs kinds base = some l)
     (haddr : next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i))
     (hi : l.fields[i]? = some τ) :
-    Straight (MemTy.ofList bs) next Γ (.mov .w64 (.r_m d (.rip disp))) (Γ.setReg d τ) :=
+    Straight (MemTy.ofList bs kinds) next Γ (.mov .w64 (.r_m d (.rip disp))) (Γ.setReg d τ) :=
   .loadGlobal hd hl haddr hi
 
 theorem Straight.storeGlobal_of {s : Reg} (hs : s ≠ .rsp)
     (_ : MemTy.locate bs (next + disp.signExtend 64) = some (base, i, 0))
-    (hl : MemTy.ofList bs base = some l) (hw : l.writable = true)
+    (hl : MemTy.ofList bs kinds base = some l) (hw : l.writable = true)
     (haddr : next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i))
     (hi : l.fields[i]? = some τ) (hsub : Sub (Γ.regs s) τ) :
-    Straight (MemTy.ofList bs) next Γ (.mov .w64 (.rm_r (.mem (.rip disp)) s)) Γ :=
+    Straight (MemTy.ofList bs kinds) next Γ (.mov .w64 (.rm_r (.mem (.rip disp)) s)) Γ :=
   .storeGlobal hs hl hw haddr hi hsub
 
 end Globals
@@ -304,6 +310,8 @@ macro_rules
          | exact Sub.null _
          | (refine Sub.nullableMono ?_; ty_sub)
          | (refine Sub.nullable ?_; ty_sub)
+         | (refine Sub.orErrMono ?_; ty_sub)
+         | (refine Sub.orErr ?_; ty_sub)
          -- the stack pointer's type after moves that cancel or add up
          | (simp only [Ty.shift_shift]
             first | exact Sub.refl _ | (refine Sub.shift_congr ?_; decide))))
@@ -456,8 +464,12 @@ computing with it, so that what is learnt about the value can be used. -/
 syntax "ty_name " term " as " ident : tactic
 
 syntax "ty_name_slot " term " as " ident : tactic
-syntax "ty_open " term " using " term : tactic
+syntax "ty_open " term : tactic
 syntax "ty_null " term : tactic
+syntax "ty_err " term " as " ident : tactic
+syntax "ty_mmap " term : tactic
+syntax "ty_mmap_kind " term : tactic
+syntax "ty_into " term : tactic
 
 /-! ## Choosing the rule from the instruction
 
@@ -562,12 +574,12 @@ elab_rules : tactic
     evalTactic (← `(tactic| (intro $v:ident; ty_normalize)))
     setGoals ((← getGoals) ++ others)
 
-/-- `ty_open r using h`: register `r` holds a pointer to a block of some
-kind, and `h` says what fields blocks of that kind have. From here on `r`
-is an ordinary pointer to those fields, which can be loaded from and stored to. -/
+/-- `ty_open r`: register `r` holds a pointer to a block of some kind. From
+here on `r` is an ordinary pointer to the fields the memory typing lists for
+that kind, which can be loaded from and stored to. -/
 elab_rules : tactic
-  | `(tactic| ty_open $r using $h) => do
-    refineBlocks (← `(tactic| refine BlockOk.openRef (r := $r) ?_ rfl $h ?_))
+  | `(tactic| ty_open $r) => do
+    refineBlocks (← `(tactic| refine BlockOk.openRef (r := $r) ?_ rfl rfl ?_))
 
 /-- `ty_null r`: register `r` holds a value that may be null. Two goals
 follow: the rest of the block with `r` exactly zero, then with `r` a value
@@ -575,6 +587,31 @@ of the type itself. A test of `r` then decides in each which way it goes. -/
 elab_rules : tactic
   | `(tactic| ty_null $r) => do
     refineBlocks (← `(tactic| refine BlockOk.splitNull (r := $r) ?_ rfl ?_ ?_))
+
+/-- `ty_err r as e`: register `r` holds what a system call handed back, an
+error number or a value. Two goals follow: the rest of the block with `r`
+exactly an error number `e`, then with `r` a value of the type itself. A
+test of `r` then decides in the first which way it goes. -/
+elab_rules : tactic
+  | `(tactic| ty_err $r as $e) => do
+    let goal ← getMainGoal
+    let others := (← getGoals).drop 1
+    setGoals [goal]
+    evalTactic (← `(tactic| refine BlockOk.splitErr (r := $r) ?_ rfl ?_ ?_))
+    let mut blocks : List MVarId := []
+    for g in ← getGoals do
+      if ← g.isAssigned then continue
+      let t ← instantiateMVars (← g.getType)
+      setGoals [g]
+      if t.isAppOf ``BlockOk then
+        evalTactic (← `(tactic| ty_normalize))
+        blocks := blocks ++ (← getGoals)
+      else if t.isForall then
+        evalTactic (← `(tactic| (intro $e:ident herr; ty_normalize)))
+        blocks := blocks ++ (← getGoals)
+      else
+        evalTactic (← `(tactic| decide))
+    setGoals (blocks ++ others)
 
 /-- The rules whose premises are proved in order, stopping at the first that
 fails: those for operands, whose premises each depend on the ones before. -/
@@ -766,6 +803,7 @@ private partial def ppTy (e : Expr) : MetaM String := do
   if e.isAppOfArity ``Ty.code 1 then return "code pointer"
   if e.isAppOf ``Ty.fn || e.isAppOf ``FnSig.ty then return "function pointer"
   if e.isAppOfArity ``Ty.nullable 1 then return s!"{← ppTy e.appArg!} or null"
+  if e.isAppOfArity ``Ty.orErr 1 then return s!"{← ppTy e.appArg!} or an error number"
   if e.isAppOfArity ``Ty.ref 3 then
     let args := e.getAppArgs
     let kind := if args[1]!.isConstOf ``Bool.true then "pointer" else "read-only pointer"
@@ -823,6 +861,8 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
       let hint :=
         if held.isAppOf ``Ty.nullable then
           ": it must be tested for null first, and `ty_null` then gives the two cases"
+        else if held.isAppOf ``Ty.orErr then
+          ": it must be tested for an error first, and `ty_err` then gives the two cases"
         else if held.isAppOf ``Ty.ref && rhs.isAppOf ``Ty.ptr then
           ": `ty_open` turns it into a pointer to that kind's fields"
         else ""
@@ -1317,7 +1357,24 @@ private def closeIfImpossible (g : MVarId) : TacticM Bool := do
     return (← getUnsolvedGoals).isEmpty
   catch _ =>
     saved.restore
-    return false
+    -- The flags may come from an error number, known only to be one.
+    let isErr ← g.withContext do
+      (← getLCtx).anyM fun d => do
+        return (← instantiateMVars d.type).isAppOf ``SysErr
+    unless isErr do return false
+    try
+      setGoals [g]
+      Tactic.withoutRecover do
+        evalTactic (← `(tactic| (
+          refine absurd $(mkIdent `hcond) ?_
+          simp only [SysErr] at *
+          simp only [Cond.eval, Flags.ofResult, AluOp.apply, subBorrow, bind, Option.bind, pure,
+            Option.map, Option.some.injEq]
+          bv_decide)))
+      return (← getUnsolvedGoals).isEmpty
+    catch _ =>
+      saved.restore
+      return false
 
 /-- Shows the flags decide a condition. -/
 private def decideCond : TacticM Unit := do
@@ -1390,9 +1447,12 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
             refine BlockOk.last rfl (HasType.syscallExit (linux_exit rfl)))))
         catch _ => throwError "`syscall`: the operating system here is not the Linux model"
       return .done gs
+    | some 9 =>
+      return .needsHelp m!"`syscall`: an `mmap` needs the layout of the new block; use \
+        `ty_mmap <fields>` or `ty_mmap_kind <kind>`"
     | some nr =>
       throwError "`syscall`: call number {nr} has no rule. The calls that can be typed are \
-        `read` (0), `write` (1) and `exit` (60)"
+        `read` (0), `write` (1), `mmap` (9) and `exit` (60)"
     | none =>
       let actual ← goal.withContext do
         ppTy (← reduce (← mkAppM ``CtxOf.regs #[ctx, mkConst ``Reg.rax]))
@@ -1490,13 +1550,31 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
     let hstate := mkIdent `hstate
     let gs ← runOn goal (do evalTactic (← `(tactic|
       (refine BlockOk.last rfl (HasType.unreachable ?_)
-       intro _ _ $hstate:ident
+       intro _ _ _ _ _ $hstate:ident
        first | exact ($hstate).flags | skip))))
     return .done gs
   | .call _ =>
     return .needsHelp m!"`{instr.toAsm}`: a call needs the callee's signature; use `ty_call <signature>`"
   | _ =>
     return .needsHelp m!"`{instr.toAsm}` is not handled by `ty_block`"
+
+/-- Types a conditional jump in the middle of a block. The side that jumps
+is settled as `ty_block` would settle it; the side that carries on is left
+as the goal, so that something can be said about it before going further. -/
+elab "ty_branch" : tactic => do
+  let others := (← getGoals).drop 1
+  let saved ← saveState
+  match ← typeStep with
+  | .endOfBlock instr =>
+    let goal ← getMainGoal
+    match ← finishBlock goal instr with
+    | .done l => setGoals (l ++ others)
+    | .continues rest l => setGoals (rest :: l ++ others)
+    | .needsHelp m => throwError m
+  | .stepped =>
+    saved.restore
+    throwError "ty_branch: the instruction here does not transfer control; use `ty_step`"
+  | .notABlock => throwError "ty_branch: the goal is not a block"
 
 /-- Types a whole block of a labelled program: the straight-line
 instructions, then the control transfer that ends it. Jump targets are found
@@ -1699,5 +1777,107 @@ elab "ty_fn_ptr " r:term " to " sig:term : tactic => do
   setGoals [← goalNamed gs `rest]
   evalTactic (← `(tactic| ty_normalize))
   setGoals ((← getGoals) ++ left ++ others)
+
+/-- Types an `mmap` at the head of a block goal with the given lemma applied
+to the layout asked for, and proves what it needs of the registers. -/
+private def typeMmap (rule : TSyntax `term) : TacticM Unit := do
+  let goal ← getMainGoal
+  let others := (← getGoals).drop 1
+  setGoals [goal]
+  try
+    evalTactic (← `(tactic| refine BlockOk.sys rfl $rule ?_))
+  catch _ =>
+    throwError "`mmap` is system call 9 of the Linux model: `rax` must hold exactly 9"
+  let gs ← getGoals
+  -- what the registers hold and what the kind is first: that settles the
+  -- length and the fields
+  for g in gs do
+    if ← g.isAssigned then continue
+    let t ← instantiateMVars (← g.getType)
+    if let some (_, lhs, _) := t.eq? then
+      if lhs.isAppOf ``CtxOf.regs then
+        setGoals [g]
+        try
+          Tactic.withoutRecover do evalTactic (← `(tactic| rfl))
+        catch _ =>
+          let reg := (regName? (← whnf lhs.appArg!)).getD "the register"
+          let actual ← g.withContext do
+            let regTy ← whnf lhs
+            let shown? ← if regTy.isAppOfArity ``Ty.eq 1 then
+                try
+                  let n ← evalAddr (← instantiateMVars regTy.appArg!)
+                  pure (some s!"exactly 0x{String.ofList (Nat.toDigits 16 n)}")
+                catch _ => pure none
+              else pure none
+            match shown? with
+            | some shown => pure shown
+            | none => ppTy (← reduce lhs)
+          if reg == "rsi" then
+            throwError "`mmap` needs the length in `rsi` to be exactly known, but its type is \
+              `{actual}`"
+          else if reg == "rdx" then
+            throwError "`mmap` is typed only for memory to read and write: `rdx` must hold \
+              exactly 3, but its type is `{actual}`"
+          else
+            throwError "`mmap` is typed only for private memory that is not a file: `{reg}` \
+              must hold exactly 0x22, but its type is `{actual}`"
+      else if lhs.isAppOf ``MemTy.kinds then
+        setGoals [g]
+        try
+          Tactic.withoutRecover do evalTactic (← `(tactic| rfl))
+        catch _ =>
+          throwError "`mmap`: the memory typing declares no kind {lhs.appArg!}"
+  let mut rest? : Option MVarId := none
+  for g in gs do
+    if ← g.isAssigned then continue
+    let t ← instantiateMVars (← g.getType)
+    if t.isAppOf ``BlockOk then rest? := some g
+    else
+      setGoals [g]
+      try
+        Tactic.withoutRecover do
+          evalTactic (← `(tactic| first
+            | decide
+            | rfl
+            | exact List.cons_ne_nil _ _
+            | (simp only [List.length_cons, List.length_nil]; omega)
+            | (simp; done)))
+      catch _ =>
+        if t.isAppOf ``LE.le then
+          throwError "`mmap`: the block's fields do not fit in the length in `rsi`"
+        else if t.isAppOf ``Ne then
+          throwError "`mmap`: a block needs at least one field"
+        else
+          throwError "`mmap`: every field of the new block must admit zero, since that is \
+            what fresh memory holds: an integer, or a value that may be null"
+  let some rest := rest? | throwError "ty_mmap: unexpected goals"
+  setGoals [rest]
+  evalTactic (← `(tactic| ty_normalize))
+  setGoals ((← getGoals) ++ others)
+
+/-- `ty_mmap fields`: the `syscall` here is an `mmap` for fresh memory, to be
+used as a block with these fields. Afterwards `rax` holds an error number or
+a writable pointer to the new block; `ty_err` tells them apart. -/
+elab_rules : tactic
+  | `(tactic| ty_mmap $fields) => do
+    typeMmap (← `(linux_mmap (fields := $fields) (len := ?_) rfl ?_ ?_ ?_ ?_ ?_ ?_))
+
+/-- `ty_mmap_kind tag`: as `ty_mmap`, for a block of the declared kind
+`tag`. Afterwards `rax` holds an error number or a writable pointer to a
+block of that kind. -/
+elab_rules : tactic
+  | `(tactic| ty_mmap_kind $tag) => do
+    typeMmap (← `(linux_mmap_kind (tag := $tag) (fields := ?_) (len := ?_) rfl ?_ ?_ ?_ ?_
+      ?_ ?_ ?_))
+
+/-- `ty_into h` types the instruction here and ends the block with it. Use it
+when the next instruction is at a label and the block should hand over to
+that label's context instead of typing the label's code a second time; `h`
+is the fact that the label allows some context, as for `ty_accept`. -/
+macro_rules
+  | `(tactic| ty_into $h) =>
+    `(tactic| (refine BlockOk.last rfl (HasType.straight (Γ' := ?_) ?st ?acc)
+               case' st => ty_straight
+               case' acc => ty_accept $h))
 
 end TypedAsm

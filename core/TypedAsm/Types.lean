@@ -52,6 +52,9 @@ inductive Ty
   | ref (tag : Nat) (writable : Bool) (index : Nat)
   /-- Zero, or a value of type `τ`. -/
   | nullable (τ : Ty)
+  /-- What a system call hands back when success gives a value of type `τ`:
+  an error number (a value from -4095 to -1), or a value of type `τ`. -/
+  | orErr (τ : Ty)
 
 /-- A description of the machine at one program point. -/
 abbrev Ctx := CtxOf Ty
@@ -68,8 +71,37 @@ def Layout.size (l : Layout) : Nat :=
   8 * l.fields.length
 
 /-- Memory typing: the layout of the block starting at each address, for the
-addresses where a block starts. It is fixed for the whole run. -/
-abbrev MemTy := BitVec 64 → Option Layout
+addresses where a block starts, and the fields that blocks of each kind
+have. Blocks are never removed or changed during a run, but new ones may
+appear (see `MemTy.Ext`); the kinds are fixed. -/
+structure MemTy where
+  blocks : BitVec 64 → Option Layout
+  /-- The fields of each kind of block that `Ty.ref` pointers may refer to.
+  A kind is declared here whether or not a block of it exists yet. -/
+  kinds : Nat → Option (List Ty)
+
+/-- `Ψ a` is the layout of the block starting at `a`, if one does. -/
+instance : CoeFun MemTy (fun _ => BitVec 64 → Option Layout) := ⟨MemTy.blocks⟩
+
+/-- `Ψ.Ext Ψ'`: `Ψ'` is `Ψ` with perhaps more blocks. This is how the memory
+typing changes while a program runs: a block, once there, stays as it is. -/
+structure MemTy.Ext (Ψ Ψ' : MemTy) : Prop where
+  blocks : ∀ a l, Ψ a = some l → Ψ' a = some l
+  kinds : Ψ'.kinds = Ψ.kinds
+
+theorem MemTy.Ext.refl (Ψ : MemTy) : Ψ.Ext Ψ :=
+  ⟨fun _ _ h => h, rfl⟩
+
+theorem MemTy.Ext.trans {Ψ Ψ' Ψ'' : MemTy} (h₁ : Ψ.Ext Ψ') (h₂ : Ψ'.Ext Ψ'') : Ψ.Ext Ψ'' :=
+  ⟨fun a l h => h₂.blocks a l (h₁.blocks a l h), h₂.kinds.trans h₁.kinds⟩
+
+/-- A system call's error result: one of the values from -4095 to -1. -/
+def SysErr (v : BitVec 64) : Prop :=
+  (-4095 : BitVec 64) ≤ v
+
+instance (v : BitVec 64) : Decidable (SysErr v) := by
+  unfold SysErr
+  infer_instance
 
 /-- Code typing: `Φ a Γ` says the instruction at address `a` may be entered
 in context `Γ`. One address may allow many contexts, which is how a function
@@ -115,6 +147,9 @@ inductive Sub : Ty → Ty → Prop
   /-- So may zero. -/
   | null (τ : Ty) : Sub (.eq 0) (.nullable τ)
   | nullableMono {τ υ : Ty} : Sub τ υ → Sub (.nullable τ) (.nullable υ)
+  /-- A value may be used where it or an error number is expected. -/
+  | orErr {τ υ : Ty} : Sub τ υ → Sub τ (.orErr υ)
+  | orErrMono {τ υ : Ty} : Sub τ υ → Sub (.orErr τ) (.orErr υ)
 
 /-- Subtyping slot by slot, for two stacks of the same length. -/
 inductive SubList : List Ty → List Ty → Prop
@@ -199,14 +234,23 @@ def ty (sig : FnSig) : Ty :=
 end FnSig
 
 /-- Two byte ranges, given by start and length, do not overlap. Stated so that
-it also covers ranges that wrap around the end of the address space. -/
+it also covers ranges that wrap around the end of the address space. An
+empty range overlaps nothing, wherever it starts. -/
 def Disjoint (a : BitVec 64) (n : Nat) (b : BitVec 64) (m : Nat) : Prop :=
-  BitVec.ofNat 64 n ≤ b - a ∧ BitVec.ofNat 64 m ≤ a - b
+  (m ≠ 0 → BitVec.ofNat 64 n ≤ b - a) ∧ (n ≠ 0 → BitVec.ofNat 64 m ≤ a - b)
 
-/-- A memory typing makes sense: blocks fit in the address space and no two overlap. -/
+/-- For two ranges that are not empty, what not overlapping comes to. -/
+theorem Disjoint.of_pos {a b : BitVec 64} {n m : Nat} (h : Disjoint a n b m) (hn : n ≠ 0)
+    (hm : m ≠ 0) : BitVec.ofNat 64 n ≤ b - a ∧ BitVec.ofNat 64 m ≤ a - b :=
+  ⟨h.1 hm, h.2 hn⟩
+
+/-- A memory typing makes sense: blocks fit in the address space, none is
+empty, no two overlap, and a block of a kind has that kind's fields. -/
 structure MemTy.WF (Ψ : MemTy) : Prop where
   size_lt : ∀ a l, Ψ a = some l → l.size < 2 ^ 64
   disjoint : ∀ a b la lb, Ψ a = some la → Ψ b = some lb → a ≠ b → Disjoint a la.size b lb.size
+  nonempty : ∀ a l, Ψ a = some l → l.fields ≠ []
+  kinds : ∀ a l, Ψ a = some l → ∀ tag, l.tag = some tag → Ψ.kinds tag = some l.fields
 
 /-! ## What the types mean
 
@@ -215,7 +259,12 @@ meaning refers to the meaning of every type inside the context the code
 expects, including other code pointers, so it cannot be defined directly.
 Instead every meaning carries a step count `n`: a code pointer at count `n`
 is safe to jump to for any smaller number of steps. Statements about real
-programs quantify over all `n`. -/
+programs quantify over all `n`.
+
+A code pointer must also stay good while the memory typing grows: code that
+was safe to jump to before a block was allocated is safe to jump to after.
+So "safe to jump to" is asked for every well-formed extension of the memory
+typing, not only the present one. -/
 
 /-- The address of the lowest byte of the stack region a context describes:
 `room` free slots below `rsp`. -/
@@ -252,27 +301,29 @@ structure Matches (H : Ty → BitVec 64 → Prop) (Ψ : MemTy) (Γ : Ctx) (s : S
 
 /-- `HasTy fetch sys Ψ n τ v`: the value `v` has type `τ`, at step count `n`.
 This does not depend on the machine state. -/
-def HasTy (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) : Nat → Ty → BitVec 64 → Prop
-  | _, .int, _ => True
-  | _, .eq x, v => v = x
-  | _, .ptr fields writable index, v =>
+def HasTy (fetch : Fetch) (sys : Syscall) : MemTy → Nat → Ty → BitVec 64 → Prop
+  | _, _, .int, _ => True
+  | _, _, .eq x, v => v = x
+  | Ψ, _, .ptr fields writable index, v =>
     ∃ a l, Ψ a = some l ∧ l.fields = fields ∧ (writable = true → l.writable = true) ∧
       v = a + BitVec.ofNat 64 (8 * index)
-  | n, .code pre, v =>
-    ∀ k, (hk : k < n) → ∀ s : State, s.rip = v →
-      Matches (fun τ w => HasTy fetch sys Ψ k τ w) Ψ pre s → SafeN fetch sys k s
-  | _, .ref tag writable index, v =>
+  | Ψ, n, .code pre, v =>
+    ∀ k, (hk : k < n) → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, s.rip = v →
+      Matches (fun τ w => HasTy fetch sys Ψ' k τ w) Ψ' pre s → SafeN fetch sys k s
+  | Ψ, _, .ref tag writable index, v =>
     ∃ a l, Ψ a = some l ∧ l.tag = some tag ∧ (writable = true → l.writable = true) ∧
       v = a + BitVec.ofNat 64 (8 * index)
-  | n, .nullable τ, v => v = 0 ∨ HasTy fetch sys Ψ n τ v
-  | n, .fn args results preserved need, v =>
-    ∀ k, (hk : k < n) → ∀ (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat),
+  | Ψ, n, .nullable τ, v => v = 0 ∨ HasTy fetch sys Ψ n τ v
+  | Ψ, n, .orErr τ, v => SysErr v ∨ HasTy fetch sys Ψ n τ v
+  | Ψ, n, .fn args results preserved need, v =>
+    ∀ k, (hk : k < n) → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF →
+      ∀ (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat),
       FnSig.CallerOk ⟨args, results, preserved, need⟩ saved ret rest room →
       ∀ s : State, s.rip = v →
-      Matches (fun τ w => HasTy fetch sys Ψ k τ w) Ψ
+      Matches (fun τ w => HasTy fetch sys Ψ' k τ w) Ψ'
         (FnSig.entry ⟨args, results, preserved, need⟩ saved ret rest room) s →
       SafeN fetch sys k s
-termination_by n τ => (n, τ)
+termination_by _ n τ => (n, τ)
 
 /-- `WellTyped fetch sys Ψ n Γ s`: the state `s` matches the context `Γ`, at step count `n`. -/
 abbrev WellTyped (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (n : Nat) (Γ : Ctx) (s : State) :
@@ -294,10 +345,12 @@ theorem hasTy_ptr {fields : List Ty} {writable : Bool} {index : Nat} {v : BitVec
   simp [HasTy]
 
 /-- A value is a code pointer if jumping to it, in any state matching the
-context it expects, is safe for any smaller number of steps. -/
+context it expects, is safe for any smaller number of steps, now and however
+the memory typing grows. -/
 theorem hasTy_code {pre : Ctx} {v : BitVec 64} :
     HasTy fetch sys Ψ n (.code pre) v ↔
-      ∀ k, k < n → ∀ s : State, s.rip = v → WellTyped fetch sys Ψ k pre s → SafeN fetch sys k s := by
+      ∀ k, k < n → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, s.rip = v →
+        WellTyped fetch sys Ψ' k pre s → SafeN fetch sys k s := by
   rw [HasTy]
 
 theorem hasTy_ref {tag : Nat} {writable : Bool} {index : Nat} {v : BitVec 64} :
@@ -310,12 +363,17 @@ theorem hasTy_nullable {τ : Ty} {v : BitVec 64} :
     HasTy fetch sys Ψ n (.nullable τ) v ↔ v = 0 ∨ HasTy fetch sys Ψ n τ v := by
   rw [HasTy]
 
+theorem hasTy_orErr {τ : Ty} {v : BitVec 64} :
+    HasTy fetch sys Ψ n (.orErr τ) v ↔ SysErr v ∨ HasTy fetch sys Ψ n τ v := by
+  rw [HasTy]
+
 /-- A value is a pointer to a function if entering it, from any caller that
 meets the signature, is safe for any smaller number of steps. -/
 theorem hasTy_fn {sig : FnSig} {v : BitVec 64} :
     HasTy fetch sys Ψ n sig.ty v ↔
-      ∀ k, k < n → ∀ saved ret rest room, sig.CallerOk saved ret rest room →
-        ∀ s : State, s.rip = v → WellTyped fetch sys Ψ k (sig.entry saved ret rest room) s →
+      ∀ k, k < n → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF →
+        ∀ saved ret rest room, sig.CallerOk saved ret rest room →
+        ∀ s : State, s.rip = v → WellTyped fetch sys Ψ' k (sig.entry saved ret rest room) s →
         SafeN fetch sys k s := by
   rw [FnSig.ty, HasTy]
 
@@ -327,6 +385,9 @@ theorem HasTy.mono {m : Nat} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys Ψ n
   | nullable τ =>
     rw [hasTy_nullable] at h ⊢
     exact h.imp id (fun h' => HasTy.mono h' hle)
+  | orErr τ =>
+    rw [hasTy_orErr] at h ⊢
+    exact h.imp id (fun h' => HasTy.mono h' hle)
   | int => exact HasTy.int v
   | eq x => exact hasTy_eq.mpr (hasTy_eq.mp h)
   | ptr fields writable index => exact hasTy_ptr.mpr (hasTy_ptr.mp h)
@@ -337,6 +398,33 @@ theorem HasTy.mono {m : Nat} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys Ψ n
     have e : Ty.fn args results preserved need = FnSig.ty ⟨args, results, preserved, need⟩ := rfl
     rw [e, hasTy_fn] at h ⊢
     exact fun k hk => h k (by omega)
+termination_by sizeOf τ
+
+/-- A value keeps its type when the memory typing grows. -/
+theorem HasTy.ext {Ψ' : MemTy} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys Ψ n τ v)
+    (he : Ψ.Ext Ψ') : HasTy fetch sys Ψ' n τ v := by
+  cases τ with
+  | ref tag writable index =>
+    obtain ⟨a, l, hl, h'⟩ := hasTy_ref.mp h
+    exact hasTy_ref.mpr ⟨a, l, he.blocks a l hl, h'⟩
+  | nullable τ =>
+    rw [hasTy_nullable] at h ⊢
+    exact h.imp id (fun h' => HasTy.ext h' he)
+  | orErr τ =>
+    rw [hasTy_orErr] at h ⊢
+    exact h.imp id (fun h' => HasTy.ext h' he)
+  | int => exact HasTy.int v
+  | eq x => exact hasTy_eq.mpr (hasTy_eq.mp h)
+  | ptr fields writable index =>
+    obtain ⟨a, l, hl, h'⟩ := hasTy_ptr.mp h
+    exact hasTy_ptr.mpr ⟨a, l, he.blocks a l hl, h'⟩
+  | code pre =>
+    rw [hasTy_code] at h ⊢
+    exact fun k hk Ψ'' he' => h k hk Ψ'' (he.trans he')
+  | fn args results preserved need =>
+    have e : Ty.fn args results preserved need = FnSig.ty ⟨args, results, preserved, need⟩ := rfl
+    rw [e, hasTy_fn] at h ⊢
+    exact fun k hk Ψ'' he' => h k hk Ψ'' (he.trans he')
 termination_by sizeOf τ
 
 /-- Matching a context carries over to any weaker notion of "has type". -/

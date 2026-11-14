@@ -26,6 +26,8 @@ theorem HasTy.sub {τ υ : Ty} {v : BitVec 64} (h : Sub τ υ) (hv : HasTy fetch
   | nullable _ ih => exact hasTy_nullable.mpr (.inr (ih hv))
   | null τ => exact hasTy_nullable.mpr (.inl (hasTy_eq.mp hv))
   | nullableMono _ ih => exact hasTy_nullable.mpr ((hasTy_nullable.mp hv).imp id ih)
+  | orErr _ ih => exact hasTy_orErr.mpr (.inr (ih hv))
+  | orErrMono _ ih => exact hasTy_orErr.mpr ((hasTy_orErr.mp hv).imp id ih)
 
 theorem SubList.length_eq {σ ρ : List Ty} (h : SubList σ ρ) : σ.length = ρ.length := by
   induction h with
@@ -56,23 +58,21 @@ theorem Disjoint.mono {a b : BitVec 64} {n m o p n' m' : Nat} (h : Disjoint a n 
     (hn : n < 2 ^ 64) (hm : m < 2 ^ 64) (ho : o + n' ≤ n) (hp : p + m' ≤ m)
     (hn' : 0 < n') (hm' : 0 < m') :
     Disjoint (a + BitVec.ofNat 64 o) n' (b + BitVec.ofNat 64 p) m' := by
-  simp only [Disjoint] at *
-  constructor <;> bv_omega
+  have h' := h.of_pos (by omega) (by omega)
+  refine ⟨fun _ => ?_, fun _ => ?_⟩ <;> bv_omega
 
 /-- A run of 8-byte slots of a region does not overlap a slot outside the run. -/
 theorem disjoint_range_slot {a : BitVec 64} {lo cnt j N : Nat} (hc : 0 < cnt)
     (hout : j < lo ∨ lo + cnt ≤ j) (hr : 8 * (lo + cnt) ≤ N) (hj : 8 * j + 8 ≤ N)
     (hN : N < 2 ^ 64) :
     Disjoint (a + BitVec.ofNat 64 (8 * lo)) (8 * cnt) (a + BitVec.ofNat 64 (8 * j)) 8 := by
-  simp only [Disjoint]
-  constructor <;> bv_omega
+  refine ⟨fun _ => ?_, fun _ => ?_⟩ <;> bv_omega
 
 /-- Two different 8-byte slots of one region do not overlap. -/
 theorem disjoint_slots {a : BitVec 64} {i j N : Nat} (hij : i ≠ j) (hi : 8 * i + 8 ≤ N)
     (hj : 8 * j + 8 ≤ N) (hN : N < 2 ^ 64) :
     Disjoint (a + BitVec.ofNat 64 (8 * i)) 8 (a + BitVec.ofNat 64 (8 * j)) 8 := by
-  simp only [Disjoint]
-  constructor <;> bv_omega
+  refine ⟨fun _ => ?_, fun _ => ?_⟩ <;> bv_omega
 
 namespace State
 
@@ -118,8 +118,8 @@ theorem store64_regs (s : State) (a v : BitVec 64) : (s.store64 a v).regs = s.re
 theorem store64_flags (s : State) (a v : BitVec 64) : (s.store64 a v).flags = s.flags := by
   simp only [store64, store32, store16, store8]
 
-theorem store64_perm (s : State) (a v : BitVec 64) : (s.store64 a v).perm = s.perm := by
-  simp only [store64, store32, store16, store8]
+theorem store64_perm (s : State) (a v : BitVec 64) : (s.store64 a v).perm = s.perm :=
+  State.perm_store s .w64 a v
 
 theorem store64_rip (s : State) (a v : BitVec 64) : (s.store64 a v).rip = s.rip := by
   simp only [store64, store32, store16, store8]
@@ -129,7 +129,7 @@ theorem load64_store64_same (s : State) (a v : BitVec 64) : (s.store64 a v).load
 
 theorem load64_store64_disjoint (s : State) {a b : BitVec 64} (v : BitVec 64)
     (h : Disjoint a 8 b 8) : (s.store64 a v).load64 b = s.load64 b :=
-  load_store_disjoint s .w64 .w64 a b v h.1 h.2
+  load_store_disjoint s .w64 .w64 a b v (h.1 (by decide)) (h.2 (by decide))
 
 end State
 
@@ -388,7 +388,7 @@ theorem push₀ {n : Nat} {τ : Ty} {v : BitVec 64} (h : WellTyped fetch sys Ψ 
         have hk : k < Γ.stack.length := (List.getElem?_eq_some_iff.mp hj).1
         have hd : Disjoint (s.getReg .rsp - 8) 8
             (s.getReg .rsp - 8 + BitVec.ofNat 64 (8 * (k + 1))) 8 := by
-          simp only [Disjoint]; constructor <;> bv_omega
+          refine ⟨fun _ => ?_, fun _ => ?_⟩ <;> bv_omega
         have e : s.getReg .rsp - 8 + BitVec.ofNat 64 (8 * (k + 1))
             = s.getReg .rsp + BitVec.ofNat 64 (8 * k) := by bv_omega
         rw [State.load64_store64_disjoint _ v hd, State.load64_congr hm, e]
@@ -989,7 +989,7 @@ theorem subBorrow_zf {n : Nat} (a b : BitVec n) (c : Bool) :
 theorem State.load64_store_inner (s : State) (w : Width) {base y : BitVec 64} {k : Nat}
     (v : BitVec w.bits) (hk : k + w.bytes.toNat ≤ 8) (hd : Disjoint base 8 y 8) :
     (s.store w (base + BitVec.ofNat 64 k) v).load64 y = s.load64 y := by
-  simp only [Disjoint] at hd
+  have hd := hd.of_pos (by decide) (by decide)
   cases w
   · have hk' : k + 4 ≤ 8 := hk
     exact State.load_store_disjoint s .w32 .w64 _ _ v
@@ -1002,7 +1002,7 @@ theorem State.load64_store_inner (s : State) (w : Width) {base y : BitVec 64} {k
 theorem State.load64_store8_inner (s : State) {base y : BitVec 64} {k : Nat} (v : BitVec 8)
     (hk : k + 1 ≤ 8) (hd : Disjoint base 8 y 8) :
     (s.store8 (base + BitVec.ofNat 64 k) v).load64 y = s.load64 y := by
-  simp only [Disjoint] at hd
+  have hd := hd.of_pos (by decide) (by decide)
   exact State.load64_store8_disjoint s v (by bv_omega)
 
 /-- A 16-bit store inside one 8-byte slot leaves every other slot unchanged. -/
@@ -1958,61 +1958,65 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
 /-! ## All typed instructions -/
 
 /-- What the induction on step count provides: every program point is safe
-for `n` steps from any state matching its context at count `n`. -/
+for `n` steps from any state matching its context at count `n`, however the
+memory typing has grown by then. -/
 def SafeUpTo (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (n : Nat) : Prop :=
-  ∀ k, k ≤ n → ∀ a Δ, Φ a Δ → ∀ s : State, s.rip = a →
-    WellTyped fetch sys Ψ k Δ s → SafeN fetch sys k s
+  ∀ k, k ≤ n → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ a Δ, Φ a Δ → ∀ s : State, s.rip = a →
+    WellTyped fetch sys Ψ' k Δ s → SafeN fetch sys k s
+
+variable {Ψ' : MemTy}
 
 /-- Entering code that accepts the current context is safe. -/
-theorem SafeUpTo.accepts {n : Nat} (ih : SafeUpTo Φ fetch sys Ψ n) {a : BitVec 64} {Γ : Ctx}
+theorem SafeUpTo.accepts {n : Nat} (ih : SafeUpTo Φ fetch sys Ψ n) (he : Ψ.Ext Ψ') (hΨ : Ψ'.WF)
+    {a : BitVec 64} {Γ : Ctx}
     {s : State} (hacc : Accepts Φ a Γ) (hr : s.rip = a)
-    (h : WellTyped fetch sys Ψ (n + 1) Γ s) : SafeN fetch sys n s := by
+    (h : WellTyped fetch sys Ψ' (n + 1) Γ s) : SafeN fetch sys n s := by
   obtain ⟨Δ, hΔ, hsub⟩ := hacc
-  exact ih n (Nat.le_refl n) a Δ hΔ s hr ((h.sub hsub).mono (Nat.le_succ n))
+  exact ih n (Nat.le_refl n) Ψ' he hΨ a Δ hΔ s hr ((h.sub hsub).mono (Nat.le_succ n))
 
 /-- A typed instruction, run in a matching state at the right address, has an
 acceptable outcome, and any state it continues to is safe for the remaining steps. -/
 theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
-    (ht : HasType Φ fetch sys Ψ next Γ i) (hΨ : Ψ.WF)
+    (ht : HasType Φ fetch sys Ψ next Γ i) (he : Ψ.Ext Ψ') (hΨ : Ψ'.WF)
     (ih : SafeUpTo Φ fetch sys Ψ n) {s : State}
-    (h : WellTyped fetch sys Ψ (n + 1) Γ s) (hrip : s.rip = next) :
+    (h : WellTyped fetch sys Ψ' (n + 1) Γ s) (hrip : s.rip = next) :
     (exec sys i s).isSafe = true ∧ ∀ s', exec sys i s = .next s' → SafeN fetch sys n s' := by
   induction ht generalizing s with
-  | weaken hsem _ ihw => exact ihw (hsem _ _ h) hrip
+  | weaken hsem _ ihw => exact ihw (hsem Ψ' he hΨ _ _ h) hrip
   | straight hst hacc =>
-    obtain ⟨s', he, hr, hw⟩ := hst.sound hΨ h hrip
-    rw [he]
+    obtain ⟨s', hex, hr, hw⟩ := (hst.ext he).sound hΨ h hrip
+    rw [hex]
     refine ⟨rfl, fun s'' heq => ?_⟩
     cases heq
-    exact ih.accepts hacc (hr.trans hrip) hw
+    exact ih.accepts he hΨ hacc (hr.trans hrip) hw
   | @jmp Γ d hacc =>
     refine ⟨rfl, fun s' heq => ?_⟩
     cases heq
-    exact ih.accepts hacc (by rw [← hrip]) (h.congr rfl rfl rfl rfl)
+    exact ih.accepts he hΨ hacc (by rw [← hrip]) (h.congr rfl rfl rfl rfl)
   | @jcc Γ c d hdec hacc hfall =>
     obtain ⟨b, hb⟩ := hdec _ h.flags
     cases b
-    · have he : exec sys (.jcc c d) s = .next s := by simp [exec, hb, Result.ofOption]
-      rw [he]
+    · have hex : exec sys (.jcc c d) s = .next s := by simp [exec, hb, Result.ofOption]
+      rw [hex]
       refine ⟨rfl, fun s' heq => ?_⟩
       cases heq
-      exact ih.accepts (hfall _ h.flags hb) hrip h
-    · have he : exec sys (.jcc c d) s = .next { s with rip := s.rip + d.signExtend 64 } := by
+      exact ih.accepts he hΨ (hfall _ h.flags hb) hrip h
+    · have hex : exec sys (.jcc c d) s = .next { s with rip := s.rip + d.signExtend 64 } := by
         simp [exec, hb, Result.ofOption]
-      rw [he]
+      rw [hex]
       refine ⟨rfl, fun s' heq => ?_⟩
       cases heq
-      exact ih.accepts (hacc _ h.flags hb) (by rw [← hrip]) (h.congr rfl rfl rfl rfl)
+      exact ih.accepts he hΨ (hacc _ h.flags hb) (by rw [← hrip]) (h.congr rfl rfl rfl rfl)
   | @call Γ ret d m hroom hret hacc =>
     have hw : (s.setReg .rsp (s.getReg .rsp - 8)).canWrite (s.getReg .rsp - 8) 8 = true :=
       h.canWrite_push hroom
     -- The return address is a code pointer: by the induction hypothesis the
     -- instruction after the call is safe in any state matching its context.
-    have hv : HasTy fetch sys Ψ (n + 1) (.code ret) s.rip := by
+    have hv : HasTy fetch sys Ψ' (n + 1) (.code ret) s.rip := by
       rw [hasTy_code]
-      intro k hk t ht hwt
-      exact ih k (by omega) next ret hret t (ht.trans hrip) hwt
-    have he : exec sys (.call (.rel d)) s
+      intro k hk Ψ'' he' hΨ'' t ht hwt
+      exact ih k (by omega) Ψ'' (he.trans he') hΨ'' next ret hret t (ht.trans hrip) hwt
+    have hex : exec sys (.call (.rel d)) s
         = .next { (s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip with
             rip := s.rip + d.signExtend 64 } := by
       have hpush : s.push64 s.rip
@@ -2021,57 +2025,57 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
       simp [exec, hpush]
     have hw' := h.push hΨ hroom hv
     generalize (s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip = s₁
-      at he hw'
-    rw [he]
+      at hex hw'
+    rw [hex]
     refine ⟨rfl, fun s' heq => ?_⟩
     cases heq
-    exact ih.accepts hacc (by rw [← hrip]) (hw'.congr rfl rfl rfl rfl)
+    exact ih.accepts he hΨ hacc (by rw [← hrip]) (hw'.congr rfl rfl rfl rfl)
   | @ret Γ Δ σ hst hsub =>
     obtain ⟨hv, hw⟩ := h.pop hst
     rw [hasTy_code] at hv
     have hc : s.canRead (s.getReg .rsp) 8 = true := by
       have := State.canRead_of_canWrite (h.canWrite_slot (i := 0) (by simp [hst]))
       simpa using this
-    have he : exec sys .ret s
+    have hex : exec sys .ret s
         = .next { s.setReg .rsp (s.getReg .rsp + 8) with rip := s.load64 (s.getReg .rsp) } := by
       simp [exec, State.pop64, State.read64, hc]
-    rw [he]
+    rw [hex]
     refine ⟨rfl, fun s' heq => ?_⟩
     cases heq
-    exact hv n (Nat.lt_succ_self n) _ rfl
+    exact hv n (Nat.lt_succ_self n) Ψ' (.refl _) hΨ _ rfl
       (((hw.sub hsub).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
   | syscall hret hacc =>
-    obtain ⟨s', he, hr, hw⟩ := hret hΨ _ _ h
-    have he' : exec sys .syscall s = .next s' := he
-    rw [he']
+    obtain ⟨s', hex, hr, Ψ₂, he₂, hΨ₂, hw⟩ := hret Ψ' he hΨ _ _ h
+    have hex' : exec sys .syscall s = .next s' := hex
+    rw [hex']
     refine ⟨rfl, fun s'' heq => ?_⟩
     cases heq
-    exact ih.accepts hacc (hr.trans hrip) hw
+    exact ih.accepts (he.trans he₂) hΨ₂ hacc (hr.trans hrip) hw
   | syscallExit hexit =>
-    obtain ⟨c, he⟩ := hexit _ _ h
-    have he' : exec sys .syscall s = .exit c := he
-    rw [he']
+    obtain ⟨c, hex⟩ := hexit Ψ' he hΨ _ _ h
+    have hex' : exec sys .syscall s = .exit c := hex
+    rw [hex']
     exact ⟨rfl, fun s' heq => nomatch heq⟩
   | @jmpInd Γ Δ rm hcode hsub =>
-    obtain ⟨v, hv, hp⟩ := hcode.sound h hrip
+    obtain ⟨v, hv, hp⟩ := (hcode.ext he).sound h hrip
     rw [hasTy_code] at hp
-    have he : exec sys (.jmp (.ind rm)) s = .next { s with rip := v } := by
+    have hex : exec sys (.jmp (.ind rm)) s = .next { s with rip := v } := by
       simp [exec, hv]
-    rw [he]
+    rw [hex]
     refine ⟨rfl, fun s' heq => ?_⟩
     cases heq
-    exact hp n (Nat.lt_succ_self n) _ rfl
+    exact hp n (Nat.lt_succ_self n) Ψ' (.refl _) hΨ _ rfl
       (((h.sub hsub).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
   | @callInd Γ Δ ret rm m hcode hroom hret hsub =>
-    obtain ⟨v, hv, hp⟩ := hcode.sound h hrip
+    obtain ⟨v, hv, hp⟩ := (hcode.ext he).sound h hrip
     rw [hasTy_code] at hp
     have hw : (s.setReg .rsp (s.getReg .rsp - 8)).canWrite (s.getReg .rsp - 8) 8 = true :=
       h.canWrite_push hroom
-    have hra : HasTy fetch sys Ψ (n + 1) (.code ret) s.rip := by
+    have hra : HasTy fetch sys Ψ' (n + 1) (.code ret) s.rip := by
       rw [hasTy_code]
-      intro k hk t ht hwt
-      exact ih k (by omega) next ret hret t (ht.trans hrip) hwt
-    have he : exec sys (.call (.ind rm)) s
+      intro k hk Ψ'' he' hΨ'' t ht hwt
+      exact ih k (by omega) Ψ'' (he.trans he') hΨ'' next ret hret t (ht.trans hrip) hwt
+    have hex : exec sys (.call (.ind rm)) s
         = .next { (s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip with
             rip := v } := by
       have hpush : s.push64 s.rip
@@ -2080,31 +2084,32 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
       simp [exec, hv, hpush]
     have hw' := h.push hΨ hroom hra
     generalize (s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip = s₁
-      at he hw'
-    rw [he]
+      at hex hw'
+    rw [hex]
     refine ⟨rfl, fun s' heq => ?_⟩
     cases heq
-    exact hp n (Nat.lt_succ_self n) _ rfl
+    exact hp n (Nat.lt_succ_self n) Ψ' (.refl _) hΨ _ rfl
       (((hw'.sub hsub).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
-  | @unreachable Γ i hun => exact absurd h (hun _ _)
+  | @unreachable Γ i hun => exact absurd h (hun Ψ' he hΨ _ _)
   | @fnPtr Γ i r a sig hr hΓ hat _ ihc =>
     have hp := h.eqReg hr hΓ
     -- By the induction hypothesis the function is safe to enter for any caller.
-    have hv : HasTy fetch sys Ψ (n + 1) sig.ty (s.getReg r) := by
+    have hv : HasTy fetch sys Ψ' (n + 1) sig.ty (s.getReg r) := by
       rw [hasTy_fn]
-      intro k hk saved ret rest room hK t ht hwt
-      exact ih k (by omega) a _ (hat saved ret rest room hK) t (ht.trans hp) hwt
+      intro k hk Ψ'' he' hΨ'' saved ret rest room hK t ht hwt
+      exact ih k (by omega) Ψ'' (he.trans he') hΨ'' a _ (hat saved ret rest room hK) t
+        (ht.trans hp) hwt
     exact ihc (h.retype hr hv) hrip
   | @callFn Γ ret rm sig m hholds hroom hret hargs hsp hback hneed =>
-    obtain ⟨v, hv, hp⟩ := hholds.sound h hrip
+    obtain ⟨v, hv, hp⟩ := (hholds.ext he).sound h hrip
     rw [hasTy_fn] at hp
     have hw : (s.setReg .rsp (s.getReg .rsp - 8)).canWrite (s.getReg .rsp - 8) 8 = true :=
       h.canWrite_push hroom
-    have hra : HasTy fetch sys Ψ (n + 1) (.code ret) s.rip := by
+    have hra : HasTy fetch sys Ψ' (n + 1) (.code ret) s.rip := by
       rw [hasTy_code]
-      intro k hk t ht hwt
-      exact ih k (by omega) next ret hret t (ht.trans hrip) hwt
-    have he : exec sys (.call (.ind rm)) s
+      intro k hk Ψ'' he' hΨ'' t ht hwt
+      exact ih k (by omega) Ψ'' (he.trans he') hΨ'' next ret hret t (ht.trans hrip) hwt
+    have hex : exec sys (.call (.ind rm)) s
         = .next { (s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip with
             rip := v } := by
       have hpush : s.push64 s.rip
@@ -2113,11 +2118,12 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
       simp [exec, hv, hpush]
     have hw' := h.push hΨ hroom hra
     generalize (s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip = s₁
-      at he hw'
-    rw [he]
+      at hex hw'
+    rw [hex]
     refine ⟨rfl, fun s' heq => ?_⟩
     cases heq
-    exact hp n (Nat.lt_succ_self n) (Γ.moveSp (-8)).regs ret Γ.stack m ⟨hback, hneed⟩ _ rfl
+    exact hp n (Nat.lt_succ_self n) Ψ' (.refl _) hΨ (Γ.moveSp (-8)).regs ret Γ.stack m
+      ⟨hback, hneed⟩ _ rfl
       (((hw'.sub (Δ := sig.entry (Γ.moveSp (-8)).regs ret Γ.stack m)
         ⟨fun r hr => by
             show Sub ((Γ.moveSp (-8)).regs r) _
@@ -2128,48 +2134,48 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
             rw [CtxOf.moveSp_sp]
             exact hsp⟩).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
   | @jmpFn Γ ret rm sig saved rest room hholds hK hsub =>
-    obtain ⟨v, hv, hp⟩ := hholds.sound h hrip
+    obtain ⟨v, hv, hp⟩ := (hholds.ext he).sound h hrip
     rw [hasTy_fn] at hp
-    have he : exec sys (.jmp (.ind rm)) s = .next { s with rip := v } := by
+    have hex : exec sys (.jmp (.ind rm)) s = .next { s with rip := v } := by
       simp [exec, hv]
-    rw [he]
+    rw [hex]
     refine ⟨rfl, fun s' heq => ?_⟩
     cases heq
-    exact hp n (Nat.lt_succ_self n) saved ret rest room hK _ rfl
+    exact hp n (Nat.lt_succ_self n) Ψ' (.refl _) hΨ saved ret rest room hK _ rfl
       (((h.sub hsub).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
   | @cover ι Γ Γ' i hsem _ ihc =>
-    obtain ⟨x, hx⟩ := hsem _ _ h
+    obtain ⟨x, hx⟩ := hsem Ψ' he hΨ _ _ h
     exact ihc x hx hrip
   | @codePtr Γ Δ i r a hr hΓ hΦ _ ihc =>
     have hp := h.regs r hr
     rw [hΓ, hasTy_eq] at hp
     -- By the induction hypothesis the code at `a` is safe in any state matching `Δ`.
-    have hv : HasTy fetch sys Ψ (n + 1) (.code Δ) (s.getReg r) := by
+    have hv : HasTy fetch sys Ψ' (n + 1) (.code Δ) (s.getReg r) := by
       rw [hasTy_code]
-      intro k hk t ht hwt
-      exact ih k (by omega) a Δ hΦ t (ht.trans hp) hwt
+      intro k hk Ψ'' he' hΨ'' t ht hwt
+      exact ih k (by omega) Ψ'' (he.trans he') hΨ'' a Δ hΦ t (ht.trans hp) hwt
     exact ihc (h.retype hr hv) hrip
 
 /-! ## Programs -/
 
 /-- In a well-typed program, every program point is safe for `n` steps from
 any state matching its context at step count `n`. -/
-theorem safeUpTo (hP : ProgramOk Φ fetch sys Ψ) (hΨ : Ψ.WF) (n : Nat) :
+theorem safeUpTo (hP : ProgramOk Φ fetch sys Ψ) (n : Nat) :
     SafeUpTo Φ fetch sys Ψ n := by
   induction n with
   | zero =>
-    intro k hk a Δ _ s _ _
+    intro k hk _ _ _ a Δ _ s _ _
     have : k = 0 := by omega
     subst this
     trivial
   | succ n ih =>
-    intro k hk a Δ hΔ s hr hw
+    intro k hk Ψ' he hΨ a Δ hΔ s hr hw
     by_cases hkn : k ≤ n
-    · exact ih k hkn a Δ hΔ s hr hw
+    · exact ih k hkn Ψ' he hΨ a Δ hΔ s hr hw
     · have : k = n + 1 := by omega
       subst this
       obtain ⟨i, len, hf, ht⟩ := hP a Δ hΔ
-      have := ht.sound hΨ ih (s := { s with rip := s.rip + len })
+      have := ht.sound he hΨ ih (s := { s with rip := s.rip + len })
         (hw.congr rfl rfl rfl rfl) (by rw [← hr])
       simpa only [SafeN, TypedAsm.step, hr, hf] using this
 
@@ -2180,6 +2186,7 @@ divide error. -/
 theorem soundness {s : State} (hP : ProgramOk Φ fetch sys Ψ) (hΨ : Ψ.WF)
     (hs : StateOk Φ fetch sys Ψ s) : Safe fetch sys s := by
   obtain ⟨Γ, hΓ, hw⟩ := hs
-  exact safe_of_safeN (fun n => safeUpTo hP hΨ n n (Nat.le_refl n) s.rip Γ hΓ s rfl (hw n))
+  exact safe_of_safeN (fun n =>
+    safeUpTo hP n n (Nat.le_refl n) Ψ (.refl _) hΨ s.rip Γ hΓ s rfl (hw n))
 
 end TypedAsm

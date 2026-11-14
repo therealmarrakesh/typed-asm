@@ -51,7 +51,7 @@ def Φ : CodeTy := .ofLabels code base At
 /-- No memory blocks. -/
 def blocks : List (BitVec 64 × Layout) := []
 
-def Ψ : MemTy := .ofList blocks
+def Ψ : MemTy := .ofList blocks []
 
 /-! ## Arithmetic facts the recursion relies on -/
 

@@ -39,7 +39,8 @@ inductive BlockOk (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) :
   /-- The rule of consequence, between instructions: continue in any context
   that every matching state also matches. -/
   | weaken {a : BitVec 64} {Γ Γ' : Ctx} :
-    (∀ n s, WellTyped fetch sys Ψ n Γ s → WellTyped fetch sys Ψ n Γ' s) →
+    (∀ Ψ₁ : MemTy, Ψ.Ext Ψ₁ → Ψ₁.WF →
+      ∀ n s, WellTyped fetch sys Ψ₁ n Γ s → WellTyped fetch sys Ψ₁ n Γ' s) →
     BlockOk Φ fetch sys Ψ a Γ' → BlockOk Φ fetch sys Ψ a Γ
   /-- A register holding exactly the address of typed code may be treated as
   a pointer to that code from here on. -/
@@ -49,7 +50,8 @@ inductive BlockOk (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) :
   /-- Case analysis on the state, between instructions: continue in each of
   a family of contexts that together cover every state matching `Γ`. -/
   | cover {ι : Type} [Nonempty ι] {a : BitVec 64} {Γ : Ctx} {Γ' : ι → Ctx} :
-    (∀ n s, WellTyped fetch sys Ψ n Γ s → ∃ x, WellTyped fetch sys Ψ n (Γ' x) s) →
+    (∀ Ψ₁ : MemTy, Ψ.Ext Ψ₁ → Ψ₁.WF →
+      ∀ n s, WellTyped fetch sys Ψ₁ n Γ s → ∃ x, WellTyped fetch sys Ψ₁ n (Γ' x) s) →
     (∀ x, BlockOk Φ fetch sys Ψ a (Γ' x)) → BlockOk Φ fetch sys Ψ a Γ
   /-- A register holding exactly the address of a function may be treated as
   a pointer to that function from here on. -/
@@ -130,7 +132,7 @@ theorem BlockOk.castPtr {a : BitVec 64} {Γ : Ctx} {r : Reg} {v base : BitVec 64
     (hv : v = base + BitVec.ofNat 64 (8 * i)) (hw : w = true → l.writable = true)
     (hrest : BlockOk Φ fetch sys Ψ a (Γ.setReg r (.ptr l.fields w i))) :
     BlockOk Φ fetch sys Ψ a Γ :=
-  .weaken (fun n s h => h.retype hr (hasTy_ptr.mpr ⟨base, l, hl, rfl, hw, by
+  .weaken (fun _ he _ n s h => h.retype hr (hasTy_ptr.mpr ⟨base, l, he.blocks _ _ hl, rfl, hw, by
     have := h.regs r hr
     rw [hΓ, hasTy_eq] at this
     rw [this, hv]⟩)) hrest
@@ -142,14 +144,14 @@ registers typed as integers. -/
 theorem BlockOk.name {a : BitVec 64} {Γ : Ctx} {r : Reg} (hr : r ≠ .rsp)
     (hrest : ∀ v, BlockOk Φ fetch sys Ψ a (Γ.setReg r (.eq v))) : BlockOk Φ fetch sys Ψ a Γ :=
   .cover (Γ' := fun v => Γ.setReg r (.eq v))
-    (fun _ s h => ⟨s.getReg r, h.retype hr (hasTy_eq.mpr rfl)⟩) hrest
+    (fun _ _ _ _ s h => ⟨s.getReg r, h.retype hr (hasTy_eq.mpr rfl)⟩) hrest
 
 /-- The stack pointer's value may be given a name. With it, the address of
 anything on the stack is a known value too. -/
 theorem BlockOk.nameSp {a : BitVec 64} {Γ : Ctx}
     (hrest : ∀ v, BlockOk Φ fetch sys Ψ a (Γ.setReg .rsp (.eq v))) : BlockOk Φ fetch sys Ψ a Γ :=
   .cover (Γ' := fun v => Γ.setReg .rsp (.eq v))
-    (fun n s h => ⟨s.getReg .rsp,
+    (fun _ _ _ n s h => ⟨s.getReg .rsp,
       h.setSp (fun r hr => by simp only [CtxOf.setReg, hr, ↓reduceIte]) rfl rfl rfl (by
         simp only [CtxOf.setReg, ↓reduceIte]
         exact hasTy_eq.mpr rfl)⟩) hrest
@@ -162,7 +164,7 @@ theorem BlockOk.nameSlot {a : BitVec 64} {Γ : Ctx} {i : Nat} (hi : i < Γ.stack
     (hrest : ∀ v, BlockOk Φ fetch sys Ψ a { Γ with stack := Γ.stack.set i (.eq v) }) :
     BlockOk Φ fetch sys Ψ a Γ :=
   .cover (Γ' := fun v => { Γ with stack := Γ.stack.set i (.eq v) })
-    (fun n s h => ⟨s.load64 (s.getReg .rsp + BitVec.ofNat 64 (8 * i)),
+    (fun _ _ _ n s h => ⟨s.load64 (s.getReg .rsp + BitVec.ofNat 64 (8 * i)),
       { regs := h.regs
         flags := h.flags
         stackPerm := by
@@ -188,24 +190,21 @@ theorem BlockOk.nameSlot {a : BitVec 64} {Γ : Ctx} {i : Nat} (hi : i < Γ.stack
 
 /-! ## Blocks of a kind, and values that may be null -/
 
-/-- Every block of kind `tag` has these fields. A pointer of type `Ty.ref`
-says only which kind of block it points to; this is the fact that says what
-such a block contains. It is a property of the memory typing, proved once
-for a program. -/
-def MemTy.TagFields (Ψ : MemTy) (tag : Nat) (fields : List Ty) : Prop :=
-  ∀ a l, Ψ a = some l → l.tag = some tag → l.fields = fields
-
 /-- A pointer to a block of a kind may be used as a pointer to a block with
-that kind's fields. -/
+that kind's fields. A pointer of type `Ty.ref` says only which kind of block
+it points to; the memory typing's list of kinds says what such a block
+contains, for blocks there from the start and blocks allocated later alike. -/
 theorem BlockOk.openRef {a : BitVec 64} {Γ : Ctx} {r : Reg} {tag : Nat} {w : Bool} {i : Nat}
     {fields : List Ty} (hr : r ≠ .rsp) (hΓ : Γ.regs r = .ref tag w i)
-    (ht : Ψ.TagFields tag fields)
+    (ht : Ψ.kinds tag = some fields)
     (hrest : BlockOk Φ fetch sys Ψ a (Γ.setReg r (.ptr fields w i))) : BlockOk Φ fetch sys Ψ a Γ :=
-  .weaken (fun n s h => h.retype hr (by
+  .weaken (fun Ψ₁ he hΨ₁ n s h => h.retype hr (by
     have hp := h.regs r hr
     rw [hΓ] at hp
     obtain ⟨b, l, hl, htag, hw, hv⟩ := hasTy_ref.mp hp
-    exact hasTy_ptr.mpr ⟨b, l, hl, ht b l hl htag, hw, hv⟩)) hrest
+    have hk := hΨ₁.kinds b l hl tag htag
+    rw [he.kinds, ht] at hk
+    exact hasTy_ptr.mpr ⟨b, l, hl, (Option.some.inj hk).symm, hw, hv⟩)) hrest
 
 /-- A register holding exactly the address of a field of a block of a kind
 may be treated as a pointer to a block of that kind. -/
@@ -214,7 +213,7 @@ theorem BlockOk.castRef {a : BitVec 64} {Γ : Ctx} {r : Reg} {v base : BitVec 64
     (htag : l.tag = some tag) (hv : v = base + BitVec.ofNat 64 (8 * i))
     (hw : w = true → l.writable = true)
     (hrest : BlockOk Φ fetch sys Ψ a (Γ.setReg r (.ref tag w i))) : BlockOk Φ fetch sys Ψ a Γ :=
-  .weaken (fun n s h => h.retype hr (hasTy_ref.mpr ⟨base, l, hl, htag, hw, by
+  .weaken (fun _ he _ n s h => h.retype hr (hasTy_ref.mpr ⟨base, l, he.blocks _ _ hl, htag, hw, by
     have := h.regs r hr
     rw [hΓ, hasTy_eq] at this
     rw [this, hv]⟩)) hrest
@@ -225,13 +224,35 @@ theorem BlockOk.splitNull {a : BitVec 64} {Γ : Ctx} {r : Reg} {τ : Ty} (hr : r
     (hΓ : Γ.regs r = .nullable τ) (hnull : BlockOk Φ fetch sys Ψ a (Γ.setReg r (.eq 0)))
     (hvalue : BlockOk Φ fetch sys Ψ a (Γ.setReg r τ)) : BlockOk Φ fetch sys Ψ a Γ :=
   .cover (ι := Bool) (Γ' := fun b => if b then Γ.setReg r (.eq 0) else Γ.setReg r τ)
-    (fun n s h => by
+    (fun _ _ _ n s h => by
       have hp := h.regs r hr
       rw [hΓ, hasTy_nullable] at hp
       rcases hp with h0 | hτ
       · exact ⟨true, h.retype hr (hasTy_eq.mpr h0)⟩
       · exact ⟨false, h.retype hr hτ⟩)
     (fun b => by cases b <;> assumption)
+
+/-- What a system call handed back is an error number or it is not: the
+rest of the block is typed once for every error number, with the register
+typed as exactly that number, and once for a value. -/
+theorem BlockOk.splitErr {a : BitVec 64} {Γ : Ctx} {r : Reg} {τ : Ty} (hr : r ≠ .rsp)
+    (hΓ : Γ.regs r = .orErr τ)
+    (herr : ∀ e, SysErr e → BlockOk Φ fetch sys Ψ a (Γ.setReg r (.eq e)))
+    (hvalue : BlockOk Φ fetch sys Ψ a (Γ.setReg r τ)) : BlockOk Φ fetch sys Ψ a Γ :=
+  .cover (ι := Option { e : BitVec 64 // SysErr e })
+    (Γ' := fun x => match x with
+      | some e => Γ.setReg r (.eq e.1)
+      | none => Γ.setReg r τ)
+    (fun _ _ _ n s h => by
+      have hp := h.regs r hr
+      rw [hΓ, hasTy_orErr] at hp
+      rcases hp with he | hτ
+      · exact ⟨some ⟨_, he⟩, h.retype hr (hasTy_eq.mpr rfl)⟩
+      · exact ⟨none, h.retype hr hτ⟩)
+    (fun x => by
+      cases x with
+      | some e => exact herr e.1 e.2
+      | none => exact hvalue)
 
 /-! ## Contexts attached to labels -/
 
@@ -272,11 +293,12 @@ end Labels
 /-- In a program typed block by block, the address of a function is a
 function pointer, at every step count. This is what lets a function's
 address sit in the program's data from the start. -/
-theorem BlocksOk.hasTy_fn (hB : BlocksOk Φ fetch sys Ψ) (hΨ : Ψ.WF) {sig : FnSig} {v : BitVec 64}
+theorem BlocksOk.hasTy_fn (hB : BlocksOk Φ fetch sys Ψ) {sig : FnSig} {v : BitVec 64}
     (hat : sig.At Φ v) (n : Nat) : HasTy fetch sys Ψ n sig.ty v := by
   rw [TypedAsm.hasTy_fn]
-  intro k hk saved ret rest room hK s hs hw
-  exact safeUpTo hB.programOk hΨ k k (Nat.le_refl k) v _ (hB _ _ (hat saved ret rest room hK)) s hs hw
+  intro k hk Ψ' he hΨ' saved ret rest room hK s hs hw
+  exact safeUpTo hB.programOk k k (Nat.le_refl k) Ψ' he hΨ' v _
+    (hB _ _ (hat saved ret rest room hK)) s hs hw
 
 /-- **Soundness, block by block.** -/
 theorem soundness_blocks {s : State} (hB : BlocksOk Φ fetch sys Ψ)

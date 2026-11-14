@@ -93,7 +93,7 @@ theorem Entry.matches {H : Ty → BitVec 64 → Prop} {s : State}
     (h : Entry entry base image dataBase data blocks room s) (hint : ∀ v, H .int v)
     (hfields : ∀ x ∈ blocks, ∀ i τ, x.2.fields[i]? = some τ →
       H τ (s.load64 (x.1 + BitVec.ofNat 64 (8 * i)))) :
-    Matches H (MemTy.ofList blocks) (entryCtx room) s where
+    Matches H (MemTy.ofList blocks kinds) (entryCtx room) s where
   regs := fun _ _ => hint _
   flags := trivial
   stackPerm := h.stack
@@ -109,7 +109,7 @@ nothing of the data. -/
 theorem Entry.matchesInt {H : Ty → BitVec 64 → Prop} {s : State}
     (h : Entry entry base image dataBase data blocks room s) (hint : ∀ v, H .int v)
     (hfields : ∀ x ∈ blocks, ∀ τ ∈ x.2.fields, τ = .int) :
-    Matches H (MemTy.ofList blocks) (entryCtx room) s :=
+    Matches H (MemTy.ofList blocks kinds) (entryCtx room) s :=
   h.matches hint (fun x hx i τ hi => by
     rw [hfields x hx τ (List.mem_of_getElem? hi)]
     exact hint _)

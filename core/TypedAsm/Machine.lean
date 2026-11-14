@@ -78,8 +78,9 @@ theorem Loaded.frame {fetch : Fetch} {s s' : State} (h : Loaded fetch s) (hf : F
   obtain ⟨hlen, hbytes⟩ := h a i len ha
   refine ⟨hlen, fun k hk => ?_⟩
   obtain ⟨hm, hp⟩ := hbytes k hk
-  refine ⟨?_, by rw [hf.perm]; exact hp⟩
-  rw [hf.mem _ (by rw [hp]; rfl)]
+  have hne : s.perm (a + BitVec.ofNat 64 k) ≠ .none := by rw [hp]; decide
+  refine ⟨?_, by rw [hf.perm _ hne]; exact hp⟩
+  rw [hf.mem _ hne (by rw [hp]; rfl)]
   exact hm
 
 /-! ## Instruction lengths -/
