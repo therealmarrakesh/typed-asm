@@ -99,14 +99,14 @@ structure WellTyped (Φ : CodeTy) (Ψ : MemTy) (Γ : Ctx) (s : State) : Prop whe
   stackPerm : s.canWrite (stackBase Γ s) (stackSize Γ) = true
   stackSize_lt : stackSize Γ < 2 ^ 64
   /-- Each described stack slot holds a value of its type. -/
-  stack : ∀ i (h : i < Γ.stack.length),
-    HasTy Φ Ψ Γ.stack[i] (s.load64 (s.getReg .rsp + BitVec.ofNat 64 (8 * i)))
+  stack : ∀ i τ, Γ.stack[i]? = some τ →
+    HasTy Φ Ψ τ (s.load64 (s.getReg .rsp + BitVec.ofNat 64 (8 * i)))
   /-- Each memory block is readable, and writable if its layout says so. -/
   heapPerm : ∀ a l, Ψ a = some l →
     s.canRead a l.size = true ∧ (l.writable = true → s.canWrite a l.size = true)
   /-- Each field of each memory block holds a value of its type. -/
-  heap : ∀ a l, Ψ a = some l → ∀ i (h : i < l.fields.length),
-    HasTy Φ Ψ l.fields[i] (s.load64 (a + BitVec.ofNat 64 (8 * i)))
+  heap : ∀ a l, Ψ a = some l → ∀ i τ, l.fields[i]? = some τ →
+    HasTy Φ Ψ τ (s.load64 (a + BitVec.ofNat 64 (8 * i)))
   /-- No memory block overlaps the stack region. -/
   stackHeap : ∀ a l, Ψ a = some l → Disjoint (stackBase Γ s) (stackSize Γ) a l.size
 

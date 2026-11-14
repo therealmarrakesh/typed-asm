@@ -13,8 +13,9 @@ address that says whether programs may read or write it.
 
 namespace TypedAsm
 
-/-- The number of bits in an operand of the given width. -/
-def Width.bits : Width → Nat
+/-- The number of bits in an operand of the given width. It is reducible so
+that `BitVec Width.w64.bits` and `BitVec 64` are interchangeable in proofs. -/
+@[reducible] def Width.bits : Width → Nat
   | .w32 => 32
   | .w64 => 64
 
