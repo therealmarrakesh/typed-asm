@@ -1019,8 +1019,10 @@ private inductive StepResult
 private def runOn (g : MVarId) (tac : TacticM Unit) : TacticM (List MVarId) := do
   setGoals [g]
   -- Without this a failing step is logged and its goal admitted, and the
-  -- caller would carry on as if it had succeeded.
-  Tactic.withoutRecover tac
+  -- caller would carry on as if it had succeeded. The fresh scope gives the
+  -- named placeholders in `tac` names of their own: without it, a second use
+  -- of the same step in one tactic call would be handed the first one's proof.
+  Tactic.withoutRecover (withFreshMacroScope tac)
   getUnsolvedGoals
 
 /-- The system call number a context puts in `rax`, if it is exactly known. -/
