@@ -327,7 +327,7 @@ def buffer (fields : List Ty) : Ctx :=
 #guard_msgs in
 example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .unknown) bare := by ty_block
 
-/-- error: `syscall`: call number 11 has no rule. The calls that can be typed are `read` (0), `write` (1), `mmap` (9) and `exit` (60) -/
+/-- error: `syscall`: call number 11 has no rule. The calls that can be typed are `read` (0), `write` (1), `close` (3), `fstat` (5), `lseek` (8), `mmap` (9), `exit` (60), `clock_gettime` (228), `exit_group` (231), `openat` (257) and `getrandom` (318) -/
 #guard_msgs in
 example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .unmodelled) bare := by ty_block
 
@@ -344,6 +344,47 @@ example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .tooLong) (buffer [.int,
 #guard_msgs in
 example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .overPointer)
     (buffer [.int, .ptr [.int] false 0]) := by
+  ty_block
+
+/-! ## Other calls that store into a buffer
+
+`fstat`, `clock_gettime` and `getrandom` are typed by the condition of a
+`read`: the bytes the kernel stores must all land in integer fields. How
+many that is depends on the call. -/
+
+inductive Fill
+  | statSmall | clockInt | randomUnknown | randomLong
+  deriving DecidableEq
+
+def fills : List (Asm Fill) := [
+  .label .statSmall, .ins (.mov .w32 (.rm_i (.reg .rax) 5)), .ins .syscall,
+  .label .clockInt, .ins (.mov .w32 (.rm_i (.reg .rax) 228)), .ins .syscall,
+  .label .randomUnknown, .ins (.mov .w32 (.rm_i (.reg .rax) 318)), .ins .syscall,
+  .label .randomLong, .ins (.mov .w32 (.rm_i (.reg .rax) 318)),
+    .ins (.mov .w32 (.rm_i (.reg .rsi) 24)), .ins .syscall]
+
+def fillFetch : Fetch := Asm.fetch 0 fills
+
+/-- Register `r` points to a writable block of two integers. -/
+def twoAt (r : Reg) : Ctx :=
+  ⟨fun r' => if r' = r then .ptr [.int, .int] true 0 else .int, [], 0, Flags.Any⟩
+
+/-- error: `fstat` could overwrite something that is not an integer: the buffer in `rsi` does not have room in integer fields for the 144 bytes the kernel stores -/
+#guard_msgs in
+example : BlockOk Φy fillFetch linux Ψ (Asm.addr fills 0 .statSmall) (twoAt .rsi) := by ty_block
+
+/-- error: `clock_gettime` needs `rsi` to hold a writable pointer to the buffer, or the address of stack slots taken with `lea` once `rsp` has a name, but its type is `int` -/
+#guard_msgs in
+example : BlockOk Φy fillFetch linux Ψ (Asm.addr fills 0 .clockInt) bare := by ty_block
+
+/-- error: `getrandom` needs the count in `rsi` to be exactly known, but its type is `int` -/
+#guard_msgs in
+example : BlockOk Φy fillFetch linux Ψ (Asm.addr fills 0 .randomUnknown) (twoAt .rdi) := by
+  ty_block
+
+/-- error: `getrandom` could overwrite something that is not an integer: the buffer in `rdi` does not have room for the count in `rsi` in integer fields -/
+#guard_msgs in
+example : BlockOk Φy fillFetch linux Ψ (Asm.addr fills 0 .randomLong) (twoAt .rdi) := by
   ty_block
 
 /-! ## Asking for memory

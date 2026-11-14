@@ -4,31 +4,44 @@ import TypedAsm.Frame
 /-!
 # A small model of Linux
 
-Four system calls: `exit`, `write`, `read` and `mmap`. Every other call
-number is modelled as failing with `-ENOSYS`, but that is not what the real
-kernel does with them, so the type system has no rule for them: a `syscall`
-is typed only when the number in `rax` is exactly known and is one of the four.
+The system calls a program can be typed to make: `exit` and `exit_group`,
+`read`, `write`, `openat`, `close`, `lseek`, `fstat`, `mmap`,
+`clock_gettime` and `getrandom`. Every other call number is modelled as
+failing with `-ENOSYS`, but that is not what the real kernel does with them,
+so the type system has no rule for them: a `syscall` is typed only when the
+number in `rax` is exactly known and is one of these.
 
-What the model leaves out of the calls it does have:
+What the types rely on is the same for every one of them, and is true of
+the real kernel whatever the arguments: the call returns to the next
+instruction (or ends the program), memory that was accessible is changed
+only inside a buffer the call was handed, and `rax`, `rcx`, `r11` and the
+flags hold values nothing is known about. What a call *answers* is the
+outside world's business, and nothing is proved from it.
+
+What the model leaves out, none of which touches the above:
 
 * A `write` to a closed pipe raises a signal in the real kernel. Here it
   does not.
-* Only file descriptors 0 (for `read`) and 1 and 2 (for `write`) exist.
 * A `read` into memory that is not writable fails without consuming input.
   The real kernel may deliver part of the data first.
-
+* There are no directories. A file is found by its whole name, spelled
+  exactly as in `World.files`, and a relative name needs `AT_FDCWD`.
+* `openat` understands the access mode and `O_CREAT`, `O_EXCL`, `O_TRUNC`
+  and `O_APPEND`; other flags are ignored. Permissions are two switches per
+  file, not owners and modes.
+* The standard streams are not files: they cannot be sought, and `fstat`
+  describes them as pipes. `fstat` fills in the kind, the size and the block
+  counts; every field the model does not track is zero.
+* Every clock tells the same time, the one the world supplies.
 * `mmap` is modelled in one form only: fresh, private, zeroed memory that
   can be read and written (`PROT_READ|PROT_WRITE`,
   `MAP_PRIVATE|MAP_ANONYMOUS`), at an address the kernel chooses. Any other
   form is modelled as failing, which is not what the kernel does, so the
-  type system types the call only in that form. Where the memory goes is the
-  outside world's choice (`World.place`); all that is assumed of it is what
-  the kernel guarantees: whole pages that were not accessible before.
+  type system types the call only in that form: this is the one call whose
+  answer the types do rely on. Where the memory goes is the outside world's
+  choice (`World.place`); all that is assumed of it is what the kernel
+  guarantees: whole pages that were not accessible before.
 * There is no `munmap`: memory, once given, is never taken back.
-
-None of these changes what the types rely on: the call returns to the next
-instruction, memory that was accessible is changed only inside the buffer of
-a `read`, and `rcx`, `r11` and the flags hold values nothing is known about.
 -/
 
 namespace TypedAsm
@@ -40,42 +53,212 @@ returning call overwrites `rcx` and `r11` and leaves the flags unknown. -/
 def ret (s : State) (v : BitVec 64) : State :=
   { ((s.setReg .rax v).setReg .rcx s.rip).setReg .r11 0 with flags := .unknown }
 
-/-- `write(fd, buf, count)`: append bytes from `buf` to the output. The
-world says how many of the `count` this call accepts; the result is that
-number, and a program that wants everything written must go round again. -/
+/-- The state a call returns in after storing `data` at `buf`, with result
+`v` and the world as `w`. -/
+def give (s : State) (buf : BitVec 64) (data : List (BitVec 8)) (v : BitVec 64) (w : World) :
+    State :=
+  ret { s.storeBytes buf data with world := w } v
+
+/-- The file descriptor in a register. The kernel takes an `int`, which is
+the low half of the register. -/
+def fdArg (s : State) (r : Reg) : Nat :=
+  ((s.getReg r).setWidth 32).toNat
+
+/-- How many of `count` bytes the next `write` accepts. -/
+def accepted (w : World) (count : Nat) : Nat :=
+  match w.writeCaps with
+  | [] => count
+  | cap :: _ => min count cap
+
+/-- `write(fd, buf, count)`: append bytes from `buf` to the output, or store
+them in a file at the descriptor's position. The world says how many of the
+`count` this call accepts; the result is that number, and a program that
+wants everything written must go round again. -/
 def write (s : State) : State :=
-  let fd := s.getReg .rdi
+  let fd := fdArg s .rdi
   let buf := s.getReg .rsi
   let count := (s.getReg .rdx).toNat
-  if fd ≠ 1 ∧ fd ≠ 2 then ret s (-9)
-  else if s.canRead buf count then
-    let n := match s.world.writeCaps with
-      | [] => count
-      | cap :: _ => min count cap
-    ret { s with
-        world := { s.world with
-          writes := s.loadBytes buf n :: s.world.writes, writeCaps := s.world.writeCaps.tail } }
-      (BitVec.ofNat 64 n)
+  match s.world.fd? fd with
+  | some .stdout =>
+    if s.canRead buf count then
+      let n := accepted s.world count
+      ret { s with
+          world := { s.world with
+            writes := s.loadBytes buf n :: s.world.writes, writeCaps := s.world.writeCaps.tail } }
+        (BitVec.ofNat 64 n)
+    else ret s (-14)
+  | some (.file i pos r w app) =>
+    if !w then ret s (-9)
+    else if s.canRead buf count then
+      match s.world.files[i]? with
+      | none => ret s (-9)
+      | some f =>
+        let n := accepted s.world count
+        let start := if app then f.size else pos
+        ret { s with
+            world := { s.world.setFd fd (.file i (start + n) r w app) with
+              files := s.world.files.setIfInBounds i (f.write start (s.loadBytes buf n))
+              writeCaps := s.world.writeCaps.tail } }
+          (BitVec.ofNat 64 n)
+    else ret s (-14)
+  | _ => ret s (-9)
+
+/-- `read(fd, buf, count)`. From the program's input: take the next input
+event; bytes are stored at `buf`, at most `count` of them, and what does not
+fit stays for the next call; with no input left the call returns 0. From a
+file: the bytes at the descriptor's position, up to the end of the file. -/
+def read (s : State) : State :=
+  let fd := fdArg s .rdi
+  let buf := s.getReg .rsi
+  let count := (s.getReg .rdx).toNat
+  match s.world.fd? fd with
+  | some .stdin =>
+    if s.canWrite buf count then
+      match s.world.input with
+      | [] => ret s 0
+      | .error e :: rest => ret { s with world := { s.world with input := rest } } e
+      | .bytes data :: rest =>
+        let chunk := data.take count
+        let left := data.drop count
+        give s buf chunk (BitVec.ofNat 64 chunk.length)
+          { s.world with input := if left.isEmpty then rest else .bytes left :: rest }
+    else ret s (-14)
+  | some (.file i pos r w app) =>
+    if !r then ret s (-9)
+    else if s.canWrite buf count then
+      match s.world.files[i]? with
+      | none => ret s (-9)
+      | some f =>
+        let data := (f.read pos count).take count
+        give s buf data (BitVec.ofNat 64 data.length)
+          (s.world.setFd fd (.file i (pos + data.length) r w app))
+    else ret s (-14)
+  | _ => ret s (-9)
+
+/-- The bytes of a zero-terminated string at `a`, without the zero: a name
+as a program hands it to the kernel. It fails if a byte cannot be read, or
+if no zero comes within `fuel` bytes. -/
+def cstring (s : State) : Nat → BitVec 64 → Except (BitVec 64) (List (BitVec 8))
+  | 0, _ => .error (-36)
+  | fuel + 1, a =>
+    if (s.perm a).readable then
+      let b := s.mem a
+      if b = 0 then .ok [] else (cstring s fuel (a + 1)).map (b :: ·)
+    else .error (-14)
+
+/-- `openat(dirfd, path, flags, mode)`: open the file with that name, making
+it first if `O_CREAT` asks and there is none. The result is the lowest
+descriptor not in use. -/
+def openat (s : State) : State :=
+  match cstring s 4096 (s.getReg .rsi) with
+  | .error e => ret s e
+  | .ok path =>
+    let flags := ((s.getReg .rdx).setWidth 32).toNat
+    let access := flags % 4
+    let creat := flags / 0x40 % 2 == 1
+    let excl := flags / 0x80 % 2 == 1
+    let trunc := flags / 0x200 % 2 == 1
+    let app := flags / 0x400 % 2 == 1
+    let r := access != 1
+    let w := access != 0
+    let fd := s.world.freeFd
+    if access == 3 then ret s (-22)
+    else if path.isEmpty then ret s (-2)
+    else if path.head? != some 0x2f && (s.getReg .rdi).setWidth 32 != (-100 : BitVec 32) then
+      ret s (-9)
+    else
+      match s.world.find? path with
+      | some i =>
+        match s.world.files[i]? with
+        | none => ret s (-2)
+        | some f =>
+          if creat && excl then ret s (-17)
+          else if (r && !f.mayRead) || (w && !f.mayWrite) then ret s (-13)
+          else
+            ret { s with
+                world := { s.world.setFd fd (.file i 0 r w app) with
+                  files := s.world.files.setIfInBounds i (if trunc && w then f.truncate else f) } }
+              (BitVec.ofNat 64 fd)
+      | none =>
+        if creat then
+          if s.world.mayCreate then
+            ret { s with
+                world := { s.world.setFd fd (.file s.world.files.size 0 r w app) with
+                  files := s.world.files.push { path := path } } }
+              (BitVec.ofNat 64 fd)
+          else ret s (-13)
+        else ret s (-2)
+
+/-- `close(fd)`. -/
+def close (s : State) : State :=
+  let fd := fdArg s .rdi
+  match s.world.fd? fd with
+  | some _ => ret { s with world := s.world.closeFd fd } 0
+  | none => ret s (-9)
+
+/-- `lseek(fd, offset, whence)`: move a file descriptor's position, counted
+from the start of the file, from where it is, or from the end. The result
+is the new position. -/
+def lseek (s : State) : State :=
+  let fd := fdArg s .rdi
+  let whence := s.getReg .rdx
+  match s.world.fd? fd with
+  | some (.file i pos r w app) =>
+    let size := ((s.world.files[i]?).map (·.size)).getD 0
+    let from? : Option Nat :=
+      if whence = 0 then some 0 else if whence = 1 then some pos
+      else if whence = 2 then some size else none
+    match from? with
+    | none => ret s (-22)
+    | some b =>
+      let to : Int := b + (s.getReg .rsi).toInt
+      if to < 0 then ret s (-22)
+      else
+        ret { s with world := s.world.setFd fd (.file i to.toNat r w app) }
+          (BitVec.ofNat 64 to.toNat)
+  | some _ => ret s (-29)
+  | none => ret s (-9)
+
+/-- The low `n` bytes of a number, least significant first. -/
+def leBytes (n v : Nat) : List (BitVec 8) :=
+  (List.range n).map fun i => BitVec.ofNat 8 (v >>> (8 * i))
+
+/-- `fstat(fd, buf)`: store a description of what the descriptor refers to,
+144 bytes of it, at `buf`. -/
+def fstat (s : State) : State :=
+  let buf := s.getReg .rsi
+  match s.world.fd? (fdArg s .rdi) with
+  | none => ret s (-9)
+  | some d =>
+    -- a regular file that its owner may read and write, or a pipe
+    let (mode, size) := match d with
+      | .file i _ _ _ _ => (0x81a4, ((s.world.files[i]?).map (·.size)).getD 0)
+      | _ => (0x1180, 0)
+    let data :=
+      leBytes 8 0 ++ leBytes 8 0 ++ leBytes 8 1 ++ leBytes 4 mode ++ leBytes 4 0 ++ leBytes 4 0 ++
+      leBytes 4 0 ++ leBytes 8 0 ++ leBytes 8 size ++ leBytes 8 4096 ++
+      leBytes 8 ((size + 511) / 512) ++ List.replicate 72 0
+    if s.canWrite buf 144 then give s buf (data.take 144) 0 s.world else ret s (-14)
+
+/-- `clock_gettime(clock, buf)`: store the time, seconds then nanoseconds,
+16 bytes, at `buf`. -/
+def clockGettime (s : State) : State :=
+  let buf := s.getReg .rsi
+  if 12 ≤ fdArg s .rdi then ret s (-22)
+  else if s.canWrite buf 16 then
+    let now := s.world.time s.world.asks
+    give s buf ((leBytes 8 now.1.toNat ++ leBytes 8 now.2.toNat).take 16) 0
+      { s.world with asks := s.world.asks + 1 }
   else ret s (-14)
 
-/-- `read(fd, buf, count)`: take the next input event. Bytes are stored at
-`buf`, at most `count` of them; what does not fit stays for the next call.
-With no input left the call returns 0. -/
-def read (s : State) : State :=
-  let fd := s.getReg .rdi
-  let buf := s.getReg .rsi
-  let count := (s.getReg .rdx).toNat
-  if fd ≠ 0 then ret s (-9)
-  else if s.canWrite buf count then
-    match s.world.input with
-    | [] => ret s 0
-    | .error e :: rest => ret { s with world := { s.world with input := rest } } e
-    | .bytes data :: rest =>
-      let chunk := data.take count
-      let left := data.drop count
-      ret { s.storeBytes buf chunk with
-          world := { s.world with input := if left.isEmpty then rest else .bytes left :: rest } }
-        (BitVec.ofNat 64 chunk.length)
+/-- `getrandom(buf, length, flags)`: store random bytes at `buf`. The result
+is how many, which is all that were asked for up to the kernel's limit. -/
+def getrandom (s : State) : State :=
+  let buf := s.getReg .rdi
+  let n := min (s.getReg .rsi).toNat 33554431
+  if s.canWrite buf n then
+    give s buf (((List.range n).map fun i => s.world.random (s.world.drawn + i)).take n)
+      (BitVec.ofNat 64 n) { s.world with drawn := s.world.drawn + n }
   else ret s (-14)
 
 /-- `mmap(addr, length, prot, flags, fd, offset)`, for fresh memory only:
@@ -103,12 +286,21 @@ def mmap (s : State) : State :=
 
 end Linux
 
-/-- `exit` is call 60, `write` is 1, `read` is 0 and `mmap` is 9. -/
+/-- The calls, by number: `read` 0, `write` 1, `close` 3, `fstat` 5, `lseek`
+8, `mmap` 9, `exit` 60, `clock_gettime` 228, `exit_group` 231, `openat` 257
+and `getrandom` 318. -/
 def linux : Syscall := fun s =>
   if s.getReg .rax = 60 then .exit (s.readReg .w32 .rdi)
+  else if s.getReg .rax = 231 then .exit (s.readReg .w32 .rdi)
   else if s.getReg .rax = 1 then .next (Linux.write s)
   else if s.getReg .rax = 0 then .next (Linux.read s)
   else if s.getReg .rax = 9 then .next (Linux.mmap s)
+  else if s.getReg .rax = 3 then .next (Linux.close s)
+  else if s.getReg .rax = 5 then .next (Linux.fstat s)
+  else if s.getReg .rax = 8 then .next (Linux.lseek s)
+  else if s.getReg .rax = 228 then .next (Linux.clockGettime s)
+  else if s.getReg .rax = 257 then .next (Linux.openat s)
+  else if s.getReg .rax = 318 then .next (Linux.getrandom s)
   else .next (Linux.ret s (-38))
 
 /-- Whether zero is a value of the type, whatever the memory typing. Fresh
@@ -139,29 +331,6 @@ theorem ret_ok {sys : Syscall} (h : WellTyped fetch sys Ψ n Γ s) (v : BitVec 6
     WellTyped fetch sys Ψ n Γ.afterSyscall (ret s v) :=
   (((h.setReg (by decide) (HasTy.int _)).setReg (by decide) (HasTy.int _)).setReg
     (by decide) (HasTy.int _)).setFlags (P := Flags.Any) trivial
-
-theorem write_ok {sys : Syscall} (h : WellTyped fetch sys Ψ n Γ s) :
-    WellTyped fetch sys Ψ n Γ.afterSyscall (write s) := by
-  simp only [write]
-  split
-  · exact ret_ok h _
-  · split
-    · exact ret_ok (by exact h.congr rfl rfl rfl rfl) _
-    · exact ret_ok h _
-
-theorem write_rip (s : State) : (write s).rip = s.rip := by
-  simp only [write]
-  split
-  · rfl
-  · split <;> rfl
-
-theorem read_rip (s : State) : (read s).rip = s.rip := by
-  simp only [read]
-  split
-  · rfl
-  · split
-    · split <;> rfl
-    · rfl
 
 theorem ret_rax (s : State) (v : BitVec 64) : (ret s v).getReg .rax = v := by
   show (((s.setReg .rax v).setReg .rcx s.rip).setReg .r11 0).getReg .rax = v
@@ -373,105 +542,285 @@ theorem mmap_ok {sys : Syscall} {len : BitVec 64} {fields : List Ty} {tag : Opti
         exact ⟨Ψ₂, hext, hWF, ret_typed hM (hasTy_orErr.mpr (.inr (hτ Ψ₂ a hat)))⟩
       · exact herr _ _ (h.congr rfl rfl rfl rfl) (by decide)
 
-/-- A `read` into a buffer that lies in integer fields of a writable block
-keeps the state well typed, whatever arrives. -/
-theorem read_ok {sys : Syscall} {fields : List Ty} {off : Nat} {len : BitVec 64}
-    (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF) (hbuf : Γ.regs .rsi = .ptr fields true off)
-    (hlen : Γ.regs .rdx = .eq len)
-    (hints : ∀ j, j < (len.toNat + 7) / 8 → fields[off + j]? = some .int) :
-    WellTyped fetch sys Ψ n Γ.afterSyscall (read s) := by
-  have hp := h.regs .rsi (by decide)
+/-! ## The two things a call can do to the program
+
+Apart from `mmap`, every call either leaves the machine alone, changing only
+the outside world and the registers a call always changes, or does that and
+also stores bytes in a buffer it was handed. Each fact a call must satisfy
+is proved once for each of the two. -/
+
+/-- `t` is `s` after a call that touched nothing of the program's. -/
+def OnlyWorld (s t : State) : Prop :=
+  ∃ v w, t = ret { s with world := w } v
+
+namespace OnlyWorld
+
+variable {t : State}
+
+theorem same (s : State) (v : BitVec 64) : OnlyWorld s (ret s v) :=
+  ⟨v, s.world, rfl⟩
+
+theorem intro (s : State) (v : BitVec 64) (w : World) :
+    OnlyWorld s (ret { s with world := w } v) :=
+  ⟨v, w, rfl⟩
+
+theorem ok {sys : Syscall} (hf : OnlyWorld s t) (h : WellTyped fetch sys Ψ n Γ s) :
+    WellTyped fetch sys Ψ n Γ.afterSyscall t := by
+  obtain ⟨v, w, rfl⟩ := hf
+  exact ret_ok (h.congr (t := { s with world := w }) rfl rfl rfl rfl) v
+
+theorem rip (hf : OnlyWorld s t) : t.rip = s.rip := by
+  obtain ⟨v, w, rfl⟩ := hf
+  rfl
+
+theorem frame (hf : OnlyWorld s t) : Frame s t := by
+  obtain ⟨v, w, rfl⟩ := hf
+  exact Frame.of_eq rfl rfl
+
+end OnlyWorld
+
+/-- `t` is `s` after a call that at most stored up to `room` bytes at `buf`,
+all of them in writable memory. -/
+def Fills (s : State) (buf : BitVec 64) (room : Nat) (t : State) : Prop :=
+  OnlyWorld s t ∨
+    ∃ data v w, data.length ≤ room ∧ s.canWrite buf data.length = true ∧ t = give s buf data v w
+
+theorem Fills.same (s : State) (buf : BitVec 64) (room : Nat) (v : BitVec 64) :
+    Fills s buf room (ret s v) :=
+  .inl (.same s v)
+
+theorem Fills.only (s : State) (buf : BitVec 64) (room : Nat) (v : BitVec 64) (w : World) :
+    Fills s buf room (ret { s with world := w } v) :=
+  .inl (.intro s v w)
+
+theorem canWrite_le {a : BitVec 64} {m k : Nat} (h : s.canWrite a m = true) (hle : k ≤ m) :
+    s.canWrite a k = true := by
+  rw [State.canWrite_iff] at h ⊢
+  exact fun i hi => h i (by omega)
+
+theorem fills_give {buf : BitVec 64} {room : Nat} {data : List (BitVec 8)} {v : BitVec 64}
+    {w : World} (hw : s.canWrite buf room = true) (hlen : data.length ≤ room) :
+    Fills s buf room (give s buf data v w) :=
+  .inr ⟨data, v, w, hlen, canWrite_le hw hlen, rfl⟩
+
+/-- Bytes stored in integer fields of a writable block leave the state well
+typed, whatever they are. -/
+theorem storeBytes_ok {sys : Syscall} {r : Reg} {fields : List Ty} {off cnt : Nat}
+    {data : List (BitVec 8)} (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF) (hr : r ≠ .rsp)
+    (hbuf : Γ.regs r = .ptr fields true off)
+    (hints : ∀ j, j < cnt → fields[off + j]? = some .int) (hlen : data.length ≤ 8 * cnt) :
+    WellTyped fetch sys Ψ n Γ (s.storeBytes (s.getReg r) data) := by
+  have hp := h.regs r hr
   rw [hbuf] at hp
   obtain ⟨a, l, hl, rfl, -, hva⟩ := hasTy_ptr.mp hp
-  have hdx := h.eqReg (by decide) hlen
-  simp only [read]
-  split
-  · exact ret_ok h _
-  · split
-    · split
-      · exact ret_ok h _
-      · exact ret_ok (by exact h.congr rfl rfl rfl rfl) _
-      · next data rest _ =>
-        refine ret_ok ?_ _
-        rw [hdx, hva]
-        by_cases hc : (len.toNat + 7) / 8 = 0
-        · -- nothing is asked for, so nothing is stored
-          have hz : len.toNat = 0 := by omega
-          rw [hz, List.take_zero, State.storeBytes_nil]
-          exact h.congr rfl rfl rfl rfl
-        · have hlast := hints ((len.toNat + 7) / 8 - 1) (by omega)
-          have hle : off + (len.toNat + 7) / 8 ≤ l.fields.length := by
-            have := (List.getElem?_eq_some_iff.mp hlast).1
-            omega
-          have hsz := hΨ.size_lt a l hl
-          simp only [Layout.size] at hsz
-          refine h.writeInts hΨ hl (lo := off) (cnt := (len.toNat + 7) / 8) (by omega) hle
-            (fun j hj hj' => by
-              have := hints (j - off) (by omega)
-              rwa [show off + (j - off) = j by omega] at this)
-            rfl rfl rfl (fun y hd => ?_)
-          have htake : (data.take len.toNat).length ≤ len.toNat := by
-            simp only [List.length_take]; omega
-          refine (State.load64_congr (s := s.storeBytes _ _) rfl y).trans
-            (State.load64_storeBytes_disjoint s _ (by omega) ?_ (hd.2 (by omega)))
-          have h1 := hd.1 (by decide)
-          bv_omega
-    · exact ret_ok h _
+  rw [hva]
+  by_cases hc : cnt = 0
+  · -- nothing can be stored
+    have hz : data = [] := List.length_eq_zero_iff.mp (by omega)
+    rw [hz, State.storeBytes_nil]
+    exact h.congr rfl rfl rfl rfl
+  · have hlast := hints (cnt - 1) (by omega)
+    have hle : off + cnt ≤ l.fields.length := by
+      have := (List.getElem?_eq_some_iff.mp hlast).1
+      omega
+    have hsz := hΨ.size_lt a l hl
+    simp only [Layout.size] at hsz
+    refine h.writeInts hΨ hl (lo := off) (cnt := cnt) (by omega) hle
+      (fun j hj hj' => by
+        have := hints (j - off) (by omega)
+        rwa [show off + (j - off) = j by omega] at this)
+      rfl rfl rfl (fun y hd => ?_)
+    refine (State.load64_congr (s := s.storeBytes _ _) rfl y).trans
+      (State.load64_storeBytes_disjoint s _ (by omega) ?_ (hd.2 (by omega)))
+    have h1 := hd.1 (by decide)
+    bv_omega
 
-/-- A `read` into a buffer that lies in integer stack slots keeps the state
-well typed, whatever arrives. -/
-theorem read_ok_stack {sys : Syscall} {v d len : BitVec 64}
-    (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF) (hsp : Γ.regs .rsp = .eq v)
-    (hbuf : Γ.regs .rsi = .eq (v + d)) (h8 : d.toNat % 8 = 0) (hlen : Γ.regs .rdx = .eq len)
-    (hints : ∀ j, j < (len.toNat + 7) / 8 → Γ.stack[d.toNat / 8 + j]? = some .int) :
-    WellTyped fetch sys Ψ n Γ.afterSyscall (read s) := by
+/-- Bytes stored in integer stack slots leave the state well typed, whatever
+they are. -/
+theorem storeBytes_ok_stack {sys : Syscall} {r : Reg} {v d : BitVec 64} {cnt : Nat}
+    {data : List (BitVec 8)} (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF) (hr : r ≠ .rsp)
+    (hsp : Γ.regs .rsp = .eq v) (hbuf : Γ.regs r = .eq (v + d)) (h8 : d.toNat % 8 = 0)
+    (hints : ∀ j, j < cnt → Γ.stack[d.toNat / 8 + j]? = some .int)
+    (hlen : data.length ≤ 8 * cnt) :
+    WellTyped fetch sys Ψ n Γ (s.storeBytes (s.getReg r) data) := by
   have hv : s.getReg .rsp = v := by
     have := h.sp
     rwa [hsp, hasTy_eq] at this
-  have hsi := h.eqReg (by decide) hbuf
-  have hdx := h.eqReg (by decide) hlen
+  have hsi := h.eqReg hr hbuf
   have hbase : v + d = s.getReg .rsp + BitVec.ofNat 64 (8 * (d.toNat / 8)) := by
     rw [hv]; congr 1; apply BitVec.eq_of_toNat_eq; simp only [BitVec.toNat_ofNat]; omega
+  rw [hsi]
+  by_cases hc : cnt = 0
+  · have hz : data = [] := List.length_eq_zero_iff.mp (by omega)
+    rw [hz, State.storeBytes_nil]
+    exact h.congr rfl rfl rfl rfl
+  · have hlast := hints (cnt - 1) (by omega)
+    have hle : d.toNat / 8 + cnt ≤ Γ.stack.length := by
+      have := (List.getElem?_eq_some_iff.mp hlast).1
+      omega
+    have hsz := h.stackSize_lt
+    simp only [stackSize] at hsz
+    refine h.writeSlotsInt hΨ (lo := d.toNat / 8) (cnt := cnt) (by omega) hle
+      (fun j hj hj' => by
+        have := hints (j - d.toNat / 8) (by omega)
+        rwa [show d.toNat / 8 + (j - d.toNat / 8) = j by omega] at this)
+      rfl rfl rfl (fun y hd => ?_)
+    rw [hbase]
+    refine (State.load64_congr (s := s.storeBytes _ _) rfl y).trans
+      (State.load64_storeBytes_disjoint s _ (by omega) ?_ (hd.2 (by omega)))
+    have h1 := hd.1 (by decide)
+    bv_omega
+
+namespace Fills
+
+variable {t : State} {r : Reg} {room : Nat}
+
+/-- A call that fills a buffer lying in integer fields of a writable block
+keeps the state well typed. -/
+theorem ok {sys : Syscall} {fields : List Ty} {off cnt : Nat}
+    (hf : Fills s (s.getReg r) room t) (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF)
+    (hr : r ≠ .rsp) (hbuf : Γ.regs r = .ptr fields true off)
+    (hints : ∀ j, j < cnt → fields[off + j]? = some .int) (hroom : room ≤ 8 * cnt) :
+    WellTyped fetch sys Ψ n Γ.afterSyscall t := by
+  rcases hf with hf | ⟨data, v, w, hlen, -, rfl⟩
+  · exact hf.ok h
+  · exact ret_ok ((storeBytes_ok (data := data) h hΨ hr hbuf hints (by omega)).congr
+      (t := { s.storeBytes (s.getReg r) data with world := w }) rfl rfl rfl rfl) v
+
+/-- A call that fills a buffer lying in integer stack slots keeps the state
+well typed. -/
+theorem ok_stack {sys : Syscall} {v d : BitVec 64} {cnt : Nat}
+    (hf : Fills s (s.getReg r) room t) (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF)
+    (hr : r ≠ .rsp) (hsp : Γ.regs .rsp = .eq v) (hbuf : Γ.regs r = .eq (v + d))
+    (h8 : d.toNat % 8 = 0) (hints : ∀ j, j < cnt → Γ.stack[d.toNat / 8 + j]? = some .int)
+    (hroom : room ≤ 8 * cnt) : WellTyped fetch sys Ψ n Γ.afterSyscall t := by
+  rcases hf with hf | ⟨data, v', w, hlen, -, rfl⟩
+  · exact hf.ok h
+  · exact ret_ok
+      ((storeBytes_ok_stack (data := data) h hΨ hr hsp hbuf h8 hints (by omega)).congr
+        (t := { s.storeBytes (s.getReg r) data with world := w }) rfl rfl rfl rfl) v'
+
+theorem rip {buf : BitVec 64} (hf : Fills s buf room t) : t.rip = s.rip := by
+  rcases hf with hf | ⟨data, v, w, -, -, rfl⟩
+  · exact hf.rip
+  · rfl
+
+/-- Only bytes of the buffer change, and those were writable. -/
+theorem frame {buf : BitVec 64} (hf : Fills s buf room t) (hroom : room ≤ 2 ^ 64) : Frame s t := by
+  rcases hf with hf | ⟨data, v, w, hlen, hw, rfl⟩
+  · exact hf.frame
+  · refine .of_perm rfl (fun x hx => ?_)
+    show (s.storeBytes buf data).mem x = s.mem x
+    rw [State.mem_storeBytes s _ x _ (by omega)]
+    by_cases hin : (x - buf).toNat < data.length
+    · -- a byte inside the buffer is writable, so it is not one of these
+      rw [State.canWrite_iff] at hw
+      have := hw _ hin
+      rw [show buf + BitVec.ofNat 64 (x - buf).toNat = x by bv_omega] at this
+      rw [this] at hx
+      cases hx
+    · rw [List.getElem?_eq_none (by omega)]
+      rfl
+
+end Fills
+
+/-! ## Each call is one of the two -/
+
+/-- Settles a call that only changes the world: every way it can end is a
+plain return. -/
+local macro "only_world" : tactic =>
+  `(tactic| repeat' (first
+    | (with_reducible exact OnlyWorld.same _ _)
+    | (with_reducible exact OnlyWorld.intro _ _ _)
+    | split))
+
+/-- Settles a call that fills a buffer: every way it can end is a plain
+return, or a store of no more than was asked for into memory found writable. -/
+local macro "fills" : tactic =>
+  `(tactic| repeat' (first
+    | (with_reducible exact Fills.same _ _ _ _)
+    | (with_reducible exact Fills.only _ _ _ _ _)
+    | (with_reducible exact fills_give (by assumption) (List.length_take_le _ _))
+    | split))
+
+theorem write_only (s : State) : OnlyWorld s (write s) := by
+  simp only [write]
+  only_world
+
+theorem openat_only (s : State) : OnlyWorld s (openat s) := by
+  simp only [openat]
+  only_world
+
+theorem close_only (s : State) : OnlyWorld s (close s) := by
+  simp only [close]
+  only_world
+
+theorem lseek_only (s : State) : OnlyWorld s (lseek s) := by
+  simp only [lseek]
+  only_world
+
+theorem read_fills (s : State) : Fills s (s.getReg .rsi) (s.getReg .rdx).toNat (read s) := by
   simp only [read]
+  fills
+
+theorem fstat_fills (s : State) : Fills s (s.getReg .rsi) 144 (fstat s) := by
+  simp only [fstat]
+  fills
+
+theorem clockGettime_fills (s : State) : Fills s (s.getReg .rsi) 16 (clockGettime s) := by
+  simp only [clockGettime]
+  fills
+
+theorem getrandom_fills (s : State) :
+    Fills s (s.getReg .rdi) (s.getReg .rsi).toNat (getrandom s) := by
+  simp only [getrandom]
   split
-  · exact ret_ok h _
+  · next hw =>
+    refine .inr ⟨_, _, _, ?_, ?_, rfl⟩
+    · exact Nat.le_trans (List.length_take_le _ _) (Nat.min_le_left _ _)
+    · exact canWrite_le hw (List.length_take_le _ _)
+  · exact Fills.same _ _ _ _
+
+/-- Only bytes that were not accessible change. -/
+theorem mmap_frame (s : State) : Frame s (mmap s) := by
+  simp only [mmap]
+  split
+  · exact Frame.of_eq rfl rfl
   · split
+    · exact Frame.of_eq rfl rfl
     · split
-      · exact ret_ok h _
-      · exact ret_ok (by exact h.congr rfl rfl rfl rfl) _
-      · next data rest _ =>
-        refine ret_ok ?_ _
-        rw [hdx, hsi]
-        by_cases hc : (len.toNat + 7) / 8 = 0
-        · have hz : len.toNat = 0 := by omega
-          rw [hz, List.take_zero, State.storeBytes_nil]
-          exact h.congr rfl rfl rfl rfl
-        · have hlast := hints ((len.toNat + 7) / 8 - 1) (by omega)
-          have hle : d.toNat / 8 + (len.toNat + 7) / 8 ≤ Γ.stack.length := by
-            have := (List.getElem?_eq_some_iff.mp hlast).1
-            omega
-          have hsz := h.stackSize_lt
-          simp only [stackSize] at hsz
-          refine h.writeSlotsInt hΨ (lo := d.toNat / 8) (cnt := (len.toNat + 7) / 8) (by omega) hle
-            (fun j hj hj' => by
-              have := hints (j - d.toNat / 8) (by omega)
-              rwa [show d.toNat / 8 + (j - d.toNat / 8) = j by omega] at this)
-            rfl rfl rfl (fun y hd => ?_)
-          have htake : (data.take len.toNat).length ≤ len.toNat := by
-            simp only [List.length_take]; omega
-          rw [hbase]
-          refine (State.load64_congr (s := s.storeBytes _ _) rfl y).trans
-            (State.load64_storeBytes_disjoint s _ (by omega) ?_ (hd.2 (by omega)))
-          have h1 := hd.1 (by decide)
-          bv_omega
-    · exact ret_ok h _
+      · exact Frame.of_eq rfl rfl
+      · split
+        · next a _ hok =>
+          obtain ⟨hal, -, htop, hun⟩ := hok
+          have hsz4 : ((s.getReg .rsi).toNat + 4095) / 4096 * 4096 % 4096 = 0 := by omega
+          generalize ((s.getReg .rsi).toNat + 4095) / 4096 * 4096 = size at htop hun hsz4 ⊢
+          have hfit64 : a.toNat + size ≤ 2 ^ 64 := by omega
+          refine ⟨fun x hx => ?_, fun x hx _ => ?_⟩
+          · show (s.mapZero a size).perm x = s.perm x
+            rw [State.perm_mapZero s hal hsz4 hfit64]
+            split
+            · next hin => exact absurd (perm_of_unmapped hal hfit64 hun hin) hx
+            · rfl
+          · show (s.mapZero a size).mem x = s.mem x
+            rw [State.mem_mapZero s hal hsz4 hfit64]
+            split
+            · next hin => exact absurd (perm_of_unmapped hal hfit64 hun hin) hx
+            · rfl
+        · exact Frame.of_eq rfl rfl
 
 end Linux
 
-/-! ## The three calls, as the type system sees them -/
+/-! ## The calls, as the type system sees them -/
 
 /-- `exit`: with 60 in `rax`, the program ends. -/
 theorem linux_exit (hΓ : Γ.regs .rax = .eq 60) : SysExits fetch linux Ψ Γ := by
+  intro _ _ _ n s h
+  have hax := h.eqReg (by decide) hΓ
+  exact ⟨s.readReg .w32 .rdi, by simp [linux, hax]⟩
+
+/-- `exit_group`: with 231 in `rax`, the program ends. -/
+theorem linux_exit_group (hΓ : Γ.regs .rax = .eq 231) : SysExits fetch linux Ψ Γ := by
   intro _ _ _ n s h
   have hax := h.eqReg (by decide) hΓ
   exact ⟨s.readReg .w32 .rdi, by simp [linux, hax]⟩
@@ -482,8 +831,33 @@ theorem linux_write (hΓ : Γ.regs .rax = .eq 1) :
     SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
-  refine ⟨Linux.write s, ?_, Linux.write_rip s, Ψ₁, .refl _, hΨ, Linux.write_ok h⟩
-  simp [linux, hax]
+  exact ⟨Linux.write s, by simp [linux, hax], (Linux.write_only s).rip, Ψ₁, .refl _, hΨ,
+    (Linux.write_only s).ok h⟩
+
+/-- `openat`: with 257 in `rax`, the call returns, whatever its arguments. A
+name that cannot be read is refused by the kernel, not a fault. -/
+theorem linux_openat (hΓ : Γ.regs .rax = .eq 257) :
+    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+  intro Ψ₁ _ hΨ n s h
+  have hax := h.eqReg (by decide) hΓ
+  exact ⟨Linux.openat s, by simp [linux, hax], (Linux.openat_only s).rip, Ψ₁, .refl _, hΨ,
+    (Linux.openat_only s).ok h⟩
+
+/-- `close`: with 3 in `rax`, the call returns, whatever its argument. -/
+theorem linux_close (hΓ : Γ.regs .rax = .eq 3) :
+    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+  intro Ψ₁ _ hΨ n s h
+  have hax := h.eqReg (by decide) hΓ
+  exact ⟨Linux.close s, by simp [linux, hax], (Linux.close_only s).rip, Ψ₁, .refl _, hΨ,
+    (Linux.close_only s).ok h⟩
+
+/-- `lseek`: with 8 in `rax`, the call returns, whatever its arguments. -/
+theorem linux_lseek (hΓ : Γ.regs .rax = .eq 8) :
+    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+  intro Ψ₁ _ hΨ n s h
+  have hax := h.eqReg (by decide) hΓ
+  exact ⟨Linux.lseek s, by simp [linux, hax], (Linux.lseek_only s).rip, Ψ₁, .refl _, hΨ,
+    (Linux.lseek_only s).ok h⟩
 
 /-- `read`: with 0 in `rax`, the call returns, provided the buffer in `rsi`
 points into a writable block and the `rdx` bytes from there are all in
@@ -494,9 +868,10 @@ theorem linux_read {fields : List Ty} {off : Nat} {len : BitVec 64} (hΓ : Γ.re
     SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
-  refine ⟨Linux.read s, ?_, Linux.read_rip s, Ψ₁, .refl _, hΨ,
-    Linux.read_ok h hΨ hbuf hlen hints⟩
-  simp [linux, hax]
+  have hf := Linux.read_fills s
+  rw [h.eqReg (by decide) hlen] at hf
+  exact ⟨Linux.read s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+    hf.ok h hΨ (by decide) hbuf hints (by omega)⟩
 
 /-- Whether a type is the integer type. -/
 def Ty.isInt : Ty → Bool
@@ -526,9 +901,87 @@ theorem linux_read_stack {v d len : BitVec 64} (hΓ : Γ.regs .rax = .eq 0)
     SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
-  refine ⟨Linux.read s, ?_, Linux.read_rip s, Ψ₁, .refl _, hΨ,
-    Linux.read_ok_stack h hΨ hsp hbuf h8 hlen hints⟩
-  simp [linux, hax]
+  have hf := Linux.read_fills s
+  rw [h.eqReg (by decide) hlen] at hf
+  exact ⟨Linux.read s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+    hf.ok_stack h hΨ (by decide) hsp hbuf h8 hints (by omega)⟩
+
+/-- `fstat`: with 5 in `rax`, the call returns, provided the buffer in `rsi`
+points into a writable block and the 144 bytes from there, which is what the
+kernel stores, are all in integer fields. -/
+theorem linux_fstat {fields : List Ty} {off : Nat} (hΓ : Γ.regs .rax = .eq 5)
+    (hbuf : Γ.regs .rsi = .ptr fields true off)
+    (hints : ∀ j, j < 18 → fields[off + j]? = some .int) :
+    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+  intro Ψ₁ _ hΨ n s h
+  have hax := h.eqReg (by decide) hΓ
+  have hf := Linux.fstat_fills s
+  exact ⟨Linux.fstat s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+    hf.ok h hΨ (by decide) hbuf hints (by omega)⟩
+
+/-- `fstat` into the stack: as `linux_fstat`, with the buffer a known
+distance above the stack pointer and its 144 bytes in integer stack slots. -/
+theorem linux_fstat_stack {v d : BitVec 64} (hΓ : Γ.regs .rax = .eq 5)
+    (hsp : Γ.regs .rsp = .eq v) (hbuf : Γ.regs .rsi = .eq (v + d)) (h8 : d.toNat % 8 = 0)
+    (hints : ∀ j, j < 18 → Γ.stack[d.toNat / 8 + j]? = some .int) :
+    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+  intro Ψ₁ _ hΨ n s h
+  have hax := h.eqReg (by decide) hΓ
+  have hf := Linux.fstat_fills s
+  exact ⟨Linux.fstat s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+    hf.ok_stack h hΨ (by decide) hsp hbuf h8 hints (by omega)⟩
+
+/-- `clock_gettime`: with 228 in `rax`, the call returns, provided the buffer
+in `rsi` points into a writable block and the 16 bytes from there are in
+integer fields. -/
+theorem linux_clock_gettime {fields : List Ty} {off : Nat} (hΓ : Γ.regs .rax = .eq 228)
+    (hbuf : Γ.regs .rsi = .ptr fields true off)
+    (hints : ∀ j, j < 2 → fields[off + j]? = some .int) :
+    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+  intro Ψ₁ _ hΨ n s h
+  have hax := h.eqReg (by decide) hΓ
+  have hf := Linux.clockGettime_fills s
+  exact ⟨Linux.clockGettime s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+    hf.ok h hΨ (by decide) hbuf hints (by omega)⟩
+
+/-- `clock_gettime` into the stack. -/
+theorem linux_clock_gettime_stack {v d : BitVec 64} (hΓ : Γ.regs .rax = .eq 228)
+    (hsp : Γ.regs .rsp = .eq v) (hbuf : Γ.regs .rsi = .eq (v + d)) (h8 : d.toNat % 8 = 0)
+    (hints : ∀ j, j < 2 → Γ.stack[d.toNat / 8 + j]? = some .int) :
+    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+  intro Ψ₁ _ hΨ n s h
+  have hax := h.eqReg (by decide) hΓ
+  have hf := Linux.clockGettime_fills s
+  exact ⟨Linux.clockGettime s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+    hf.ok_stack h hΨ (by decide) hsp hbuf h8 hints (by omega)⟩
+
+/-- `getrandom`: with 318 in `rax`, the call returns, provided the buffer in
+`rdi` points into a writable block and the `rsi` bytes from there are all in
+integer fields. -/
+theorem linux_getrandom {fields : List Ty} {off : Nat} {len : BitVec 64}
+    (hΓ : Γ.regs .rax = .eq 318) (hbuf : Γ.regs .rdi = .ptr fields true off)
+    (hlen : Γ.regs .rsi = .eq len)
+    (hints : ∀ j, j < (len.toNat + 7) / 8 → fields[off + j]? = some .int) :
+    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+  intro Ψ₁ _ hΨ n s h
+  have hax := h.eqReg (by decide) hΓ
+  have hf := Linux.getrandom_fills s
+  rw [h.eqReg (by decide) hlen] at hf
+  exact ⟨Linux.getrandom s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+    hf.ok h hΨ (by decide) hbuf hints (by omega)⟩
+
+/-- `getrandom` into the stack. -/
+theorem linux_getrandom_stack {v d len : BitVec 64} (hΓ : Γ.regs .rax = .eq 318)
+    (hsp : Γ.regs .rsp = .eq v) (hbuf : Γ.regs .rdi = .eq (v + d)) (h8 : d.toNat % 8 = 0)
+    (hlen : Γ.regs .rsi = .eq len)
+    (hints : ∀ j, j < (len.toNat + 7) / 8 → Γ.stack[d.toNat / 8 + j]? = some .int) :
+    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+  intro Ψ₁ _ hΨ n s h
+  have hax := h.eqReg (by decide) hΓ
+  have hf := Linux.getrandom_fills s
+  rw [h.eqReg (by decide) hlen] at hf
+  exact ⟨Linux.getrandom s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+    hf.ok_stack h hΨ (by decide) hsp hbuf h8 hints (by omega)⟩
 
 /-- `mmap` for a block of plain fields: with 9 in `rax`, the length in `rsi`,
 3 in `rdx` and 0x22 in `r10`, the call returns an error number or a writable
@@ -573,72 +1026,18 @@ theorem linux_mmap_kind {len : BitVec 64} {tag : Nat} {fields : List Ty}
 accessible byte that is not writable. -/
 theorem linux_frame (s : State) : (linux s).All (Frame s) := by
   unfold linux
-  split
-  · trivial
-  · split
-    · show Frame s (Linux.write s)
-      simp only [Linux.write]
-      split
-      · exact Frame.of_eq rfl rfl
-      · split <;> exact Frame.of_eq rfl rfl
-    · split
-      · show Frame s (Linux.read s)
-        simp only [Linux.read]
-        split
-        · exact Frame.of_eq rfl rfl
-        · split
-          · next hw =>
-            split
-            · exact Frame.of_eq rfl rfl
-            · exact Frame.of_eq rfl rfl
-            · next data rest _ =>
-              refine .of_perm rfl (fun x hx => ?_)
-              show (s.storeBytes _ _).mem x = s.mem x
-              have hlen : (data.take (s.getReg .rdx).toNat).length ≤ 2 ^ 64 := by
-                have := (s.getReg .rdx).isLt
-                simp only [List.length_take]; omega
-              rw [State.mem_storeBytes s _ x _ hlen]
-              by_cases hin : (x - s.getReg .rsi).toNat < (data.take (s.getReg .rdx).toNat).length
-              · -- a byte inside the buffer is writable, so it is not one of these
-                rw [State.canWrite_iff] at hw
-                have hlt : (x - s.getReg .rsi).toNat < (s.getReg .rdx).toNat := by
-                  simp only [List.length_take] at hin; omega
-                have := hw _ hlt
-                rw [show s.getReg .rsi + BitVec.ofNat 64 (x - s.getReg .rsi).toNat = x by
-                  bv_omega] at this
-                rw [this] at hx
-                cases hx
-              · rw [List.getElem?_eq_none (by omega)]
-                rfl
-          · exact Frame.of_eq rfl rfl
-      · split
-        · show Frame s (Linux.mmap s)
-          simp only [Linux.mmap]
-          split
-          · exact Frame.of_eq rfl rfl
-          · split
-            · exact Frame.of_eq rfl rfl
-            · split
-              · exact Frame.of_eq rfl rfl
-              · split
-                · next a _ hok =>
-                  -- only bytes that were not accessible change
-                  obtain ⟨hal, -, htop, hun⟩ := hok
-                  have hsz4 : ((s.getReg .rsi).toNat + 4095) / 4096 * 4096 % 4096 = 0 := by omega
-                  generalize ((s.getReg .rsi).toNat + 4095) / 4096 * 4096 = size at htop hun hsz4 ⊢
-                  have hfit64 : a.toNat + size ≤ 2 ^ 64 := by omega
-                  refine ⟨fun x hx => ?_, fun x hx _ => ?_⟩
-                  · show (s.mapZero a size).perm x = s.perm x
-                    rw [State.perm_mapZero s hal hsz4 hfit64]
-                    split
-                    · next hin => exact absurd (Linux.perm_of_unmapped hal hfit64 hun hin) hx
-                    · rfl
-                  · show (s.mapZero a size).mem x = s.mem x
-                    rw [State.mem_mapZero s hal hsz4 hfit64]
-                    split
-                    · next hin => exact absurd (Linux.perm_of_unmapped hal hfit64 hun hin) hx
-                    · rfl
-                · exact Frame.of_eq rfl rfl
-        · exact Frame.of_eq rfl rfl
+  repeat' split
+  all_goals first
+    | trivial
+    | exact (Linux.write_only s).frame
+    | exact (Linux.read_fills s).frame (Nat.le_of_lt (s.getReg .rdx).isLt)
+    | exact Linux.mmap_frame s
+    | exact (Linux.close_only s).frame
+    | exact (Linux.fstat_fills s).frame (by decide)
+    | exact (Linux.lseek_only s).frame
+    | exact (Linux.clockGettime_fills s).frame (by decide)
+    | exact (Linux.openat_only s).frame
+    | exact (Linux.getrandom_fills s).frame (Nat.le_of_lt (s.getReg .rsi).isLt)
+    | exact Frame.of_eq rfl rfl
 
 end TypedAsm

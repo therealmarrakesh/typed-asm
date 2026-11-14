@@ -70,10 +70,61 @@ inductive ReadEvent
   | bytes (data : List (BitVec 8))
   | error (errno : BitVec 64)
 
+/-- A file: its name, and its bytes. The bytes are what it held to begin
+with, overlaid by what has been written to it since, so that writing costs
+the same however large the file. -/
+structure File where
+  /-- The name, exactly as a program must spell it to open the file. -/
+  path : List (BitVec 8)
+  base : Array (BitVec 8) := #[]
+  over : Std.TreeMap Nat (BitVec 8) := {}
+  size : Nat := base.size
+  /-- Whether the program is allowed to open it for reading, and for writing. -/
+  mayRead : Bool := true
+  mayWrite : Bool := true
+
+namespace File
+
+/-- The byte at a position; zero where nothing was ever written. -/
+def byte (f : File) (i : Nat) : BitVec 8 :=
+  f.over.getD i (f.base.getD i 0)
+
+/-- Up to `n` bytes from position `pos`, stopping at the end of the file. -/
+def read (f : File) (pos n : Nat) : List (BitVec 8) :=
+  (List.range (min n (f.size - pos))).map fun i => f.byte (pos + i)
+
+/-- The file with `data` written at position `pos`. Writing past the end
+makes the file longer; any gap reads as zero. -/
+def write (f : File) (pos : Nat) (data : List (BitVec 8)) : File :=
+  { f with
+    over := (data.zipIdx).foldl (fun t x => t.insert (pos + x.2) x.1) f.over
+    size := max f.size (pos + data.length) }
+
+/-- The file made empty. -/
+def truncate (f : File) : File :=
+  { f with base := #[], over := {}, size := 0 }
+
+/-- Everything in the file. -/
+def contents (f : File) : List (BitVec 8) :=
+  f.read 0 f.size
+
+end File
+
+/-- What a file descriptor refers to. -/
+inductive Fd
+  /-- The input the program is given: descriptor 0 to begin with. -/
+  | stdin
+  /-- The program's output: descriptors 1 and 2 to begin with. -/
+  | stdout
+  /-- An open file: which one, the position of the next read or write, what
+  it was opened for, and whether every write goes to the end. -/
+  | file (index pos : Nat) (canRead canWrite append : Bool)
+
 /-- The world outside the machine, as far as a program can observe it: what
-is still to be read, one event per `read`, and everything written so far.
-Only system calls touch it. Nothing is assumed about the input, so a result
-proved for every state holds whatever the program is given to read. -/
+is still to be read, one event per `read`, everything written so far, the
+files there are, and which descriptors are open. Only system calls touch it.
+Nothing is assumed about it, so a result proved for every state holds
+whatever the program is given to read and whatever files it finds. -/
 structure World where
   input : List ReadEvent := []
   /-- The bytes of each `write` so far, most recent first. -/
@@ -87,6 +138,46 @@ structure World where
   place : Nat → Option (BitVec 64) := fun _ => none
   /-- How many requests for memory have been made. -/
   asked : Nat := 0
+  /-- The open file descriptors, by number. -/
+  fds : List (Nat × Fd) := [(0, .stdin), (1, .stdout), (2, .stdout)]
+  /-- The files there are. There are no directories: a file is found by its
+  whole name, spelled exactly. -/
+  files : Array File := #[]
+  /-- Whether the program may create files. -/
+  mayCreate : Bool := true
+  /-- The random bytes the kernel would hand out, in order, and how many
+  have been handed out. -/
+  random : Nat → BitVec 8 := fun _ => 0
+  drawn : Nat := 0
+  /-- The time, in seconds and nanoseconds, at each successive asking, and
+  how many times it has been asked. -/
+  time : Nat → BitVec 64 × BitVec 64 := fun _ => (0, 0)
+  asks : Nat := 0
+
+namespace World
+
+/-- What a descriptor refers to, if it is open. -/
+def fd? (w : World) (n : Nat) : Option Fd :=
+  w.fds.lookup n
+
+/-- Make a descriptor refer to something. -/
+def setFd (w : World) (n : Nat) (fd : Fd) : World :=
+  { w with fds := (n, fd) :: w.fds.filter (·.1 != n) }
+
+/-- Close a descriptor. -/
+def closeFd (w : World) (n : Nat) : World :=
+  { w with fds := w.fds.filter (·.1 != n) }
+
+/-- The lowest descriptor number not in use, which is the one the kernel
+gives out next. -/
+def freeFd (w : World) : Nat :=
+  ((List.range (w.fds.length + 1)).find? fun i => (w.fds.lookup i).isNone).getD w.fds.length
+
+/-- The file with a given name, if there is one. -/
+def find? (w : World) (path : List (BitVec 8)) : Option Nat :=
+  w.files.findIdx? (·.path == path)
+
+end World
 
 /-- Everything written so far, in the order it was written. -/
 def World.output (w : World) : List (BitVec 8) :=

@@ -1033,12 +1033,64 @@ private def syscallNumber (ctx : Expr) : MetaM (Option Nat) := do
   if v.hasExprMVar || v.hasFVar then return none
   try return some (← evalAddr v) catch _ => return none
 
-/-- Types a `read` whose buffer is on the stack, at the head of a block
-goal. Returns the rest of the block. -/
-private def typeReadStack (goal : MVarId) : TacticM MVarId := do
-  let gs ← runOn goal (do evalTactic (← `(tactic|
-    refine BlockOk.sys rfl
-      (linux_read_stack (v := ?_) (d := ?_) (len := ?_) rfl ?_ ?_ ?_ ?_ ?_) ?_)))
+/-- A system call that returns and asks nothing of the program's memory:
+its number, its name and its rule. -/
+private def plainCalls : List (Nat × String × Name) :=
+  [(1, "write", ``linux_write), (3, "close", ``linux_close), (8, "lseek", ``linux_lseek),
+   (257, "openat", ``linux_openat)]
+
+/-- A system call that stores into a buffer: its number and name, the rule
+for a buffer in a memory block and the rule for one on the stack, the
+register holding the buffer, and how much is stored there: the count in a
+register, or a fixed number of bytes. -/
+private def bufferCalls : List (Nat × String × Name × Name × String × (String ⊕ Nat)) :=
+  [(0, "read", ``linux_read, ``linux_read_stack, "rsi", .inl "rdx"),
+   (5, "fstat", ``linux_fstat, ``linux_fstat_stack, "rsi", .inr 144),
+   (228, "clock_gettime", ``linux_clock_gettime, ``linux_clock_gettime_stack, "rsi", .inr 16),
+   (318, "getrandom", ``linux_getrandom, ``linux_getrandom_stack, "rdi", .inl "rsi")]
+
+/-- Whether a call number is one that is typed as a step in a block. -/
+private def isStepCall (nr : Nat) : Bool :=
+  plainCalls.any (·.1 == nr) || bufferCalls.any (·.1 == nr)
+
+/-- The names of the calls that can be typed, for messages. -/
+private def typedCalls : String :=
+  "`read` (0), `write` (1), `close` (3), `fstat` (5), `lseek` (8), `mmap` (9), `exit` (60), \
+   `clock_gettime` (228), `exit_group` (231), `openat` (257) and `getrandom` (318)"
+
+/-- The shape of a system call's rule: what it leaves to be found out. -/
+private inductive SysShape
+  /-- Nothing but the call number. -/
+  | plain
+  /-- A buffer in a memory block; `sized` if the count comes from a register. -/
+  | block (sized : Bool)
+  /-- A buffer on the stack. -/
+  | stack (sized : Bool)
+
+/-- Applies a system call's rule at the head of a block goal and returns the
+goals it leaves: its premises, and the rest of the block. -/
+private def applySysRule (goal : MVarId) (rule : Name) (shape : SysShape) :
+    TacticM (List MVarId) := do
+  let r := mkIdent rule
+  let tac ← match shape with
+    | .plain => `(tactic| refine BlockOk.sys rfl ($r ?_) ?_)
+    | .block true =>
+      `(tactic| refine BlockOk.sys rfl ($r (fields := ?_) (off := ?_) (len := ?_) ?_ ?_ ?_ ?_) ?_)
+    | .block false =>
+      `(tactic| refine BlockOk.sys rfl ($r (fields := ?_) (off := ?_) ?_ ?_ ?_) ?_)
+    | .stack true =>
+      `(tactic| refine BlockOk.sys rfl
+          ($r (v := ?_) (d := ?_) (len := ?_) ?_ ?_ ?_ ?_ ?_ ?_) ?_)
+    | .stack false =>
+      `(tactic| refine BlockOk.sys rfl ($r (v := ?_) (d := ?_) ?_ ?_ ?_ ?_ ?_) ?_)
+  try
+    runOn goal (do evalTactic tac)
+  catch _ => throwError "`syscall`: the operating system here is not the Linux model"
+
+/-- Types a call whose buffer is on the stack, at the head of a block goal.
+Returns the rest of the block. -/
+private def typeBufferStack (goal : MVarId) (rule : Name) (sized : Bool) : TacticM MVarId := do
+  let gs ← applySysRule goal rule (.stack sized)
   -- what the registers hold first: that settles where the buffer is
   for g in gs do
     if ← g.isAssigned then continue
@@ -1058,27 +1110,33 @@ private def typeReadStack (goal : MVarId) : TacticM MVarId := do
   let some rest := rest? | throwError "unexpected goals"
   return rest
 
-/-- Types a `write` or `read` at the head of a block goal, leaving the rest
-of the block as the main goal. -/
+/-- Types a system call that returns, at the head of a block goal, leaving
+the rest of the block as the main goal. -/
 private def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
   let ctx := (← instantiateMVars (← goal.getType)).consumeMData.getAppArgs[5]!
-  if nr == 0 then
-    let saved ← saveState
-    try
-      let rest ← typeReadStack goal
-      setGoals [rest]
-      evalTactic (← `(tactic| ty_normalize))
-      return
-    catch _ => saved.restore
-  let gs ← try
-      if nr == 1 then
-        runOn goal (do evalTactic (← `(tactic|
-          refine BlockOk.sys rfl (linux_write rfl) ?_)))
-      else
-        runOn goal (do evalTactic (← `(tactic|
-          refine BlockOk.sys rfl
-            (linux_read (fields := ?_) (off := ?_) (len := ?_) rfl ?_ ?_ ?_) ?_)))
-    catch _ => throwError "`syscall`: the operating system here is not the Linux model"
+  if let some (_, _, rule) := plainCalls.find? (·.1 == nr) then
+    let gs ← applySysRule goal rule .plain
+    let mut rest? : Option MVarId := none
+    for g in gs do
+      if ← g.isAssigned then continue
+      let t ← instantiateMVars (← g.getType)
+      if t.isAppOf ``BlockOk then rest? := some g
+      else discard <| runOn g (do evalTactic (← `(tactic| rfl)))
+    let some rest := rest? | throwError "ty_block: unexpected goals at `syscall`"
+    setGoals [rest]
+    evalTactic (← `(tactic| ty_normalize))
+    return
+  let some (_, name, rule, stackRule, bufReg, size) := bufferCalls.find? (·.1 == nr)
+    | throwError "`syscall`: call number {nr} is not typed as a step"
+  let sized := size.isLeft
+  let saved ← saveState
+  try
+    let rest ← typeBufferStack goal stackRule sized
+    setGoals [rest]
+    evalTactic (← `(tactic| ty_normalize))
+    return
+  catch _ => saved.restore
+  let gs ← applySysRule goal rule (.block sized)
   let mut rest? : Option MVarId := none
   let mut left : List MVarId := []
   -- what the registers must hold first: that settles the buffer and the count
@@ -1093,11 +1151,11 @@ private def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
         let reg := (regName? lhs.appArg!).getD "the register"
         let actual ← g.withContext do ppTy (← reduce (← mkAppM ``CtxOf.regs #[ctx, lhs.appArg!]))
         if rhs.isAppOf ``Ty.ptr then
-          throwError "`read` needs `{reg}` to hold a writable pointer to the buffer, or the \
+          throwError "`{name}` needs `{reg}` to hold a writable pointer to the buffer, or the \
             address of stack slots taken with `lea` once `rsp` has a name, but its type is \
             `{actual}`"
         else
-          throwError "`read` needs the count in `{reg}` to be exactly known, but its type is \
+          throwError "`{name}` needs the count in `{reg}` to be exactly known, but its type is \
             `{actual}`"
   -- then that every field the buffer covers is an integer
   for g in gs do
@@ -1109,8 +1167,14 @@ private def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
             | (refine ints_of_check ?_; first | ((try dsimp only); decide) | rfl)
             | (intro j hj; refine getElem?_replicate_of_lt ?_; omega))))
         catch _ =>
-          throwError "`read` could overwrite something that is not an integer: the buffer in \
-            `rsi` does not have room for the count in `rdx` in integer fields"
+          match size with
+          | .inl cntReg =>
+            throwError "`{name}` could overwrite something that is not an integer: the buffer \
+              in `{bufReg}` does not have room for the count in `{cntReg}` in integer fields"
+          | .inr bytes =>
+            throwError "`{name}` could overwrite something that is not an integer: the buffer \
+              in `{bufReg}` does not have room in integer fields for the {bytes} bytes the \
+              kernel stores"
       left := left ++ after
   let some rest := rest? | throwError "ty_block: unexpected goals at `syscall`"
   setGoals [rest]
@@ -1146,7 +1210,7 @@ private partial def typeStep (named : Bool := false) : TacticM StepResult := wit
       -- A system call that returns is a step like any other.
       if let .syscall := instr then
         if let some nr ← syscallNumber ty.getAppArgs[5]! then
-          if nr == 0 || nr == 1 then
+          if isStepCall nr then
             setGoals [goal]
             typeSyscallStep goal nr
             setGoals ((← getGoals) ++ others)
@@ -1449,12 +1513,18 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
             refine BlockOk.last rfl (HasType.syscallExit (linux_exit rfl)))))
         catch _ => throwError "`syscall`: the operating system here is not the Linux model"
       return .done gs
+    | some 231 =>
+      let gs ← try
+          runOn goal (do evalTactic (← `(tactic|
+            refine BlockOk.last rfl (HasType.syscallExit (linux_exit_group rfl)))))
+        catch _ => throwError "`syscall`: the operating system here is not the Linux model"
+      return .done gs
     | some 9 =>
       return .needsHelp m!"`syscall`: an `mmap` needs the layout of the new block; use \
         `ty_mmap <fields>` or `ty_mmap_kind <kind>`"
     | some nr =>
       throwError "`syscall`: call number {nr} has no rule. The calls that can be typed are \
-        `read` (0), `write` (1), `mmap` (9) and `exit` (60)"
+        {typedCalls}"
     | none =>
       let actual ← goal.withContext do
         ppTy (← reduce (← mkAppM ``CtxOf.regs #[ctx, mkConst ``Reg.rax]))

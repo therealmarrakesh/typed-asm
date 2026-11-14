@@ -45,6 +45,16 @@ stack. A request for more than that runs into the next and is refused. -/
 def defaultPlace : Nat → Option (BitVec 64) :=
   fun i => some (BitVec.ofNat 64 (0x100000000000 + 0x10000000 * i))
 
+/-- A file with the given name and contents. -/
+def fileOf (path : String) (bytes : List Byte) : File :=
+  { path := bytesOf path, base := bytes.toArray }
+
+/-- The files named after each `--file` on a command line. -/
+private def fileArgs : List String → List String
+  | "--file" :: path :: rest => path :: fileArgs rest
+  | _ :: rest => fileArgs rest
+  | [] => []
+
 private partial def readAll (h : IO.FS.Stream) (acc : ByteArray) : IO ByteArray := do
   let chunk ← h.read 4096
   if chunk.isEmpty then return acc else readAll h (acc ++ chunk)
@@ -56,6 +66,12 @@ decoded from memory. What the program writes goes to standard output, how
 the run ended goes to standard error, and the executable's own exit status
 is the program's. If `readsInput`, standard input is read to its end first
 and given to the program as its input.
+
+Each `--file NAME` makes that file of this machine visible to the program
+under exactly that name. What the program writes to files stays in the
+model: nothing on this machine is created or changed. The time the program
+is told is this machine's, and the random bytes it is given are drawn afresh
+on each run.
 
 With `--elf FILE` it writes the program as a Linux executable. -/
 def exeMain (entry : Nat) (image data : List Byte) (start : State) (args : List String)
@@ -73,7 +89,20 @@ def exeMain (entry : Nat) (image data : List Byte) (start : State) (args : List 
         let bytes := input.toList.map fun b => BitVec.ofNat 8 b.toNat
         pure { start with world := { start.world with input := [.bytes bytes] } }
       else pure start
-    let start := { start with world := { start.world with place := defaultPlace } }
+    let mut files : Array File := #[]
+    for path in fileArgs args do
+      let bytes ← IO.FS.readBinFile path
+      files := files.push (fileOf path (bytes.toList.map fun b => BitVec.ofNat 8 b.toNat))
+    let seed ← IO.rand 0 (2 ^ 32)
+    let now ← IO.monoNanosNow
+    let start := { start with
+      world := { start.world with
+        place := defaultPlace
+        files := files
+        random := fun i => BitVec.ofNat 8 (((seed + i) * 2654435761) >>> 13)
+        time := fun i =>
+          let t := now + 1000 * i
+          (BitVec.ofNat 64 (t / 1000000000), BitVec.ofNat 64 (t % 1000000000)) } }
     let (final, outcome) := runMemFinal linux fuel start
     let out ← IO.getStdout
     out.write (ByteArray.mk (final.world.output.map fun b => b.toNat.toUInt8).toArray)
