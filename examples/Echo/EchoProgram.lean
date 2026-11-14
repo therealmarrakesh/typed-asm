@@ -119,6 +119,14 @@ def startWith (input : List ReadEvent) : State :=
 #guard wroteAndExited "ab" 0
   (runMemFinal linux 1000 (startWith [.bytes (bytesOf "ab"), .error (-4), .bytes (bytesOf "cd")]))
 
+-- This program trusts each `write` to take everything. When one takes less,
+-- as the kernel is allowed to, what it did not take is lost: here the first
+-- `write` accepts only three bytes. The program is still safe.
+#guard wroteAndExited "helab" 0
+  (runMemFinal linux 1000
+    { startWith [.bytes (bytesOf "hello"), .bytes (bytesOf "ab")] with
+      world := { input := [.bytes (bytesOf "hello"), .bytes (bytesOf "ab")], writeCaps := [3] } })
+
 -- A longer input, 4,096 bytes in one piece, comes back intact. The model
 -- runs at a steady speed however much it has stored; if that were lost,
 -- this check would be the first thing to slow down.

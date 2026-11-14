@@ -11,8 +11,8 @@ typed only when the number in `rax` is exactly known and is one of the three.
 
 What the model leaves out of the calls it does have:
 
-* A `write` always writes everything it is given. The real kernel may write
-  less, or raise a signal (a write to a closed pipe).
+* A `write` to a closed pipe raises a signal in the real kernel. Here it
+  does not.
 * Only file descriptors 0 (for `read`) and 1 and 2 (for `write`) exist.
 * A `read` into memory that is not writable fails without consuming input.
   The real kernel may deliver part of the data first.
@@ -31,15 +31,22 @@ returning call overwrites `rcx` and `r11` and leaves the flags unknown. -/
 def ret (s : State) (v : BitVec 64) : State :=
   { ((s.setReg .rax v).setReg .rcx s.rip).setReg .r11 0 with flags := .unknown }
 
-/-- `write(fd, buf, count)`: append `count` bytes from `buf` to the output. -/
+/-- `write(fd, buf, count)`: append bytes from `buf` to the output. The
+world says how many of the `count` this call accepts; the result is that
+number, and a program that wants everything written must go round again. -/
 def write (s : State) : State :=
   let fd := s.getReg .rdi
   let buf := s.getReg .rsi
   let count := (s.getReg .rdx).toNat
   if fd ≠ 1 ∧ fd ≠ 2 then ret s (-9)
   else if s.canRead buf count then
-    ret { s with world := { s.world with writes := s.loadBytes buf count :: s.world.writes } }
-      (BitVec.ofNat 64 count)
+    let n := match s.world.writeCaps with
+      | [] => count
+      | cap :: _ => min count cap
+    ret { s with
+        world := { s.world with
+          writes := s.loadBytes buf n :: s.world.writes, writeCaps := s.world.writeCaps.tail } }
+      (BitVec.ofNat 64 n)
   else ret s (-14)
 
 /-- `read(fd, buf, count)`: take the next input event. Bytes are stored at

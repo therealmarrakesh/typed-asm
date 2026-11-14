@@ -78,6 +78,9 @@ structure World where
   input : List ReadEvent := []
   /-- The bytes of each `write` so far, most recent first. -/
   writes : List (List (BitVec 8)) := []
+  /-- How many bytes each coming `write` will accept at most, one entry per
+  call. When none is left a `write` accepts everything it is given. -/
+  writeCaps : List Nat := []
 
 /-- Everything written so far, in the order it was written. -/
 def World.output (w : World) : List (BitVec 8) :=
