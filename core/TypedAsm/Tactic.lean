@@ -36,9 +36,9 @@ theorem innerDisp_of (disp : BitVec 32) (hlt : disp.toNat < 2 ^ 31) :
   omega
 
 /-- Releasing the top `k` stack slots, with the remaining stack computed. -/
-theorem Straight.freeFrame' {Γ : Ctx} {k : Nat} {imm : BitVec 32} (hk : slotDisp k imm)
-    (hlen : (Γ.stack.take k).length = k) :
-    Straight Γ (.alu .add .w64 (.rm_i (.reg .rsp) imm))
+theorem Straight.freeFrame' {next : BitVec 64} {Γ : Ctx} {k : Nat} {imm : BitVec 32}
+    (hk : slotDisp k imm) (hlen : (Γ.stack.take k).length = k) :
+    Straight next Γ (.alu .add .w64 (.rm_i (.reg .rsp) imm))
       { Γ with stack := Γ.stack.drop k, room := Γ.room + k, flags := Flags.Known } :=
   .freeFrame hk (List.take_append_drop k _).symm hlen
 
@@ -150,6 +150,7 @@ macro "ty_straight" : tactic =>
     | ty_rule Straight.movRR32
     | ty_rule Straight.movRI
     | ty_rule Straight.movAbs
+    | ty_rule Straight.leaRip
     | ty_rule Straight.lea
     | ty_rule Straight.loadStack
     | ty_rule Straight.loadField

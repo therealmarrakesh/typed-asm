@@ -70,18 +70,20 @@ def At (sig : FnSig) (Φ : CodeTy) (a : BitVec 64) : Prop :=
   ∀ saved ret rest room, sig.CallerOk saved ret rest room → Φ a (sig.entry saved ret rest room)
 
 /-- Returning from a function is well typed. -/
-theorem ret_ok {sig : FnSig} {Φ : CodeTy} {next : BitVec 64} {saved : Reg → Ty} {ret : Ctx}
+theorem ret_ok {sig : FnSig} {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
+    {next : BitVec 64} {saved : Reg → Ty} {ret : Ctx}
     {rest : List Ty} {room : Nat} (hK : sig.CallerOk saved ret rest room) :
-    HasType Φ next (sig.exit saved ret rest room) .ret :=
+    HasType Φ fetch sys Ψ next (sig.exit saved ret rest room) .ret :=
   .ret rfl hK.ret
 
 /-- Returning is well typed from any context at least as strong as the
 function's exit context. -/
-theorem ret_of {sig : FnSig} {Φ : CodeTy} {next : BitVec 64} {saved : Reg → Ty} {Γ ret : Ctx}
+theorem ret_of {sig : FnSig} {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
+    {next : BitVec 64} {saved : Reg → Ty} {Γ ret : Ctx}
     {rest : List Ty} {room : Nat} (hK : sig.CallerOk saved ret rest room)
     (hregs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsOut saved r))
     (hstack : Γ.stack = .code ret :: rest) (hroom : Γ.room = room) :
-    HasType Φ next Γ .ret :=
+    HasType Φ fetch sys Ψ next Γ .ret :=
   .ret hstack
     ⟨fun r hr => (hregs r hr).trans (hK.ret.regs r hr), hK.ret.stack,
       by rw [hroom]; exact hK.ret.room, fun f _ => hK.ret.flags f trivial⟩
@@ -90,11 +92,12 @@ theorem ret_of {sig : FnSig} {Φ : CodeTy} {next : BitVec 64} {saved : Reg → T
 and the function's stack use, the argument registers hold what the function
 expects, and what the function returns is acceptable after the call. The
 preserved registers keep the types the caller has for them. -/
-theorem call_ok {sig : FnSig} {Φ : CodeTy} {next : BitVec 64} {Γ ret : Ctx} {d : BitVec 32}
+theorem call_ok {sig : FnSig} {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
+    {next : BitVec 64} {Γ ret : Ctx} {d : BitVec 32}
     {m : Nat} (hf : sig.At Φ (next + d.signExtend 64)) (hroom : Γ.room = m + 1)
     (hret : Φ next ret) (hargs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn Γ.regs r))
     (hback : CtxSub (sig.returned Γ.regs Γ.stack m) ret) (hneed : sig.need ≤ m) :
-    HasType Φ next Γ (.call (.rel d)) :=
+    HasType Φ fetch sys Ψ next Γ (.call (.rel d)) :=
   .call hroom hret
     ⟨sig.entry Γ.regs ret Γ.stack m, hf _ _ _ _ ⟨hback, hneed⟩,
       ⟨hargs, .refl _, rfl, fun _ _ => trivial⟩⟩
