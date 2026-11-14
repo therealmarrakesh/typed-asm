@@ -8,32 +8,38 @@ a conditional jump in the middle of a block, and a comparison of two exactly
 known values.
 
 ```asm
-_start:                       ; rdi = pointer to a record of two integers
-   0  mov   esi, 7
-   5  mov   edx, 7
-  10  cmp   rsi, rdx
-  13  jne   spin              ; never taken, and the types know it
-  19  call  pick
-  24  mov   edi, eax
-  26  mov   eax, 60           ; Linux `exit`
-  31  syscall
+_start:
+   0  lea   rdi, [rip + record]  ; the record is one page after the load address
+   7  mov   esi, 7
+  12  mov   edx, 7
+  17  cmp   rsi, rdx
+  20  jne   spin                 ; never taken
+  26  call  pick
+  31  mov   edi, eax
+  33  mov   eax, 60              ; Linux `exit`
+  38  syscall
 spin:
-  33  jmp   spin
-pick:                         ; rdi = pointer to the record; result in rax
-  38  sub   rsp, 16           ; two locals
-  42  mov   [rsp], rdi        ; local 0: the pointer
-  46  mov   eax, [rdi+8]      ; low half of the second field
-  49  mov   [rsp+8], rax      ; local 1: that value
-  54  mov   [rdi+12], eax     ; 32-bit store into the top half of the second field
-  57  mov   [rdi+1], al       ; byte store into the first field
-  60  test  rax, rax
-  63  je    skip
-  69  mov   rcx, [rsp]        ; the local is still a pointer
-  73  movzx eax, byte ptr [rcx]
+  40  jmp   spin
+pick:                            ; rdi = pointer to the record; result in rax
+  45  sub   rsp, 16              ; two locals
+  49  mov   [rsp], rdi           ; local 0: the pointer
+  53  mov   eax, [rdi+8]         ; low half of the second field
+  56  mov   [rsp+8], rax         ; local 1: that value
+  61  mov   [rdi+12], eax        ; 32-bit store into the top half of the second field
+  64  mov   [rdi+1], al          ; byte store into the first field
+  67  test  rax, rax
+  70  je    skip
+  76  mov   rcx, [rsp]           ; the local is still a pointer
+  80  movzx eax, byte ptr [rcx]
 skip:
-  76  add   rsp, 16
-  80  ret
+  83  add   rsp, 16
+  87  ret
 ```
+
+The numbers are offsets from the start of the code. The program is laid out
+for the addresses of the ELF file it can be written to: code at `0x4000b0`,
+the record at `0x401000`. `lake exe frame` runs it in the model;
+`lake exe frame --elf FILE` writes an executable that Linux can run.
 -/
 
 open TypedAsm
@@ -51,6 +57,7 @@ inductive Label
 
 def code : List (Asm Label) := [
   .label .start,
+  .ins (.lea .w64 .rdi (.rip 0xf49)),
   .ins (.mov .w32 (.rm_i (.reg .rsi) 7)),
   .ins (.mov .w32 (.rm_i (.reg .rdx) 7)),
   .ins (.alu .cmp .w64 (.rm_r (.reg .rsi) .rdx)),
@@ -77,14 +84,37 @@ def code : List (Asm Label) := [
   .ins (.alu .add .w64 (.rm_i (.reg .rsp) 16)),
   .ins .ret]
 
-def fetch : Fetch := Asm.fetch 0 code
+/-- Where the code is loaded. -/
+def base : BitVec 64 := BitVec.ofNat 64 Elf.codeBase
 
-/-- The starting state: a record holding `0x1234` and 1 at `0x1000`, three
-free stack slots below `rsp`, and `rdi` pointing at the record. -/
+/-- Where the record is loaded. -/
+def dataBase : BitVec 64 := BitVec.ofNat 64 Elf.dataBase
+
+def fetch : Fetch := Asm.fetch base code
+
+/-- The program's bytes. -/
+def image : List Byte := Asm.image base code
+
+/-- The address execution starts at. -/
+def entry : BitVec 64 := Asm.addr code base .start
+
+/-- The record's two fields. -/
+def record : List (BitVec 64) := [0x1234, 1]
+
+/-- The record's bytes, as they sit in the file and in memory. -/
+def recordBytes : List Byte := record.flatMap le64
+
+/-- Everything in the starting state except the program itself: the record
+in writable memory, and three free stack slots below `rsp`. -/
+def prepared : State :=
+  (((State.init.setPerm dataBase 16 .rw).setPerm 0x7fffffe8 24 .rw).store64 dataBase 0x1234).store64
+      (dataBase + 8) 1
+    |>.setReg .rsp 0x80000000
+
+/-- A starting state: `prepared`, with the program's bytes in executable
+memory and `rip` at the entry. -/
 def start : State :=
-  (((State.init.setPerm 0x1000 16 .rw).setPerm 0x7fe8 24 .rw).store64 0x1000 0x1234).store64
-      0x1008 1
-    |>.setReg .rsp 0x8000 |>.setReg .rdi 0x1000
+  { prepared.loadCode base image with rip := entry }
 
 /-! ## Running it -/
 
@@ -100,9 +130,16 @@ def exitsWith (code : BitVec 32) : Outcome → Bool
 
 -- The second field is not zero, so the result is the low byte of the first: 0x34.
 -- (The byte store changed the first field's second byte, not its low byte.)
-#guard exitsWith 0x34 (run fetch linux 100 start)
+#guard exitsWith 0x34 (runMem linux 100 start)
 
 end Frame
 
-def main : IO Unit :=
-  IO.println (Frame.describe (run Frame.fetch linux 100 Frame.start))
+/-- With no arguments, runs the program on the machine with code in memory
+and prints the outcome. With `--elf FILE`, writes the program as a Linux executable. -/
+def main (args : List String) : IO Unit := do
+  match args with
+  | ["--elf", path] =>
+    let bytes := Elf.file Frame.entry.toNat Frame.image Frame.recordBytes (writable := true)
+    IO.FS.writeBinFile path (ByteArray.mk (bytes.map fun b => b.toNat.toUInt8).toArray)
+    IO.println s!"wrote {bytes.length} bytes to {path}"
+  | _ => IO.println (Frame.describe (runMem linux 100 Frame.start))

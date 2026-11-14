@@ -9,25 +9,31 @@ called from two places whose stacks differ. The caller keeps its pointer in
 `rbx` across both calls, relying on `swap` to preserve that register.
 
 ```asm
-_start:                       ; rdi = pointer to a record of two integers
-   0  mov   rbx, rdi          ; keep the pointer in a callee-saved register
-   3  call  swap              ; called with an empty stack
-   8  push  rbx
-   9  mov   rdi, rbx          ; rbx is still a pointer after the call
-  12  call  swap              ; called with one slot on the stack
-  17  pop   rdi
-  18  mov   eax, 60           ; Linux `exit`
-  23  xor   edi, edi
-  25  syscall
+_start:
+   0  lea   rdi, [rip + record]  ; the record is one page after the load address
+   7  mov   rbx, rdi             ; keep the pointer in a callee-saved register
+  10  call  swap                 ; called with an empty stack
+  15  push  rbx
+  16  mov   rdi, rbx             ; rbx is still a pointer after the call
+  19  call  swap                 ; called with one slot on the stack
+  24  pop   rdi
+  25  mov   eax, 60              ; Linux `exit`
+  30  xor   edi, edi
+  32  syscall
 spin:
-  27  jmp   spin              ; not reached: `exit` does not return
-swap:                         ; rdi = pointer to the record
-  32  mov   rax, [rdi]
-  35  mov   rcx, [rdi+8]
-  39  mov   [rdi], rcx
-  42  mov   [rdi+8], rax
-  46  ret
+  34  jmp   spin                 ; not reached: `exit` does not return
+swap:                            ; rdi = pointer to the record
+  39  mov   rax, [rdi]
+  42  mov   rcx, [rdi+8]
+  46  mov   [rdi], rcx
+  49  mov   [rdi+8], rax
+  53  ret
 ```
+
+The numbers are offsets from the start of the code. The program is laid out
+for the addresses of the ELF file it can be written to: code at `0x4000b0`,
+the record at `0x401000`. `lake exe swap` runs it in the model;
+`lake exe swap --elf FILE` writes an executable that Linux can run.
 -/
 
 open TypedAsm
@@ -45,6 +51,7 @@ inductive Label
 
 def code : List (Asm Label) := [
   .label .start,
+  .ins (.lea .w64 .rdi (.rip 0xf49)),
   .ins (.mov .w64 (.rm_r (.reg .rbx) .rdi)),
   .call .swap,
   .label .afterFirst,
@@ -65,35 +72,66 @@ def code : List (Asm Label) := [
   .ins (.mov .w64 (.rm_r (.mem (field 8)) .rax)),
   .ins .ret]
 
-def fetch : Fetch := Asm.fetch 0 code
+/-- Where the code is loaded. -/
+def base : BitVec 64 := BitVec.ofNat 64 Elf.codeBase
 
-/-- The starting state: a record holding 3 and 5 at `0x1000`, two free stack
-slots below `rsp`, and `rdi` pointing at the record. -/
+/-- Where the record is loaded. -/
+def dataBase : BitVec 64 := BitVec.ofNat 64 Elf.dataBase
+
+def fetch : Fetch := Asm.fetch base code
+
+/-- The program's bytes. -/
+def image : List Byte := Asm.image base code
+
+/-- The address execution starts at. -/
+def entry : BitVec 64 := Asm.addr code base .start
+
+/-- The record's two fields. -/
+def record : List (BitVec 64) := [3, 5]
+
+/-- The record's bytes, as they sit in the file and in memory. -/
+def recordBytes : List Byte := record.flatMap le64
+
+/-- Everything in the starting state except the program itself: the record
+in writable memory, and two free stack slots below `rsp`. -/
+def prepared : State :=
+  (((State.init.setPerm dataBase 16 .rw).setPerm 0x7ffffff0 16 .rw).store64 dataBase 3).store64
+      (dataBase + 8) 5
+    |>.setReg .rsp 0x80000000
+
+/-- A starting state: `prepared`, with the program's bytes in executable
+memory and `rip` at the entry. -/
 def start : State :=
-  (((State.init.setPerm 0x1000 16 .rw).setPerm 0x7ff0 16 .rw).store64 0x1000 3).store64 0x1008 5
-    |>.setReg .rsp 0x8000 |>.setReg .rdi 0x1000
+  { prepared.loadCode base image with rip := entry }
 
 /-! ## Running it -/
 
 def describe : Outcome → String
-  | .next s => s!"running: record = ({(s.load64 0x1000).toNat}, {(s.load64 0x1008).toNat})"
+  | .next s => s!"running: record = ({(s.load64 dataBase).toNat}, {(s.load64 (dataBase + 8)).toNat})"
   | .fault f => s!"fault: {repr f}"
   | .exit code => s!"exit {code.toNat}"
   | .stuck => "stuck"
 
 def recordIs (x y : BitVec 64) : Outcome → Bool
-  | .next s => s.load64 0x1000 == x && s.load64 0x1008 == y
+  | .next s => s.load64 dataBase == x && s.load64 (dataBase + 8) == y
   | _ => false
 
--- After the first call returns (seven steps) the fields are exchanged, and
--- after the second (eight more) they are back.
-#guard recordIs 5 3 (run fetch linux 7 start)
-#guard recordIs 3 5 (run fetch linux 15 start)
+-- After the first call returns (eight steps) the fields are exchanged, and
+-- after the second (eight more) they are back. Instructions are decoded from memory.
+#guard recordIs 5 3 (runMem linux 8 start)
+#guard recordIs 3 5 (runMem linux 16 start)
 
 end Swap
 
-def main : IO Unit := do
-  IO.println (Swap.describe (run Swap.fetch linux 0 Swap.start))
-  IO.println (Swap.describe (run Swap.fetch linux 7 Swap.start))
-  IO.println (Swap.describe (run Swap.fetch linux 15 Swap.start))
-  IO.println (Swap.describe (run Swap.fetch linux 100 Swap.start))
+/-- With no arguments, runs the program on the machine with code in memory
+and prints the record as it goes. With `--elf FILE`, writes the program as a
+Linux executable. -/
+def main (args : List String) : IO Unit := do
+  match args with
+  | ["--elf", path] =>
+    let bytes := Elf.file Swap.entry.toNat Swap.image Swap.recordBytes (writable := true)
+    IO.FS.writeBinFile path (ByteArray.mk (bytes.map fun b => b.toNat.toUInt8).toArray)
+    IO.println s!"wrote {bytes.length} bytes to {path}"
+  | _ =>
+    for n in [0, 8, 16, 100] do
+      IO.println (Swap.describe (runMem linux n Swap.start))

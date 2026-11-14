@@ -4,8 +4,8 @@ import TypedAsm.Encode
 # A file Linux can run
 
 A minimal static ELF executable with two segments: one readable and
-executable, holding the file's headers followed by the code, and one
-read-only, holding data. Nothing here is proved; it is a container format.
+executable, holding the file's headers followed by the code, and one holding
+data, read-only or writable. Nothing here is proved; it is a container format.
 
 The addresses are fixed. Code starts at `Elf.codeBase`, which is the load
 address plus the size of the headers, and data starts at `Elf.dataBase`, one
@@ -45,12 +45,12 @@ def header (entry : Nat) : List Byte :=
     ++ le16 2 ++ le16 0x3E ++ le32n 1 ++ le64n entry ++ le64n 64 ++ le64n 0 ++ le32n 0
     ++ le16 64 ++ le16 56 ++ le16 2 ++ le16 64 ++ le16 0 ++ le16 0
 
-/-- The bytes of an executable file whose code and read-only data are these.
-Execution starts at `entry`. The code must fit in the first page after the headers. -/
-def file (entry : Nat) (code data : List Byte) : List Byte :=
+/-- The bytes of an executable file whose code and data are these. Execution
+starts at `entry`. The code must fit in the first page after the headers. -/
+def file (entry : Nat) (code data : List Byte) (writable : Bool := false) : List Byte :=
   let text := header entry
     ++ programHeader 5 0 loadBase (headerSize + code.length)
-    ++ programHeader 4 0x1000 dataBase data.length
+    ++ programHeader (if writable then 6 else 4) 0x1000 dataBase data.length
     ++ code
   text ++ List.replicate (0x1000 - text.length) 0 ++ data
 

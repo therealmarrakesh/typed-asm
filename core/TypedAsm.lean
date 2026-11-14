@@ -18,6 +18,7 @@ import TypedAsm.Frame
 import TypedAsm.Machine
 import TypedAsm.Image
 import TypedAsm.Elf
+import TypedAsm.Entry
 import TypedAsm.Linux
 import TypedAsm.Blocks
 

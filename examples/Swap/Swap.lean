@@ -33,7 +33,7 @@ def done : Ctx := ⟨fun _ => .int, [], 2, Flags.Any⟩
 
 /-- The contexts allowed at each label. -/
 inductive At : Label → Ctx → Prop
-  | start : At .start ⟨only .rdi, [], 2, Flags.Any⟩
+  | start : At .start (entryCtx 2)
   /-- After the first call the pointer is still in `rbx`. -/
   | afterFirst : At .afterFirst ⟨only .rbx, [], 2, Flags.Any⟩
   | afterSecond : At .afterSecond ⟨only .rbx, [pair], 1, Flags.Any⟩
@@ -42,12 +42,12 @@ inductive At : Label → Ctx → Prop
     swapSig.CallerOk saved ret rest room → At .swap (swapSig.entry saved ret rest room)
 
 /-- The code typing: those contexts, at the addresses of their labels. -/
-def Φ : CodeTy := .ofLabels code 0 At
+def Φ : CodeTy := .ofLabels code base At
 
 def recordLayout : Layout := ⟨[.int, .int], true⟩
 
 /-- One memory block: the record. -/
-def blocks : List (BitVec 64 × Layout) := [(0x1000, recordLayout)]
+def blocks : List (BitVec 64 × Layout) := [(dataBase, recordLayout)]
 
 def Ψ : MemTy := .ofList blocks
 
@@ -57,38 +57,56 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   refine BlocksOk.of_labels ?_
   intro l Γ h
   cases h with
-  | start => ty_block; ty_call swapSig
+  | start =>
+    -- lea rdi, [rip + record]
+    ty_step
+    -- `rdi` holds exactly the record's address, so it is a pointer to it
+    refine BlockOk.castPtr (r := .rdi) (base := dataBase) (i := 0) (w := true) (by decide) rfl rfl
+      (by decide) (fun _ => rfl) ?_
+    ty_block
+    ty_call swapSig
   | afterFirst => ty_block; ty_call swapSig
   | afterSecond => ty_block
   | spin => ty_block
   | swap saved ret rest room hK => ty_block
 
-/-! ## The memory typing and the starting state -/
+/-! ## The memory typing and the entry contract -/
 
 theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 
-theorem startOk : StateOk Φ fetch linux Ψ start := by
-  refine ⟨_, .intro At.start, fun n => Matches.ofCheck (by decide) ?_ trivial ?_ ?_⟩
-  · intro r _
-    cases r <;> first
-      | exact HasTy.int _
-      | exact hasTy_ptr.mpr ⟨0x1000, recordLayout, rfl, rfl, fun _ => rfl, by decide⟩
-  · intro i τ h; simp at h
-  · intro x hx i τ hi
-    simp only [blocks, List.mem_singleton] at hx
-    subst hx
-    have : τ = .int := by simpa [recordLayout] using List.mem_of_getElem? hi
-    subst this
-    exact HasTy.int _
+/-- What the program needs of the state it starts in: its bytes in
+executable memory, the record readable and writable, and two writable stack slots below `rsp` that
+do not overlap it. This is the contract with whatever loads the program;
+for the ELF file, with the Linux kernel. -/
+abbrev Entry : State → Prop := TypedAsm.Entry entry base image blocks 2
+
+/-- Any state meeting the entry contract is well typed. -/
+theorem Entry.stateOk {s : State} (h : Entry s) : StateOk Φ fetch linux Ψ s :=
+  ⟨entryCtx 2, by rw [h.rip]; exact .intro At.start,
+    fun _ => h.matches HasTy.int (by simp [blocks, recordLayout])⟩
 
 /-! ## Safety -/
 
-/-- The program never gets stuck, never page-faults and never executes an invalid opcode. -/
-theorem safe : Safe fetch linux start :=
-  soundness_blocks blocksOk memOk (linuxOk fetch Ψ) startOk
+/-- **From any state meeting the entry contract, the program is safe on the
+machine that fetches instructions by decoding memory.** It never gets stuck,
+never page-faults and never executes an invalid opcode. -/
+theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
+  .of_safe linux_frame (Asm.loaded h.code)
+    (soundness_blocks blocksOk memOk (linuxOk fetch Ψ) h.stateOk)
 
-/-- So running it for any number of steps gives an acceptable outcome. -/
-theorem run_safe (n : Nat) : (run fetch linux n start).isSafe = true :=
-  safe.run n
+theorem image_length : image.length = 54 := by decide
+
+/-- The starting state used by the simulator meets the entry contract. -/
+theorem start_entry : Entry start :=
+  Entry.ofLoad (by rw [image_length]; decide) (by decide) (by decide) (by decide) (by decide)
+    (by simp only [image_length]; decide) (by rw [image_length]; decide)
+
+/-- The simulator's run is safe, with instructions decoded from memory. -/
+theorem safeMem : SafeMem linux start :=
+  safeMem_of_entry start_entry
+
+/-- It is also safe on the table machine, which is what the type system reasons about. -/
+theorem safe : Safe fetch linux start :=
+  soundness_blocks blocksOk memOk (linuxOk fetch Ψ) start_entry.stateOk
 
 end Swap
