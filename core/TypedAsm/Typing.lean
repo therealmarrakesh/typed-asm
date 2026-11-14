@@ -40,9 +40,19 @@ structure CtxSub (Γ Δ : Ctx) : Prop where
   room : Γ.room = Δ.room
   flags : Δ.flags = true → Γ.flags = true
 
-/-- The code at `a` may be entered from a state matching `Γ`. -/
+theorem Sub.rfl {τ : Ty} : Sub τ τ := .refl τ
+
+theorem SubList.refl : ∀ σ : List Ty, SubList σ σ
+  | [] => .nil
+  | τ :: σ => .cons (.refl τ) (SubList.refl σ)
+
+theorem CtxSub.refl (Γ : Ctx) : CtxSub Γ Γ :=
+  ⟨fun _ _ => .refl _, .refl _, rfl, id⟩
+
+/-- The code at `a` may be entered from a state matching `Γ`: one of the
+contexts allowed there is `Γ` or weaker. -/
 def Accepts (Φ : CodeTy) (a : BitVec 64) (Γ : Ctx) : Prop :=
-  ∃ Δ, Φ a = some Δ ∧ CtxSub Γ Δ
+  ∃ Δ, Φ a Δ ∧ CtxSub Γ Δ
 
 /-! ## Changing a context -/
 
@@ -140,7 +150,7 @@ inductive HasType (Φ : CodeTy) (next : BitVec 64) : Ctx → Instr → Prop
   /-- A call pushes the return address, typed as a pointer to code expecting
   the context required at the instruction after the call. The callee sees it
   on top of the stack. -/
-  | call {Γ ret : Ctx} {d : BitVec 32} {n : Nat} : Γ.room = n + 1 → Φ next = some ret →
+  | call {Γ ret : Ctx} {d : BitVec 32} {n : Nat} : Γ.room = n + 1 → Φ next ret →
     Accepts Φ (next + d.signExtend 64) { Γ with stack := .code ret :: Γ.stack, room := n } →
     HasType Φ next Γ (.call (.rel d))
   /-- A return needs a code pointer on top of the stack, and the state with it
@@ -151,15 +161,16 @@ inductive HasType (Φ : CodeTy) (next : BitVec 64) : Ctx → Instr → Prop
 
 /-! ## Programs and states -/
 
-/-- A program is well typed if every address the code typing mentions holds
-an instruction that is well typed in the context given for that address. -/
+/-- A program is well typed if, for every address and every context the code
+typing allows there, the address holds an instruction that is well typed in
+that context. -/
 def ProgramOk (Φ : CodeTy) (fetch : Fetch) : Prop :=
-  ∀ a Γ, Φ a = some Γ → ∃ i len, fetch a = some (i, len) ∧ HasType Φ (a + len) Γ i
+  ∀ a Γ, Φ a Γ → ∃ i len, fetch a = some (i, len) ∧ HasType Φ (a + len) Γ i
 
-/-- A state is well typed if it matches the context the code typing gives
-for its `rip`, at every step count. -/
+/-- A state is well typed if it matches a context the code typing allows at
+its `rip`, at every step count. -/
 def StateOk (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (s : State) : Prop :=
-  ∃ Γ, Φ s.rip = some Γ ∧ ∀ n, WellTyped fetch sys Ψ n Γ s
+  ∃ Γ, Φ s.rip Γ ∧ ∀ n, WellTyped fetch sys Ψ n Γ s
 
 /-- What the type system assumes about the operating system: a system call
 from a well-typed state has an acceptable outcome, and if it returns, it

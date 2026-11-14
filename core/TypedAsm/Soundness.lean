@@ -602,7 +602,7 @@ theorem Straight.sound {Γ Γ' : Ctx} {i : Instr} (ht : Straight Γ i Γ') (hΨ 
 /-- What the induction on step count provides: every program point is safe
 for `n` steps from any state matching its context at count `n`. -/
 def SafeUpTo (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (n : Nat) : Prop :=
-  ∀ k, k ≤ n → ∀ a Δ, Φ a = some Δ → ∀ s : State, s.rip = a →
+  ∀ k, k ≤ n → ∀ a Δ, Φ a Δ → ∀ s : State, s.rip = a →
     WellTyped fetch sys Ψ k Δ s → SafeN fetch sys k s
 
 /-- Entering code that accepts the current context is safe. -/

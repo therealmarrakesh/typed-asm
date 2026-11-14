@@ -50,8 +50,10 @@ def Layout.size (l : Layout) : Nat :=
 addresses where a block starts. It is fixed for the whole run. -/
 abbrev MemTy := BitVec 64 → Option Layout
 
-/-- Code typing: the context required on entry to each instruction address. -/
-abbrev CodeTy := BitVec 64 → Option Ctx
+/-- Code typing: `Φ a Γ` says the instruction at address `a` may be entered
+in context `Γ`. One address may allow many contexts, which is how a function
+is typed once and called from several places. -/
+abbrev CodeTy := BitVec 64 → Ctx → Prop
 
 /-- Two byte ranges, given by start and length, do not overlap. Stated so that
 it also covers ranges that wrap around the end of the address space. -/
