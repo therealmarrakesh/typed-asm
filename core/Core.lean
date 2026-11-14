@@ -1,4 +1,5 @@
 import Core.Instr
+import Core.Result
 import Core.State
 import Core.Memory
 import Core.Step

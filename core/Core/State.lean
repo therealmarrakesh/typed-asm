@@ -6,6 +6,9 @@ import Std.Tactic.BVDecide
 
 The registers, flags, instruction pointer and memory, with the basic operations
 for reading and writing registers.
+
+Memory has a byte at every address, and separately a permission for every
+address that says whether programs may read or write it.
 -/
 
 namespace Core
@@ -24,20 +27,48 @@ structure Flags where
   of : Option Bool
   deriving DecidableEq, Repr
 
+/-- What a program may do with a byte of memory. -/
+inductive Perm
+  /-- Not accessible. -/
+  | none
+  /-- Readable only. -/
+  | ro
+  /-- Readable and writable. -/
+  | rw
+  deriving DecidableEq, Repr
+
+def Perm.readable : Perm → Bool
+  | .none => false
+  | _ => true
+
+def Perm.writable : Perm → Bool
+  | .rw => true
+  | _ => false
+
+theorem Perm.readable_of_writable {p : Perm} (h : p.writable = true) : p.readable = true := by
+  cases p <;> simp_all [Perm.readable, Perm.writable]
+
 structure State where
   regs : Reg → BitVec 64
   flags : Flags
   rip : BitVec 64
   mem : BitVec 64 → BitVec 8
+  perm : BitVec 64 → Perm
 
 namespace State
 
-/-- A state with every register and memory byte zero and every flag clear. -/
+/-- A state with every register and memory byte zero, every flag clear, and
+no accessible memory. -/
 def init : State where
   regs := fun _ => 0
   flags := ⟨some false, some false, some false, some false⟩
   rip := 0
   mem := fun _ => 0
+  perm := fun _ => .none
+
+/-- Set the permission of the `len` bytes starting at `base`. -/
+def setPerm (s : State) (base len : BitVec 64) (p : Perm) : State :=
+  { s with perm := fun x => if x - base < len then p else s.perm x }
 
 /-- Read a full 64-bit register. -/
 def getReg (s : State) (r : Reg) : BitVec 64 :=

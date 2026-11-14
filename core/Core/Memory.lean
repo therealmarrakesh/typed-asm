@@ -1,11 +1,15 @@
 import Core.State
+import Core.Result
 
 /-!
 # Memory access
 
 Effective addresses, and little-endian loads and stores over the byte-level
-memory in `State`. Every address holds a byte and every access succeeds;
-faulting on invalid addresses is not modelled here.
+memory in `State`.
+
+There are two layers. `load` and `store` are the raw operations: they ignore
+permissions and always succeed. `read` and `write` are what instructions use:
+they check permissions first and fault if any byte of the access is not allowed.
 -/
 
 namespace Core
@@ -128,6 +132,11 @@ theorem load_store_disjoint (s : State) (w w' : Width) (a b : BitVec 64) (v : Bi
   · refine load64_congr ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ <;> apply mem_store_of_disjoint <;>
       cases w <;> simp only [Width.bytes] at * <;> bv_decide
 
+/-- A store does not change any permission. -/
+theorem perm_store (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) :
+    (s.store w a v).perm = s.perm := by
+  cases w <;> simp only [store, store64, store32, store16, store8]
+
 /-- A store does not change any register. -/
 theorem getReg_store (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) (r : Reg) :
     (s.store w a v).getReg r = s.getReg r := by
@@ -139,6 +148,64 @@ theorem load_setReg (s : State) (r : Reg) (v : BitVec 64) (w : Width) (a : BitVe
   cases w
   · exact load32_congr rfl rfl rfl rfl
   · exact load64_congr rfl rfl rfl rfl rfl rfl rfl rfl
+
+/-! ## Checked access -/
+
+/-- Whether all `n` bytes starting at `a` are readable. -/
+def canRead (s : State) (a : BitVec 64) (n : Nat) : Bool :=
+  (List.range n).all fun i => (s.perm (a + BitVec.ofNat 64 i)).readable
+
+/-- Whether all `n` bytes starting at `a` are writable. -/
+def canWrite (s : State) (a : BitVec 64) (n : Nat) : Bool :=
+  (List.range n).all fun i => (s.perm (a + BitVec.ofNat 64 i)).writable
+
+theorem canRead_of_canWrite {s : State} {a : BitVec 64} {n : Nat} (h : s.canWrite a n = true) :
+    s.canRead a n = true := by
+  simp only [canRead, canWrite, List.all_eq_true] at *
+  exact fun i hi => Perm.readable_of_writable (h i hi)
+
+def read8 (s : State) (a : BitVec 64) : Result (BitVec 8) :=
+  if s.canRead a 1 then .next (s.load8 a) else .fault .pageFault
+
+def read16 (s : State) (a : BitVec 64) : Result (BitVec 16) :=
+  if s.canRead a 2 then .next (s.load16 a) else .fault .pageFault
+
+def read64 (s : State) (a : BitVec 64) : Result (BitVec 64) :=
+  if s.canRead a 8 then .next (s.load64 a) else .fault .pageFault
+
+/-- Load a value of the given width, faulting unless every byte is readable. -/
+def read (s : State) (w : Width) (a : BitVec 64) : Result (BitVec w.bits) :=
+  if s.canRead a w.bytes.toNat then .next (s.load w a) else .fault .pageFault
+
+def write8 (s : State) (a : BitVec 64) (v : BitVec 8) : Result State :=
+  if s.canWrite a 1 then .next (s.store8 a v) else .fault .pageFault
+
+def write64 (s : State) (a : BitVec 64) (v : BitVec 64) : Result State :=
+  if s.canWrite a 8 then .next (s.store64 a v) else .fault .pageFault
+
+/-- Store a value of the given width, faulting unless every byte is writable.
+A faulting store changes nothing. -/
+def write (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) : Result State :=
+  if s.canWrite a w.bytes.toNat then .next (s.store w a v) else .fault .pageFault
+
+/-- A successful write is the raw store. -/
+theorem write_eq_next {s s' : State} {w : Width} {a : BitVec 64} {v : BitVec w.bits}
+    (h : s.write w a v = .next s') : s' = s.store w a v := by
+  simp only [write] at h
+  split at h <;> simp_all
+
+/-- A value just written can be read back. -/
+theorem read_write_same {s s' : State} {w : Width} {a : BitVec 64} {v : BitVec w.bits}
+    (h : s.write w a v = .next s') : s'.read w a = .next v := by
+  simp only [write] at h
+  split at h
+  next hw =>
+    cases h
+    have hr : (s.store w a v).canRead a w.bytes.toNat = true := by
+      simp only [canRead, perm_store]
+      exact canRead_of_canWrite hw
+    simp only [read, hr, ite_true, load_store_same]
+  next => cases h
 
 end State
 

@@ -11,24 +11,8 @@ Flags the hardware leaves undefined after an instruction become `none`.
 
 namespace Core
 
-/-- Exceptions the hardware raises. -/
-inductive Fault
-  /-- Division by zero, or a quotient that does not fit. -/
-  | divideError
-  /-- An undefined instruction, including `ud2`. -/
-  | invalidOpcode
-  deriving DecidableEq, Repr
-
 /-- The result of trying to execute one instruction. -/
-inductive Outcome
-  /-- Execution continued normally. -/
-  | next (s : State)
-  /-- The hardware would raise an exception. -/
-  | fault (f : Fault)
-  /-- The program asked the operating system to end it, with this status. -/
-  | exit (code : BitVec 32)
-  /-- The model does not say what happens. -/
-  | stuck
+abbrev Outcome := Result State
 
 /-- Where the machine finds instructions: the instruction at an address,
 together with its length in bytes. -/
@@ -144,28 +128,28 @@ def imulTrunc {n : Nat} (a b : BitVec n) : BitVec n × Flags :=
 `rax`; the result is the new `rax`, the new `rdx`, and the flags. A divide
 faults on a zero divisor or a quotient that does not fit. -/
 def MulDivOp.eval {n : Nat} (op : MulDivOp) (hi lo src : BitVec n) :
-    Except Fault (BitVec n × BitVec n × Flags) :=
+    Result (BitVec n × BitVec n × Flags) :=
   match op with
   | .mul =>
     let full := lo.setWidth (n + n) * src.setWidth (n + n)
     let h := (full >>> n).setWidth n
-    .ok (full.setWidth n, h, .ofMul (h != 0))
+    .next (full.setWidth n, h, .ofMul (h != 0))
   | .imul =>
     let full := lo.signExtend (n + n) * src.signExtend (n + n)
     let l := full.setWidth n
-    .ok (l, (full >>> n).setWidth n, .ofMul (full != l.signExtend (n + n)))
+    .next (l, (full >>> n).setWidth n, .ofMul (full != l.signExtend (n + n)))
   | .div =>
     let dividend := hi ++ lo
     let d := src.setWidth (n + n)
     let q := dividend / d
-    if src == 0 || (q.setWidth n).setWidth (n + n) != q then .error .divideError
-    else .ok (q.setWidth n, (dividend % d).setWidth n, .unknown)
+    if src == 0 || (q.setWidth n).setWidth (n + n) != q then .fault .divideError
+    else .next (q.setWidth n, (dividend % d).setWidth n, .unknown)
   | .idiv =>
     let dividend := hi ++ lo
     let d := src.signExtend (n + n)
     let q := dividend.sdiv d
-    if src == 0 || (q.setWidth n).signExtend (n + n) != q then .error .divideError
-    else .ok (q.setWidth n, (dividend.srem d).setWidth n, .unknown)
+    if src == 0 || (q.setWidth n).signExtend (n + n) != q then .fault .divideError
+    else .next (q.setWidth n, (dividend.srem d).setWidth n, .unknown)
 
 /-- The number of set bits. -/
 def popcount {n : Nat} (a : BitVec n) : BitVec n :=
@@ -191,38 +175,40 @@ def NarrowW.bits : NarrowW → Nat
   | .w8 => 8
   | .w16 => 16
 
-/-! ## Operands -/
+/-! ## Operands
+
+Reading or writing a memory operand faults if the access is not permitted. -/
 
 namespace State
 
-def readRM (s : State) (w : Width) : RM → BitVec w.bits
-  | .reg r => s.readReg w r
-  | .mem m => s.load w (s.ea m)
+def readRM (s : State) (w : Width) : RM → Result (BitVec w.bits)
+  | .reg r => .next (s.readReg w r)
+  | .mem m => s.read w (s.ea m)
 
-def writeRM (s : State) (w : Width) (dst : RM) (v : BitVec w.bits) : State :=
+def writeRM (s : State) (w : Width) (dst : RM) (v : BitVec w.bits) : Result State :=
   match dst with
-  | .reg r => s.writeReg w r v
-  | .mem m => s.store w (s.ea m) v
+  | .reg r => .next (s.writeReg w r v)
+  | .mem m => s.write w (s.ea m) v
 
 def readRI (s : State) (w : Width) : RI → BitVec w.bits
   | .reg r => s.readReg w r
   | .imm i => i.signExtend w.bits
 
 /-- Read an 8- or 16-bit value: the low bits of a register, or from memory. -/
-def readNarrow (s : State) (sw : NarrowW) (src : RM) : BitVec sw.bits :=
+def readNarrow (s : State) (sw : NarrowW) (src : RM) : Result (BitVec sw.bits) :=
   match src with
-  | .reg r => (s.getReg r).setWidth sw.bits
+  | .reg r => .next ((s.getReg r).setWidth sw.bits)
   | .mem m =>
     match sw with
-    | .w8 => s.load8 (s.ea m)
-    | .w16 => s.load16 (s.ea m)
+    | .w8 => s.read8 (s.ea m)
+    | .w16 => s.read16 (s.ea m)
 
 /-- Write one byte: the low byte of a register, leaving its other 56 bits
 unchanged, or one byte of memory. -/
-def writeRM8 (s : State) (dst : RM) (v : BitVec 8) : State :=
+def writeRM8 (s : State) (dst : RM) (v : BitVec 8) : Result State :=
   match dst with
-  | .reg r => s.setReg r ((s.getReg r &&& ~~~0xff) ||| v.setWidth 64)
-  | .mem m => s.store8 (s.ea m) v
+  | .reg r => .next (s.setReg r ((s.getReg r &&& ~~~0xff) ||| v.setWidth 64))
+  | .mem m => s.write8 (s.ea m) v
 
 /-- A shift count reduced modulo the operand width, as the hardware does. -/
 def shiftCount (s : State) (w : Width) : Count → Nat
@@ -230,13 +216,14 @@ def shiftCount (s : State) (w : Width) : Count → Nat
   | .cl => (s.getReg .rcx).toNat % w.bits
 
 /-- Decrement `rsp` by 8 and store a value there. -/
-def push64 (s : State) (v : BitVec 64) : State :=
+def push64 (s : State) (v : BitVec 64) : Result State :=
   let sp := s.getReg .rsp - 8
-  (s.setReg .rsp sp).store64 sp v
+  (s.setReg .rsp sp).write64 sp v
 
 /-- Load the value at `rsp` and increment `rsp` by 8. -/
-def pop64 (s : State) : BitVec 64 × State :=
-  (s.load64 (s.getReg .rsp), s.setReg .rsp (s.getReg .rsp + 8))
+def pop64 (s : State) : Result (BitVec 64 × State) := do
+  let v ← s.read64 (s.getReg .rsp)
+  return (v, s.setReg .rsp (s.getReg .rsp + 8))
 
 end State
 
@@ -247,86 +234,96 @@ def Operands.dst : Operands → RM
   | .rm_i dst _ => dst
 
 /-- The value of the source of a two-operand form. Immediates are sign-extended. -/
-def Operands.src (s : State) (w : Width) : Operands → BitVec w.bits
-  | .rm_r _ src => s.readReg w src
-  | .r_m _ src => s.load w (s.ea src)
-  | .rm_i _ imm => imm.signExtend w.bits
+def Operands.src (s : State) (w : Width) : Operands → Result (BitVec w.bits)
+  | .rm_r _ src => .next (s.readReg w src)
+  | .r_m _ src => s.read w (s.ea src)
+  | .rm_i _ imm => .next (imm.signExtend w.bits)
 
 /-! ## Instructions -/
 
 /-- Execute one instruction. `s.rip` must already hold the address of the
-instruction after it. -/
+instruction after it.
+
+An instruction that faults changes nothing: a fault carries no state, and
+every memory access is checked before any part of it is performed. -/
 def exec (sys : Syscall) (i : Instr) (s : State) : Outcome :=
   match i with
   -- arithmetic and logic
-  | .alu op w ops =>
-    match op.eval s.flags.cf (s.readRM w ops.dst) (ops.src s w) with
-    | none => .stuck
-    | some (r, flags) =>
-      let s := if op.writesDst then s.writeRM w ops.dst r else s
-      .next { s with flags }
-  | .test w dst src =>
-    let r := s.readRM w dst &&& s.readRI w src
-    .next { s with flags := .ofResult r false false }
-  | .unary .neg w dst =>
-    let (r, flags) := subBorrow 0 (s.readRM w dst) false
-    .next { s.writeRM w dst r with flags }
-  | .unary .not w dst => .next (s.writeRM w dst (~~~(s.readRM w dst)))
-  | .shift op w dst c =>
-    let (r, flags) := op.eval s.flags (s.readRM w dst) (s.shiftCount w c)
-    .next { s.writeRM w dst r with flags }
-  | .mulDiv op w src =>
-    match op.eval (s.readReg w .rdx) (s.readReg w .rax) (s.readRM w src) with
-    | .error f => .fault f
-    | .ok (lo, hi, flags) => .next { (s.writeReg w .rax lo).writeReg w .rdx hi with flags }
-  | .imul2 w dst src =>
-    let (r, flags) := imulTrunc (s.readReg w dst) (s.readRM w src)
-    .next { s.writeReg w dst r with flags }
-  | .imul3 w dst src imm =>
-    let (r, flags) := imulTrunc (s.readRM w src) (imm.signExtend w.bits)
-    .next { s.writeReg w dst r with flags }
-  | .popcnt w dst src =>
-    let a := s.readRM w src
-    .next { s.writeReg w dst (popcount a) with flags := ⟨some false, some (a == 0), some false, some false⟩ }
+  | .alu op w ops => do
+    let a ← s.readRM w ops.dst
+    let b ← ops.src s w
+    let (r, flags) ← Result.ofOption (op.eval s.flags.cf a b)
+    let s ← if op.writesDst then s.writeRM w ops.dst r else pure s
+    return { s with flags }
+  | .test w dst src => do
+    let r := (← s.readRM w dst) &&& s.readRI w src
+    return { s with flags := .ofResult r false false }
+  | .unary .neg w dst => do
+    let (r, flags) := subBorrow 0 (← s.readRM w dst) false
+    let s ← s.writeRM w dst r
+    return { s with flags }
+  | .unary .not w dst => do
+    s.writeRM w dst (~~~(← s.readRM w dst))
+  | .shift op w dst c => do
+    let (r, flags) := op.eval s.flags (← s.readRM w dst) (s.shiftCount w c)
+    let s ← s.writeRM w dst r
+    return { s with flags }
+  | .mulDiv op w src => do
+    let (lo, hi, flags) ← op.eval (s.readReg w .rdx) (s.readReg w .rax) (← s.readRM w src)
+    return { (s.writeReg w .rax lo).writeReg w .rdx hi with flags }
+  | .imul2 w dst src => do
+    let (r, flags) := imulTrunc (s.readReg w dst) (← s.readRM w src)
+    return { s.writeReg w dst r with flags }
+  | .imul3 w dst src imm => do
+    let (r, flags) := imulTrunc (← s.readRM w src) (imm.signExtend w.bits)
+    return { s.writeReg w dst r with flags }
+  | .popcnt w dst src => do
+    let a ← s.readRM w src
+    return { s.writeReg w dst (popcount a) with
+      flags := ⟨some false, some (a == 0), some false, some false⟩ }
   | .bswap w r => .next (s.writeReg w r (bswap w (s.readReg w r)))
   | .cdq => .next (s.writeReg .w32 .rdx (signFill (s.readReg .w32 .rax)))
   | .cqo => .next (s.writeReg .w64 .rdx (signFill (s.readReg .w64 .rax)))
   -- data movement
-  | .mov w ops => .next (s.writeRM w ops.dst (ops.src s w))
+  | .mov w ops => do
+    s.writeRM w ops.dst (← ops.src s w)
   | .movAbs dst imm => .next (s.setReg dst imm)
-  | .store8 dst src => .next (s.store8 (s.ea dst) ((s.getReg src).setWidth 8))
-  | .movzx w dst sw src => .next (s.writeReg w dst ((s.readNarrow sw src).setWidth w.bits))
-  | .movsx w dst sw src => .next (s.writeReg w dst ((s.readNarrow sw src).signExtend w.bits))
-  | .movsxd dst src => .next (s.setReg dst ((s.readRM .w32 src).signExtend 64))
+  | .store8 dst src => s.write8 (s.ea dst) ((s.getReg src).setWidth 8)
+  | .movzx w dst sw src => do
+    return s.writeReg w dst ((← s.readNarrow sw src).setWidth w.bits)
+  | .movsx w dst sw src => do
+    return s.writeReg w dst ((← s.readNarrow sw src).signExtend w.bits)
+  | .movsxd dst src => do
+    return s.setReg dst ((← s.readRM .w32 src).signExtend 64)
   | .lea w dst addr => .next (s.writeReg w dst ((s.ea addr).setWidth w.bits))
-  | .cmov c w dst src =>
-    match c.eval s.flags with
-    | none => .stuck
-    | some b => .next (s.writeReg w dst (if b then s.readRM w src else s.readReg w dst))
-  | .setcc c dst =>
-    match c.eval s.flags with
-    | none => .stuck
-    | some b => .next (s.writeRM8 dst (if b then 1 else 0))
-  | .push r => .next (s.push64 (s.getReg r))
-  | .pop r =>
-    let (v, s) := s.pop64
-    .next (s.setReg r v)
+  | .cmov c w dst src => do
+    -- The source is read, and can fault, even when the condition is false.
+    let v ← s.readRM w src
+    let b ← Result.ofOption (c.eval s.flags)
+    return s.writeReg w dst (if b then v else s.readReg w dst)
+  | .setcc c dst => do
+    let b ← Result.ofOption (c.eval s.flags)
+    s.writeRM8 dst (if b then 1 else 0)
+  | .push r => s.push64 (s.getReg r)
+  | .pop r => do
+    let (v, s) ← s.pop64
+    return s.setReg r v
   -- control flow
   | .jmp (.rel d) => .next { s with rip := s.rip + d.signExtend 64 }
-  | .jmp (.ind rm) => .next { s with rip := s.readRM .w64 rm }
-  | .jcc c d =>
-    match c.eval s.flags with
-    | none => .stuck
-    | some true => .next { s with rip := s.rip + d.signExtend 64 }
-    | some false => .next s
-  | .call t =>
-    let target := match t with
-      | .rel d => s.rip + d.signExtend 64
+  | .jmp (.ind rm) => do
+    return { s with rip := ← s.readRM .w64 rm }
+  | .jcc c d => do
+    let b ← Result.ofOption (c.eval s.flags)
+    return if b then { s with rip := s.rip + d.signExtend 64 } else s
+  | .call t => do
+    let target ← match t with
+      | .rel d => pure (s.rip + d.signExtend 64)
       | .ind rm => s.readRM .w64 rm
-    .next { s.push64 s.rip with rip := target }
-  | .ret =>
-    let (v, s) := s.pop64
-    .next { s with rip := v }
+    let s' ← s.push64 s.rip
+    return { s' with rip := target }
+  | .ret => do
+    let (v, s) ← s.pop64
+    return { s with rip := v }
   -- miscellaneous
   | .nop => .next s
   | .ud2 => .fault .invalidOpcode
@@ -346,9 +343,25 @@ def run (fetch : Fetch) (sys : Syscall) : Nat → State → Outcome
     | .next s => run fetch sys n s
     | o => o
 
-/-- Popping straight after a push returns the pushed value. -/
-theorem State.pop64_push64 (s : State) (v : BitVec 64) : (s.push64 v).pop64.1 = v :=
-  State.load_store_same _ .w64 _ v
+/-- Popping straight after a successful push returns the pushed value. -/
+theorem State.pop64_push64 {s s' : State} {v : BitVec 64} (h : s.push64 v = .next s') :
+    s'.pop64 = .next (v, s'.setReg .rsp (s'.getReg .rsp + 8)) := by
+  simp only [State.push64, State.write64] at h
+  split at h
+  next hw =>
+    cases h
+    have hsp : ((s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) v).getReg .rsp
+        = s.getReg .rsp - 8 :=
+      (State.getReg_store _ .w64 _ v _).trans (State.getReg_setReg_same _ _ _)
+    have hr : ((s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) v).canRead
+        (s.getReg .rsp - 8) 8 = true :=
+      State.canRead_of_canWrite hw
+    have hv : ((s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) v).load64
+        (s.getReg .rsp - 8) = v :=
+      State.load_store_same _ .w64 _ v
+    simp only [State.pop64, State.read64, hsp, hr, hv, ite_true]
+    rfl
+  next => cases h
 
 /-! ## Agreement with the standard library
 
