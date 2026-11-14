@@ -94,9 +94,7 @@ def recordBytes : List Byte := record.flatMap le64
 /-- Everything in the starting state except the program itself: the record
 in writable memory, and two free stack slots below `rsp`. -/
 def prepared : State :=
-  (((State.init.setPerm dataBase 16 .rw).setPerm 0x7ffffff0 16 .rw).store64 dataBase 3).store64
-      (dataBase + 8) 5
-    |>.setReg .rsp 0x80000000
+  ((State.init.loadData dataBase recordBytes .rw).setPerm 0x7ffffff0 16 .rw).setReg .rsp 0x80000000
 
 /-- A starting state: `prepared`, with the program's bytes in executable
 memory and `rip` at the entry. -/

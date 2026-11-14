@@ -90,9 +90,7 @@ def arrayBytes : List Byte := array.flatMap le64
 /-- Everything in the starting state except the program itself: the array
 in read-only memory, and one free stack slot below `rsp`. -/
 def prepared : State :=
-  let s := (State.init.setPerm dataBase 40 .ro).setPerm 0x7ffffff8 8 .rw
-  let s := (array.zipIdx).foldl (fun s (v, i) => s.store64 (dataBase + 8 * BitVec.ofNat 64 i) v) s
-  s.setReg .rsp 0x80000000
+  ((State.init.loadData dataBase arrayBytes .ro).setPerm 0x7ffffff8 8 .rw).setReg .rsp 0x80000000
 
 /-- A starting state: `prepared`, with the program's bytes in executable
 memory and `rip` at the entry. -/

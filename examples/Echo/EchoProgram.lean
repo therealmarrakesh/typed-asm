@@ -92,7 +92,7 @@ def bufferBytes : List Byte := List.replicate 16 0
 /-- Everything in the starting state except the program itself: the buffer
 in writable memory. The program uses no stack. -/
 def prepared : State :=
-  (State.init.setPerm dataBase 16 .rw).setReg .rsp 0x80000000
+  (State.init.loadData dataBase bufferBytes .rw).setReg .rsp 0x80000000
 
 /-- A starting state: `prepared`, with the program's bytes in executable
 memory and `rip` at the entry. Nothing is waiting to be read. -/

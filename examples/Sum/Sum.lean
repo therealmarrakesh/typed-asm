@@ -115,12 +115,12 @@ theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 executable memory, the array readable, and one writable stack slot below `rsp` that
 does not overlap it. This is the contract with whatever loads the program;
 for the ELF file, with the Linux kernel. -/
-abbrev Entry : State → Prop := TypedAsm.Entry entry base image blocks 1
+abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase arrayBytes blocks 1
 
 /-- Any state meeting the entry contract is well typed. -/
 theorem Entry.stateOk {s : State} (h : Entry s) : StateOk Φ fetch linux Ψ s :=
   ⟨entryCtx 1, by rw [h.rip]; exact .intro At.start,
-    fun _ => h.matches HasTy.int (by simp [blocks, arrayLayout])⟩
+    fun _ => h.matchesInt HasTy.int (by simp [blocks, arrayLayout])⟩
 
 /-! ## Safety -/
 
@@ -135,7 +135,9 @@ theorem image_length : image.length = 55 := by decide
 
 /-- The starting state used by the simulator meets the entry contract. -/
 theorem start_entry : Entry start :=
-  Entry.ofLoad (by rw [image_length]; decide) (by decide) (by decide) (by decide) (by decide)
+  Entry.ofLoad (by rw [image_length]; decide) (by decide)
+    ((State.hasData_loadData _ _ _ _ (by decide)).congr rfl) (by rw [image_length]; decide)
+    (by decide) (by decide) (by decide)
     (by simp only [image_length]; decide) (by rw [image_length]; decide)
 
 /-- The simulator's run is safe, with instructions decoded from memory. -/
