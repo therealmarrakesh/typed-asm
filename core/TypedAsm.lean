@@ -9,6 +9,7 @@ import TypedAsm.Typing
 import TypedAsm.Soundness
 import TypedAsm.Asm
 import TypedAsm.Linux
+import TypedAsm.Blocks
 
 /-!
 # TypedAsm
