@@ -51,6 +51,11 @@ inductive BlockOk (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) :
   | cover {ι : Type} [Nonempty ι] {a : BitVec 64} {Γ : Ctx} {Γ' : ι → Ctx} :
     (∀ n s, WellTyped fetch sys Ψ n Γ s → ∃ x, WellTyped fetch sys Ψ n (Γ' x) s) →
     (∀ x, BlockOk Φ fetch sys Ψ a (Γ' x)) → BlockOk Φ fetch sys Ψ a Γ
+  /-- A register holding exactly the address of a function may be treated as
+  a pointer to that function from here on. -/
+  | fnPtr {a : BitVec 64} {Γ : Ctx} {r : Reg} {v : BitVec 64} {sig : FnSig} :
+    r ≠ .rsp → Γ.regs r = .eq v → sig.At Φ v → BlockOk Φ fetch sys Ψ a (Γ.setReg r sig.ty) →
+    BlockOk Φ fetch sys Ψ a Γ
   /-- The last instruction of the block. -/
   | last {a : BitVec 64} {Γ : Ctx} {i : Instr} {len : BitVec 64} :
     fetch a = some (i, len) → HasType Φ fetch sys Ψ (a + len) Γ i → BlockOk Φ fetch sys Ψ a Γ
@@ -80,6 +85,9 @@ theorem HasType.mono (h : ∀ a Γ, Φ a Γ → Φ' a Γ) {next : BitVec 64} {Γ
   | jmpInd hcode hsub => exact .jmpInd hcode hsub
   | callInd hcode hroom hret hsub => exact .callInd hcode hroom (h _ _ hret) hsub
   | unreachable hun => exact .unreachable hun
+  | fnPtr hr hΓ hat _ ih => exact .fnPtr hr hΓ (fun sv rt rs rm hK => h _ _ (hat sv rt rs rm hK)) ih
+  | callFn hh hroom hret hargs hback hneed => exact .callFn hh hroom (h _ _ hret) hargs hback hneed
+  | jmpFn hh hK hsub => exact .jmpFn hh hK hsub
   | cover hsem _ ih => exact .cover hsem ih
   | codePtr hr hΓ hΦ _ ih => exact .codePtr hr hΓ (h _ _ hΦ) ih
   | weaken hsem _ ih => exact .weaken hsem ih
@@ -108,6 +116,9 @@ theorem BlocksOk.programOk (h : BlocksOk Φ fetch sys Ψ) :
     obtain ⟨i', len', hf', ht'⟩ := ih x
     cases hf.symm.trans hf'
     exact ht'
+  | fnPtr hr hΓ hat _ ih =>
+    obtain ⟨i, len, hf, ht⟩ := ih
+    exact ⟨i, len, hf, .fnPtr hr hΓ (fun sv rt rs rm hK => h _ _ (hat sv rt rs rm hK)) ht⟩
   | last hf ht => exact ⟨_, _, hf, ht.mono h⟩
 
 /-- A register holding exactly the address of a field of a memory block may
@@ -167,6 +178,15 @@ theorem FnSig.at_label {sig : FnSig} {l : L}
   fun saved ret rest room hK => .intro (h saved ret rest room hK)
 
 end Labels
+
+/-- In a program typed block by block, the address of a function is a
+function pointer, at every step count. This is what lets a function's
+address sit in the program's data from the start. -/
+theorem BlocksOk.hasTy_fn (hB : BlocksOk Φ fetch sys Ψ) (hΨ : Ψ.WF) {sig : FnSig} {v : BitVec 64}
+    (hat : sig.At Φ v) (n : Nat) : HasTy fetch sys Ψ n sig.ty v := by
+  rw [TypedAsm.hasTy_fn]
+  intro k hk saved ret rest room hK s hs hw
+  exact safeUpTo hB.programOk hΨ k k (Nat.le_refl k) v _ (hB _ _ (hat saved ret rest room hK)) s hs hw
 
 /-- **Soundness, block by block.** -/
 theorem soundness_blocks {s : State} (hB : BlocksOk Φ fetch sys Ψ)

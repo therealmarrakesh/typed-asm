@@ -12,18 +12,6 @@ preserved registers.
 
 namespace TypedAsm
 
-/-- A function signature. -/
-structure FnSig where
-  /-- The types expected in the registers on entry. -/
-  args : Reg → Ty
-  /-- The types left in the registers on return. -/
-  results : Reg → Ty
-  /-- The registers whose types are the same on return as on entry, whatever
-  they were. `args` and `results` are ignored for these. -/
-  preserved : Reg → Bool
-  /-- The number of stack slots the function uses below its return address. -/
-  need : Nat
-
 /-- The registers a function must preserve under the System V calling convention. -/
 def calleeSaved : Reg → Bool
   | .rbx | .rbp | .r12 | .r13 | .r14 | .r15 => true
@@ -31,43 +19,10 @@ def calleeSaved : Reg → Bool
 
 namespace FnSig
 
-/-- Register types on entry, when the preserved registers have types `saved`. -/
-def regsIn (sig : FnSig) (saved : Reg → Ty) : Reg → Ty :=
-  fun r => if sig.preserved r then saved r else sig.args r
-
-/-- Register types on return, when the preserved registers have types `saved`. -/
-def regsOut (sig : FnSig) (saved : Reg → Ty) : Reg → Ty :=
-  fun r => if sig.preserved r then saved r else sig.results r
-
-/-- The context at the function's first instruction, for a caller that
-expects `ret` on return and has `rest` on its stack. -/
-def entry (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) : Ctx :=
-  ⟨sig.regsIn saved, .code ret :: rest, room, Flags.Any⟩
-
-/-- The context at the function's `ret` instruction. -/
-def exit (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) : Ctx :=
-  ⟨sig.regsOut saved, .code ret :: rest, room, Flags.Any⟩
-
-/-- The context the caller is in once the function has returned. -/
-def returned (sig : FnSig) (saved : Reg → Ty) (rest : List Ty) (room : Nat) : Ctx :=
-  ⟨sig.regsOut saved, rest, room + 1, Flags.Any⟩
-
-/-- What a function needs of its caller: the state it returns must be
-acceptable where it returns to, and there must be enough stack. -/
-structure CallerOk (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
-    Prop where
-  ret : CtxSub (sig.returned saved rest room) ret
-  room : sig.need ≤ room
-
 /-- The caller left room for the function's own stack use, and possibly more. -/
 theorem CallerOk.room_split {sig : FnSig} {saved : Reg → Ty} {ret : Ctx} {rest : List Ty}
     {room : Nat} (h : sig.CallerOk saved ret rest room) : ∃ m, room = m + sig.need :=
   ⟨room - sig.need, by have := h.room; omega⟩
-
-/-- `sig.At Φ a`: the code typing lets address `a` be entered as a function
-with signature `sig`, by any caller. -/
-def At (sig : FnSig) (Φ : CodeTy) (a : BitVec 64) : Prop :=
-  ∀ saved ret rest room, sig.CallerOk saved ret rest room → Φ a (sig.entry saved ret rest room)
 
 /-- Returning from a function is well typed. -/
 theorem ret_ok {sig : FnSig} {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
@@ -108,7 +63,7 @@ entered with for its preserved registers, and the stack `rest` it sees
 below the return address; the caller's own must be at least as strong. -/
 theorem callInd_ok {sig : FnSig} {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
     {next : BitVec 64} {Γ ret : Ctx} {rm : RM} {saved : Reg → Ty} {rest : List Ty} {m : Nat}
-    (hf : CodeAt Ψ next Γ rm (sig.entry saved ret rest m)) (hroom : Γ.room = m + 1)
+    (hf : Holds Ψ next Γ rm (.code (sig.entry saved ret rest m))) (hroom : Γ.room = m + 1)
     (hret : Φ next ret) (hargs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn saved r))
     (hstack : SubList Γ.stack rest) :
     HasType Φ fetch sys Ψ next Γ (.call (.ind rm)) :=

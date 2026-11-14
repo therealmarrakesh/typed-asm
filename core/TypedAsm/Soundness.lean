@@ -1062,9 +1062,9 @@ theorem WriteIntOk.writeRM8 {rm : RM} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 1 
     simp only [State.writeRM8, hea, State.write8, hc, ite_true]
 
 /-- An operand holding a code pointer can be read, and what is read is a code pointer. -/
-theorem CodeAt.sound {rm : RM} {Δ : Ctx} (hc : CodeAt Ψ next Γ rm Δ)
+theorem Holds.sound {rm : RM} {τ : Ty} (hc : Holds Ψ next Γ rm τ)
     (h : WellTyped fetch sys Ψ ix Γ s) (hrip : s.rip = next) :
-    ∃ v, s.readRM .w64 rm = .next v ∧ HasTy fetch sys Ψ ix (.code Δ) v := by
+    ∃ v, s.readRM .w64 rm = .next v ∧ HasTy fetch sys Ψ ix τ v := by
   cases hc with
   | @indexed b x sc fields writable off i disp c Δ hb hΓ hΓx hD hi =>
     have hp := h.regs b hb
@@ -1861,6 +1861,49 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
     exact hp n (Nat.lt_succ_self n) _ rfl
       (((hw'.sub hsub).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
   | @unreachable Γ i hun => exact absurd h (hun _ _)
+  | @fnPtr Γ i r a sig hr hΓ hat _ ihc =>
+    have hp := h.eqReg hr hΓ
+    -- By the induction hypothesis the function is safe to enter for any caller.
+    have hv : HasTy fetch sys Ψ (n + 1) sig.ty (s.getReg r) := by
+      rw [hasTy_fn]
+      intro k hk saved ret rest room hK t ht hwt
+      exact ih k (by omega) a _ (hat saved ret rest room hK) t (ht.trans hp) hwt
+    exact ihc (h.retype hr hv) hrip
+  | @callFn Γ ret rm sig m hholds hroom hret hargs hback hneed =>
+    obtain ⟨v, hv, hp⟩ := hholds.sound h hrip
+    rw [hasTy_fn] at hp
+    have hw : (s.setReg .rsp (s.getReg .rsp - 8)).canWrite (s.getReg .rsp - 8) 8 = true :=
+      h.canWrite_push hroom
+    have hra : HasTy fetch sys Ψ (n + 1) (.code ret) s.rip := by
+      rw [hasTy_code]
+      intro k hk t ht hwt
+      exact ih k (by omega) next ret hret t (ht.trans hrip) hwt
+    have he : exec sys (.call (.ind rm)) s
+        = .next { (s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip with
+            rip := v } := by
+      have hpush : s.push64 s.rip
+          = .next ((s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip) := by
+        simp only [State.push64, State.write64, hw, ite_true]
+      simp [exec, hv, hpush]
+    have hw' := h.push hΨ hroom hra
+    generalize (s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip = s₁
+      at he hw'
+    rw [he]
+    refine ⟨rfl, fun s' heq => ?_⟩
+    cases heq
+    exact hp n (Nat.lt_succ_self n) Γ.regs ret Γ.stack m ⟨hback, hneed⟩ _ rfl
+      (((hw'.sub (Δ := sig.entry Γ.regs ret Γ.stack m)
+        ⟨hargs, .refl _, rfl, fun _ _ => trivial⟩).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
+  | @jmpFn Γ ret rm sig saved rest room hholds hK hsub =>
+    obtain ⟨v, hv, hp⟩ := hholds.sound h hrip
+    rw [hasTy_fn] at hp
+    have he : exec sys (.jmp (.ind rm)) s = .next { s with rip := v } := by
+      simp [exec, hv]
+    rw [he]
+    refine ⟨rfl, fun s' heq => ?_⟩
+    cases heq
+    exact hp n (Nat.lt_succ_self n) saved ret rest room hK _ rfl
+      (((h.sub hsub).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
   | @cover ι Γ Γ' i hsem _ ihc =>
     obtain ⟨x, hx⟩ := hsem _ _ h
     exact ihc x hx hrip

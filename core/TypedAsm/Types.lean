@@ -39,6 +39,10 @@ inductive Ty
   | ptr (fields : List Ty) (writable : Bool) (index : Nat)
   /-- The address of code that is safe to enter when the machine matches `pre`. -/
   | code (pre : CtxOf Ty)
+  /-- The address of a function with this signature (see `FnSig`): it may be
+  called by any caller that meets the signature, whatever that caller's own
+  stack and whatever it keeps in the preserved registers. -/
+  | fn (args results : Reg → Ty) (preserved : Reg → Bool) (need : Nat)
 
 /-- A description of the machine at one program point. -/
 abbrev Ctx := CtxOf Ty
@@ -61,6 +65,95 @@ in context `Γ`. One address may allow many contexts, which is how a function
 is typed once and called from several places. -/
 abbrev CodeTy := BitVec 64 → Ctx → Prop
 
+/-- Whether all four flags hold known values. -/
+def Flags.defined (f : Flags) : Bool :=
+  f.cf.isSome && f.zf.isSome && f.sf.isSome && f.of.isSome
+
+/-- The flags predicate "all four hold known values". -/
+def Flags.Known : Flags → Prop := fun f => f.defined = true
+
+/-- The flags predicate that says nothing. -/
+def Flags.Any : Flags → Prop := fun _ => True
+
+/-! ## Subtyping -/
+
+/-- `Sub τ υ`: every value of type `τ` also has type `υ`. -/
+inductive Sub : Ty → Ty → Prop
+  | refl (τ : Ty) : Sub τ τ
+  /-- Any value may be treated as an integer. -/
+  | int (τ : Ty) : Sub τ .int
+  /-- A writable pointer may be used as a read-only one. -/
+  | readOnly (fields : List Ty) (writable : Bool) (index : Nat) :
+    Sub (.ptr fields true index) (.ptr fields writable index)
+
+/-- Subtyping slot by slot, for two stacks of the same length. -/
+inductive SubList : List Ty → List Ty → Prop
+  | nil : SubList [] []
+  | cons {τ υ : Ty} {σ ρ : List Ty} : Sub τ υ → SubList σ ρ → SubList (τ :: σ) (υ :: ρ)
+
+/-- `CtxSub Γ Δ`: every state matching `Γ` also matches `Δ`. The stack shape
+and room must agree exactly; only the types of registers and slots may be weakened. -/
+structure CtxSub (Γ Δ : Ctx) : Prop where
+  regs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (Δ.regs r)
+  stack : SubList Γ.stack Δ.stack
+  room : Γ.room = Δ.room
+  flags : ∀ f, Γ.flags f → Δ.flags f
+
+/-! ## Function signatures -/
+
+/-- A function signature. -/
+structure FnSig where
+  /-- The types expected in the registers on entry. -/
+  args : Reg → Ty
+  /-- The types left in the registers on return. -/
+  results : Reg → Ty
+  /-- The registers whose types are the same on return as on entry, whatever
+  they were. `args` and `results` are ignored for these. -/
+  preserved : Reg → Bool
+  /-- The number of stack slots the function uses below its return address. -/
+  need : Nat
+
+namespace FnSig
+
+/-- Register types on entry, when the preserved registers have types `saved`. -/
+def regsIn (sig : FnSig) (saved : Reg → Ty) : Reg → Ty :=
+  fun r => if sig.preserved r then saved r else sig.args r
+
+/-- Register types on return, when the preserved registers have types `saved`. -/
+def regsOut (sig : FnSig) (saved : Reg → Ty) : Reg → Ty :=
+  fun r => if sig.preserved r then saved r else sig.results r
+
+/-- The context at the function's first instruction, for a caller that
+expects `ret` on return and has `rest` on its stack. -/
+def entry (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) : Ctx :=
+  ⟨sig.regsIn saved, .code ret :: rest, room, Flags.Any⟩
+
+/-- The context at the function's `ret` instruction. -/
+def exit (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) : Ctx :=
+  ⟨sig.regsOut saved, .code ret :: rest, room, Flags.Any⟩
+
+/-- The context the caller is in once the function has returned. -/
+def returned (sig : FnSig) (saved : Reg → Ty) (rest : List Ty) (room : Nat) : Ctx :=
+  ⟨sig.regsOut saved, rest, room + 1, Flags.Any⟩
+
+/-- What a function needs of its caller: the state it returns must be
+acceptable where it returns to, and there must be enough stack. -/
+structure CallerOk (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+    Prop where
+  ret : CtxSub (sig.returned saved rest room) ret
+  room : sig.need ≤ room
+
+/-- `sig.At Φ a`: the code typing lets address `a` be entered as a function
+with signature `sig`, by any caller. -/
+def At (sig : FnSig) (Φ : CodeTy) (a : BitVec 64) : Prop :=
+  ∀ saved ret rest room, sig.CallerOk saved ret rest room → Φ a (sig.entry saved ret rest room)
+
+/-- The type of a pointer to a function with this signature. -/
+def ty (sig : FnSig) : Ty :=
+  .fn sig.args sig.results sig.preserved sig.need
+
+end FnSig
+
 /-- Two byte ranges, given by start and length, do not overlap. Stated so that
 it also covers ranges that wrap around the end of the address space. -/
 def Disjoint (a : BitVec 64) (n : Nat) (b : BitVec 64) (m : Nat) : Prop :=
@@ -79,16 +172,6 @@ expects, including other code pointers, so it cannot be defined directly.
 Instead every meaning carries a step count `n`: a code pointer at count `n`
 is safe to jump to for any smaller number of steps. Statements about real
 programs quantify over all `n`. -/
-
-/-- Whether all four flags hold known values. -/
-def Flags.defined (f : Flags) : Bool :=
-  f.cf.isSome && f.zf.isSome && f.sf.isSome && f.of.isSome
-
-/-- The flags predicate "all four hold known values". -/
-def Flags.Known : Flags → Prop := fun f => f.defined = true
-
-/-- The flags predicate that says nothing. -/
-def Flags.Any : Flags → Prop := fun _ => True
 
 /-- The address of the lowest byte of the stack region a context describes:
 `room` free slots below `rsp`. -/
@@ -132,6 +215,13 @@ def HasTy (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) : Nat → Ty → BitVec 6
   | n, .code pre, v =>
     ∀ k, (hk : k < n) → ∀ s : State, s.rip = v →
       Matches (fun τ w => HasTy fetch sys Ψ k τ w) Ψ pre s → SafeN fetch sys k s
+  | n, .fn args results preserved need, v =>
+    ∀ k, (hk : k < n) → ∀ (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat),
+      FnSig.CallerOk ⟨args, results, preserved, need⟩ saved ret rest room →
+      ∀ s : State, s.rip = v →
+      Matches (fun τ w => HasTy fetch sys Ψ k τ w) Ψ
+        (FnSig.entry ⟨args, results, preserved, need⟩ saved ret rest room) s →
+      SafeN fetch sys k s
 termination_by n => n
 
 /-- `WellTyped fetch sys Ψ n Γ s`: the state `s` matches the context `Γ`, at step count `n`. -/
@@ -160,6 +250,15 @@ theorem hasTy_code {pre : Ctx} {v : BitVec 64} :
       ∀ k, k < n → ∀ s : State, s.rip = v → WellTyped fetch sys Ψ k pre s → SafeN fetch sys k s := by
   rw [HasTy]
 
+/-- A value is a pointer to a function if entering it, from any caller that
+meets the signature, is safe for any smaller number of steps. -/
+theorem hasTy_fn {sig : FnSig} {v : BitVec 64} :
+    HasTy fetch sys Ψ n sig.ty v ↔
+      ∀ k, k < n → ∀ saved ret rest room, sig.CallerOk saved ret rest room →
+        ∀ s : State, s.rip = v → WellTyped fetch sys Ψ k (sig.entry saved ret rest room) s →
+        SafeN fetch sys k s := by
+  rw [FnSig.ty, HasTy]
+
 /-- A type's meaning at a step count implies its meaning at every smaller one. -/
 theorem HasTy.mono {m : Nat} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys Ψ n τ v)
     (hle : m ≤ n) : HasTy fetch sys Ψ m τ v := by
@@ -169,6 +268,10 @@ theorem HasTy.mono {m : Nat} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys Ψ n
   | ptr fields writable index => exact hasTy_ptr.mpr (hasTy_ptr.mp h)
   | code pre =>
     rw [hasTy_code] at h ⊢
+    exact fun k hk => h k (by omega)
+  | fn args results preserved need =>
+    have e : Ty.fn args results preserved need = FnSig.ty ⟨args, results, preserved, need⟩ := rfl
+    rw [e, hasTy_fn] at h ⊢
     exact fun k hk => h k (by omega)
 
 /-- Matching a context carries over to any weaker notion of "has type". -/

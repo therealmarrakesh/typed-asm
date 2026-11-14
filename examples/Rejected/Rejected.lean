@@ -155,7 +155,7 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i16) Γ := by ty_step
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i17) Γ := by ty_step
 
-/-- error: `jmp rax`: the operand does not hold a code pointer here. A register holding the exact address of a label becomes one with `ty_code_ptr` -/
+/-- error: `jmp rax`: the operand does not hold a pointer to code here. A register holding the exact address of a label becomes one with `ty_fn_ptr` (a function) or `ty_code_ptr` (any other label) -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i18) Γ := by ty_block
 
@@ -244,7 +244,7 @@ def Φc : CodeTy := .ofLabels calls 0 AtCallee
 #guard_msgs in
 example : BlockOk Φc callFetch linux Ψ (Asm.addr calls 0 .direct) bare := by ty_call plain
 
-/-- error: `call rax`: the operand does not hold a pointer to a function with this signature that can be called with the room available here. A register holding the exact address of a label becomes a code pointer with `ty_code_ptr` -/
+/-- error: `call rax`: the operand does not hold a pointer to a function with this signature, or there is no room on the stack for the return address. A register holding the exact address of a function becomes a pointer to it with `ty_fn_ptr` -/
 #guard_msgs in
 example : BlockOk Φc callFetch linux Ψ (Asm.addr calls 0 .indirect) roomy := by ty_call plain
 

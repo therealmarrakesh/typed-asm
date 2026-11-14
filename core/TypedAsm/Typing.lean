@@ -29,28 +29,6 @@ namespace TypedAsm
 
 /-! ## Subtyping -/
 
-/-- `Sub τ υ`: every value of type `τ` also has type `υ`. -/
-inductive Sub : Ty → Ty → Prop
-  | refl (τ : Ty) : Sub τ τ
-  /-- Any value may be treated as an integer. -/
-  | int (τ : Ty) : Sub τ .int
-  /-- A writable pointer may be used as a read-only one. -/
-  | readOnly (fields : List Ty) (writable : Bool) (index : Nat) :
-    Sub (.ptr fields true index) (.ptr fields writable index)
-
-/-- Subtyping slot by slot, for two stacks of the same length. -/
-inductive SubList : List Ty → List Ty → Prop
-  | nil : SubList [] []
-  | cons {τ υ : Ty} {σ ρ : List Ty} : Sub τ υ → SubList σ ρ → SubList (τ :: σ) (υ :: ρ)
-
-/-- `CtxSub Γ Δ`: every state matching `Γ` also matches `Δ`. The stack shape
-and room must agree exactly; only the types of registers and slots may be weakened. -/
-structure CtxSub (Γ Δ : Ctx) : Prop where
-  regs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (Δ.regs r)
-  stack : SubList Γ.stack Δ.stack
-  room : Γ.room = Δ.room
-  flags : ∀ f, Γ.flags f → Δ.flags f
-
 theorem Sub.rfl {τ : Ty} : Sub τ τ := .refl τ
 
 theorem Sub.trans {τ υ φ : Ty} (h₁ : Sub τ υ) (h₂ : Sub υ φ) : Sub τ φ := by
@@ -176,25 +154,26 @@ inductive WriteIntOk (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) (n : Nat) : RM �
     next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i + k) →
     l.fields[i]? = some .int → k + n ≤ 8 → WriteIntOk Ψ next Γ n (.mem (.rip disp)) Γ
 
-/-- `CodeAt Ψ next Γ rm Δ`: `rm` holds a pointer to code that expects `Δ`. -/
-inductive CodeAt (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) : RM → Ctx → Prop
+/-- `Holds Ψ next Γ rm τ`: `rm` is a register, a whole field or a whole stack
+slot that holds a value of type `τ`. -/
+inductive Holds (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) : RM → Ty → Prop
   | indexed {b : Reg} {x : IndexReg} {sc : Scale} {fields : List Ty} {writable : Bool}
-      {off i : Nat} {disp : BitVec 32} {c : BitVec 64} {Δ : Ctx} :
+      {off i : Nat} {disp : BitVec 32} {c : BitVec 64} {τ : Ty} :
     b ≠ .rsp → Γ.regs b = .ptr fields writable off → Γ.regs x.toReg = .eq c →
     (c <<< sc.shift) + disp.signExtend 64 = BitVec.ofNat 64 (8 * i) →
-    fields[off + i]? = some (.code Δ) →
-    CodeAt Ψ next Γ (.mem (.sib (some b) (some (x, sc)) disp)) Δ
-  | global {base : BitVec 64} {l : Layout} {i : Nat} {disp : BitVec 32} {Δ : Ctx} :
+    fields[off + i]? = some τ →
+    Holds Ψ next Γ (.mem (.sib (some b) (some (x, sc)) disp)) τ
+  | global {base : BitVec 64} {l : Layout} {i : Nat} {disp : BitVec 32} {τ : Ty} :
     Ψ base = some l → next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i) →
-    l.fields[i]? = some (.code Δ) → CodeAt Ψ next Γ (.mem (.rip disp)) Δ
-  | reg {r : Reg} {Δ : Ctx} : r ≠ .rsp → Γ.regs r = .code Δ → CodeAt Ψ next Γ (.reg r) Δ
+    l.fields[i]? = some τ → Holds Ψ next Γ (.mem (.rip disp)) τ
+  | reg {r : Reg} {τ : Ty} : r ≠ .rsp → Γ.regs r = τ → Holds Ψ next Γ (.reg r) τ
   | field {b : Reg} {fields : List Ty} {writable : Bool} {off i : Nat} {disp : BitVec 32}
-      {Δ : Ctx} :
+      {τ : Ty} :
     b ≠ .rsp → Γ.regs b = .ptr fields writable off → slotDisp i disp →
-    fields[off + i]? = some (.code Δ) → CodeAt Ψ next Γ (.mem (.sib (some b) none disp)) Δ
-  | slot {i : Nat} {disp : BitVec 32} {Δ : Ctx} :
-    slotDisp i disp → Γ.stack[i]? = some (.code Δ) →
-    CodeAt Ψ next Γ (.mem (.sib (some .rsp) none disp)) Δ
+    fields[off + i]? = some τ → Holds Ψ next Γ (.mem (.sib (some b) none disp)) τ
+  | slot {i : Nat} {disp : BitVec 32} {τ : Ty} :
+    slotDisp i disp → Γ.stack[i]? = some τ →
+    Holds Ψ next Γ (.mem (.sib (some .rsp) none disp)) τ
 
 /-- At least the named flags are defined. -/
 def Flags.Defined (cf zf sf of : Bool) : Flags → Prop :=
@@ -600,13 +579,31 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
   /-- A system call that ends the program. Nothing after it needs a type. -/
   | syscallExit {Γ : Ctx} : SysExits fetch sys Ψ Γ → HasType Φ fetch sys Ψ next Γ .syscall
   /-- Jump through a register, field or stack slot holding a code pointer. -/
-  | jmpInd {Γ Δ : Ctx} {rm : RM} : CodeAt Ψ next Γ rm Δ → CtxSub Γ Δ →
+  | jmpInd {Γ Δ : Ctx} {rm : RM} : Holds Ψ next Γ rm (.code Δ) → CtxSub Γ Δ →
     HasType Φ fetch sys Ψ next Γ (.jmp (.ind rm))
   /-- Call through a register, field or stack slot holding a code pointer.
   The callee sees the return address on top of the stack. -/
-  | callInd {Γ Δ ret : Ctx} {rm : RM} {n : Nat} : CodeAt Ψ next Γ rm Δ → Γ.room = n + 1 → Φ next ret →
+  | callInd {Γ Δ ret : Ctx} {rm : RM} {n : Nat} : Holds Ψ next Γ rm (.code Δ) → Γ.room = n + 1 → Φ next ret →
     CtxSub { Γ with stack := .code ret :: Γ.stack, room := n } Δ →
     HasType Φ fetch sys Ψ next Γ (.call (.ind rm))
+  /-- A register holding exactly the address of a function may be treated as
+  a pointer to that function, to be called by any caller. -/
+  | fnPtr {Γ : Ctx} {i : Instr} {r : Reg} {a : BitVec 64} {sig : FnSig} :
+    r ≠ .rsp → Γ.regs r = .eq a → sig.At Φ a →
+    HasType Φ fetch sys Ψ next (Γ.setReg r sig.ty) i → HasType Φ fetch sys Ψ next Γ i
+  /-- Call through a register, field or stack slot holding a function
+  pointer. The conditions are those of a direct call to that function. -/
+  | callFn {Γ ret : Ctx} {rm : RM} {sig : FnSig} {m : Nat} :
+    Holds Ψ next Γ rm sig.ty → Γ.room = m + 1 → Φ next ret →
+    (∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn Γ.regs r)) →
+    CtxSub (sig.returned Γ.regs Γ.stack m) ret → sig.need ≤ m →
+    HasType Φ fetch sys Ψ next Γ (.call (.ind rm))
+  /-- Jump to a function through a pointer to it: a tail call, made on
+  behalf of the caller the current function would have returned to. -/
+  | jmpFn {Γ ret : Ctx} {rm : RM} {sig : FnSig} {saved : Reg → Ty} {rest : List Ty}
+      {room : Nat} :
+    Holds Ψ next Γ rm sig.ty → sig.CallerOk saved ret rest room →
+    CtxSub Γ (sig.entry saved ret rest room) → HasType Φ fetch sys Ψ next Γ (.jmp (.ind rm))
   /-- Any instruction is well typed in a context no state can match. This is
   how code that is never reached, such as a `ud2` after an impossible branch,
   is typed. -/

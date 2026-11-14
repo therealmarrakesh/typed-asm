@@ -18,6 +18,8 @@ needs an argument, typically a fact about values at a branch.
 * `ty_step` types one. `ty_step_with r` types one with a rule you name.
 * `ty_straight` types a single instruction; the two above are built on it.
 * `ty_name r as v` gives the value in a register a name.
+* `ty_fn_ptr r to sig` turns a register holding a function's address into a
+  pointer to that function.
 * `ty_code_ptr r to Δ` turns a register holding a label's address into a
   code pointer, for indirect jumps and calls.
 * `ty_accept h` shows the current context is accepted at an address, given
@@ -85,12 +87,12 @@ theorem WriteIntOk.global_of
     WriteIntOk (MemTy.ofList bs) next Γ n (.mem (.rip disp)) Γ :=
   .global hl hw haddr hi hk
 
-theorem CodeAt.global_of {Δ : Ctx}
+theorem Holds.global_of
     (_ : MemTy.locate bs (next + disp.signExtend 64) = some (base, i, 0))
     (hl : MemTy.ofList bs base = some l)
     (haddr : next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i))
-    (hi : l.fields[i]? = some (.code Δ)) :
-    CodeAt (MemTy.ofList bs) next Γ (.mem (.rip disp)) Δ :=
+    (hi : l.fields[i]? = some τ) :
+    Holds (MemTy.ofList bs) next Γ (.mem (.rip disp)) τ :=
   .global hl haddr hi
 
 theorem Straight.loadGlobal_of {d : Reg} (hd : d ≠ .rsp)
@@ -324,8 +326,8 @@ at the first that fails. For rules whose first premise computes what the
 others refer to, where carrying on after a failure would be slow. -/
 syntax "ty_rule_ordered " term : tactic
 
-/-- Proves that an operand can be read, can be written, or holds a code
-pointer: it is a register, a stack slot, a field of a pointer, or a field
+/-- Proves that an operand can be read, can be written, or holds a value of
+a given type: it is a register, a stack slot, a field of a pointer, or a field
 of a block at a fixed address. -/
 macro "ty_operand" : tactic =>
   `(tactic| first
@@ -334,8 +336,8 @@ macro "ty_operand" : tactic =>
     | ty_rule_ordered WriteIntOk.reg | ty_rule_ordered WriteIntOk.slot
     | ty_rule_ordered WriteIntOk.field | ty_rule_ordered WriteIntOk.indexed
     | ty_rule_ordered WriteIntOk.global_of
-    | ty_rule_ordered CodeAt.reg | ty_rule_ordered CodeAt.slot | ty_rule_ordered CodeAt.field
-    | ty_rule_ordered CodeAt.indexed | ty_rule_ordered CodeAt.global_of)
+    | ty_rule_ordered Holds.reg | ty_rule_ordered Holds.slot | ty_rule_ordered Holds.field
+    | ty_rule_ordered Holds.indexed | ty_rule_ordered Holds.global_of)
 
 macro_rules
   | `(tactic| ty_side) =>
@@ -430,8 +432,8 @@ fails: those for operands, whose premises each depend on the ones before. -/
 def orderedRules : List Name := [``Straight.loadGlobal_of, ``Straight.storeGlobal_of,
   ``ReadOk.reg, ``ReadOk.slot, ``ReadOk.field, ``ReadOk.indexed, ``ReadOk.global_of,
   ``WriteIntOk.reg, ``WriteIntOk.slot, ``WriteIntOk.field, ``WriteIntOk.indexed,
-  ``WriteIntOk.global_of, ``CodeAt.reg, ``CodeAt.slot, ``CodeAt.field, ``CodeAt.indexed,
-  ``CodeAt.global_of]
+  ``WriteIntOk.global_of, ``Holds.reg, ``Holds.slot, ``Holds.field, ``Holds.indexed,
+  ``Holds.global_of]
 
 /-- The straight-line rules that can type an instruction of this shape, most
 informative first. An empty list means the type system has no rule for it. -/
@@ -611,6 +613,7 @@ private partial def ppTy (e : Expr) : MetaM String := do
   if e.isConstOf ``Ty.int then return "int"
   if e.isAppOfArity ``Ty.eq 1 then return s!"exactly {← ppClean e.appArg!}"
   if e.isAppOfArity ``Ty.code 1 then return "code pointer"
+  if e.isAppOf ``Ty.fn || e.isAppOf ``FnSig.ty then return "function pointer"
   if e.isAppOfArity ``Ty.ptr 3 then
     let args := e.getAppArgs
     let kind := if args[1]!.isConstOf ``Bool.true then "pointer" else "read-only pointer"
@@ -656,6 +659,7 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
           if rhs.getAppArgs[1]!.isConstOf ``Bool.true then "a writable pointer" else "a pointer"
         else if rhs.isAppOf ``Ty.eq then "an exactly known value"
         else if rhs.isAppOf ``Ty.code then "a code pointer"
+        else if rhs.isAppOf ``Ty.fn || rhs.isAppOf ``FnSig.ty then "a function pointer"
         else "a value of another type"
       return m!"`{reg}` must hold {wanted}, but its type is `{actual}`"
     if lhs.isAppOf ``MemTy.locate then
@@ -705,7 +709,7 @@ private def operandRules (ty : Expr) : List Name :=
   if ty.isAppOf ``ReadOk then [``ReadOk.reg, ``ReadOk.slot, ``ReadOk.field, ``ReadOk.indexed, ``ReadOk.global_of]
   else if ty.isAppOf ``WriteIntOk then [``WriteIntOk.reg, ``WriteIntOk.slot, ``WriteIntOk.field, ``WriteIntOk.indexed,
     ``WriteIntOk.global_of]
-  else if ty.isAppOf ``CodeAt then [``CodeAt.reg, ``CodeAt.slot, ``CodeAt.field, ``CodeAt.indexed, ``CodeAt.global_of]
+  else if ty.isAppOf ``Holds then [``Holds.reg, ``Holds.slot, ``Holds.field, ``Holds.indexed, ``Holds.global_of]
   else []
 
 /-- Applies a rule to the main goal and describes the first premise that
@@ -1232,6 +1236,20 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
     let [rest'] ← runOn rest introBranch | throwError "unexpected goals"
     return .continues rest' leftTaken
   | .jmp (.ind _) =>
+    let before ← saveState
+    -- a tail call through a function pointer, on behalf of this function's caller
+    let tail? ← try
+        let gs ← runOn goal (do evalTactic (← `(tactic|
+          refine BlockOk.last rfl (HasType.jmpFn (sig := ?_) (saved := ?_) (ret := ?_)
+            (rest := ?_) (room := ?_) ?fn ?caller ?sub))))
+        discard <| runOn (← goalNamed gs `fn) (do evalTactic (← `(tactic| ty_operand)))
+        discard <| runOn (← goalNamed gs `caller) (do evalTactic (← `(tactic| assumption)))
+        let left ← runOn (← goalNamed gs `sub) (do evalTactic (← `(tactic| ctx_sub)))
+        pure (some left)
+      catch _ =>
+        before.restore
+        pure none
+    if let some left := tail? then return .done left
     let gs ← runOn goal (do evalTactic (← `(tactic|
       refine BlockOk.last rfl (HasType.jmpInd (Δ := ?_) ?code ?sub))))
     let code ← goalNamed gs `code
@@ -1239,8 +1257,9 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
     try
       discard <| runOn code (do evalTactic (← `(tactic| ty_operand)))
     catch _ =>
-      throwError "`{instr.toAsm}`: the operand does not hold a code pointer here. A register \
-        holding the exact address of a label becomes one with `ty_code_ptr`"
+      throwError "`{instr.toAsm}`: the operand does not hold a pointer to code here. A register \
+        holding the exact address of a label becomes one with `ty_fn_ptr` (a function) or \
+        `ty_code_ptr` (any other label)"
     let left ← try
         runOn sub (do evalTactic (← `(tactic| ctx_sub)))
       catch _ =>
@@ -1313,41 +1332,59 @@ elab "ty_call " sig:term : tactic => do
     let room ← typed.withContext do ppClean (← reduce (← mkAppM ``CtxOf.room #[ctx]))
     return m!"`{instr.toAsm}`: there is no room on the stack for the return address: the \
       context has room for {room}"
+  -- A call through an operand holding a function pointer is typed like a
+  -- direct call to that function.
+  let viaPointer? ← match instr? with
+    | some (.call (.ind _)) =>
+      let before ← saveState
+      try
+        let gs ← runOn typed (do evalTactic (← `(tactic|
+          refine HasType.callFn (sig := $sig) (ret := ?_) ?callee rfl ?retpoint ?args ?back ?need)))
+        discard <| runOn (← goalNamed gs `callee) (do evalTactic (← `(tactic| ty_operand)))
+        pure (some gs)
+      catch _ =>
+        before.restore
+        pure none
+    | _ => pure none
   match instr? with
   | some (.call (.rel _)) => pure ()
   | some (.call (.ind rm)) =>
-    let instr := Instr.call (.ind rm)
-    -- A call through a register, field or stack slot holding a code pointer.
-    let gs ← try
-        runOn typed (do evalTactic (← `(tactic|
-          refine FnSig.callInd_ok (sig := $sig) (saved := ?_) (ret := ?_) (rest := ?_)
-            ?callee rfl ?retpoint ?args ?stack)))
-      catch _ => throwError (← noRoom instr)
-    let callee ← goalNamed gs `callee
-    try
-      discard <| runOn callee (do evalTactic (← `(tactic| ty_operand)))
-    catch _ =>
-      throwError "`{instr.toAsm}`: the operand does not hold a pointer to a function with this \
-        signature that can be called with the room available here. A register holding the \
-        exact address of a label becomes a code pointer with `ty_code_ptr`"
-    let mut left : List MVarId := []
-    left := left ++ (← proveAtLabel (← goalNamed gs `retpoint) (pure []))
-    left := left ++ (← runOn (← goalNamed gs `args) (do evalTactic (← `(tactic| sub_regs))))
-    let stack ← goalNamed gs `stack
-    let stackLeft ← try
-        runOn stack (do evalTactic (← `(tactic| ty_stack)))
-      catch _ => pure [stack]
-    unless stackLeft.isEmpty do
-      throwError "`{instr.toAsm}`: the stack here does not match the one the function pointer \
-        expects"
-    setGoals (left ++ others)
-    return
+    if viaPointer?.isNone then
+      let instr := Instr.call (.ind rm)
+      -- Otherwise the operand may hold a pointer to code expecting one context.
+      let gs ← try
+          runOn typed (do evalTactic (← `(tactic|
+            refine FnSig.callInd_ok (sig := $sig) (saved := ?_) (ret := ?_) (rest := ?_)
+              ?callee rfl ?retpoint ?args ?stack)))
+        catch _ => throwError (← noRoom instr)
+      let callee ← goalNamed gs `callee
+      try
+        discard <| runOn callee (do evalTactic (← `(tactic| ty_operand)))
+      catch _ =>
+        throwError "`{instr.toAsm}`: the operand does not hold a pointer to a function with this \
+          signature, or there is no room on the stack for the return address. A register \
+          holding the exact address of a function becomes a pointer to it with `ty_fn_ptr`"
+      let mut left : List MVarId := []
+      left := left ++ (← proveAtLabel (← goalNamed gs `retpoint) (pure []))
+      left := left ++ (← runOn (← goalNamed gs `args) (do evalTactic (← `(tactic| sub_regs))))
+      let stack ← goalNamed gs `stack
+      let stackLeft ← try
+          runOn stack (do evalTactic (← `(tactic| ty_stack)))
+        catch _ => pure [stack]
+      unless stackLeft.isEmpty do
+        throwError "`{instr.toAsm}`: the stack here does not match the one the function pointer \
+          expects"
+      setGoals (left ++ others)
+      return
   | some instr => throwError "ty_call: the instruction here is `{instr.toAsm}`, not a call"
   | none => throwError "ty_call: the instruction at this address is not known"
-  let gs ← try
-      runOn typed (do evalTactic (← `(tactic|
-        refine FnSig.call_ok (sig := $sig) (ret := ?_) ?callee rfl ?retpoint ?args ?back ?need)))
-    catch _ => throwError (← noRoom (instr?.getD .nop))
+  let gs ← match viaPointer? with
+    | some gs => pure gs
+    | none =>
+      try
+        runOn typed (do evalTactic (← `(tactic|
+          refine FnSig.call_ok (sig := $sig) (ret := ?_) ?callee rfl ?retpoint ?args ?back ?need)))
+      catch _ => throwError (← noRoom (instr?.getD .nop))
   let mut left : List MVarId := []
   -- the callee first: it involves no unknowns
   for g in gs do
@@ -1400,6 +1437,29 @@ elab "ty_code_ptr " r:term " to " Δ:term : tactic => do
           catch _ => pure [p]
         left := left ++ after
     else left := left ++ [g]
+  setGoals [← goalNamed gs `rest]
+  evalTactic (← `(tactic| ty_normalize))
+  setGoals ((← getGoals) ++ left ++ others)
+
+/-- `ty_fn_ptr r to sig`: register `r` holds exactly the address of a
+function with signature `sig`; from here on it is a pointer to that function,
+which can be stored, passed on, and called by any caller. -/
+elab "ty_fn_ptr " r:term " to " sig:term : tactic => do
+  let goal ← getMainGoal
+  let others := (← getGoals).drop 1
+  let gs ← try
+      runOn goal (do evalTactic (← `(tactic|
+        refine BlockOk.fnPtr (r := $r) (sig := $sig) ?ne rfl ?here ?rest)))
+    catch _ =>
+      throwError "ty_fn_ptr: the register does not hold an exactly known address here"
+  discard <| runOn (← goalNamed gs `ne) (do evalTactic (← `(tactic| decide)))
+  let [entry] ← runOn (← goalNamed gs `here) (do evalTactic (← `(tactic| intro _ _ _ _ hK)))
+    | throwError "ty_fn_ptr: unexpected goals"
+  let left ← try
+      proveAtLabel entry (pure [])
+    catch e =>
+      throwError "ty_fn_ptr: the address is not that of a function with this signature\n\
+        {e.toMessageData}"
   setGoals [← goalNamed gs `rest]
   evalTactic (← `(tactic| ty_normalize))
   setGoals ((← getGoals) ++ left ++ others)
