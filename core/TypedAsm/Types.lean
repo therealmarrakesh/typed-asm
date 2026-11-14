@@ -21,16 +21,22 @@ structure CtxOf (τ : Type) where
   stack : List τ
   /-- How many more slots may be pushed. -/
   room : Nat
-  /-- Whether all four flags hold known values. -/
-  flags : Bool
+  /-- What is known about the flags. -/
+  flags : Flags → Prop
 
 /-- The type of a 64-bit value. -/
 inductive Ty
   /-- Any value. Every value has this type, so it also serves as "unknown". -/
   | int
-  /-- The address of a memory block whose fields have these types. A value of
-  this type with `writable` set may be stored through. -/
-  | ptr (fields : List Ty) (writable : Bool)
+  /-- Exactly this value. Combined with a code typing that allows a family of
+  contexts at one address, this is how types depend on values: the family is
+  indexed by the values, and the registers are typed as exactly those. -/
+  | eq (v : BitVec 64)
+  /-- The address of field `index` of a memory block whose fields have these
+  types. A value of this type with `writable` set may be stored through.
+  `index` may equal the number of fields (one past the end); such a pointer
+  cannot be dereferenced. -/
+  | ptr (fields : List Ty) (writable : Bool) (index : Nat)
   /-- The address of code that is safe to enter when the machine matches `pre`. -/
   | code (pre : CtxOf Ty)
 
@@ -78,6 +84,12 @@ programs quantify over all `n`. -/
 def Flags.defined (f : Flags) : Bool :=
   f.cf.isSome && f.zf.isSome && f.sf.isSome && f.of.isSome
 
+/-- The flags predicate "all four hold known values". -/
+def Flags.Known : Flags → Prop := fun f => f.defined = true
+
+/-- The flags predicate that says nothing. -/
+def Flags.Any : Flags → Prop := fun _ => True
+
 /-- The address of the lowest byte of the stack region a context describes:
 `room` free slots below `rsp`. -/
 def stackBase (Γ : Ctx) (s : State) : BitVec 64 :=
@@ -92,8 +104,8 @@ says what it means for the value `v` to have type `τ`. -/
 structure Matches (H : Ty → BitVec 64 → Prop) (Ψ : MemTy) (Γ : Ctx) (s : State) : Prop where
   /-- Each register other than `rsp` holds a value of its type. -/
   regs : ∀ r, r ≠ .rsp → H (Γ.regs r) (s.getReg r)
-  /-- If the context says the flags are known, they are. -/
-  flags : Γ.flags = true → s.flags.defined = true
+  /-- The flags are as the context says. -/
+  flags : Γ.flags s.flags
   /-- The stack region, free slots included, is writable. -/
   stackPerm : s.canWrite (stackBase Γ s) (stackSize Γ) = true
   stackSize_lt : stackSize Γ < 2 ^ 64
@@ -113,8 +125,10 @@ structure Matches (H : Ty → BitVec 64 → Prop) (Ψ : MemTy) (Γ : Ctx) (s : S
 This does not depend on the machine state. -/
 def HasTy (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) : Nat → Ty → BitVec 64 → Prop
   | _, .int, _ => True
-  | _, .ptr fields writable, v =>
-    ∃ l, Ψ v = some l ∧ l.fields = fields ∧ (writable = true → l.writable = true)
+  | _, .eq x, v => v = x
+  | _, .ptr fields writable index, v =>
+    ∃ a l, Ψ a = some l ∧ l.fields = fields ∧ (writable = true → l.writable = true) ∧
+      v = a + BitVec.ofNat 64 (8 * index)
   | n, .code pre, v =>
     ∀ k, (hk : k < n) → ∀ s : State, s.rip = v →
       Matches (fun τ w => HasTy fetch sys Ψ k τ w) Ψ pre s → SafeN fetch sys k s
@@ -130,9 +144,13 @@ variable {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {n : Nat}
 theorem HasTy.int (v : BitVec 64) : HasTy fetch sys Ψ n .int v := by
   simp [HasTy]
 
-theorem hasTy_ptr {fields : List Ty} {writable : Bool} {v : BitVec 64} :
-    HasTy fetch sys Ψ n (.ptr fields writable) v ↔
-      ∃ l, Ψ v = some l ∧ l.fields = fields ∧ (writable = true → l.writable = true) := by
+theorem hasTy_eq {x v : BitVec 64} : HasTy fetch sys Ψ n (.eq x) v ↔ v = x := by
+  simp [HasTy]
+
+theorem hasTy_ptr {fields : List Ty} {writable : Bool} {index : Nat} {v : BitVec 64} :
+    HasTy fetch sys Ψ n (.ptr fields writable index) v ↔
+      ∃ a l, Ψ a = some l ∧ l.fields = fields ∧ (writable = true → l.writable = true) ∧
+        v = a + BitVec.ofNat 64 (8 * index) := by
   simp [HasTy]
 
 /-- A value is a code pointer if jumping to it, in any state matching the
@@ -147,7 +165,8 @@ theorem HasTy.mono {m : Nat} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys Ψ n
     (hle : m ≤ n) : HasTy fetch sys Ψ m τ v := by
   cases τ with
   | int => exact HasTy.int v
-  | ptr fields writable => exact hasTy_ptr.mpr (hasTy_ptr.mp h)
+  | eq x => exact hasTy_eq.mpr (hasTy_eq.mp h)
+  | ptr fields writable index => exact hasTy_ptr.mpr (hasTy_ptr.mp h)
   | code pre =>
     rw [hasTy_code] at h ⊢
     exact fun k hk => h k (by omega)

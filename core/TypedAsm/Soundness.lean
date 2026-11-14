@@ -17,9 +17,9 @@ theorem HasTy.sub {τ υ : Ty} {v : BitVec 64} (h : Sub τ υ) (hv : HasTy fetch
   cases h with
   | refl => exact hv
   | int => exact HasTy.int v
-  | readOnly fields w =>
-    obtain ⟨l, hl, hf, hw⟩ := hasTy_ptr.mp hv
-    exact hasTy_ptr.mpr ⟨l, hl, hf, fun _ => hw rfl⟩
+  | readOnly fields w index =>
+    obtain ⟨a, l, hl, hf, hw, hva⟩ := hasTy_ptr.mp hv
+    exact hasTy_ptr.mpr ⟨a, l, hl, hf, fun _ => hw rfl, hva⟩
 
 theorem SubList.length_eq {σ ρ : List Ty} (h : SubList σ ρ) : σ.length = ρ.length := by
   induction h with
@@ -142,7 +142,7 @@ theorem congr {t : State} (h : WellTyped fetch sys Ψ ix Γ s) (hr : t.regs = s.
   have hb : stackBase Γ t = stackBase Γ s := by simp only [stackBase, hg]
   exact {
     regs := fun r hr' => by rw [hg]; exact h.regs r hr'
-    flags := fun hfl => by rw [hf]; exact h.flags hfl
+    flags := by rw [hf]; exact h.flags
     stackPerm := by rw [hb, State.canWrite_congr hp]; exact h.stackPerm
     stackSize_lt := h.stackSize_lt
     stack := fun i τ hi => by rw [hg, State.load64_congr hm]; exact h.stack i τ hi
@@ -158,7 +158,7 @@ theorem sub {Δ : Ctx} (h : WellTyped fetch sys Ψ ix Γ s) (hs : CtxSub Γ Δ) 
   have hz : stackSize Δ = stackSize Γ := by simp only [stackSize, hs.room, hl]
   exact {
     regs := fun r hr => (h.regs r hr).sub (hs.regs r hr)
-    flags := fun hf => h.flags (hs.flags hf)
+    flags := hs.flags _ h.flags
     stackPerm := by rw [hb, hz]; exact h.stackPerm
     stackSize_lt := by rw [hz]; exact h.stackSize_lt
     stack := fun i υ hi => by
@@ -195,10 +195,9 @@ theorem setReg {r : Reg} {τ : Ty} {v : BitVec 64} (h : WellTyped fetch sys Ψ i
     heap := fun a l hl i τ' hi => by rw [State.load64_congr hm]; exact h.heap a l hl i τ' hi
     stackHeap := fun a l hl => by rw [hb]; exact h.stackHeap a l hl }
 
-/-- Replacing the flags, provided they are known whenever the new context says so. -/
-theorem setFlags {f : Flags} {b : Bool} (h : WellTyped fetch sys Ψ ix Γ s)
-    (hf : b = true → f.defined = true) :
-    WellTyped fetch sys Ψ ix { Γ with flags := b } { s with flags := f } :=
+/-- Replacing the flags with ones that satisfy the new context's flags predicate. -/
+theorem setFlags {f : Flags} {P : Flags → Prop} (h : WellTyped fetch sys Ψ ix Γ s) (hf : P f) :
+    WellTyped fetch sys Ψ ix { Γ with flags := P } { s with flags := f } :=
   { regs := h.regs, flags := hf, stackPerm := h.stackPerm, stackSize_lt := h.stackSize_lt,
     stack := h.stack, heapPerm := h.heapPerm, heap := h.heap, stackHeap := h.stackHeap }
 
@@ -244,7 +243,7 @@ theorem storeField {a : BitVec 64} {l : Layout} {i : Nat} {τ : Ty} {v : BitVec 
   have hp := State.store64_perm s (a + BitVec.ofNat 64 (8 * i)) v
   exact {
     regs := fun r hr => by rw [hg]; exact h.regs r hr
-    flags := fun hf => by rw [State.store64_flags]; exact h.flags hf
+    flags := by rw [State.store64_flags]; exact h.flags
     stackPerm := by rw [hb, State.canWrite_congr hp]; exact h.stackPerm
     stackSize_lt := h.stackSize_lt
     stack := fun j τ' hj => by
@@ -296,7 +295,7 @@ theorem storeStack {i : Nat} {τ : Ty} {v : BitVec 64} (h : WellTyped fetch sys 
   simp only [stackSize] at hlt
   exact {
     regs := fun r hr => by rw [hg]; exact h.regs r hr
-    flags := fun hf => by rw [State.store64_flags]; exact h.flags hf
+    flags := by rw [State.store64_flags]; exact h.flags
     stackPerm := by rw [hb, hz, State.canWrite_congr hp]; exact h.stackPerm
     stackSize_lt := by rw [hz]; exact h.stackSize_lt
     stack := fun j τ' hj => by
@@ -349,7 +348,7 @@ theorem push {n : Nat} {τ : Ty} {v : BitVec 64} (h : WellTyped fetch sys Ψ ix 
   exact {
     regs := fun r hr => by
       rw [hg, State.getReg_setReg_other s .rsp r _ hr]; exact h.regs r hr
-    flags := fun hf => by rw [State.store64_flags]; exact h.flags hf
+    flags := by rw [State.store64_flags]; exact h.flags
     stackPerm := by rw [hb, hz, State.canWrite_congr hp]; exact h.stackPerm
     stackSize_lt := by rw [hz]; exact h.stackSize_lt
     stack := fun j τ' hj => by
@@ -429,9 +428,9 @@ theorem afterAlu {op : AluOp} {d : Reg} {fl : Flags} (h : WellTyped fetch sys Ψ
       { (if op.writesDst then s.setReg d v else s) with flags := fl } := by
   cases hwd : op.writesDst
   · simp only [CtxOf.afterAlu, hwd, Bool.false_eq_true, ↓reduceIte]
-    exact h.setFlags (fun _ => hdef)
+    exact h.setFlags (P := Flags.Known) hdef
   · simp only [CtxOf.afterAlu, hwd, ↓reduceIte]
-    exact (h.setReg hd (HasTy.int v)).setFlags (fun _ => hdef)
+    exact (h.setReg hd (HasTy.int v)).setFlags (P := Flags.Known) hdef
 
 end WellTyped
 
@@ -495,6 +494,29 @@ theorem AluOp.eval_some {n : Nat} (op : AluOp) {cf : Option Bool} (a b : BitVec 
     | (obtain ⟨c, rfl⟩ := Option.isSome_iff_exists.mp (h rfl)
        exact ⟨_, _, rfl, Flags.ofResult_defined _ _ _⟩)
 
+/-- An operation that produces a result without the carry flag produces the
+same result whatever the carry flag is. -/
+theorem AluOp.eval_of_none {n : Nat} {op : AluOp} {a b : BitVec n} {x : BitVec n × Flags}
+    (h : op.eval none a b = some x) (cf : Option Bool) : op.eval cf a b = some x := by
+  cases op <;> simp_all [AluOp.eval]
+
+theorem addCarry_fst (a b : BitVec 64) : (addCarry a b false).1 = a + b := by
+  simp only [addCarry]
+  bv_decide
+
+theorem subBorrow_fst (a b : BitVec 64) : (subBorrow a b false).1 = a - b := by
+  simp only [subBorrow]
+  bv_decide
+
+/-- The zero flag after a subtraction says whether the result is zero. -/
+theorem subBorrow_zf {n : Nat} (a b : BitVec n) (c : Bool) :
+    (subBorrow a b c).2.zf = some ((subBorrow a b c).1 == 0) := rfl
+
+/-- Stepping `i` slots on from slot `off`. -/
+theorem slot_add (a : BitVec 64) (off i : Nat) :
+    a + BitVec.ofNat 64 (8 * off) + BitVec.ofNat 64 (8 * i) = a + BitVec.ofNat 64 (8 * (off + i)) := by
+  rw [BitVec.add_assoc, ← BitVec.ofNat_add, Nat.mul_add]
+
 /-! ## Instructions that continue to the next one -/
 
 /-- A straight-line typed instruction, run in a matching state, continues to
@@ -514,31 +536,35 @@ theorem Straight.sound {Γ Γ' : Ctx} {i : Instr} (ht : Straight Γ i Γ') (hΨ 
     refine ⟨s.writeReg .w32 d (s.readReg .w32 src), ?_, rfl, h.setReg hd (HasTy.int _)⟩
     simp [exec, State.writeRM, Operands.src, Operands.dst]
   | @movRI w d imm hd =>
-    refine ⟨s.writeReg w d (imm.signExtend w.bits), ?_, rfl, h.setReg hd (HasTy.int _)⟩
+    refine ⟨s.writeReg w d (imm.signExtend w.bits), ?_, rfl, h.setReg hd (hasTy_eq.mpr rfl)⟩
     simp [exec, State.writeRM, Operands.src, Operands.dst]
   | @movAbs d imm hd =>
-    refine ⟨s.setReg d imm, ?_, rfl, h.setReg hd (HasTy.int _)⟩
+    refine ⟨s.setReg d imm, ?_, rfl, h.setReg hd (hasTy_eq.mpr rfl)⟩
     simp [exec]
   | @lea w d m hd =>
     refine ⟨s.writeReg w d ((s.ea m).setWidth w.bits), ?_, rfl, h.setReg hd (HasTy.int _)⟩
     simp [exec]
-  | @loadField d b fields writable i disp τ hd hb hΓ hi hdisp =>
+  | @loadField d b fields writable off i disp τ hd hb hΓ hi hdisp =>
     have hp := h.regs b hb
     rw [hΓ] at hp
-    obtain ⟨l, hl, rfl, -⟩ := hasTy_ptr.mp hp
-    have hilt : i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
-    refine ⟨s.setReg d (s.load64 (s.getReg b + BitVec.ofNat 64 (8 * i))), ?_, rfl,
-      h.setReg hd (h.heap _ l hl i τ hi)⟩
-    simp [exec, State.writeRM, Operands.src, Operands.dst, State.ea_slot s b hdisp,
+    obtain ⟨a, l, hl, rfl, -, hva⟩ := hasTy_ptr.mp hp
+    have hilt : off + i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
+    have hea : s.ea (.sib (some b) none disp) = a + BitVec.ofNat 64 (8 * (off + i)) := by
+      rw [State.ea_slot s b hdisp, hva, slot_add]
+    refine ⟨s.setReg d (s.load64 (a + BitVec.ofNat 64 (8 * (off + i)))), ?_, rfl,
+      h.setReg hd (h.heap _ l hl (off + i) τ hi)⟩
+    simp [exec, State.writeRM, Operands.src, Operands.dst, hea,
       State.read_w64 (h.canRead_field hl hilt), State.writeReg]
-  | @storeField b src fields i disp τ hb hs hΓ hi hsub hdisp =>
+  | @storeField b src fields off i disp τ hb hs hΓ hi hsub hdisp =>
     have hp := h.regs b hb
     rw [hΓ] at hp
-    obtain ⟨l, hl, rfl, hw⟩ := hasTy_ptr.mp hp
-    have hilt : i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
-    refine ⟨s.store64 (s.getReg b + BitVec.ofNat 64 (8 * i)) (s.getReg src), ?_,
+    obtain ⟨a, l, hl, rfl, hw, hva⟩ := hasTy_ptr.mp hp
+    have hilt : off + i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
+    have hea : s.ea (.sib (some b) none disp) = a + BitVec.ofNat 64 (8 * (off + i)) := by
+      rw [State.ea_slot s b hdisp, hva, slot_add]
+    refine ⟨s.store64 (a + BitVec.ofNat 64 (8 * (off + i))) (s.getReg src), ?_,
       State.store64_rip _ _ _, h.storeField hΨ hl hi ((h.regs src hs).sub hsub)⟩
-    simp [exec, State.writeRM, Operands.src, Operands.dst, State.ea_slot s b hdisp,
+    simp [exec, State.writeRM, Operands.src, Operands.dst, hea,
       State.readReg_w64, State.write_w64 _ (h.canWrite_field hl (hw rfl) hilt)]
   | @loadStack d i disp τ hd hi hdisp =>
     have hilt : i < Γ.stack.length := (List.getElem?_eq_some_iff.mp hi).1
@@ -570,10 +596,7 @@ theorem Straight.sound {Γ Γ' : Ctx} {i : Instr} (ht : Straight Γ i Γ') (hΨ 
     simp [exec, State.pop64, State.read64, hc]
   | @aluRR op w d src hd hc =>
     obtain ⟨r, fl, he, hdef⟩ := op.eval_some (cf := s.flags.cf) (s.readReg w d) (s.readReg w src)
-      (fun hrc => by
-        have := h.flags (hc hrc)
-        simp only [Flags.defined, Bool.and_eq_true] at this
-        exact this.1.1.1)
+      (fun hrc => hc hrc _ h.flags)
     refine ⟨{ (if op.writesDst then s.setReg d (r.setWidth 64) else s) with flags := fl }, ?_, ?_,
       h.afterAlu hd hdef _⟩
     · cases hwd : op.writesDst <;>
@@ -582,20 +605,70 @@ theorem Straight.sound {Γ Γ' : Ctx} {i : Instr} (ht : Straight Γ i Γ') (hΨ 
     · cases op.writesDst <;> rfl
   | @aluRI op w d imm hd hc =>
     obtain ⟨r, fl, he, hdef⟩ := op.eval_some (cf := s.flags.cf) (s.readReg w d)
-      (imm.signExtend w.bits) (fun hrc => by
-        have := h.flags (hc hrc)
-        simp only [Flags.defined, Bool.and_eq_true] at this
-        exact this.1.1.1)
+      (imm.signExtend w.bits) (fun hrc => hc hrc _ h.flags)
     refine ⟨{ (if op.writesDst then s.setReg d (r.setWidth 64) else s) with flags := fl }, ?_, ?_,
       h.afterAlu hd hdef _⟩
     · cases hwd : op.writesDst <;>
         simp [exec, State.readRM, State.writeRM, Operands.src, Operands.dst, he, Result.ofOption,
           hwd, State.writeReg]
     · cases op.writesDst <;> rfl
+  | @aluMem op d b fields writable off i disp τ hd hb hΓ hi hdisp hc =>
+    have hp := h.regs b hb
+    rw [hΓ] at hp
+    obtain ⟨a, l, hl, rfl, -, hva⟩ := hasTy_ptr.mp hp
+    have hilt : off + i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
+    have hea : s.ea (.sib (some b) none disp) = a + BitVec.ofNat 64 (8 * (off + i)) := by
+      rw [State.ea_slot s b hdisp, hva, slot_add]
+    obtain ⟨r, fl, he, hdef⟩ := op.eval_some (cf := s.flags.cf) (s.readReg .w64 d)
+      (s.load64 (a + BitVec.ofNat 64 (8 * (off + i)))) (fun hrc => hc hrc _ h.flags)
+    refine ⟨{ (if op.writesDst then s.setReg d (r.setWidth 64) else s) with flags := fl }, ?_, ?_,
+      h.afterAlu hd hdef _⟩
+    · cases hwd : op.writesDst <;>
+        simp [exec, State.readRM, State.writeRM, Operands.src, Operands.dst, hea,
+          State.read_w64 (h.canRead_field hl hilt), he, Result.ofOption, hwd, State.writeReg]
+    · cases op.writesDst <;> rfl
+  | @aluExact op d imm a r fl hd hΓ he =>
+    have hp := h.regs d hd
+    rw [hΓ, hasTy_eq] at hp
+    have he' : op.eval s.flags.cf (s.readReg .w64 d) (imm.signExtend 64) = some (r, fl) := by
+      rw [State.readReg_w64, hp]
+      exact AluOp.eval_of_none he _
+    refine ⟨{ (if op.writesDst then s.setReg d r else s) with flags := fl }, ?_, ?_, ?_⟩
+    · cases hwd : op.writesDst <;>
+        simp [exec, State.readRM, State.writeRM, Operands.src, Operands.dst, he',
+          Result.ofOption, hwd, State.writeReg]
+    · cases op.writesDst <;> rfl
+    · cases hwd : op.writesDst
+      · simp only [Bool.false_eq_true, ↓reduceIte]
+        exact h.setFlags (P := (· = fl)) rfl
+      · simp only [↓reduceIte]
+        exact (h.setReg hd (hasTy_eq.mpr rfl)).setFlags (P := (· = fl)) rfl
+  | @addPtr d fields writable off k imm hd hΓ hk =>
+    have hp := h.regs d hd
+    rw [hΓ] at hp
+    obtain ⟨a, l, hl, rfl, hw, hva⟩ := hasTy_ptr.mp hp
+    obtain ⟨rfl, hlt⟩ := hk
+    have hv : HasTy fetch sys Ψ ix (.ptr l.fields writable (off + k))
+        (s.getReg d + BitVec.ofNat 64 (8 * k)) :=
+      hasTy_ptr.mpr ⟨a, l, hl, rfl, hw, by rw [hva, slot_add]⟩
+    refine ⟨{ s.setReg d (s.getReg d + BitVec.ofNat 64 (8 * k)) with
+        flags := (addCarry (s.getReg d) (BitVec.ofNat 64 (8 * k)) false).2 }, ?_, rfl,
+      (h.setReg hd hv).setFlags (P := Flags.Known) (Flags.ofResult_defined _ _ _)⟩
+    simp [exec, State.readRM, State.writeRM, Operands.src, Operands.dst, AluOp.eval,
+      AluOp.writesDst, Result.ofOption, State.writeReg, State.readReg_w64, sext_slot hlt,
+      addCarry_fst]
   | @test w r src =>
     refine ⟨{ s with flags := .ofResult (s.readReg w r &&& s.readRI w src) false false }, ?_, rfl,
-      h.setFlags (b := true) (fun _ => Flags.ofResult_defined _ _ _)⟩
+      h.setFlags (P := Flags.Known) (Flags.ofResult_defined _ _ _)⟩
     simp [exec, State.readRM]
+  | @testExact r r' a b hr hr' hΓ hΓ' =>
+    have hp := h.regs r hr
+    have hp' := h.regs r' hr'
+    rw [hΓ, hasTy_eq] at hp
+    rw [hΓ', hasTy_eq] at hp'
+    refine ⟨{ s with flags := .ofResult (a &&& b) false false }, ?_, rfl,
+      h.setFlags (P := (· = Flags.ofResult (a &&& b) false false)) rfl⟩
+    simp [exec, State.readRM, State.readRI, State.readReg_w64, hp, hp']
 
 /-! ## All typed instructions -/
 
@@ -630,20 +703,20 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
     refine ⟨rfl, fun s' heq => ?_⟩
     cases heq
     exact ih.accepts hacc (by rw [← hrip]) (h.congr rfl rfl rfl rfl)
-  | @jcc c d hf hacc hfall =>
-    obtain ⟨b, hb⟩ := Cond.eval_some (h.flags hf) c
+  | @jcc c d hdec hacc hfall =>
+    obtain ⟨b, hb⟩ := hdec _ h.flags
     cases b
     · have he : exec sys (.jcc c d) s = .next s := by simp [exec, hb, Result.ofOption]
       rw [he]
       refine ⟨rfl, fun s' heq => ?_⟩
       cases heq
-      exact ih.accepts hfall hrip h
+      exact ih.accepts (hfall _ h.flags hb) hrip h
     · have he : exec sys (.jcc c d) s = .next { s with rip := s.rip + d.signExtend 64 } := by
         simp [exec, hb, Result.ofOption]
       rw [he]
       refine ⟨rfl, fun s' heq => ?_⟩
       cases heq
-      exact ih.accepts hacc (by rw [← hrip]) (h.congr rfl rfl rfl rfl)
+      exact ih.accepts (hacc _ h.flags hb) (by rw [← hrip]) (h.congr rfl rfl rfl rfl)
   | @jmpReg Δ r hr hΓ hsub =>
     have hp := h.regs r hr
     rw [hΓ, hasTy_code] at hp

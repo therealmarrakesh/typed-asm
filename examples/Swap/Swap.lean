@@ -67,16 +67,16 @@ def start : State :=
 /-! ## The typing -/
 
 /-- A pointer to a writable record of two integers. -/
-def pair : Ty := .ptr [.int, .int] true
+def pair : Ty := .ptr [.int, .int] true 0
 
 /-- Register types while `rdi` points to the record. -/
 def ptrRegs : Reg → Ty := fun r => if r = .rdi then pair else .int
 
 /-- A context in which `rdi` points to the record. -/
-def withPtr (stack : List Ty) (room : Nat) : Ctx := ⟨ptrRegs, stack, room, false⟩
+def withPtr (stack : List Ty) (room : Nat) : Ctx := ⟨ptrRegs, stack, room, Flags.Any⟩
 
 /-- For the last part of `_start`: nothing is known about any register. -/
-def done : Ctx := ⟨fun _ => .int, [], 2, false⟩
+def done : Ctx := ⟨fun _ => .int, [], 2, Flags.Any⟩
 
 /-- The context inside `swap`, for a caller that expects `ret` on return and
 has `rest` on its stack. This is where `swap` is polymorphic: it is typed for
@@ -108,7 +108,7 @@ def Ψ : MemTy := fun a => if a = 0x1000 then some recordLayout else none
 /-! ## The program is well typed -/
 
 theorem subDone (Γ : Ctx) (hs : Γ.stack = []) (hm : Γ.room = 2) : CtxSub Γ done :=
-  ⟨fun _ _ => .int _, by rw [hs]; exact .nil, hm, fun h => absurd h (by decide)⟩
+  ⟨fun _ _ => .int _, by rw [hs]; exact .nil, hm, fun _ _ => trivial⟩
 
 theorem accDone {a : BitVec 64} (ha : a ∈ [12, 17, 19, 21]) (Γ : Ctx) (hs : Γ.stack = [])
     (hm : Γ.room = 2) : Accepts Φ a Γ :=
@@ -120,7 +120,7 @@ theorem accSwap {a : BitVec 64} {ret : Ctx} {rest : List Ty} {room : Nat} (ha : 
     (hK : CallerOk ret rest room) (Γ : Ctx) (hr : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (ptrRegs r))
     (hs : Γ.stack = .code ret :: rest) (hm : Γ.room = room) : Accepts Φ a Γ :=
   ⟨swapCtx ret rest room, .swap a ret rest room ha hK,
-    ⟨hr, by rw [hs]; exact .refl _, hm, fun h => absurd h Bool.false_ne_true⟩⟩
+    ⟨hr, by rw [hs]; exact .refl _, hm, fun _ _ => trivial⟩⟩
 
 /-- Setting a register other than `rdi` to an integer keeps the pointer in `rdi`. -/
 theorem setInt (Γ : Ctx) (hΓ : Γ.regs = ptrRegs) (d : Reg) (hd : d ≠ .rdi) :
@@ -208,9 +208,9 @@ theorem startOk : StateOk Φ fetch linux Ψ start := by
   · intro r _
     simp only [withPtr, ptrRegs]
     split
-    · next h => subst h; exact hasTy_ptr.mpr ⟨recordLayout, rfl, rfl, fun _ => rfl⟩
+    · next h => subst h; exact hasTy_ptr.mpr ⟨0x1000, recordLayout, rfl, rfl, fun _ => rfl, by decide⟩
     · exact HasTy.int _
-  · intro h; exact absurd h (by decide)
+  · trivial
   · decide
   · decide
   · intro i τ h; simp [withPtr] at h
@@ -238,7 +238,7 @@ theorem linuxOk (fetch : Fetch) (Ψ : MemTy) : SysOk fetch linux Ψ := by
   · refine ⟨rfl, fun s' he => ?_⟩
     cases he
     exact ⟨rfl, (((h.setReg (by decide) (HasTy.int _)).setReg (by decide) (HasTy.int _)).setReg
-      (by decide) (HasTy.int _)).setFlags (b := false) (fun hf => absurd hf (by decide))⟩
+      (by decide) (HasTy.int _)).setFlags (P := Flags.Any) trivial⟩
 
 /-! ## Safety -/
 

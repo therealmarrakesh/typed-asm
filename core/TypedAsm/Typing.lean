@@ -25,7 +25,8 @@ inductive Sub : Ty → Ty → Prop
   /-- Any value may be treated as an integer. -/
   | int (τ : Ty) : Sub τ .int
   /-- A writable pointer may be used as a read-only one. -/
-  | readOnly (fields : List Ty) (writable : Bool) : Sub (.ptr fields true) (.ptr fields writable)
+  | readOnly (fields : List Ty) (writable : Bool) (index : Nat) :
+    Sub (.ptr fields true index) (.ptr fields writable index)
 
 /-- Subtyping slot by slot, for two stacks of the same length. -/
 inductive SubList : List Ty → List Ty → Prop
@@ -38,7 +39,7 @@ structure CtxSub (Γ Δ : Ctx) : Prop where
   regs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (Δ.regs r)
   stack : SubList Γ.stack Δ.stack
   room : Γ.room = Δ.room
-  flags : Δ.flags = true → Γ.flags = true
+  flags : ∀ f, Γ.flags f → Δ.flags f
 
 theorem Sub.rfl {τ : Ty} : Sub τ τ := .refl τ
 
@@ -47,7 +48,7 @@ theorem SubList.refl : ∀ σ : List Ty, SubList σ σ
   | τ :: σ => .cons (.refl τ) (SubList.refl σ)
 
 theorem CtxSub.refl (Γ : Ctx) : CtxSub Γ Γ :=
-  ⟨fun _ _ => .refl _, .refl _, rfl, id⟩
+  ⟨fun _ _ => .refl _, .refl _, rfl, fun _ h => h⟩
 
 /-- The code at `a` may be entered from a state matching `Γ`: one of the
 contexts allowed there is `Γ` or weaker. -/
@@ -67,12 +68,12 @@ def AluOp.readsCarry : AluOp → Bool
 /-- The context after a two-operand operation on register `d`: the flags
 become known, and `d` holds an integer if the operation writes it. -/
 def CtxOf.afterAlu (Γ : Ctx) (op : AluOp) (d : Reg) : Ctx :=
-  { (if op.writesDst then Γ.setReg d .int else Γ) with flags := true }
+  { (if op.writesDst then Γ.setReg d .int else Γ) with flags := Flags.Known }
 
 /-- The context after a system call: the operating system may have changed
 `rax`, `rcx`, `r11` and the flags. -/
 def CtxOf.afterSyscall (Γ : Ctx) : Ctx :=
-  { ((Γ.setReg .rax .int).setReg .rcx .int).setReg .r11 .int with flags := false }
+  { ((Γ.setReg .rax .int).setReg .rcx .int).setReg .r11 .int with flags := Flags.Any }
 
 /-- The displacement that addresses 8-byte slot `i`. -/
 def slotDisp (i : Nat) (disp : BitVec 32) : Prop :=
@@ -91,22 +92,26 @@ inductive Straight : Ctx → Instr → Ctx → Prop
   /-- A 32-bit register copy keeps only the low half, so the result is an integer. -/
   | movRR32 {Γ : Ctx} {d s : Reg} : d ≠ .rsp →
     Straight Γ (.mov .w32 (.rm_r (.reg d) s)) (Γ.setReg d .int)
+  /-- Loading a constant gives exactly that value. -/
   | movRI {Γ : Ctx} {w : Width} {d : Reg} {imm : BitVec 32} : d ≠ .rsp →
-    Straight Γ (.mov w (.rm_i (.reg d) imm)) (Γ.setReg d .int)
+    Straight Γ (.mov w (.rm_i (.reg d) imm))
+      (Γ.setReg d (.eq ((imm.signExtend w.bits).setWidth 64)))
   | movAbs {Γ : Ctx} {d : Reg} {imm : BitVec 64} : d ≠ .rsp →
-    Straight Γ (.movAbs d imm) (Γ.setReg d .int)
+    Straight Γ (.movAbs d imm) (Γ.setReg d (.eq imm))
   /-- `lea` only computes an address; the result is an integer. -/
   | lea {Γ : Ctx} {w : Width} {d : Reg} {m : Mem} : d ≠ .rsp →
     Straight Γ (.lea w d m) (Γ.setReg d .int)
-  /-- Load field `i` of the block a register points to. -/
-  | loadField {Γ : Ctx} {d b : Reg} {fields : List Ty} {writable : Bool} {i : Nat}
+  /-- Load the field `i` slots past where a register points. -/
+  | loadField {Γ : Ctx} {d b : Reg} {fields : List Ty} {writable : Bool} {off i : Nat}
       {disp : BitVec 32} {τ : Ty} :
-    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .ptr fields writable → fields[i]? = some τ →
+    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .ptr fields writable off → fields[off + i]? = some τ →
     slotDisp i disp →
     Straight Γ (.mov .w64 (.r_m d (.sib (some b) none disp))) (Γ.setReg d τ)
-  /-- Store into field `i` of a writable block. The stored value must have the field's type. -/
-  | storeField {Γ : Ctx} {b s : Reg} {fields : List Ty} {i : Nat} {disp : BitVec 32} {τ : Ty} :
-    b ≠ .rsp → s ≠ .rsp → Γ.regs b = .ptr fields true → fields[i]? = some τ →
+  /-- Store into the field `i` slots past where a writable pointer points.
+  The stored value must have the field's type. -/
+  | storeField {Γ : Ctx} {b s : Reg} {fields : List Ty} {off i : Nat} {disp : BitVec 32}
+      {τ : Ty} :
+    b ≠ .rsp → s ≠ .rsp → Γ.regs b = .ptr fields true off → fields[off + i]? = some τ →
     Sub (Γ.regs s) τ → slotDisp i disp →
     Straight Γ (.mov .w64 (.rm_r (.mem (.sib (some b) none disp)) s)) Γ
   /-- Load stack slot `i`. -/
@@ -124,13 +129,36 @@ inductive Straight : Ctx → Instr → Ctx → Prop
     Straight Γ (.pop r) (CtxOf.setReg { Γ with stack := σ, room := Γ.room + 1 } r τ)
   /-- Arithmetic between registers. The result is an integer whatever the operands were. -/
   | aluRR {Γ : Ctx} {op : AluOp} {w : Width} {d s : Reg} :
-    d ≠ .rsp → (op.readsCarry = true → Γ.flags = true) →
+    d ≠ .rsp → (op.readsCarry = true → ∀ f, Γ.flags f → f.cf.isSome = true) →
     Straight Γ (.alu op w (.rm_r (.reg d) s)) (Γ.afterAlu op d)
   | aluRI {Γ : Ctx} {op : AluOp} {w : Width} {d : Reg} {imm : BitVec 32} :
-    d ≠ .rsp → (op.readsCarry = true → Γ.flags = true) →
+    d ≠ .rsp → (op.readsCarry = true → ∀ f, Γ.flags f → f.cf.isSome = true) →
     Straight Γ (.alu op w (.rm_i (.reg d) imm)) (Γ.afterAlu op d)
+  /-- Arithmetic with a field of a block as the source. -/
+  | aluMem {Γ : Ctx} {op : AluOp} {d b : Reg} {fields : List Ty} {writable : Bool}
+      {off i : Nat} {disp : BitVec 32} {τ : Ty} :
+    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .ptr fields writable off → fields[off + i]? = some τ →
+    slotDisp i disp → (op.readsCarry = true → ∀ f, Γ.flags f → f.cf.isSome = true) →
+    Straight Γ (.alu op .w64 (.r_m d (.sib (some b) none disp))) (Γ.afterAlu op d)
+  /-- Arithmetic on an exactly known value with a constant: the result and
+  the flags are exactly known too. -/
+  | aluExact {Γ : Ctx} {op : AluOp} {d : Reg} {imm : BitVec 32} {a r : BitVec 64} {fl : Flags} :
+    d ≠ .rsp → Γ.regs d = .eq a → op.eval none a (imm.signExtend 64) = some (r, fl) →
+    Straight Γ (.alu op .w64 (.rm_i (.reg d) imm))
+      { (if op.writesDst then Γ.setReg d (.eq r) else Γ) with flags := (· = fl) }
+  /-- Advancing a pointer by whole slots keeps it a pointer into the same block. -/
+  | addPtr {Γ : Ctx} {d : Reg} {fields : List Ty} {writable : Bool} {off k : Nat}
+      {imm : BitVec 32} :
+    d ≠ .rsp → Γ.regs d = .ptr fields writable off → slotDisp k imm →
+    Straight Γ (.alu .add .w64 (.rm_i (.reg d) imm))
+      { Γ.setReg d (.ptr fields writable (off + k)) with flags := Flags.Known }
   | test {Γ : Ctx} {w : Width} {r : Reg} {src : RI} :
-    Straight Γ (.test w (.reg r) src) { Γ with flags := true }
+    Straight Γ (.test w (.reg r) src) { Γ with flags := Flags.Known }
+  /-- Testing two exactly known values gives exactly known flags. -/
+  | testExact {Γ : Ctx} {r r' : Reg} {a b : BitVec 64} :
+    r ≠ .rsp → r' ≠ .rsp → Γ.regs r = .eq a → Γ.regs r' = .eq b →
+    Straight Γ (.test .w64 (.reg r) (.reg r'))
+      { Γ with flags := (· = Flags.ofResult (a &&& b) false false) }
 
 /-! ## All typed instructions -/
 
@@ -141,9 +169,13 @@ inductive HasType (Φ : CodeTy) (next : BitVec 64) : Ctx → Instr → Prop
   | straight {Γ Γ' : Ctx} {i : Instr} : Straight Γ i Γ' → Accepts Φ next Γ' → HasType Φ next Γ i
   | jmp {Γ : Ctx} {d : BitVec 32} : Accepts Φ (next + d.signExtend 64) Γ →
     HasType Φ next Γ (.jmp (.rel d))
-  /-- A conditional jump needs known flags, and both successors must accept. -/
-  | jcc {Γ : Ctx} {c : Cond} {d : BitVec 32} : Γ.flags = true →
-    Accepts Φ (next + d.signExtend 64) Γ → Accepts Φ next Γ → HasType Φ next Γ (.jcc c d)
+  /-- A conditional jump needs flags that decide the condition. Each
+  successor must accept, and may assume which way the condition went. -/
+  | jcc {Γ : Ctx} {c : Cond} {d : BitVec 32} :
+    (∀ f, Γ.flags f → ∃ b, c.eval f = some b) →
+    (∀ f, Γ.flags f → c.eval f = some true → Accepts Φ (next + d.signExtend 64) Γ) →
+    (∀ f, Γ.flags f → c.eval f = some false → Accepts Φ next Γ) →
+    HasType Φ next Γ (.jcc c d)
   /-- Jump through a register holding a code pointer. -/
   | jmpReg {Γ Δ : Ctx} {r : Reg} : r ≠ .rsp → Γ.regs r = .code Δ → CtxSub Γ Δ →
     HasType Φ next Γ (.jmp (.ind (.reg r)))
