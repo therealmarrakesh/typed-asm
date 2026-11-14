@@ -130,7 +130,7 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i12) Γ := by ty_step
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i13) Γ := by ty_step
 
 /-- error: at address 43: cannot type `shl dword ptr [rsi], 1` in the current context
-• shiftRM: `rsi` must hold a writable pointer, but its type is `read-only pointer to [int, int]` -/
+• shiftImm: `rsi` must hold a writable pointer, but its type is `read-only pointer to [int, int]` -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i14) Γ := by ty_step
 
@@ -245,6 +245,34 @@ example : BlockOk Φc callFetch linux Ψ (Asm.addr calls 0 .indirect) roomy := b
 /-- error: ty_call: the instruction here is `ret`, not a call -/
 #guard_msgs in
 example : BlockOk Φc callFetch linux Ψ (Asm.addr calls 0 .f) bare := by ty_call plain
+
+/-! ## Branching on flags that an instruction leaves
+
+A shift by a constant defines the carry, zero and sign flags, and the
+overflow flag only when the count is one. A multiply defines carry and
+overflow. -/
+
+inductive Flagged
+  | zero | overflow | carry | out
+  deriving DecidableEq
+
+def flagged : List (Asm Flagged) := [
+  .label .zero, .ins (.shift .shr .w32 (.reg .rcx) (.imm 3)), .jcc .e .out,
+  .label .overflow, .ins (.shift .shl .w32 (.reg .rcx) (.imm 3)), .jcc .o .out,
+  .label .carry, .ins (.mulDiv .mul .w32 (.reg .rcx)), .jcc .b .out,
+  .label .out, .jmp .out]
+
+def flaggedFetch : Fetch := Asm.fetch 0 flagged
+
+def Φf : CodeTy := .ofLabels flagged 0 (fun _ Δ => Δ = bare)
+
+example : BlockOk Φf flaggedFetch linux Ψ (Asm.addr flagged 0 .zero) bare := by ty_block
+
+/-- error: `jo 8`: the flags known here do not decide the condition -/
+#guard_msgs in
+example : BlockOk Φf flaggedFetch linux Ψ (Asm.addr flagged 0 .overflow) bare := by ty_block
+
+example : BlockOk Φf flaggedFetch linux Ψ (Asm.addr flagged 0 .carry) bare := by ty_block
 
 /-! ## Accepted, for contrast
 

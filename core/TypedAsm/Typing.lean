@@ -19,7 +19,7 @@ writes integers. Indexed operands have no rule.
 
 Every instruction of the machine has a rule. What the rules do not track:
 the results of multiplies, divides, shifts and the like are plain integers,
-the flags after a shift are unknown, and a divide is not shown free of a
+and a divide is not shown free of a
 divide error, which safety permits.
 -/
 
@@ -180,10 +180,39 @@ def Instr.isDivide : Instr → Bool
   | .mulDiv .idiv _ _ => true
   | _ => false
 
+/-- At least the named flags are defined. -/
+def Flags.Defined (cf zf sf of : Bool) : Flags → Prop :=
+  fun f => (cf = true → f.cf.isSome = true) ∧ (zf = true → f.zf.isSome = true) ∧
+    (sf = true → f.sf.isSome = true) ∧ (of = true → f.of.isSome = true)
+
+/-- Whether a condition reads only flags among the named ones. -/
+def Cond.within (c : Cond) (cf zf sf of : Bool) : Bool :=
+  match c with
+  | .o | .no => of
+  | .b | .ae => cf
+  | .e | .ne => zf
+  | .be | .a => cf && zf
+  | .s | .ns => sf
+  | .l | .ge => sf && of
+  | .le | .g => zf && sf && of
+
+/-- What is known about the flags after a shift or rotate by `c`, where `c`
+has been reduced modulo the operand width. A count of zero leaves them as
+they were. Otherwise a shift defines carry, zero and sign, a rotate only
+carry, and either defines overflow only for a count of one. -/
+def ShiftOp.flagsAfter (op : ShiftOp) (c : Nat) (old : Flags → Prop) : Flags → Prop :=
+  if c = 0 then old else
+  match op with
+  | .shl | .shr | .sar => Flags.Defined true true true (c == 1)
+  | .rol | .ror => Flags.Defined true false false (c == 1)
+
+/-- After a multiply, only carry and overflow are defined. -/
+abbrev Flags.AfterMul : Flags → Prop := Flags.Defined true false false true
+
 /-- The context after a multiply or divide: `rax` and `rdx` hold the result,
-and the flags are not all defined. -/
-def CtxOf.afterMulDiv (Γ : Ctx) : Ctx :=
-  { (Γ.setReg .rax .int).setReg .rdx .int with flags := Flags.Any }
+and the flags satisfy `P`. -/
+def CtxOf.afterMulDiv (Γ : Ctx) (P : Flags → Prop) : Ctx :=
+  { (Γ.setReg .rax .int).setReg .rdx .int with flags := P }
 
 /-! ## Instructions that continue to the next one -/
 
@@ -321,26 +350,32 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
   | notRM {Γ Γ' : Ctx} {w : Width} {dst : RM} :
     ReadOk Ψ next Γ w.bytes.toNat dst → WriteIntOk Ψ next Γ w.bytes.toNat dst Γ' →
     Straight Ψ next Γ (.unary .not w dst) Γ'
-  /-- A shift or rotate. Afterwards nothing is known about the flags: some
-  are undefined, and a count of zero leaves them as they were. -/
-  | shiftRM {Γ Γ' : Ctx} {op : ShiftOp} {w : Width} {dst : RM} {c : Count} :
+  /-- A shift or rotate by a constant. The count decides which flags are
+  defined afterwards. -/
+  | shiftImm {Γ Γ' : Ctx} {op : ShiftOp} {w : Width} {dst : RM} {n : BitVec 8} :
     ReadOk Ψ next Γ w.bytes.toNat dst → WriteIntOk Ψ next Γ w.bytes.toNat dst Γ' →
-    Straight Ψ next Γ (.shift op w dst c) { Γ' with flags := Flags.Any }
+    Straight Ψ next Γ (.shift op w dst (.imm n))
+      { Γ' with flags := op.flagsAfter (n.toNat % w.bits) Γ.flags }
+  /-- A shift or rotate by `cl`. The count may be zero, which leaves the
+  flags as they were, so nothing is known about them afterwards. -/
+  | shiftCl {Γ Γ' : Ctx} {op : ShiftOp} {w : Width} {dst : RM} :
+    ReadOk Ψ next Γ w.bytes.toNat dst → WriteIntOk Ψ next Γ w.bytes.toNat dst Γ' →
+    Straight Ψ next Γ (.shift op w dst .cl) { Γ' with flags := Flags.Any }
   | mulRM {Γ : Ctx} {w : Width} {src : RM} : ReadOk Ψ next Γ w.bytes.toNat src →
-    Straight Ψ next Γ (.mulDiv .mul w src) Γ.afterMulDiv
+    Straight Ψ next Γ (.mulDiv .mul w src) (Γ.afterMulDiv Flags.AfterMul)
   | imulRM {Γ : Ctx} {w : Width} {src : RM} : ReadOk Ψ next Γ w.bytes.toNat src →
-    Straight Ψ next Γ (.mulDiv .imul w src) Γ.afterMulDiv
+    Straight Ψ next Γ (.mulDiv .imul w src) (Γ.afterMulDiv Flags.AfterMul)
   /-- A divide may raise a divide error, which is an acceptable outcome; if
   it does not, execution continues. -/
   | divRM {Γ : Ctx} {w : Width} {src : RM} : ReadOk Ψ next Γ w.bytes.toNat src →
-    Straight Ψ next Γ (.mulDiv .div w src) Γ.afterMulDiv
+    Straight Ψ next Γ (.mulDiv .div w src) (Γ.afterMulDiv Flags.Any)
   | idivRM {Γ : Ctx} {w : Width} {src : RM} : ReadOk Ψ next Γ w.bytes.toNat src →
-    Straight Ψ next Γ (.mulDiv .idiv w src) Γ.afterMulDiv
+    Straight Ψ next Γ (.mulDiv .idiv w src) (Γ.afterMulDiv Flags.Any)
   | imul2RM {Γ : Ctx} {w : Width} {d : Reg} {src : RM} : d ≠ .rsp → ReadOk Ψ next Γ w.bytes.toNat src →
-    Straight Ψ next Γ (.imul2 w d src) { Γ.setReg d .int with flags := Flags.Any }
+    Straight Ψ next Γ (.imul2 w d src) { Γ.setReg d .int with flags := Flags.AfterMul }
   | imul3RM {Γ : Ctx} {w : Width} {d : Reg} {src : RM} {imm : BitVec 32} :
     d ≠ .rsp → ReadOk Ψ next Γ w.bytes.toNat src →
-    Straight Ψ next Γ (.imul3 w d src imm) { Γ.setReg d .int with flags := Flags.Any }
+    Straight Ψ next Γ (.imul3 w d src imm) { Γ.setReg d .int with flags := Flags.AfterMul }
   | popcntRM {Γ : Ctx} {w : Width} {d : Reg} {src : RM} : d ≠ .rsp → ReadOk Ψ next Γ w.bytes.toNat src →
     Straight Ψ next Γ (.popcnt w d src) { Γ.setReg d .int with flags := Flags.Known }
   | bswap {Γ : Ctx} {w : Width} {r : Reg} : r ≠ .rsp →

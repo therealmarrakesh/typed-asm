@@ -202,7 +202,8 @@ macro "ty_decided" : tactic => do
   let subst := Lean.mkIdent `rfl
   `(tactic| first
     | exact Cond.decided_of_known (fun _ h => h) _
-    | (rintro f $subst:ident; exact ⟨_, rfl⟩))
+    | (rintro f $subst:ident; exact ⟨_, rfl⟩)
+    | (refine Cond.decided_of_defined _ ?_; decide))
 
 /-- Proves a side condition of a typing rule, or fails. -/
 syntax "ty_side" : tactic
@@ -244,6 +245,7 @@ context in a record update that mentions it once per field, so without this
 the context would multiply in size with every instruction. -/
 macro "ty_normalize" : tactic =>
   `(tactic| try dsimp only [CtxOf.setReg, CtxOf.afterAlu, CtxOf.afterSyscall, CtxOf.afterMulDiv,
+      ShiftOp.flagsAfter, Width.bits, Nat.reduceEqDiff, Nat.reduceBEq, ↓reduceIte,
       AluOp.writesDst, List.set_cons_zero, List.set_cons_succ,
       Bool.cond_true, Bool.cond_false, Nat.add_zero, Nat.zero_add, BitVec.reduceToNat, Nat.reduceDiv,
       Nat.reduceMod, Nat.reduceAdd, Nat.reduceMul])
@@ -301,7 +303,8 @@ def Instr.rules : Instr → List Name
   | .test _ _ _ => [``Straight.testRM]
   | .unary .neg _ _ => [``Straight.negRM]
   | .unary .not _ _ => [``Straight.notRM]
-  | .shift _ _ _ _ => [``Straight.shiftRM]
+  | .shift _ _ _ (.imm _) => [``Straight.shiftImm]
+  | .shift _ _ _ .cl => [``Straight.shiftCl]
   | .mulDiv .mul _ _ => [``Straight.mulRM]
   | .mulDiv .imul _ _ => [``Straight.imulRM]
   | .mulDiv .div _ _ => [``Straight.divRM]
@@ -324,7 +327,7 @@ def Instr.endsBlock : Instr → Bool
   | _ => false
 
 /-- Every straight-line rule, for instructions whose shape is not known. -/
-def allStraightRules : List Name := [``Straight.movRR64, ``Straight.movRR32, ``Straight.movRI, ``Straight.movAbs, ``Straight.leaRip, ``Straight.lea, ``Straight.loadStack, ``Straight.loadField, ``Straight.storeStack, ``Straight.storeField, ``Straight.push, ``Straight.pop, ``Straight.allocFrame, ``Straight.freeFrame', ``Straight.aluExact, ``Straight.aluExactRR, ``Straight.addPtr, ``Straight.aluRR, ``Straight.aluRI, ``Straight.testExact, ``Straight.nop, ``Straight.aluStoreR, ``Straight.aluStoreI, ``Straight.cmpR, ``Straight.cmpI, ``Straight.aluLoad, ``Straight.testRM, ``Straight.negRM, ``Straight.notRM, ``Straight.shiftRM, ``Straight.mulRM, ``Straight.imulRM, ``Straight.divRM, ``Straight.idivRM, ``Straight.imul2RM, ``Straight.imul3RM, ``Straight.popcntRM, ``Straight.bswap, ``Straight.cdq, ``Straight.cqo, ``Straight.movsxdRM, ``Straight.cmovRM, ``Straight.setccRM, ``Straight.movzxRM, ``Straight.movsxRM, ``Straight.loadInt, ``Straight.storeInt, ``Straight.storeImm, ``Straight.store8RM, ``Straight.loadGlobal_of, ``Straight.storeGlobal_of]
+def allStraightRules : List Name := [``Straight.movRR64, ``Straight.movRR32, ``Straight.movRI, ``Straight.movAbs, ``Straight.leaRip, ``Straight.lea, ``Straight.loadStack, ``Straight.loadField, ``Straight.storeStack, ``Straight.storeField, ``Straight.push, ``Straight.pop, ``Straight.allocFrame, ``Straight.freeFrame', ``Straight.aluExact, ``Straight.aluExactRR, ``Straight.addPtr, ``Straight.aluRR, ``Straight.aluRI, ``Straight.testExact, ``Straight.nop, ``Straight.aluStoreR, ``Straight.aluStoreI, ``Straight.cmpR, ``Straight.cmpI, ``Straight.aluLoad, ``Straight.testRM, ``Straight.negRM, ``Straight.notRM, ``Straight.shiftImm, ``Straight.shiftCl, ``Straight.mulRM, ``Straight.imulRM, ``Straight.divRM, ``Straight.idivRM, ``Straight.imul2RM, ``Straight.imul3RM, ``Straight.popcntRM, ``Straight.bswap, ``Straight.cdq, ``Straight.cqo, ``Straight.movsxdRM, ``Straight.cmovRM, ``Straight.setccRM, ``Straight.movzxRM, ``Straight.movsxRM, ``Straight.loadInt, ``Straight.storeInt, ``Straight.storeImm, ``Straight.store8RM, ``Straight.loadGlobal_of, ``Straight.storeGlobal_of]
 
 private unsafe def evalInstrUnsafe (e : Expr) : MetaM Instr :=
   evalExpr Instr (mkConst ``Instr) e
@@ -757,7 +760,8 @@ private def decideCond : TacticM Unit := do
   let subst := mkIdent `rfl
   evalTactic (← `(tactic| first
     | (rintro f $subst:ident; exact ⟨_, rfl⟩)
-    | exact Cond.decided_of_known (fun _ h => h) _))
+    | exact Cond.decided_of_known (fun _ h => h) _
+    | (refine Cond.decided_of_defined _ ?_; decide)))
 
 /-- The goal among `gs` that came from the placeholder `?name`. Goals are
 found by name because the order in which `refine` returns them is not fixed. -/
@@ -828,7 +832,10 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
     let dec ← goalNamed gs `dec
     let taken ← goalNamed gs `taken
     let rest ← goalNamed gs `rest
-    discard <| runOn dec decideCond
+    try
+      discard <| runOn dec decideCond
+    catch _ =>
+      throwError "`{instr.toAsm}`: the flags known here do not decide the condition"
     let [takenAcc] ← runOn taken introBranch | throwError "unexpected goals"
     let leftTaken ← proveAccepts takenAcc
     let [rest'] ← runOn rest introBranch | throwError "unexpected goals"

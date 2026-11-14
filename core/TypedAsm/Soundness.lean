@@ -707,6 +707,36 @@ theorem Cond.eval_some {f : Flags} (h : f.defined = true) (c : Cond) : ∃ b, c.
   obtain ⟨⟨⟨⟨cf, rfl⟩, ⟨zf, rfl⟩⟩, ⟨sf, rfl⟩⟩, ⟨of, rfl⟩⟩ := h
   cases c <;> simp [Cond.eval]
 
+/-- When the flags a condition reads are defined, it has an answer. -/
+theorem Cond.decided_of_defined {cf zf sf of : Bool} (c : Cond)
+    (hc : c.within cf zf sf of = true) :
+    ∀ f, Flags.Defined cf zf sf of f → ∃ b, c.eval f = some b := by
+  rintro ⟨fc, fz, fs, fo⟩ ⟨h1, h2, h3, h4⟩
+  cases c <;> simp only [Cond.within, Bool.and_eq_true] at hc <;>
+    simp only [Option.isSome_iff_exists] at h1 h2 h3 h4
+  all_goals
+    first
+    | (obtain ⟨x, rfl⟩ := h1 hc; exact ⟨_, rfl⟩)
+    | (obtain ⟨x, rfl⟩ := h2 hc; exact ⟨_, rfl⟩)
+    | (obtain ⟨x, rfl⟩ := h3 hc; exact ⟨_, rfl⟩)
+    | (obtain ⟨x, rfl⟩ := h4 hc; exact ⟨_, rfl⟩)
+    | (obtain ⟨x, rfl⟩ := h1 hc.1; obtain ⟨y, rfl⟩ := h2 hc.2; exact ⟨_, rfl⟩)
+    | (obtain ⟨x, rfl⟩ := h3 hc.1; obtain ⟨y, rfl⟩ := h4 hc.2; exact ⟨_, rfl⟩)
+    | (obtain ⟨x, rfl⟩ := h2 hc.1.1; obtain ⟨y, rfl⟩ := h3 hc.1.2; obtain ⟨z, rfl⟩ := h4 hc.2
+       exact ⟨_, rfl⟩)
+
+theorem Flags.ofMul_defined (b : Bool) : Flags.AfterMul (Flags.ofMul b) := by
+  simp [Flags.AfterMul, Flags.Defined, Flags.ofMul]
+
+/-- The flags a shift or rotate leaves are the ones the rule promises. -/
+theorem ShiftOp.eval_flagsAfter {n : Nat} (op : ShiftOp) {P : Flags → Prop} {old : Flags}
+    (hP : P old) (a : BitVec n) (c : Nat) : op.flagsAfter c P (op.eval old a c).2 := by
+  simp only [ShiftOp.flagsAfter, ShiftOp.eval]
+  by_cases hc : c = 0
+  · simp only [hc, ↓reduceIte]; exact hP
+  · simp only [hc, ↓reduceIte]
+    cases op <;> by_cases h1 : c = 1 <;> simp [Flags.Defined, h1]
+
 theorem Flags.ofResult_defined {n : Nat} (r : BitVec n) (cf of : Bool) :
     (Flags.ofResult r cf of).defined = true := by
   simp [Flags.ofResult, Flags.defined]
@@ -969,14 +999,15 @@ theorem MulDivOp.eval_cases {n : Nat} (op : MulDivOp) (hi lo src : BitVec n) :
 `rdx` integers. -/
 theorem mulDiv_next {Γ : Ctx} {s : State} {op : MulDivOp} {w : Width} {src : RM}
     (hr : ReadOk Ψ next Γ w.bytes.toNat src) (h : WellTyped fetch sys Ψ ix Γ s)
-    (hrip : s.rip = next) (hx : ∀ a, ∃ x, op.eval (s.readReg w .rdx) (s.readReg w .rax) a = .next x) :
+    (hrip : s.rip = next) {P : Flags → Prop}
+    (hx : ∀ a, ∃ x, op.eval (s.readReg w .rdx) (s.readReg w .rax) a = .next x ∧ P x.2.2) :
     ∃ s', exec sys (.mulDiv op w src) s = .next s' ∧ s'.rip = s.rip ∧
-      WellTyped fetch sys Ψ ix Γ.afterMulDiv s' := by
+      WellTyped fetch sys Ψ ix (Γ.afterMulDiv P) s' := by
   obtain ⟨a, ha⟩ := hr.readRM h hrip
-  obtain ⟨⟨lo, hi, fl⟩, hx⟩ := hx a
+  obtain ⟨⟨lo, hi, fl⟩, hx, hP⟩ := hx a
   refine ⟨{ (s.writeReg w .rax lo).writeReg w .rdx hi with flags := fl }, ?_, rfl,
     ((h.setReg (by decide) (HasTy.int _)).setReg (by decide) (HasTy.int _)).setFlags
-      (P := Flags.Any) trivial⟩
+      (P := P) hP⟩
   simp [exec, ha, hx]
 
 /-- A divide either raises a divide error or continues. -/
@@ -985,7 +1016,7 @@ theorem mulDiv_sound {Γ : Ctx} {s : State} {op : MulDivOp} {w : Width} {src : R
     (hrip : s.rip = next) :
     (exec sys (.mulDiv op w src) s).isSafe = true ∧
       ∀ s', exec sys (.mulDiv op w src) s = .next s' →
-        s'.rip = s.rip ∧ WellTyped fetch sys Ψ ix Γ.afterMulDiv s' := by
+        s'.rip = s.rip ∧ WellTyped fetch sys Ψ ix (Γ.afterMulDiv Flags.Any) s' := by
   obtain ⟨a, ha⟩ := hr.readRM h hrip
   rcases op.eval_cases (s.readReg w .rdx) (s.readReg w .rax) a with ⟨⟨lo, hi, fl⟩, hx⟩ | hx
   · have he : exec sys (.mulDiv op w src) s
@@ -1061,30 +1092,40 @@ theorem Straight.sound_next {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
     obtain ⟨a, ha⟩ := hr.readRM h hrip
     obtain ⟨s', hs', hrip', hwt⟩ := hw.writeRM h hΨ hrip (~~~a)
     exact ⟨s', by simp [exec, ha, hs'], hrip', hwt⟩
-  | @shiftRM Γ₁ op w dst c hr hw =>
+  | @shiftImm Γ₁ op w dst n hr hw =>
     obtain ⟨a, ha⟩ := hr.readRM h hrip
-    generalize hrf : op.eval s.flags a (s.shiftCount w c) = rf
+    have hfl := op.eval_flagsAfter h.flags a (n.toNat % w.bits)
+    generalize hrf : op.eval s.flags a (n.toNat % w.bits) = rf at hfl
+    obtain ⟨r, fl⟩ := rf
+    obtain ⟨s', hs', hrip', hwt⟩ := hw.writeRM h hΨ hrip r
+    refine ⟨{ s' with flags := fl }, ?_, hrip', hwt.setFlags hfl⟩
+    simp [exec, ha, State.shiftCount, hrf, hs']
+  | @shiftCl Γ₁ op w dst hr hw =>
+    obtain ⟨a, ha⟩ := hr.readRM h hrip
+    generalize hrf : op.eval s.flags a (s.shiftCount w .cl) = rf
     obtain ⟨r, fl⟩ := rf
     obtain ⟨s', hs', hrip', hwt⟩ := hw.writeRM h hΨ hrip r
     refine ⟨{ s' with flags := fl }, ?_, hrip', hwt.setFlags (P := Flags.Any) trivial⟩
     simp [exec, ha, hrf, hs']
-  | @mulRM w src hr => exact mulDiv_next hr h hrip (fun _ => ⟨_, rfl⟩)
-  | @imulRM w src hr => exact mulDiv_next hr h hrip (fun _ => ⟨_, rfl⟩)
+  | @mulRM w src hr => exact mulDiv_next hr h hrip (fun _ => ⟨_, rfl, Flags.ofMul_defined _⟩)
+  | @imulRM w src hr => exact mulDiv_next hr h hrip (fun _ => ⟨_, rfl, Flags.ofMul_defined _⟩)
   | divRM => exact absurd hnd (by simp [Instr.isDivide])
   | idivRM => exact absurd hnd (by simp [Instr.isDivide])
   | @imul2RM w d src hd hr =>
     obtain ⟨a, ha⟩ := hr.readRM h hrip
-    generalize hrf : imulTrunc (s.readReg w d) a = rf
+    have hfl : Flags.AfterMul (imulTrunc (s.readReg w d) a).2 := Flags.ofMul_defined _
+    generalize hrf : imulTrunc (s.readReg w d) a = rf at hfl
     obtain ⟨r, fl⟩ := rf
     refine ⟨{ s.writeReg w d r with flags := fl }, ?_, rfl,
-      (h.setReg hd (HasTy.int _)).setFlags (P := Flags.Any) trivial⟩
+      (h.setReg hd (HasTy.int _)).setFlags hfl⟩
     simp [exec, ha, hrf]
   | @imul3RM w d src imm hd hr =>
     obtain ⟨a, ha⟩ := hr.readRM h hrip
-    generalize hrf : imulTrunc a (imm.signExtend w.bits) = rf
+    have hfl : Flags.AfterMul (imulTrunc a (imm.signExtend w.bits)).2 := Flags.ofMul_defined _
+    generalize hrf : imulTrunc a (imm.signExtend w.bits) = rf at hfl
     obtain ⟨r, fl⟩ := rf
     refine ⟨{ s.writeReg w d r with flags := fl }, ?_, rfl,
-      (h.setReg hd (HasTy.int _)).setFlags (P := Flags.Any) trivial⟩
+      (h.setReg hd (HasTy.int _)).setFlags hfl⟩
     simp [exec, ha, hrf]
   | @popcntRM w d src hd hr =>
     obtain ⟨a, ha⟩ := hr.readRM h hrip
