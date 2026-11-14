@@ -14,6 +14,10 @@ import TypedAsm.Soundness
 import TypedAsm.Fn
 import TypedAsm.Program
 import TypedAsm.Asm
+import TypedAsm.Frame
+import TypedAsm.Machine
+import TypedAsm.Image
+import TypedAsm.Elf
 import TypedAsm.Linux
 import TypedAsm.Blocks
 
