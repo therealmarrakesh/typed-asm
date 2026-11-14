@@ -59,6 +59,11 @@ structure CallerOk (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List T
   ret : CtxSub (sig.returned saved rest room) ret
   room : sig.need ≤ room
 
+/-- The caller left room for the function's own stack use, and possibly more. -/
+theorem CallerOk.room_split {sig : FnSig} {saved : Reg → Ty} {ret : Ctx} {rest : List Ty}
+    {room : Nat} (h : sig.CallerOk saved ret rest room) : ∃ m, room = m + sig.need :=
+  ⟨room - sig.need, by have := h.room; omega⟩
+
 /-- `sig.At Φ a`: the code typing lets address `a` be entered as a function
 with signature `sig`, by any caller. -/
 def At (sig : FnSig) (Φ : CodeTy) (a : BitVec 64) : Prop :=
