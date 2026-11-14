@@ -84,6 +84,9 @@ def image : List Byte := Asm.image base code
 /-- The address execution starts at. -/
 def entry : BitVec 64 := Asm.addr code base .start
 
+-- Every jump and call reaches the label it names.
+#guard Asm.offsetsFit base code
+
 def array : List (BitVec 64) := [3, 1, 4, 1, 5]
 
 /-- The array's bytes, as they sit in the file and in memory. -/

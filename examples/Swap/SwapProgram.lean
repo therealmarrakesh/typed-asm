@@ -86,6 +86,9 @@ def image : List Byte := Asm.image base code
 /-- The address execution starts at. -/
 def entry : BitVec 64 := Asm.addr code base .start
 
+-- Every jump and call reaches the label it names.
+#guard Asm.offsetsFit base code
+
 /-- The record's two fields. -/
 def record : List (BitVec 64) := [3, 5]
 

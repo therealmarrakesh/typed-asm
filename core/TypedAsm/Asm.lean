@@ -47,9 +47,14 @@ not occur is given address 0. -/
 def addr (prog : List (Asm L)) (base : BitVec 64) (l : L) : BitVec 64 :=
   (find l base prog).getD 0
 
-/-- The offset from `next` to `target`. It must fit in 32 bits; this is not checked. -/
+/-- The offset from `next` to `target`, truncated to 32 bits. `offsetsFit`
+checks that nothing was lost. -/
 def offset (next target : BitVec 64) : BitVec 32 :=
   (target - next).setWidth 32
+
+/-- Whether the 32-bit offset from `next` really reaches `target`. -/
+def reaches (next target : BitVec 64) : Bool :=
+  next + (offset next target).signExtend 64 == target
 
 /-- The instructions of a program, with labels replaced by offsets. -/
 def resolve (target : L → BitVec 64) : BitVec 64 → List (Asm L) → List (Instr × BitVec 64)
@@ -63,6 +68,21 @@ def resolve (target : L → BitVec 64) : BitVec 64 → List (Asm L) → List (In
     | .jcc c l => (.jcc c (offset next (target l)), BitVec.ofNat 64 x.len) :: resolve target next rest
     | .call l =>
       (.call (.rel (offset next (target l))), BitVec.ofNat 64 x.len) :: resolve target next rest
+
+/-- Whether every jump and call in the lines from address `a` reaches its target. -/
+def offsetsFitFrom (target : L → BitVec 64) : BitVec 64 → List (Asm L) → Bool
+  | _, [] => true
+  | a, x :: rest =>
+    let next := a + BitVec.ofNat 64 x.len
+    (match x with
+      | .jmp l | .jcc _ l | .call l => reaches next (target l)
+      | _ => true) && offsetsFitFrom target next rest
+
+/-- Whether every jump and call in a program loaded at `base` reaches its
+target: that is, whether each offset fits in 32 bits. A program can check
+this about itself with `#guard`. -/
+def offsetsFit (base : BitVec 64) (prog : List (Asm L)) : Bool :=
+  offsetsFitFrom (addr prog base) base prog
 
 /-- The instruction table of a program loaded at `base`. -/
 def fetch (base : BitVec 64) (prog : List (Asm L)) : Fetch :=
