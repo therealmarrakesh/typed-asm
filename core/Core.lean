@@ -1,5 +1,6 @@
 import Core.Instr
 import Core.State
+import Core.Memory
 
 /-!
 # Core

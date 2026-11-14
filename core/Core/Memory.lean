@@ -1,0 +1,128 @@
+import Core.State
+
+/-!
+# Memory access
+
+Effective addresses, and little-endian loads and stores over the byte-level
+memory in `State`. Every address holds a byte and every access succeeds;
+faulting on invalid addresses is not modelled here.
+-/
+
+namespace Core
+
+/-- The left shift that multiplies by the scale factor. -/
+def Scale.shift : Scale → Nat
+  | .s1 => 0
+  | .s2 => 1
+  | .s4 => 2
+  | .s8 => 3
+
+/-- The number of bytes an operand of the given width occupies in memory. -/
+def Width.bytes : Width → BitVec 64
+  | .w32 => 4
+  | .w64 => 8
+
+namespace State
+
+/-- The address a memory operand denotes. Arithmetic wraps at 64 bits.
+
+For the `rip`-relative form, `s.rip` must already hold the address of the *next*
+instruction, as it does on hardware while an instruction executes. -/
+def ea (s : State) : Mem → BitVec 64
+  | .sib base index disp =>
+    let b := match base with
+      | some r => s.getReg r
+      | none => 0
+    let i := match index with
+      | some (r, scale) => s.getReg r.toReg <<< scale.shift
+      | none => 0
+    b + i + disp.signExtend 64
+  | .rip disp => s.rip + disp.signExtend 64
+
+/-! ## Loads -/
+
+def load8 (s : State) (a : BitVec 64) : BitVec 8 :=
+  s.mem a
+
+def load16 (s : State) (a : BitVec 64) : BitVec 16 :=
+  s.load8 (a + 1) ++ s.load8 a
+
+def load32 (s : State) (a : BitVec 64) : BitVec 32 :=
+  s.load16 (a + 2) ++ s.load16 a
+
+def load64 (s : State) (a : BitVec 64) : BitVec 64 :=
+  s.load32 (a + 4) ++ s.load32 a
+
+/-- Load a value of the given width. The lowest address holds the least significant byte. -/
+def load (s : State) (w : Width) (a : BitVec 64) : BitVec w.bits :=
+  match w with
+  | .w32 => s.load32 a
+  | .w64 => s.load64 a
+
+/-! ## Stores -/
+
+def store8 (s : State) (a : BitVec 64) (v : BitVec 8) : State :=
+  { s with mem := fun x => if x = a then v else s.mem x }
+
+def store16 (s : State) (a : BitVec 64) (v : BitVec 16) : State :=
+  (s.store8 a (v.extractLsb' 0 8)).store8 (a + 1) (v.extractLsb' 8 8)
+
+def store32 (s : State) (a : BitVec 64) (v : BitVec 32) : State :=
+  (s.store16 a (v.extractLsb' 0 16)).store16 (a + 2) (v.extractLsb' 16 16)
+
+def store64 (s : State) (a : BitVec 64) (v : BitVec 64) : State :=
+  (s.store32 a (v.extractLsb' 0 32)).store32 (a + 4) (v.extractLsb' 32 32)
+
+/-- Store a value of the given width. The least significant byte goes to the lowest address. -/
+def store (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) : State :=
+  match w with
+  | .w32 => s.store32 a v
+  | .w64 => s.store64 a v
+
+/-! ## Laws -/
+
+/-- Loading from an address just stored to returns the stored value. -/
+theorem load8_store8_same (s : State) (a : BitVec 64) (v : BitVec 8) :
+    (s.store8 a v).load8 a = v := by
+  simp [load8, store8]
+
+/-- Loading from an address just stored to returns the stored value. -/
+theorem load_store_same (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) :
+    (s.store w a v).load w a = v := by
+  cases w <;>
+    simp [load, store, load64, load32, load16, load8, store64, store32, store16, store8,
+      BitVec.add_assoc] <;>
+    bv_decide
+
+/-- A store changes only the bytes in its own range. -/
+theorem mem_store_of_disjoint (s : State) (w : Width) (a x : BitVec 64) (v : BitVec w.bits)
+    (h : w.bytes ≤ x - a) : (s.store w a v).mem x = s.mem x := by
+  cases w <;>
+    simp only [store, store64, store32, store16, store8, Width.bytes] at * <;>
+    bv_decide
+
+/-- A store leaves a load from a non-overlapping range unchanged. The two
+hypotheses say that neither range starts inside the other, which also covers
+ranges that wrap around the end of the address space. -/
+theorem load_store_disjoint (s : State) (w w' : Width) (a b : BitVec 64) (v : BitVec w.bits)
+    (h₁ : w.bytes ≤ b - a) (h₂ : w'.bytes ≤ a - b) :
+    (s.store w a v).load w' b = s.load w' b := by
+  cases w' <;> cases w <;>
+    simp only [Width.bytes] at h₁ h₂ <;>
+    simp only [load, load64, load32, load16, load8] <;>
+    simp (disch := simp only [Width.bytes]; bv_decide) only [mem_store_of_disjoint] <;>
+    rfl
+
+/-- A store does not change any register. -/
+theorem getReg_store (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) (r : Reg) :
+    (s.store w a v).getReg r = s.getReg r := by
+  cases w <;> rfl
+
+/-- A register write does not change memory. -/
+theorem load_setReg (s : State) (r : Reg) (v : BitVec 64) (w : Width) (a : BitVec 64) :
+    (s.setReg r v).load w a = s.load w a := by
+  cases w <;> rfl
+
+end State
+
+end Core
