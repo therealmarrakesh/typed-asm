@@ -86,7 +86,8 @@ theorem HasType.mono (h : ∀ a Γ, Φ a Γ → Φ' a Γ) {next : BitVec 64} {Γ
   | callInd hcode hroom hret hsub => exact .callInd hcode hroom (h _ _ hret) hsub
   | unreachable hun => exact .unreachable hun
   | fnPtr hr hΓ hat _ ih => exact .fnPtr hr hΓ (fun sv rt rs rm hK => h _ _ (hat sv rt rs rm hK)) ih
-  | callFn hh hroom hret hargs hback hneed => exact .callFn hh hroom (h _ _ hret) hargs hback hneed
+  | callFn hh hroom hret hargs hsp hback hneed =>
+    exact .callFn hh hroom (h _ _ hret) hargs hsp hback hneed
   | jmpFn hh hK hsub => exact .jmpFn hh hK hsub
   | cover hsem _ ih => exact .cover hsem ih
   | codePtr hr hΓ hΦ _ ih => exact .codePtr hr hΓ (h _ _ hΦ) ih
@@ -143,6 +144,16 @@ theorem BlockOk.name {a : BitVec 64} {Γ : Ctx} {r : Reg} (hr : r ≠ .rsp)
   .cover (Γ' := fun v => Γ.setReg r (.eq v))
     (fun _ s h => ⟨s.getReg r, h.retype hr (hasTy_eq.mpr rfl)⟩) hrest
 
+/-- The stack pointer's value may be given a name. With it, the address of
+anything on the stack is a known value too. -/
+theorem BlockOk.nameSp {a : BitVec 64} {Γ : Ctx}
+    (hrest : ∀ v, BlockOk Φ fetch sys Ψ a (Γ.setReg .rsp (.eq v))) : BlockOk Φ fetch sys Ψ a Γ :=
+  .cover (Γ' := fun v => Γ.setReg .rsp (.eq v))
+    (fun n s h => ⟨s.getReg .rsp,
+      h.setSp (fun r hr => by simp only [CtxOf.setReg, hr, ↓reduceIte]) rfl rfl rfl (by
+        simp only [CtxOf.setReg, ↓reduceIte]
+        exact hasTy_eq.mpr rfl)⟩) hrest
+
 /-- A stack slot may be given a name for the value it holds: the rest of
 the block is typed for every value `v`, with the slot typed as exactly `v`.
 Whatever else was known about the slot is given up, so this is for slots
@@ -172,7 +183,8 @@ theorem BlockOk.nameSlot {a : BitVec 64} {Γ : Ctx} {i : Nat} (hi : i < Γ.stack
         heap := h.heap
         stackHeap := fun b l hl => by
           have := h.stackHeap b l hl
-          simpa only [stackBase, stackSize, List.length_set] using this }⟩) hrest
+          simpa only [stackBase, stackSize, List.length_set] using this
+        sp := h.sp }⟩) hrest
 
 /-! ## Blocks of a kind, and values that may be null -/
 

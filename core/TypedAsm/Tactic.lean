@@ -54,7 +54,8 @@ theorem innerDisp_of (disp : BitVec 32) (hlt : disp.toNat < 2 ^ 31) :
 theorem Straight.freeFrame' {Ψ : MemTy} {next : BitVec 64} {Γ : Ctx} {k : Nat} {imm : BitVec 32}
     (hk : slotDisp k imm) (hlen : (Γ.stack.take k).length = k) :
     Straight Ψ next Γ (.alu .add .w64 (.rm_i (.reg .rsp) imm))
-      { Γ with stack := Γ.stack.drop k, room := Γ.room + k, flags := Flags.Known } :=
+      { Γ.moveSp (BitVec.ofNat 64 (8 * k)) with
+        stack := Γ.stack.drop k, room := Γ.room + k, flags := Flags.Known } :=
   .freeFrame hk (List.take_append_drop k _).symm hlen
 
 /-! Operands at a fixed address. Which block the address falls in, and where,
@@ -283,10 +284,11 @@ macro "ty_flags" : tactic => do
 automatically; register comparisons it cannot settle are left as goals. -/
 macro "ctx_sub" : tactic =>
   `(tactic| (
-    refine CtxSub.mk ?regs ?stack ?room ?flags
+    refine CtxSub.mk ?regs ?stack ?room ?flags ?sp
     case stack => ty_stack
     case room => first | rfl | omega
     case flags => ty_flags
+    case sp => ty_sub
     sub_regs))
 
 /-- `ty_accept h` proves `Accepts Φ a Γ` by comparing `Γ` with a context `Δ`
@@ -391,7 +393,8 @@ macro_rules
 context in a record update that mentions it once per field, so without this
 the context would multiply in size with every instruction. -/
 macro "ty_normalize" : tactic =>
-  `(tactic| try dsimp only [CtxOf.setReg, CtxOf.afterAlu, CtxOf.afterSyscall, CtxOf.afterMulDiv,
+  `(tactic| try dsimp only [CtxOf.setReg, CtxOf.moveSp, Ty.shift, CtxOf.afterAlu, CtxOf.afterSyscall,
+      CtxOf.afterMulDiv,
       ShiftOp.apply, Scale.shift,
       ShiftOp.flagsAfter, Width.bits, Nat.reduceEqDiff, Nat.reduceBEq, ↓reduceIte,
       AluOp.writesDst, List.set_cons_zero, List.set_cons_succ,
@@ -443,14 +446,23 @@ def nameRegister (r : Term) (v : Ident) : TacticM Unit := do
   let goal ← getMainGoal
   let others := (← getGoals).drop 1
   setGoals [goal]
-  evalTactic (← `(tactic| refine BlockOk.name (r := $r) ?_ ?_))
-  let mut rest? : Option MVarId := none
-  for g in ← getGoals do
-    let t ← instantiateMVars (← g.getType)
-    if t.isAppOf ``Ne then
-      setGoals [g]
-      evalTactic (← `(tactic| decide))
-    else rest? := some g
+  -- the stack pointer has a rule of its own
+  let saved ← saveState
+  let rest? ← try
+      evalTactic (← `(tactic| refine BlockOk.name (r := $r) ?_ ?_))
+      let mut rest? : Option MVarId := none
+      for g in ← getGoals do
+        let t ← instantiateMVars (← g.getType)
+        if t.isAppOf ``Ne then
+          setGoals [g]
+          evalTactic (← `(tactic| decide))
+        else rest? := some g
+      pure rest?
+    catch _ =>
+      saved.restore
+      setGoals [goal]
+      evalTactic (← `(tactic| refine BlockOk.nameSp (Γ := ?_) ?_))
+      pure (← getGoals).head?
   let some rest := rest? | throwError "ty_name: unexpected goals"
   setGoals [rest]
   evalTactic (← `(tactic| (intro $v:ident; ty_normalize)))
@@ -534,6 +546,7 @@ def Instr.rules : Instr → List Name
   | .mov _ (.rm_i (.reg _) _) => [``Straight.movRI]
   | .movAbs _ _ => [``Straight.movAbs]
   | .lea .w64 _ (.rip _) => [``Straight.leaRip, ``Straight.lea]
+  | .lea .w64 _ (.sib (some .rsp) none _) => [``Straight.leaSp, ``Straight.lea]
   | .lea .w64 _ (.sib (some _) none _) => [``Straight.leaExactB, ``Straight.lea]
   | .lea .w64 _ (.sib (some _) (some _) _) => [``Straight.leaExactBI, ``Straight.lea]
   | .lea _ _ _ => [``Straight.lea]
@@ -615,7 +628,7 @@ def Instr.rules : Instr → List Name
 instruction already gives: they apply when values are exactly known. When an
 instruction cannot be typed, why one of these did not apply is not reported,
 since the general rule's reason is the one that matters. -/
-def sharpeningRules : List Name := [``Straight.mov32Exact, ``Straight.aluExact32,
+def sharpeningRules : List Name := [``Straight.leaSp, ``Straight.mov32Exact, ``Straight.aluExact32,
   ``Straight.aluExactRR32, ``Straight.shiftExact, ``Straight.leaExactB, ``Straight.leaExactBI,
   ``Straight.negExact, ``Straight.notExact, ``Straight.imul2Exact, ``Straight.imul3Exact,
   ``Straight.mulDivExact, ``Straight.cdqExact, ``Straight.cqoExact,
@@ -929,10 +942,43 @@ private def syscallNumber (ctx : Expr) : MetaM (Option Nat) := do
   if v.hasExprMVar || v.hasFVar then return none
   try return some (← evalAddr v) catch _ => return none
 
+/-- Types a `read` whose buffer is on the stack, at the head of a block
+goal. Returns the rest of the block. -/
+private def typeReadStack (goal : MVarId) : TacticM MVarId := do
+  let gs ← runOn goal (do evalTactic (← `(tactic|
+    refine BlockOk.sys rfl
+      (linux_read_stack (v := ?_) (d := ?_) (len := ?_) rfl ?_ ?_ ?_ ?_ ?_) ?_)))
+  -- what the registers hold first: that settles where the buffer is
+  for g in gs do
+    if ← g.isAssigned then continue
+    let t ← instantiateMVars (← g.getType)
+    if let some (_, lhs, _) := t.eq? then
+      if lhs.isAppOf ``CtxOf.regs then
+        discard <| runOn g (do evalTactic (← `(tactic| rfl)))
+  let mut rest? : Option MVarId := none
+  for g in gs do
+    if ← g.isAssigned then continue
+    let t ← instantiateMVars (← g.getType)
+    if t.isAppOf ``BlockOk then rest? := some g
+    else if t.isForall then
+      discard <| runOn g (do evalTactic (← `(tactic| (refine ints_of_check ?_; (try dsimp only); decide))))
+    else if (← isProp t) then
+      discard <| runOn g (do evalTactic (← `(tactic| decide)))
+  let some rest := rest? | throwError "unexpected goals"
+  return rest
+
 /-- Types a `write` or `read` at the head of a block goal, leaving the rest
 of the block as the main goal. -/
 private def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
   let ctx := (← instantiateMVars (← goal.getType)).consumeMData.getAppArgs[5]!
+  if nr == 0 then
+    let saved ← saveState
+    try
+      let rest ← typeReadStack goal
+      setGoals [rest]
+      evalTactic (← `(tactic| ty_normalize))
+      return
+    catch _ => saved.restore
   let gs ← try
       if nr == 1 then
         runOn goal (do evalTactic (← `(tactic|
@@ -956,8 +1002,9 @@ private def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
         let reg := (regName? lhs.appArg!).getD "the register"
         let actual ← g.withContext do ppTy (← reduce (← mkAppM ``CtxOf.regs #[ctx, lhs.appArg!]))
         if rhs.isAppOf ``Ty.ptr then
-          throwError "`read` needs `{reg}` to hold a writable pointer to the buffer, but its \
-            type is `{actual}`"
+          throwError "`read` needs `{reg}` to hold a writable pointer to the buffer, or the \
+            address of stack slots taken with `lea` once `rsp` has a name, but its type is \
+            `{actual}`"
         else
           throwError "`read` needs the count in `{reg}` to be exactly known, but its type is \
             `{actual}`"
@@ -968,7 +1015,7 @@ private def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
     if t.isForall then
       let after ← try
           runOn g (do evalTactic (← `(tactic| first
-            | (refine ints_of_check ?_; decide)
+            | (refine ints_of_check ?_; (try dsimp only); decide)
             | (intro j hj; refine getElem?_replicate_of_lt ?_; omega))))
         catch _ =>
           throwError "`read` could overwrite something that is not an integer: the buffer in \
@@ -1305,7 +1352,8 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
   | .ret =>
     let gs ← try
         runOn goal (do evalTactic (← `(tactic|
-          refine BlockOk.last rfl (FnSig.ret_of (sig := ?_) (saved := ?_) ?caller ?regs rfl rfl))))
+          refine BlockOk.last rfl
+            (FnSig.ret_of (sig := ?_) (saved := ?_) ?caller ?regs ?sp rfl rfl))))
       catch _ =>
         throwError "`ret` needs a return address on top of the stack, but the context does \
           not have one there"
@@ -1318,6 +1366,8 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
           discard <| runOn g (do evalTactic (← `(tactic| assumption)))
         catch _ =>
           throwError "`ret` needs the caller's requirement (`sig.CallerOk …`) among the hypotheses"
+      else if t.isAppOf ``Sub then
+        left := left ++ (← runOn g (do evalTactic (← `(tactic| ty_sub))))
       else if ← isProp t then
         left := left ++ (← runOn g (do evalTactic (← `(tactic| sub_regs))))
     return .done left
@@ -1457,7 +1507,8 @@ elab "ty_call " sig:term : tactic => do
       let before ← saveState
       try
         let gs ← runOn typed (do evalTactic (← `(tactic|
-          refine HasType.callFn (sig := $sig) (ret := ?_) ?callee rfl ?retpoint ?args ?back ?need)))
+          refine HasType.callFn (sig := $sig) (ret := ?_) ?callee rfl ?retpoint ?args ?sp ?back
+            ?need)))
         discard <| runOn (← goalNamed gs `callee) (do evalTactic (← `(tactic| ty_operand)))
         pure (some gs)
       catch _ =>
@@ -1473,7 +1524,7 @@ elab "ty_call " sig:term : tactic => do
       let gs ← try
           runOn typed (do evalTactic (← `(tactic|
             refine FnSig.callInd_ok (sig := $sig) (saved := ?_) (ret := ?_) (rest := ?_)
-              ?callee rfl ?retpoint ?args ?stack)))
+              ?callee rfl ?retpoint ?args ?sp ?stack)))
         catch _ => throwError (← noRoom instr)
       let callee ← goalNamed gs `callee
       try
@@ -1485,6 +1536,7 @@ elab "ty_call " sig:term : tactic => do
       let mut left : List MVarId := []
       left := left ++ (← proveAtLabel (← goalNamed gs `retpoint) (pure []))
       left := left ++ (← runOn (← goalNamed gs `args) (do evalTactic (← `(tactic| sub_regs))))
+      left := left ++ (← runOn (← goalNamed gs `sp) (do evalTactic (← `(tactic| ty_sub))))
       let stack ← goalNamed gs `stack
       let stackLeft ← try
           runOn stack (do evalTactic (← `(tactic| ty_stack)))
@@ -1501,7 +1553,8 @@ elab "ty_call " sig:term : tactic => do
     | none =>
       try
         runOn typed (do evalTactic (← `(tactic|
-          refine FnSig.call_ok (sig := $sig) (ret := ?_) ?callee rfl ?retpoint ?args ?back ?need)))
+          refine FnSig.call_ok (sig := $sig) (ret := ?_) ?callee rfl ?retpoint ?args ?sp ?back
+            ?need)))
       catch _ => throwError (← noRoom (instr?.getD .nop))
   let mut left : List MVarId := []
   -- the callee first: it involves no unknowns
@@ -1517,7 +1570,8 @@ elab "ty_call " sig:term : tactic => do
     if ← g.isAssigned then continue
     let t ← instantiateMVars (← g.getType)
     if !(← isProp t) then continue
-    if t.isAppOf ``FnSig.At || t.isAppOf ``CtxSub || t.isForall || t.isAppOf ``LE.le then continue
+    if t.isAppOf ``FnSig.At || t.isAppOf ``CtxSub || t.isForall || t.isAppOf ``LE.le ||
+        t.isAppOf ``Sub then continue
     left := left ++ (← proveAtLabel g (pure []))
   for g in gs do
     if ← g.isAssigned then continue
@@ -1526,6 +1580,8 @@ elab "ty_call " sig:term : tactic => do
       left := left ++ (← runOn g (do evalTactic (← `(tactic| ctx_sub))))
     else if t.isForall then
       left := left ++ (← runOn g (do evalTactic (← `(tactic| sub_regs))))
+    else if t.isAppOf ``Sub then
+      left := left ++ (← runOn g (do evalTactic (← `(tactic| ty_sub))))
     else if t.isAppOf ``LE.le then
       -- The stack the function needs is a field of its signature: the
       -- signature is unfolded so that arithmetic can see the number.

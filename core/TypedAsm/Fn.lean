@@ -27,9 +27,10 @@ theorem CallerOk.room_split {sig : FnSig} {saved : Reg → Ty} {ret : Ctx} {rest
 /-- Returning from a function is well typed. -/
 theorem ret_ok {sig : FnSig} {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
     {next : BitVec 64} {saved : Reg → Ty} {ret : Ctx}
-    {rest : List Ty} {room : Nat} (hK : sig.CallerOk saved ret rest room) :
+    {rest : List Ty} {room : Nat} (hK : sig.CallerOk saved ret rest room)
+    (hsp : Sub ((sig.regsOut saved .rsp).shift 8) (sig.regsOut saved .rsp)) :
     HasType Φ fetch sys Ψ next (sig.exit saved ret rest room) .ret :=
-  .ret rfl hK.ret
+  .ret rfl (.ofMoved hK.ret.regs hK.ret.stack hK.ret.room hK.ret.flags (hsp.trans hK.ret.sp))
 
 /-- Returning is well typed from any context at least as strong as the
 function's exit context. -/
@@ -37,11 +38,13 @@ theorem ret_of {sig : FnSig} {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ :
     {next : BitVec 64} {saved : Reg → Ty} {Γ ret : Ctx}
     {rest : List Ty} {room : Nat} (hK : sig.CallerOk saved ret rest room)
     (hregs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsOut saved r))
+    (hsp : Sub ((Γ.regs .rsp).shift 8) (sig.regsOut saved .rsp))
     (hstack : Γ.stack = .code ret :: rest) (hroom : Γ.room = room) :
     HasType Φ fetch sys Ψ next Γ .ret :=
   .ret hstack
-    ⟨fun r hr => (hregs r hr).trans (hK.ret.regs r hr), hK.ret.stack,
-      by rw [hroom]; exact hK.ret.room, fun f _ => hK.ret.flags f trivial⟩
+    (.ofMoved (fun r hr => (hregs r hr).trans (hK.ret.regs r hr)) hK.ret.stack
+      (by rw [hroom]; exact hK.ret.room) (fun f _ => hK.ret.flags f trivial)
+      (hsp.trans hK.ret.sp))
 
 /-- Calling a function is well typed if there is room for the return address
 and the function's stack use, the argument registers hold what the function
@@ -51,11 +54,12 @@ theorem call_ok {sig : FnSig} {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ 
     {next : BitVec 64} {Γ ret : Ctx} {d : BitVec 32}
     {m : Nat} (hf : sig.At Φ (next + d.signExtend 64)) (hroom : Γ.room = m + 1)
     (hret : Φ next ret) (hargs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn Γ.regs r))
+    (hsp : Sub ((Γ.regs .rsp).shift (-8)) (sig.regsIn Γ.regs .rsp))
     (hback : CtxSub (sig.returned Γ.regs Γ.stack m) ret) (hneed : sig.need ≤ m) :
     HasType Φ fetch sys Ψ next Γ (.call (.rel d)) :=
   .call hroom hret
     ⟨sig.entry Γ.regs ret Γ.stack m, hf _ _ _ _ ⟨hback, hneed⟩,
-      ⟨hargs, .refl _, rfl, fun _ _ => trivial⟩⟩
+      .ofMoved hargs (.refl _) rfl (fun _ _ => trivial) hsp⟩
 
 /-- Calling a function through a register, field or stack slot that holds a
 pointer to it. The pointer's type fixes the types `saved` the function is
@@ -65,9 +69,10 @@ theorem callInd_ok {sig : FnSig} {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {
     {next : BitVec 64} {Γ ret : Ctx} {rm : RM} {saved : Reg → Ty} {rest : List Ty} {m : Nat}
     (hf : Holds Ψ next Γ rm (.code (sig.entry saved ret rest m))) (hroom : Γ.room = m + 1)
     (hret : Φ next ret) (hargs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn saved r))
+    (hsp : Sub ((Γ.regs .rsp).shift (-8)) (sig.regsIn saved .rsp))
     (hstack : SubList Γ.stack rest) :
     HasType Φ fetch sys Ψ next Γ (.call (.ind rm)) :=
-  .callInd hf hroom hret ⟨hargs, .cons (.refl _) hstack, rfl, fun _ _ => trivial⟩
+  .callInd hf hroom hret (.ofMoved hargs (.cons (.refl _) hstack) rfl (fun _ _ => trivial) hsp)
 
 end FnSig
 

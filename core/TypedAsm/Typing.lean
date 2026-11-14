@@ -59,7 +59,7 @@ theorem SubList.refl : ∀ σ : List Ty, SubList σ σ
   | τ :: σ => .cons (.refl τ) (SubList.refl σ)
 
 theorem CtxSub.refl (Γ : Ctx) : CtxSub Γ Γ :=
-  ⟨fun _ _ => .refl _, .refl _, rfl, fun _ h => h⟩
+  ⟨fun _ _ => .refl _, .refl _, rfl, fun _ h => h, .refl _⟩
 
 /-- The code at `a` may be entered from a state matching `Γ`: one of the
 contexts allowed there is `Γ` or weaker. -/
@@ -70,6 +70,34 @@ def Accepts (Φ : CodeTy) (a : BitVec 64) (Γ : Ctx) : Prop :=
 
 def CtxOf.setReg (Γ : Ctx) (r : Reg) (τ : Ty) : Ctx :=
   { Γ with regs := fun r' => if r' = r then τ else Γ.regs r' }
+
+/-- The context after the stack pointer has moved by `d`: what was known of
+its value is carried along. -/
+def CtxOf.moveSp (Γ : Ctx) (d : BitVec 64) : Ctx :=
+  { Γ with regs := fun r => if r = .rsp then (Γ.regs .rsp).shift d else Γ.regs r }
+
+theorem CtxOf.moveSp_regs {Γ : Ctx} {d : BitVec 64} {r : Reg} (hr : r ≠ .rsp) :
+    (Γ.moveSp d).regs r = Γ.regs r := by
+  simp only [CtxOf.moveSp, hr, ↓reduceIte]
+
+theorem CtxOf.moveSp_sp (Γ : Ctx) (d : BitVec 64) :
+    (Γ.moveSp d).regs .rsp = (Γ.regs .rsp).shift d := by
+  simp only [CtxOf.moveSp, ↓reduceIte]
+
+/-- Comparing a context whose stack pointer has just moved with another. -/
+theorem CtxSub.ofMoved {Γ Δ : Ctx} {d : BitVec 64} {stack : List Ty} {room : Nat}
+    (hregs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (Δ.regs r)) (hstack : SubList stack Δ.stack)
+    (hroom : room = Δ.room) (hflags : ∀ f, Γ.flags f → Δ.flags f)
+    (hsp : Sub ((Γ.regs .rsp).shift d) (Δ.regs .rsp)) :
+    CtxSub { Γ.moveSp d with stack := stack, room := room } Δ :=
+  ⟨fun r hr => by
+      show Sub ((Γ.moveSp d).regs r) _
+      rw [CtxOf.moveSp_regs hr]
+      exact hregs r hr,
+    hstack, hroom, hflags, by
+      show Sub ((Γ.moveSp d).regs .rsp) _
+      rw [CtxOf.moveSp_sp]
+      exact hsp⟩
 
 /-- Whether the operation reads the carry flag. -/
 def AluOp.readsCarry : AluOp → Bool
@@ -256,6 +284,12 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
   next instruction plus the displacement. -/
   | leaRip {Γ : Ctx} {d : Reg} {disp : BitVec 32} : d ≠ .rsp →
     Straight Ψ next Γ (.lea .w64 d (.rip disp)) (Γ.setReg d (.eq (next + disp.signExtend 64)))
+  /-- The address of something on the stack, when the stack pointer's value
+  is known. -/
+  | leaSp {Γ : Ctx} {d : Reg} {disp : BitVec 32} {v : BitVec 64} :
+    d ≠ .rsp → Γ.regs .rsp = .eq v →
+    Straight Ψ next Γ (.lea .w64 d (.sib (some .rsp) none disp))
+      (Γ.setReg d (.eq (v + disp.signExtend 64)))
   /-- `lea` only computes an address; the result is an integer. -/
   | lea {Γ : Ctx} {w : Width} {d : Reg} {m : Mem} : d ≠ .rsp →
     Straight Ψ next Γ (.lea w d m) (Γ.setReg d .int)
@@ -309,9 +343,10 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
     Straight Ψ next Γ (.mov .w64 (.rm_r (.mem (.sib (some .rsp) none disp)) s))
       { Γ with stack := Γ.stack.set i (Γ.regs s) }
   | push {Γ : Ctx} {r : Reg} {n : Nat} : r ≠ .rsp → Γ.room = n + 1 →
-    Straight Ψ next Γ (.push r) { Γ with stack := Γ.regs r :: Γ.stack, room := n }
+    Straight Ψ next Γ (.push r) { Γ.moveSp (-8) with stack := Γ.regs r :: Γ.stack, room := n }
   | pop {Γ : Ctx} {r : Reg} {τ : Ty} {σ : List Ty} : r ≠ .rsp → Γ.stack = τ :: σ →
-    Straight Ψ next Γ (.pop r) (CtxOf.setReg { Γ with stack := σ, room := Γ.room + 1 } r τ)
+    Straight Ψ next Γ (.pop r)
+      (CtxOf.setReg { Γ.moveSp 8 with stack := σ, room := Γ.room + 1 } r τ)
   /-- Arithmetic between registers. The result is an integer whatever the operands were. -/
   | aluRR {Γ : Ctx} {op : AluOp} {w : Width} {d s : Reg} :
     d ≠ .rsp → (op.readsCarry = true → ∀ f, Γ.flags f → f.cf.isSome = true) →
@@ -336,12 +371,14 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
   | allocFrame {Γ : Ctx} {k m : Nat} {imm : BitVec 32} :
     slotDisp k imm → Γ.room = m + k →
     Straight Ψ next Γ (.alu .sub .w64 (.rm_i (.reg .rsp) imm))
-      { Γ with stack := List.replicate k .int ++ Γ.stack, room := m, flags := Flags.Known }
+      { Γ.moveSp (-BitVec.ofNat 64 (8 * k)) with
+        stack := List.replicate k .int ++ Γ.stack, room := m, flags := Flags.Known }
   /-- Release the top `k` stack slots. -/
   | freeFrame {Γ : Ctx} {k : Nat} {imm : BitVec 32} {top rest : List Ty} :
     slotDisp k imm → Γ.stack = top ++ rest → top.length = k →
     Straight Ψ next Γ (.alu .add .w64 (.rm_i (.reg .rsp) imm))
-      { Γ with stack := rest, room := Γ.room + k, flags := Flags.Known }
+      { Γ.moveSp (BitVec.ofNat 64 (8 * k)) with
+        stack := rest, room := Γ.room + k, flags := Flags.Known }
   /-- Advancing a pointer by whole slots keeps it a pointer into the same block. -/
   | addPtr {Γ : Ctx} {d : Reg} {fields : List Ty} {writable : Bool} {off k : Nat}
       {imm : BitVec 32} :
@@ -578,12 +615,14 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
   the context required at the instruction after the call. The callee sees it
   on top of the stack. -/
   | call {Γ ret : Ctx} {d : BitVec 32} {n : Nat} : Γ.room = n + 1 → Φ next ret →
-    Accepts Φ (next + d.signExtend 64) { Γ with stack := .code ret :: Γ.stack, room := n } →
+    Accepts Φ (next + d.signExtend 64)
+      { Γ.moveSp (-8) with stack := .code ret :: Γ.stack, room := n } →
     HasType Φ fetch sys Ψ next Γ (.call (.rel d))
   /-- A return needs a code pointer on top of the stack, and the state with it
   popped must match what that code requires. -/
   | ret {Γ Δ : Ctx} {σ : List Ty} : Γ.stack = .code Δ :: σ →
-    CtxSub { Γ with stack := σ, room := Γ.room + 1 } Δ → HasType Φ fetch sys Ψ next Γ .ret
+    CtxSub { Γ.moveSp 8 with stack := σ, room := Γ.room + 1 } Δ →
+    HasType Φ fetch sys Ψ next Γ .ret
   /-- A system call that returns. It is typed only where the operating
   system is shown to return to the next instruction with a state matching
   `Γ'`; there is no rule for a call about which nothing is known. -/
@@ -597,7 +636,7 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
   /-- Call through a register, field or stack slot holding a code pointer.
   The callee sees the return address on top of the stack. -/
   | callInd {Γ Δ ret : Ctx} {rm : RM} {n : Nat} : Holds Ψ next Γ rm (.code Δ) → Γ.room = n + 1 → Φ next ret →
-    CtxSub { Γ with stack := .code ret :: Γ.stack, room := n } Δ →
+    CtxSub { Γ.moveSp (-8) with stack := .code ret :: Γ.stack, room := n } Δ →
     HasType Φ fetch sys Ψ next Γ (.call (.ind rm))
   /-- A register holding exactly the address of a function may be treated as
   a pointer to that function, to be called by any caller. -/
@@ -609,6 +648,7 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
   | callFn {Γ ret : Ctx} {rm : RM} {sig : FnSig} {m : Nat} :
     Holds Ψ next Γ rm sig.ty → Γ.room = m + 1 → Φ next ret →
     (∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn Γ.regs r)) →
+    Sub ((Γ.regs .rsp).shift (-8)) (sig.regsIn Γ.regs .rsp) →
     CtxSub (sig.returned Γ.regs Γ.stack m) ret → sig.need ≤ m →
     HasType Φ fetch sys Ψ next Γ (.call (.ind rm))
   /-- Jump to a function through a pointer to it: a tail call, made on

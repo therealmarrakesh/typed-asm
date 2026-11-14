@@ -62,7 +62,8 @@ theorem Matches.ofCheck {H : Ty → BitVec 64 → Prop} {bs : List (BitVec 64 ×
     (hstack : ∀ i τ, Γ.stack[i]? = some τ →
       H τ (s.load64 (s.getReg .rsp + BitVec.ofNat 64 (8 * i))))
     (hheap : ∀ x ∈ bs, ∀ i τ, x.2.fields[i]? = some τ →
-      H τ (s.load64 (x.1 + BitVec.ofNat 64 (8 * i)))) :
+      H τ (s.load64 (x.1 + BitVec.ofNat 64 (8 * i))))
+    (hrsp : H (Γ.regs .rsp) (s.getReg .rsp)) :
     Matches H (MemTy.ofList bs) Γ s := by
   simp only [stateCheck, Bool.and_eq_true, List.all_eq_true, decide_eq_true_eq,
     Bool.or_eq_true, Bool.not_eq_true'] at hc
@@ -80,6 +81,7 @@ theorem Matches.ofCheck {H : Ty → BitVec 64 → Prop} {bs : List (BitVec 64 ×
       · rw [hw] at hwr; cases hwr
       · exact hw
     heap := fun a l hl => hheap _ (MemTy.mem_of_ofList hl)
-    stackHeap := fun a l hl => (hb _ (MemTy.mem_of_ofList hl)).2 }
+    stackHeap := fun a l hl => (hb _ (MemTy.mem_of_ofList hl)).2
+    sp := hrsp }
 
 end TypedAsm

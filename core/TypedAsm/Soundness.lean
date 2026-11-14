@@ -163,7 +163,8 @@ theorem congr {t : State} (h : WellTyped fetch sys Ψ ix Γ s) (hr : t.regs = s.
     heapPerm := fun a l hl => by
       rw [State.canRead_congr hp, State.canWrite_congr hp]; exact h.heapPerm a l hl
     heap := fun a l hl i τ hi => by rw [State.load64_congr hm]; exact h.heap a l hl i τ hi
-    stackHeap := fun a l hl => by rw [hb]; exact h.stackHeap a l hl }
+    stackHeap := fun a l hl => by rw [hb]; exact h.stackHeap a l hl
+    sp := by rw [hg]; exact h.sp }
 
 /-- A state matching a context matches every weaker context. -/
 theorem sub {Δ : Ctx} (h : WellTyped fetch sys Ψ ix Γ s) (hs : CtxSub Γ Δ) : WellTyped fetch sys Ψ ix Δ s := by
@@ -180,7 +181,8 @@ theorem sub {Δ : Ctx} (h : WellTyped fetch sys Ψ ix Γ s) (hs : CtxSub Γ Δ) 
       exact (h.stack i τ hτ).sub hsub
     heapPerm := h.heapPerm
     heap := h.heap
-    stackHeap := fun a l hl => by rw [hb, hz]; exact h.stackHeap a l hl }
+    stackHeap := fun a l hl => by rw [hb, hz]; exact h.stackHeap a l hl
+    sp := h.sp.sub hs.sp }
 
 /-- Writing a value of type `τ` to a register other than `rsp`. -/
 theorem setReg {r : Reg} {τ : Ty} {v : BitVec 64} (h : WellTyped fetch sys Ψ ix Γ s) (hr : r ≠ .rsp)
@@ -207,13 +209,18 @@ theorem setReg {r : Reg} {τ : Ty} {v : BitVec 64} (h : WellTyped fetch sys Ψ i
     heapPerm := fun a l hl => by
       rw [State.canRead_congr hp, State.canWrite_congr hp]; exact h.heapPerm a l hl
     heap := fun a l hl i τ' hi => by rw [State.load64_congr hm]; exact h.heap a l hl i τ' hi
-    stackHeap := fun a l hl => by rw [hb]; exact h.stackHeap a l hl }
+    stackHeap := fun a l hl => by rw [hb]; exact h.stackHeap a l hl
+    sp := by
+      rw [hsp]
+      simp only [CtxOf.setReg, Ne.symm hr, ↓reduceIte]
+      exact h.sp }
 
 /-- Replacing the flags with ones that satisfy the new context's flags predicate. -/
 theorem setFlags {f : Flags} {P : Flags → Prop} (h : WellTyped fetch sys Ψ ix Γ s) (hf : P f) :
     WellTyped fetch sys Ψ ix { Γ with flags := P } { s with flags := f } :=
   { regs := h.regs, flags := hf, stackPerm := h.stackPerm, stackSize_lt := h.stackSize_lt,
-    stack := h.stack, heapPerm := h.heapPerm, heap := h.heap, stackHeap := h.stackHeap }
+    stack := h.stack, heapPerm := h.heapPerm, heap := h.heap, stackHeap := h.stackHeap,
+    sp := h.sp }
 
 /-- Field `i` of a block is readable. -/
 theorem canRead_field {a : BitVec 64} {l : Layout} {i : Nat} (h : WellTyped fetch sys Ψ ix Γ s)
@@ -290,7 +297,8 @@ theorem storeField {a : BitVec 64} {l : Layout} {i : Nat} {τ : Ty} {v : BitVec 
           (by simp only [Layout.size]; omega) (by omega) (by omega)
         rw [State.load64_store64_disjoint s v hd]
         exact h.heap b l' hl' j τ' hj
-    stackHeap := fun b l' hl' => by rw [hb]; exact h.stackHeap b l' hl' }
+    stackHeap := fun b l' hl' => by rw [hb]; exact h.stackHeap b l' hl'
+    sp := by rw [hg]; exact h.sp }
 
 /-- Storing into stack slot `i`; the slot takes the stored value's type. -/
 theorem storeStack {i : Nat} {τ : Ty} {v : BitVec 64} (h : WellTyped fetch sys Ψ ix Γ s) (hΨ : Ψ.WF)
@@ -335,11 +343,12 @@ theorem storeStack {i : Nat} {τ : Ty} {v : BitVec 64} (h : WellTyped fetch sys 
       rw [slot_addr] at hd
       rw [State.load64_store64_disjoint s v hd]
       exact h.heap b l' hl' j τ' hj
-    stackHeap := fun b l' hl' => by rw [hb, hz]; exact h.stackHeap b l' hl' }
+    stackHeap := fun b l' hl' => by rw [hb, hz]; exact h.stackHeap b l' hl'
+    sp := by rw [hg]; exact h.sp }
 
 /-- Pushing a value of type `τ` when there is room. -/
-theorem push {n : Nat} {τ : Ty} {v : BitVec 64} (h : WellTyped fetch sys Ψ ix Γ s) (hΨ : Ψ.WF)
-    (hroom : Γ.room = n + 1) (hv : HasTy fetch sys Ψ ix τ v) :
+theorem push₀ {n : Nat} {τ : Ty} {v : BitVec 64} (h : WellTyped fetch sys Ψ ix Γ s) (hΨ : Ψ.WF)
+    (hint : Γ.regs .rsp = .int) (hroom : Γ.room = n + 1) (hv : HasTy fetch sys Ψ ix τ v) :
     WellTyped fetch sys Ψ ix { Γ with stack := τ :: Γ.stack, room := n }
       ((s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) v) := by
   have hg : ∀ r, ((s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) v).getReg r
@@ -394,11 +403,16 @@ theorem push {n : Nat} {τ : Ty} {v : BitVec 64} (h : WellTyped fetch sys Ψ ix 
       rw [htop] at hd
       rw [State.load64_store64_disjoint _ v hd, State.load64_congr hm]
       exact h.heap b l' hl' j τ' hj
-    stackHeap := fun b l' hl' => by rw [hb, hz]; exact h.stackHeap b l' hl' }
+    stackHeap := fun b l' hl' => by rw [hb, hz]; exact h.stackHeap b l' hl'
+    sp := by
+      show HasTy fetch sys Ψ ix (Γ.regs .rsp) _
+      rw [hint]
+      exact HasTy.int _ }
 
 /-- Popping: the top slot holds a value of its type, and the rest of the
 state matches the context with that slot removed. -/
-theorem pop {τ : Ty} {σ : List Ty} (h : WellTyped fetch sys Ψ ix Γ s) (hst : Γ.stack = τ :: σ) :
+theorem pop₀ {τ : Ty} {σ : List Ty} (h : WellTyped fetch sys Ψ ix Γ s)
+    (hint : Γ.regs .rsp = .int) (hst : Γ.stack = τ :: σ) :
     HasTy fetch sys Ψ ix τ (s.load64 (s.getReg .rsp)) ∧
     WellTyped fetch sys Ψ ix { Γ with stack := σ, room := Γ.room + 1 }
       (s.setReg .rsp (s.getReg .rsp + 8)) := by
@@ -433,10 +447,15 @@ theorem pop {τ : Ty} {σ : List Ty} (h : WellTyped fetch sys Ψ ix Γ s) (hst :
         rw [State.canRead_congr hp, State.canWrite_congr hp]; exact h.heapPerm b l' hl'
       heap := fun b l' hl' j τ' hj => by
         rw [State.load64_congr hm]; exact h.heap b l' hl' j τ' hj
-      stackHeap := fun b l' hl' => by rw [hb, hz]; exact h.stackHeap b l' hl' }
+      stackHeap := fun b l' hl' => by rw [hb, hz]; exact h.stackHeap b l' hl'
+      sp := by
+        show HasTy fetch sys Ψ ix (Γ.regs .rsp) _
+        rw [hint]
+        exact HasTy.int _ }
 
 /-- Reserving `k` stack slots: they become integer slots. -/
-theorem allocFrame {k m : Nat} (h : WellTyped fetch sys Ψ ix Γ s) (hroom : Γ.room = m + k) :
+theorem allocFrame₀ {k m : Nat} (h : WellTyped fetch sys Ψ ix Γ s)
+    (hint : Γ.regs .rsp = .int) (hroom : Γ.room = m + k) :
     WellTyped fetch sys Ψ ix { Γ with stack := List.replicate k .int ++ Γ.stack, room := m }
       (s.setReg .rsp (s.getReg .rsp - BitVec.ofNat 64 (8 * k))) := by
   have hm : (s.setReg .rsp (s.getReg .rsp - BitVec.ofNat 64 (8 * k))).mem = s.mem := rfl
@@ -477,11 +496,15 @@ theorem allocFrame {k m : Nat} (h : WellTyped fetch sys Ψ ix Γ s) (hroom : Γ.
       rw [State.canRead_congr hp, State.canWrite_congr hp]; exact h.heapPerm b l' hl'
     heap := fun b l' hl' j τ' hj => by
       rw [State.load64_congr hm]; exact h.heap b l' hl' j τ' hj
-    stackHeap := fun b l' hl' => by rw [hb, hz]; exact h.stackHeap b l' hl' }
+    stackHeap := fun b l' hl' => by rw [hb, hz]; exact h.stackHeap b l' hl'
+    sp := by
+      show HasTy fetch sys Ψ ix (Γ.regs .rsp) _
+      rw [hint]
+      exact HasTy.int _ }
 
 /-- Releasing the top `k` stack slots. -/
-theorem freeFrame {k : Nat} {top rest : List Ty} (h : WellTyped fetch sys Ψ ix Γ s)
-    (hst : Γ.stack = top ++ rest) (hk : top.length = k) :
+theorem freeFrame₀ {k : Nat} {top rest : List Ty} (h : WellTyped fetch sys Ψ ix Γ s)
+    (hint : Γ.regs .rsp = .int) (hst : Γ.stack = top ++ rest) (hk : top.length = k) :
     WellTyped fetch sys Ψ ix { Γ with stack := rest, room := Γ.room + k }
       (s.setReg .rsp (s.getReg .rsp + BitVec.ofNat 64 (8 * k))) := by
   have hm : (s.setReg .rsp (s.getReg .rsp + BitVec.ofNat 64 (8 * k))).mem = s.mem := rfl
@@ -513,7 +536,93 @@ theorem freeFrame {k : Nat} {top rest : List Ty} (h : WellTyped fetch sys Ψ ix 
       rw [State.canRead_congr hp, State.canWrite_congr hp]; exact h.heapPerm b l' hl'
     heap := fun b l' hl' j τ' hj => by
       rw [State.load64_congr hm]; exact h.heap b l' hl' j τ' hj
-    stackHeap := fun b l' hl' => by rw [hb, hz]; exact h.stackHeap b l' hl' }
+    stackHeap := fun b l' hl' => by rw [hb, hz]; exact h.stackHeap b l' hl'
+    sp := by
+      show HasTy fetch sys Ψ ix (Γ.regs .rsp) _
+      rw [hint]
+      exact HasTy.int _ }
+
+/-- A value shifted by a known amount has the shifted type. -/
+theorem _root_.TypedAsm.HasTy.shift {τ : Ty} {v : BitVec 64} (hv : HasTy fetch sys Ψ ix τ v)
+    (d : BitVec 64) : HasTy fetch sys Ψ ix (τ.shift d) (v + d) := by
+  cases τ with
+  | eq x => exact hasTy_eq.mpr (by rw [hasTy_eq.mp hv])
+  | _ => exact HasTy.int _
+
+/-- A context that differs only in the stack pointer's type is matched as
+soon as the stack pointer has that type. -/
+theorem setSp {Γ' : Ctx} (h : WellTyped fetch sys Ψ ix Γ s)
+    (hregs : ∀ r, r ≠ .rsp → Γ'.regs r = Γ.regs r) (hstack : Γ'.stack = Γ.stack)
+    (hroom : Γ'.room = Γ.room) (hflags : Γ'.flags = Γ.flags)
+    (hv : HasTy fetch sys Ψ ix (Γ'.regs .rsp) (s.getReg .rsp)) : WellTyped fetch sys Ψ ix Γ' s :=
+  { regs := fun r hr => by rw [hregs r hr]; exact h.regs r hr
+    flags := by rw [hflags]; exact h.flags
+    stackPerm := by
+      have := h.stackPerm
+      simpa only [stackBase, stackSize, hstack, hroom] using this
+    stackSize_lt := by
+      have := h.stackSize_lt
+      simpa only [stackSize, hstack, hroom] using this
+    stack := fun i τ hi => h.stack i τ (by rw [← hstack]; exact hi)
+    heapPerm := h.heapPerm
+    heap := h.heap
+    stackHeap := fun a l hl => by
+      have := h.stackHeap a l hl
+      simpa only [stackBase, stackSize, hstack, hroom] using this
+    sp := hv }
+
+/-- What is known of the stack pointer's value may be forgotten. -/
+theorem forgetSp (h : WellTyped fetch sys Ψ ix Γ s) :
+    WellTyped fetch sys Ψ ix (Γ.setReg .rsp .int) s :=
+  h.setSp (fun r hr => by simp only [CtxOf.setReg, hr, ↓reduceIte]) rfl rfl rfl (HasTy.int _)
+
+/-- After the stack pointer has moved by `d`, it has its type moved by `d`. -/
+theorem sp_moved (h : WellTyped fetch sys Ψ ix Γ s) {v d : BitVec 64}
+    (hv : v = s.getReg .rsp + d) : HasTy fetch sys Ψ ix ((Γ.moveSp d).regs .rsp) v := by
+  subst hv
+  rw [CtxOf.moveSp_sp]
+  exact h.sp.shift d
+
+private theorem moved_regs {d : BitVec 64} {r : Reg} (hr : r ≠ .rsp) :
+    (Γ.moveSp d).regs r = (Γ.setReg .rsp .int).regs r := by
+  simp only [CtxOf.moveSp, CtxOf.setReg, hr, ↓reduceIte]
+
+/-- After a push: the pushed value is on top, and the stack pointer is 8 lower. -/
+theorem push {n : Nat} {τ : Ty} {v : BitVec 64} (h : WellTyped fetch sys Ψ ix Γ s) (hΨ : Ψ.WF)
+    (hroom : Γ.room = n + 1) (hv : HasTy fetch sys Ψ ix τ v) :
+    WellTyped fetch sys Ψ ix { Γ.moveSp (-8) with stack := τ :: Γ.stack, room := n }
+      ((s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) v) :=
+  (h.forgetSp.push₀ hΨ (by simp [CtxOf.setReg]) hroom hv).setSp (fun _ hr => moved_regs hr) rfl
+    rfl rfl (h.sp_moved (by
+      rw [State.getReg, State.store64_regs]
+      show (s.setReg .rsp (s.getReg .rsp - 8)).getReg .rsp = _
+      rw [State.getReg_setReg_same, BitVec.sub_eq_add_neg]))
+
+/-- After a pop: the popped value had the top slot's type, and the stack
+pointer is 8 higher. -/
+theorem pop {τ : Ty} {σ : List Ty} (h : WellTyped fetch sys Ψ ix Γ s) (hst : Γ.stack = τ :: σ) :
+    HasTy fetch sys Ψ ix τ (s.load64 (s.getReg .rsp)) ∧
+    WellTyped fetch sys Ψ ix { Γ.moveSp 8 with stack := σ, room := Γ.room + 1 }
+      (s.setReg .rsp (s.getReg .rsp + 8)) := by
+  obtain ⟨hτ, hw⟩ := h.forgetSp.pop₀ (by simp [CtxOf.setReg]) hst
+  exact ⟨hτ, hw.setSp (fun _ hr => moved_regs hr) rfl rfl rfl
+    (h.sp_moved (State.getReg_setReg_same _ _ _))⟩
+
+theorem allocFrame {k m : Nat} (h : WellTyped fetch sys Ψ ix Γ s) (hroom : Γ.room = m + k) :
+    WellTyped fetch sys Ψ ix
+      { Γ.moveSp (-BitVec.ofNat 64 (8 * k)) with
+        stack := List.replicate k .int ++ Γ.stack, room := m }
+      (s.setReg .rsp (s.getReg .rsp - BitVec.ofNat 64 (8 * k))) :=
+  (h.forgetSp.allocFrame₀ (by simp [CtxOf.setReg]) hroom).setSp (fun _ hr => moved_regs hr) rfl
+    rfl rfl (h.sp_moved (by rw [State.getReg_setReg_same, BitVec.sub_eq_add_neg]))
+
+theorem freeFrame {k : Nat} {top rest : List Ty} (h : WellTyped fetch sys Ψ ix Γ s)
+    (hst : Γ.stack = top ++ rest) (hk : top.length = k) :
+    WellTyped fetch sys Ψ ix
+      { Γ.moveSp (BitVec.ofNat 64 (8 * k)) with stack := rest, room := Γ.room + k }
+      (s.setReg .rsp (s.getReg .rsp + BitVec.ofNat 64 (8 * k))) :=
+  (h.forgetSp.freeFrame₀ (by simp [CtxOf.setReg]) hst hk).setSp (fun _ hr => moved_regs hr) rfl
+    rfl rfl (h.sp_moved (State.getReg_setReg_same _ _ _))
 
 /-- Any `m` bytes inside field `i` of a writable block are writable. -/
 theorem canWrite_inner {a : BitVec 64} {l : Layout} {i k m : Nat}
@@ -568,7 +677,8 @@ theorem writeInt {a : BitVec 64} {l : Layout} {i : Nat} {s' : State}
           (by simp only [Layout.size]; omega) (by omega) (by omega)
         rw [hframe _ hd]
         exact h.heap b l' hl' j τ' hj
-    stackHeap := fun b l' hl' => by rw [hb]; exact h.stackHeap b l' hl' }
+    stackHeap := fun b l' hl' => by rw [hb]; exact h.stackHeap b l' hl'
+    sp := by rw [hg]; exact h.sp }
 
 /-- Any change to memory confined to a run of integer fields keeps the state
 well typed. -/
@@ -616,7 +726,8 @@ theorem writeInts {a : BitVec 64} {l : Layout} {lo cnt : Nat} {s' : State}
           (by simp only [Layout.size]; omega) (by omega) (by omega)
         rw [hframe _ hd]
         exact h.heap b l' hl' j τ' hj
-    stackHeap := fun b l' hl' => by rw [hb]; exact h.stackHeap b l' hl' }
+    stackHeap := fun b l' hl' => by rw [hb]; exact h.stackHeap b l' hl'
+    sp := by rw [hg]; exact h.sp }
 
 /-- Any `m` bytes inside field `i` of a block are readable. -/
 theorem canRead_inner {a : BitVec 64} {l : Layout} {i k m : Nat} (h : WellTyped fetch sys Ψ ix Γ s)
@@ -687,7 +798,49 @@ theorem writeSlotInt {i : Nat} {s' : State} (h : WellTyped fetch sys Ψ ix Γ s)
       rw [slot_addr] at hd
       rw [hframe _ hd]
       exact h.heap b l' hl' j τ' hj
-    stackHeap := fun b l' hl' => by rw [hb, hz]; exact h.stackHeap b l' hl' }
+    stackHeap := fun b l' hl' => by rw [hb, hz]; exact h.stackHeap b l' hl'
+    sp := by rw [hg]; exact h.sp }
+
+/-- Any change to memory confined to a run of integer stack slots keeps the
+state well typed. -/
+theorem writeSlotsInt {lo cnt : Nat} {s' : State} (h : WellTyped fetch sys Ψ ix Γ s) (hΨ : Ψ.WF)
+    (hc : 0 < cnt) (hle : lo + cnt ≤ Γ.stack.length)
+    (hi : ∀ j, lo ≤ j → j < lo + cnt → Γ.stack[j]? = some .int) (hregs : s'.regs = s.regs)
+    (hflags : s'.flags = s.flags) (hperm : s'.perm = s.perm)
+    (hframe : ∀ y, Disjoint (s.getReg .rsp + BitVec.ofNat 64 (8 * lo)) (8 * cnt) y 8 →
+      s'.load64 y = s.load64 y) :
+    WellTyped fetch sys Ψ ix Γ s' := by
+  have hg : ∀ r, s'.getReg r = s.getReg r := fun r => by simp only [State.getReg, hregs]
+  have hb : stackBase Γ s' = stackBase Γ s := by simp only [stackBase, hg]
+  have hlt := h.stackSize_lt
+  simp only [stackSize] at hlt
+  exact {
+    regs := fun r hr => by rw [hg]; exact h.regs r hr
+    flags := by rw [hflags]; exact h.flags
+    stackPerm := by rw [hb, State.canWrite_congr hperm]; exact h.stackPerm
+    stackSize_lt := h.stackSize_lt
+    stack := fun j τ' hj => by
+      rw [hg]
+      have hjlt : j < Γ.stack.length := (List.getElem?_eq_some_iff.mp hj).1
+      by_cases hin : lo ≤ j ∧ j < lo + cnt
+      · have e : τ' = .int := Option.some.inj (hj.symm.trans (hi j hin.1 hin.2))
+        subst e
+        exact HasTy.int _
+      · rw [hframe _ (disjoint_range_slot (N := 8 * Γ.stack.length) hc (by omega) (by omega)
+          (by omega) (by omega))]
+        exact h.stack j τ' hj
+    heapPerm := fun b l' hl' => by
+      rw [State.canRead_congr hperm, State.canWrite_congr hperm]; exact h.heapPerm b l' hl'
+    heap := fun b l' hl' j τ' hj => by
+      have hjlt : j < l'.fields.length := (List.getElem?_eq_some_iff.mp hj).1
+      have hd := (h.stackHeap b l' hl').mono (o := 8 * Γ.room + 8 * lo) (p := 8 * j)
+        (n' := 8 * cnt) (m' := 8) h.stackSize_lt (hΨ.size_lt b l' hl')
+        (by simp only [stackSize]; omega) (by simp only [Layout.size]; omega) (by omega) (by omega)
+      rw [slot_addr] at hd
+      rw [hframe _ hd]
+      exact h.heap b l' hl' j τ' hj
+    stackHeap := fun b l' hl' => by rw [hb]; exact h.stackHeap b l' hl'
+    sp := by rw [hg]; exact h.sp }
 
 /-- After a two-operand operation on register `d` that left known flags. -/
 theorem afterAlu {op : AluOp} {d : Reg} {fl : Flags} (h : WellTyped fetch sys Ψ ix Γ s) (hd : d ≠ .rsp)
@@ -1548,6 +1701,13 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
     refine ⟨s.setReg d (s.rip + disp.signExtend 64), ?_, rfl,
       h.setReg hd (hasTy_eq.mpr (by rw [hrip]))⟩
     simp [exec, State.ea, State.writeReg]
+  | @leaSp d disp v hd hΓ =>
+    have hp : s.getReg .rsp = v := by
+      have := h.sp
+      rwa [hΓ, hasTy_eq] at this
+    refine ⟨s.writeReg .w64 d ((s.ea (.sib (some .rsp) none disp)).setWidth 64), ?_, rfl,
+      h.setReg hd (hasTy_eq.mpr (by simp [State.ea, hp]))⟩
+    simp [exec]
   | @lea w d m hd =>
     refine ⟨s.writeReg w d ((s.ea m).setWidth w.bits), ?_, rfl, h.setReg hd (HasTy.int _)⟩
     simp [exec]
@@ -1875,7 +2035,7 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
       intro k hk saved ret rest room hK t ht hwt
       exact ih k (by omega) a _ (hat saved ret rest room hK) t (ht.trans hp) hwt
     exact ihc (h.retype hr hv) hrip
-  | @callFn Γ ret rm sig m hholds hroom hret hargs hback hneed =>
+  | @callFn Γ ret rm sig m hholds hroom hret hargs hsp hback hneed =>
     obtain ⟨v, hv, hp⟩ := hholds.sound h hrip
     rw [hasTy_fn] at hp
     have hw : (s.setReg .rsp (s.getReg .rsp - 8)).canWrite (s.getReg .rsp - 8) 8 = true :=
@@ -1899,7 +2059,14 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
     cases heq
     exact hp n (Nat.lt_succ_self n) Γ.regs ret Γ.stack m ⟨hback, hneed⟩ _ rfl
       (((hw'.sub (Δ := sig.entry Γ.regs ret Γ.stack m)
-        ⟨hargs, .refl _, rfl, fun _ _ => trivial⟩).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
+        ⟨fun r hr => by
+            show Sub ((Γ.moveSp (-8)).regs r) _
+            rw [CtxOf.moveSp_regs hr]
+            exact hargs r hr,
+          .refl _, rfl, fun _ _ => trivial, by
+            show Sub ((Γ.moveSp (-8)).regs .rsp) _
+            rw [CtxOf.moveSp_sp]
+            exact hsp⟩).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
   | @jmpFn Γ ret rm sig saved rest room hholds hK hsub =>
     obtain ⟨v, hv, hp⟩ := hholds.sound h hrip
     rw [hasTy_fn] at hp

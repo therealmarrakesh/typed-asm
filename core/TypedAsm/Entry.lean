@@ -102,6 +102,7 @@ theorem Entry.matches {H : Ty → BitVec 64 → Prop} {s : State}
   heapPerm := fun a l hl => h.perms (a, l) (MemTy.mem_of_ofList hl)
   heap := fun a l hl i τ hi => hfields (a, l) (MemTy.mem_of_ofList hl) i τ hi
   stackHeap := fun a l hl => h.apart (a, l) (MemTy.mem_of_ofList hl)
+  sp := hint _
 
 /-- The same when every field of every block is an integer, which needs
 nothing of the data. -/

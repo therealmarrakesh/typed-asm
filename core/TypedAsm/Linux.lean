@@ -152,6 +152,54 @@ theorem read_ok {sys : Syscall} {fields : List Ty} {off : Nat} {len : BitVec 64}
           bv_omega
     · exact ret_ok h _
 
+/-- A `read` into a buffer that lies in integer stack slots keeps the state
+well typed, whatever arrives. -/
+theorem read_ok_stack {sys : Syscall} {v d len : BitVec 64}
+    (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF) (hsp : Γ.regs .rsp = .eq v)
+    (hbuf : Γ.regs .rsi = .eq (v + d)) (h8 : d.toNat % 8 = 0) (hlen : Γ.regs .rdx = .eq len)
+    (hints : ∀ j, j < (len.toNat + 7) / 8 → Γ.stack[d.toNat / 8 + j]? = some .int) :
+    WellTyped fetch sys Ψ n Γ.afterSyscall (read s) := by
+  have hv : s.getReg .rsp = v := by
+    have := h.sp
+    rwa [hsp, hasTy_eq] at this
+  have hsi := h.eqReg (by decide) hbuf
+  have hdx := h.eqReg (by decide) hlen
+  have hbase : v + d = s.getReg .rsp + BitVec.ofNat 64 (8 * (d.toNat / 8)) := by
+    rw [hv]; congr 1; apply BitVec.eq_of_toNat_eq; simp only [BitVec.toNat_ofNat]; omega
+  simp only [read]
+  split
+  · exact ret_ok h _
+  · split
+    · split
+      · exact ret_ok h _
+      · exact ret_ok (by exact h.congr rfl rfl rfl rfl) _
+      · next data rest _ =>
+        refine ret_ok ?_ _
+        rw [hdx, hsi]
+        by_cases hc : (len.toNat + 7) / 8 = 0
+        · have hz : len.toNat = 0 := by omega
+          rw [hz, List.take_zero, State.storeBytes_nil]
+          exact h.congr rfl rfl rfl rfl
+        · have hlast := hints ((len.toNat + 7) / 8 - 1) (by omega)
+          have hle : d.toNat / 8 + (len.toNat + 7) / 8 ≤ Γ.stack.length := by
+            have := (List.getElem?_eq_some_iff.mp hlast).1
+            omega
+          have hsz := h.stackSize_lt
+          simp only [stackSize] at hsz
+          refine h.writeSlotsInt hΨ (lo := d.toNat / 8) (cnt := (len.toNat + 7) / 8) (by omega) hle
+            (fun j hj hj' => by
+              have := hints (j - d.toNat / 8) (by omega)
+              rwa [show d.toNat / 8 + (j - d.toNat / 8) = j by omega] at this)
+            rfl rfl rfl (fun y hd => ?_)
+          have htake : (data.take len.toNat).length ≤ len.toNat := by
+            simp only [List.length_take]; omega
+          rw [hbase]
+          refine (State.load64_congr (s := s.storeBytes _ _) rfl y).trans
+            (State.load64_storeBytes_disjoint s _ (by omega) ?_ hd.2)
+          have h1 := hd.1
+          bv_omega
+    · exact ret_ok h _
+
 end Linux
 
 /-! ## The three calls, as the type system sees them -/
@@ -200,6 +248,19 @@ theorem ints_of_check {fields : List Ty} {off k : Nat}
   | some τ =>
     rw [hf] at hj'
     cases τ <;> first | rfl | exact absurd hj' (by simp [Ty.isInt])
+
+/-- `read` into the stack: with 0 in `rax`, the call returns, provided the
+stack pointer's value is known, the buffer in `rsi` is a known distance
+above it, and the `rdx` bytes from there are all in integer stack slots. -/
+theorem linux_read_stack {v d len : BitVec 64} (hΓ : Γ.regs .rax = .eq 0)
+    (hsp : Γ.regs .rsp = .eq v) (hbuf : Γ.regs .rsi = .eq (v + d)) (h8 : d.toNat % 8 = 0)
+    (hlen : Γ.regs .rdx = .eq len)
+    (hints : ∀ j, j < (len.toNat + 7) / 8 → Γ.stack[d.toNat / 8 + j]? = some .int) :
+    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+  intro hΨ n s h
+  have hax := h.eqReg (by decide) hΓ
+  refine ⟨Linux.read s, ?_, Linux.read_rip s, Linux.read_ok_stack h hΨ hsp hbuf h8 hlen hints⟩
+  simp [linux, hax]
 
 /-! ## Memory the program cannot write stays as it was -/
 

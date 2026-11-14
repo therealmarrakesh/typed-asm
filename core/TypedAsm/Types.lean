@@ -14,8 +14,9 @@ namespace TypedAsm
 /-- A description of the machine at one program point, over some notion `τ` of type.
 `Ctx` below is this with `τ` filled in. -/
 structure CtxOf (τ : Type) where
-  /-- The type of each register. The entry for `rsp` is ignored: the stack
-  pointer is described by `stack` and `room`. -/
+  /-- The type of each register. What the stack pointer points at is
+  described by `stack` and `room`; its entry here says what is known of its
+  value, which is usually nothing (`int`) and otherwise exactly what it is. -/
   regs : Reg → τ
   /-- The types of the stack slots, from `[rsp]` upward. -/
   stack : List τ
@@ -85,6 +86,14 @@ def Flags.Known : Flags → Prop := fun f => f.defined = true
 /-- The flags predicate that says nothing. -/
 def Flags.Any : Flags → Prop := fun _ => True
 
+/-- The type of a value after a known amount is added to it: an exactly
+known value stays exactly known, and nothing is known of anything else. This
+is what happens to the stack pointer's type when the stack pointer moves. -/
+def Ty.shift (τ : Ty) (d : BitVec 64) : Ty :=
+  match τ with
+  | .eq v => .eq (v + d)
+  | _ => .int
+
 /-! ## Subtyping -/
 
 /-- `Sub τ υ`: every value of type `τ` also has type `υ`. -/
@@ -115,6 +124,8 @@ structure CtxSub (Γ Δ : Ctx) : Prop where
   stack : SubList Γ.stack Δ.stack
   room : Γ.room = Δ.room
   flags : ∀ f, Γ.flags f → Δ.flags f
+  /-- What is known of the stack pointer's value may also be weakened. -/
+  sp : Sub (Γ.regs .rsp) (Δ.regs .rsp)
 
 /-! ## Function signatures -/
 
@@ -220,6 +231,8 @@ structure Matches (H : Ty → BitVec 64 → Prop) (Ψ : MemTy) (Γ : Ctx) (s : S
     H τ (s.load64 (a + BitVec.ofNat 64 (8 * i)))
   /-- No memory block overlaps the stack region. -/
   stackHeap : ∀ a l, Ψ a = some l → Disjoint (stackBase Γ s) (stackSize Γ) a l.size
+  /-- The stack pointer holds a value of its type. -/
+  sp : H (Γ.regs .rsp) (s.getReg .rsp)
 
 /-- `HasTy fetch sys Ψ n τ v`: the value `v` has type `τ`, at step count `n`.
 This does not depend on the machine state. -/
@@ -320,7 +333,8 @@ theorem Matches.imp {H H' : Ty → BitVec 64 → Prop} {Γ : Ctx} {s : State}
     stack := fun i τ hi => himp _ _ (h.stack i τ hi)
     heapPerm := h.heapPerm
     heap := fun a l hl i τ hi => himp _ _ (h.heap a l hl i τ hi)
-    stackHeap := h.stackHeap }
+    stackHeap := h.stackHeap
+    sp := himp _ _ h.sp }
 
 /-- A state well typed at a step count is well typed at every smaller one. -/
 theorem WellTyped.mono {m : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch sys Ψ n Γ s)
