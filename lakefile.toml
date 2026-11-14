@@ -1,29 +1,50 @@
 name = "typed-assembly"
 version = "0.1.0"
-defaultTargets = ["TypedAsm", "sum", "swap", "frame", "Rejected"]
+defaultTargets = ["TypedAsm", "Sum", "Swap", "Frame", "Rejected", "sum", "swap", "frame"]
 
-# The core library: machine model, instruction set, semantics.
+# The core library: machine model, instruction set, semantics, type system.
+# The glob includes TypedAsm.Tactic, which the root module does not import.
 [[lean_lib]]
 name = "TypedAsm"
 srcDir = "core"
+globs = ["TypedAsm.*"]
 
-# Examples live in examples/<Name>/, one folder each, with the program in
-# examples/<Name>/<Name>.lean. Each is an executable that can `import TypedAsm`.
-# Run one with `lake exe <name>`.
+# Examples live in examples/<Name>/, one folder each:
+#
+#   <Name>Program.lean   the program and how to run it in the model
+#   <Name>.lean          its typing and the proof that it is safe
+#
+# The executable is built from the program file alone, so it does not link
+# the tactics. Run one with `lake exe <name>`.
+
+[[lean_lib]]
+name = "Sum"
+srcDir = "examples/Sum"
+roots = ["Sum", "SumProgram"]
 
 [[lean_exe]]
 name = "sum"
-root = "Sum"
+root = "SumProgram"
 srcDir = "examples/Sum"
+
+[[lean_lib]]
+name = "Swap"
+srcDir = "examples/Swap"
+roots = ["Swap", "SwapProgram"]
 
 [[lean_exe]]
 name = "swap"
-root = "Swap"
+root = "SwapProgram"
 srcDir = "examples/Swap"
+
+[[lean_lib]]
+name = "Frame"
+srcDir = "examples/Frame"
+roots = ["Frame", "FrameProgram"]
 
 [[lean_exe]]
 name = "frame"
-root = "Frame"
+root = "FrameProgram"
 srcDir = "examples/Frame"
 
 # Not a program to run: instructions the type system rejects, with the

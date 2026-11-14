@@ -1,4 +1,5 @@
 import TypedAsm
+import TypedAsm.Tactic
 
 /-!
 # Instructions the type system rejects
@@ -49,8 +50,8 @@ def Γ : Ctx where
   flags := Flags.Any
 
 /-- error: at address 0: cannot type `mov qword ptr [rax], rcx` in the current context
-• storeField: `rax` must hold a writable pointer, but its type is `Ty.int`
-• storeIntR: `rax` must hold a writable pointer, but its type is `Ty.int` -/
+• storeField: `rax` must hold a writable pointer, but its type is `int`
+• storeIntR: `rax` must hold a writable pointer, but its type is `int` -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ 0 Γ := by ty_step
 
@@ -60,8 +61,8 @@ example : BlockOk Φ fetch linux Ψ 0 Γ := by ty_step
 example : BlockOk Φ fetch linux Ψ 1 Γ := by ty_step
 
 /-- error: at address 2: cannot type `mov qword ptr [rsi], rcx` in the current context
-• storeField: `rsi` must hold a writable pointer, but its type is `Ty.ptr [Ty.int, Ty.int] false 0`
-• storeIntR: `rsi` must hold a writable pointer, but its type is `Ty.ptr [Ty.int, Ty.int] false 0` -/
+• storeField: `rsi` must hold a writable pointer, but its type is `read-only pointer to [int, int]`
+• storeIntR: `rsi` must hold a writable pointer, but its type is `read-only pointer to [int, int]` -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ 2 Γ := by ty_step
 
@@ -71,7 +72,7 @@ example : BlockOk Φ fetch linux Ψ 2 Γ := by ty_step
 example : BlockOk Φ fetch linux Ψ 3 Γ := by ty_step
 
 /-- error: at address 4: cannot type `mov dword ptr [rdx+8], ecx` in the current context
-• storeIntR: the field must have type `Ty.int`, but has type `Ty.ptr [Ty.int] false 0` -/
+• storeIntR: the field must have type `int`, but has type `read-only pointer to [int]` -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ 4 Γ := by ty_step
 
@@ -96,8 +97,8 @@ example : BlockOk Φ fetch linux Ψ 7 Γ := by ty_step
 example : BlockOk Φ fetch linux Ψ 8 Γ := by ty_step
 
 /-- error: at address 9: cannot type `mov qword ptr [rdx+8], rdi` in the current context
-• storeField: a value of type `Ty.ptr [Ty.int, Ty.int] true 0` cannot be stored where `Ty.ptr [Ty.int] false 0` is required
-• storeIntR: the field must have type `Ty.int`, but has type `Ty.ptr [Ty.int] false 0` -/
+• storeField: a value of type `pointer to [int, int]` cannot be stored where `read-only pointer to [int]` is required
+• storeIntR: the field must have type `int`, but has type `read-only pointer to [int]` -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ 9 Γ := by ty_step
 
