@@ -9,24 +9,25 @@ step, which the typing expresses with types that depend on values: the
 contexts inside the loop are indexed by how many elements have been consumed.
 
 ```asm
-_start:                       ; rdi = pointer to an array of five integers
-   0  mov   esi, 5
-   5  call  sum
-  10  mov   edi, eax
-  12  mov   eax, 60           ; Linux `exit`
-  17  syscall
-  19  jmp   19                ; not reached: `exit` does not return
-sum:                          ; rdi = pointer, rsi = count, result in rax
-  24  xor   eax, eax
-  26  test  rsi, rsi
-  29  je    done
+_start:
+   0  lea   rdi, [rip + array]   ; the array is at 0x1000
+   7  mov   esi, 5
+  12  call  sum
+  17  mov   edi, eax
+  19  mov   eax, 60              ; Linux `exit`
+  24  syscall
+  26  jmp   26                   ; not reached: `exit` does not return
+sum:                             ; rdi = pointer, rsi = count, result in rax
+  31  xor   eax, eax
+  33  test  rsi, rsi
+  36  je    done
 loop:
-  35  add   rax, [rdi]
-  38  add   rdi, 8
-  42  sub   rsi, 1
-  46  jne   loop
+  42  add   rax, [rdi]
+  45  add   rdi, 8
+  49  sub   rsi, 1
+  53  jne   loop
 done:
-  52  ret
+  59  ret
 ```
 -/
 
@@ -41,6 +42,7 @@ inductive Label
   deriving DecidableEq
 
 def code : List (Asm Label) := [
+  .ins (.lea .w64 .rdi (.rip 0xff9)) 7,
   .ins (.mov .w32 (.rm_i (.reg .rsi) 5)) 5,
   .call .sum,
   .ins (.mov .w32 (.rm_r (.reg .rdi) .rax)) 2,
@@ -64,12 +66,12 @@ def fetch : Fetch := Asm.fetch 0 code
 
 def array : List (BitVec 64) := [3, 1, 4, 1, 5]
 
-/-- The starting state: the array in read-only memory at `0x1000`, one free
-stack slot below `rsp`, and `rdi` pointing at the array. -/
+/-- The starting state: the array in read-only memory at `0x1000` and one
+free stack slot below `rsp`. No register points anywhere yet. -/
 def start : State :=
   let s := (State.init.setPerm 0x1000 40 .ro).setPerm 0x7ff8 8 .rw
   let s := (array.zipIdx).foldl (fun s (v, i) => s.store64 (0x1000 + 8 * BitVec.ofNat 64 i) v) s
-  (s.setReg .rsp 0x8000).setReg .rdi 0x1000
+  s.setReg .rsp 0x8000
 
 /-! ## The typing -/
 
@@ -99,17 +101,17 @@ def fin : Ctx := ⟨fun _ => .int, [], 1, Flags.Any⟩
 
 /-- Contexts are given only where control arrives from elsewhere. -/
 inductive Φ : BitVec 64 → Ctx → Prop
-  | start : Φ 0 ⟨fun r => if r = .rdi then elem 5 0 else .int, [], 1, Flags.Any⟩
-  | afterCall : Φ 10 fin
-  | spin : Φ 19 fin
+  | start : Φ 0 fin
+  | afterCall : Φ 17 fin
+  | spin : Φ 26 fin
   | sum (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
-    (sumSig n).CallerOk saved ret rest room → Φ 24 ((sumSig n).entry saved ret rest room)
+    (sumSig n).CallerOk saved ret rest room → Φ 31 ((sumSig n).entry saved ret rest room)
   /-- The loop invariant, for `i < n` elements consumed. -/
   | loop (n i : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
     (sumSig n).CallerOk saved ret rest room → i < n →
-    Φ 35 ⟨sumRegs n i saved, .code ret :: rest, room, Flags.Any⟩
+    Φ 42 ⟨sumRegs n i saved, .code ret :: rest, room, Flags.Any⟩
   | done (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
-    (sumSig n).CallerOk saved ret rest room → Φ 52 ((sumSig n).exit saved ret rest room)
+    (sumSig n).CallerOk saved ret rest room → Φ 59 ((sumSig n).exit saved ret rest room)
 
 def arrayLayout : Layout := ⟨List.replicate 5 .int, false⟩
 
@@ -134,12 +136,16 @@ theorem decr {n i : Nat} (hi : i < n) :
 
 /-! ## The program is well typed -/
 
-theorem blocksOk : BlocksOk Φ fetch := by
+theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   intro a Γ h
   cases h with
   | start =>
-    -- mov esi, 5; call sum
+    -- lea rdi, [rip + array]; mov esi, 5
     ty_steps
+    -- `rdi` holds exactly the array's address, so it is a pointer to its first element
+    refine BlockOk.castPtr (r := .rdi) (base := 0x1000) (i := 0) (w := false) (by decide) rfl rfl
+      (by decide) (fun h => absurd h (by decide)) ?_
+    -- call sum
     exact .last rfl (FnSig.call_ok (sig := sumSig 5) (fun _ _ _ _ hK => .sum 5 _ _ _ _ hK) rfl
       Φ.afterCall (by sub_regs) (by ctx_sub) (by decide))
   | afterCall =>
@@ -185,10 +191,8 @@ theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 theorem startOk : StateOk Φ fetch linux Ψ start := by
   refine ⟨_, Φ.start, fun n => Matches.ofCheck (by decide) ?_ trivial ?_ ?_⟩
   · intro r _
-    cases r <;> first
-      | exact HasTy.int _
-      | exact hasTy_ptr.mpr ⟨0x1000, arrayLayout, rfl, rfl, fun h => absurd h (by decide), by decide⟩
-  · intro i τ h; simp at h
+    exact HasTy.int _
+  · intro i τ h; simp [fin] at h
   · intro x hx i τ hi
     simp only [blocks, List.mem_singleton] at hx
     subst hx

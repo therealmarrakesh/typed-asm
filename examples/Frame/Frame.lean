@@ -119,7 +119,7 @@ def Ψ : MemTy := .ofList blocks
 
 /-! ## The program is well typed -/
 
-theorem blocksOk : BlocksOk Φ fetch := by
+theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   intro a Γ h
   cases h with
   | start =>
