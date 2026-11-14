@@ -110,6 +110,67 @@ theorem Straight.storeGlobal_of {s : Reg} (hs : s ≠ .rsp)
 
 end Globals
 
+/-! Indexed operands: which field and byte a scaled index lands on. These
+hold for any index, since addresses wrap; what needs a bound on the index is
+the field being inside the block. -/
+
+theorem sext_toNat {disp : BitVec 32} (hd : disp.toNat < 2 ^ 31) :
+    disp.signExtend 64 = BitVec.ofNat 64 disp.toNat := by
+  have h := sext_small hd
+  rwa [BitVec.ofNat_toNat, BitVec.setWidth_eq] at h
+
+/-- An index scaled by 8 with a displacement that is a multiple of 8
+addresses a whole field. -/
+theorem index8_slot (c : BitVec 64) (disp : BitVec 32)
+    (h8 : disp.toNat % 8 = 0) (hd : disp.toNat < 2 ^ 31) :
+    (c <<< Scale.s8.shift) + disp.signExtend 64
+      = BitVec.ofNat 64 (8 * (c.toNat + disp.toNat / 8)) := by
+  apply BitVec.eq_of_toNat_eq
+  rw [sext_toNat hd]
+  simp only [BitVec.toNat_add, BitVec.toNat_shiftLeft, BitVec.toNat_ofNat, Nat.shiftLeft_eq,
+    Scale.shift]
+  omega
+
+/-- An index scaled by 8, with any displacement. -/
+theorem index8 (c : BitVec 64) (disp : BitVec 32) (hd : disp.toNat < 2 ^ 31) :
+    (c <<< Scale.s8.shift) + disp.signExtend 64
+      = BitVec.ofNat 64 (8 * (c.toNat + disp.toNat / 8) + disp.toNat % 8) := by
+  apply BitVec.eq_of_toNat_eq
+  rw [sext_toNat hd]
+  simp only [BitVec.toNat_add, BitVec.toNat_shiftLeft, BitVec.toNat_ofNat, Nat.shiftLeft_eq,
+    Scale.shift]
+  omega
+
+/-- An index with any scale: the field and byte are those of the byte offset. -/
+theorem index_any (c : BitVec 64) (sc : Scale) (disp : BitVec 32) (hd : disp.toNat < 2 ^ 31) :
+    (c <<< sc.shift) + disp.signExtend 64
+      = BitVec.ofNat 64 (8 * ((c.toNat * 2 ^ sc.shift + disp.toNat) / 8)
+          + (c.toNat * 2 ^ sc.shift + disp.toNat) % 8) := by
+  apply BitVec.eq_of_toNat_eq
+  rw [sext_toNat hd]
+  simp only [BitVec.toNat_add, BitVec.toNat_shiftLeft, BitVec.toNat_ofNat, Nat.shiftLeft_eq]
+  generalize c.toNat * 2 ^ sc.shift = m
+  omega
+
+/-- After `cmp a, b`, "below" holds exactly when `a` is less than `b` as
+unsigned numbers. This is the fact a bounds check establishes. -/
+theorem cmp_below_iff (a b : BitVec 64) :
+    Cond.eval (AluOp.apply .cmp a b).2 .b = some (decide (a.toNat < b.toNat)) := by
+  have h := subBorrow_cf .w64 a b
+  simp only [AluOp.apply, Cond.eval]
+  rw [h]
+  rfl
+
+theorem cmp_below {a b : BitVec 64} (h : Cond.eval (AluOp.apply .cmp a b).2 .b = some true) :
+    a.toNat < b.toNat := by
+  rw [cmp_below_iff] at h
+  simpa using h
+
+theorem cmp_not_below {a b : BitVec 64}
+    (h : Cond.eval (AluOp.apply .cmp a b).2 .b = some false) : b.toNat ≤ a.toNat := by
+  rw [cmp_below_iff] at h
+  simpa using h
+
 theorem getElem?_replicate_of_lt {n i : Nat} {τ : Ty} (h : i < n) :
     (List.replicate n τ)[i]? = some τ := by
   simp [h]
@@ -222,6 +283,13 @@ macro "ty_cond_value" : tactic => do
   let subst := Lean.mkIdent `rfl
   `(tactic| (rintro f $subst:ident; rfl))
 
+/-- Proves which field and byte a scaled index lands on. -/
+macro "ty_index" : tactic =>
+  `(tactic| first
+    | (refine index8_slot _ _ ?_ ?_ <;> decide)
+    | (refine index8 _ _ ?_; decide)
+    | (refine index_any _ _ _ ?_; decide))
+
 /-- Proves a side condition of a typing rule, or fails. -/
 syntax "ty_side" : tactic
 
@@ -240,12 +308,13 @@ pointer: it is a register, a stack slot, a field of a pointer, or a field
 of a block at a fixed address. -/
 macro "ty_operand" : tactic =>
   `(tactic| first
-    | ty_rule ReadOk.reg | ty_rule ReadOk.slot | ty_rule ReadOk.field
-    | ty_rule_ordered ReadOk.global_of
-    | ty_rule WriteIntOk.reg | ty_rule WriteIntOk.slot | ty_rule WriteIntOk.field
+    | ty_rule_ordered ReadOk.reg | ty_rule_ordered ReadOk.slot | ty_rule_ordered ReadOk.field
+    | ty_rule_ordered ReadOk.indexed | ty_rule_ordered ReadOk.global_of
+    | ty_rule_ordered WriteIntOk.reg | ty_rule_ordered WriteIntOk.slot
+    | ty_rule_ordered WriteIntOk.field | ty_rule_ordered WriteIntOk.indexed
     | ty_rule_ordered WriteIntOk.global_of
-    | ty_rule CodeAt.reg | ty_rule CodeAt.slot | ty_rule CodeAt.field
-    | ty_rule_ordered CodeAt.global_of)
+    | ty_rule_ordered CodeAt.reg | ty_rule_ordered CodeAt.slot | ty_rule_ordered CodeAt.field
+    | ty_rule_ordered CodeAt.indexed | ty_rule_ordered CodeAt.global_of)
 
 macro_rules
   | `(tactic| ty_side) =>
@@ -259,6 +328,7 @@ macro_rules
       | ty_carry
       | ty_decided
       | ty_cond_value
+      | ty_index
       | ty_operand)
 
 macro_rules
@@ -304,9 +374,13 @@ elab_rules : tactic
       unless (← getUnsolvedGoals).isEmpty do throwError "premise not proved"
     setGoals []
 
-/-- The rules whose premises must be proved in order. -/
+/-- The rules whose premises are proved in order, stopping at the first that
+fails: those for operands, whose premises each depend on the ones before. -/
 def orderedRules : List Name := [``Straight.loadGlobal_of, ``Straight.storeGlobal_of,
-  ``ReadOk.global_of, ``WriteIntOk.global_of, ``CodeAt.global_of]
+  ``ReadOk.reg, ``ReadOk.slot, ``ReadOk.field, ``ReadOk.indexed, ``ReadOk.global_of,
+  ``WriteIntOk.reg, ``WriteIntOk.slot, ``WriteIntOk.field, ``WriteIntOk.indexed,
+  ``WriteIntOk.global_of, ``CodeAt.reg, ``CodeAt.slot, ``CodeAt.field, ``CodeAt.indexed,
+  ``CodeAt.global_of]
 
 /-- The straight-line rules that can type an instruction of this shape, most
 informative first. An empty list means the type system has no rule for it. -/
@@ -325,6 +399,7 @@ def Instr.rules : Instr → List Name
   | .mov .w64 (.r_m _ (.sib (some .rsp) none _)) => [``Straight.loadStack]
   | .mov .w64 (.r_m _ (.sib (some _) none _)) => [``Straight.loadField]
   | .mov .w64 (.r_m _ (.rip _)) => [``Straight.loadGlobal_of]
+  | .mov .w64 (.r_m _ (.sib (some _) (some _) _)) => [``Straight.loadIndexed, ``Straight.loadInt]
   | .mov _ (.r_m _ _) => [``Straight.loadInt]
   | .movzx _ _ _ (.reg _) => [``Straight.movzxExact, ``Straight.movzxRM]
   | .movzx _ _ _ _ => [``Straight.movzxRM]
@@ -337,6 +412,8 @@ def Instr.rules : Instr → List Name
   | .mov .w64 (.rm_r (.mem (.sib (some _) none _)) _) =>
     [``Straight.storeField, ``Straight.storeInt]
   | .mov .w64 (.rm_r (.mem (.rip _)) _) => [``Straight.storeGlobal_of, ``Straight.storeInt]
+  | .mov .w64 (.rm_r (.mem (.sib (some _) (some _) _)) _) =>
+    [``Straight.storeIndexed, ``Straight.storeInt]
   | .mov _ (.rm_r (.mem _) _) => [``Straight.storeInt]
   | .mov _ (.rm_i (.mem _) _) => [``Straight.storeImm]
   | .store8 _ _ => [``Straight.store8RM]
@@ -411,7 +488,8 @@ def Instr.endsBlock : Instr → Bool
   | _ => false
 
 /-- Every straight-line rule, for instructions whose shape is not known. -/
-def allStraightRules : List Name := sharpeningRules ++ [``Straight.movRR64, ``Straight.movRR32, ``Straight.movRI, ``Straight.movAbs, ``Straight.leaRip, ``Straight.lea, ``Straight.loadStack, ``Straight.loadField, ``Straight.storeStack, ``Straight.storeField, ``Straight.push, ``Straight.pop, ``Straight.allocFrame, ``Straight.freeFrame', ``Straight.aluExact, ``Straight.aluExactRR, ``Straight.addPtr, ``Straight.aluRR, ``Straight.aluRI, ``Straight.testExact, ``Straight.nop, ``Straight.aluStoreR, ``Straight.aluStoreI, ``Straight.cmpR, ``Straight.cmpI, ``Straight.aluLoad, ``Straight.testRM, ``Straight.negRM, ``Straight.notRM, ``Straight.shiftImm, ``Straight.shiftCl, ``Straight.mulRM, ``Straight.imulRM, ``Straight.divRM, ``Straight.idivRM, ``Straight.imul2RM, ``Straight.imul3RM, ``Straight.popcntRM, ``Straight.bswap, ``Straight.cdq, ``Straight.cqo, ``Straight.movsxdRM, ``Straight.cmovRM, ``Straight.setccRM, ``Straight.movzxRM, ``Straight.movsxRM, ``Straight.loadInt, ``Straight.storeInt, ``Straight.storeImm, ``Straight.store8RM, ``Straight.loadGlobal_of, ``Straight.storeGlobal_of, ``Straight.xorSelf]
+def allStraightRules : List Name := sharpeningRules ++ [``Straight.movRR64, ``Straight.movRR32, ``Straight.movRI, ``Straight.movAbs, ``Straight.leaRip, ``Straight.lea, ``Straight.loadStack, ``Straight.loadField, ``Straight.storeStack, ``Straight.storeField, ``Straight.push, ``Straight.pop, ``Straight.allocFrame, ``Straight.freeFrame', ``Straight.aluExact, ``Straight.aluExactRR, ``Straight.addPtr, ``Straight.aluRR, ``Straight.aluRI, ``Straight.testExact, ``Straight.nop, ``Straight.aluStoreR, ``Straight.aluStoreI, ``Straight.cmpR, ``Straight.cmpI, ``Straight.aluLoad, ``Straight.testRM, ``Straight.negRM, ``Straight.notRM, ``Straight.shiftImm, ``Straight.shiftCl, ``Straight.mulRM, ``Straight.imulRM, ``Straight.divRM, ``Straight.idivRM, ``Straight.imul2RM, ``Straight.imul3RM, ``Straight.popcntRM, ``Straight.bswap, ``Straight.cdq, ``Straight.cqo, ``Straight.movsxdRM, ``Straight.cmovRM, ``Straight.setccRM, ``Straight.movzxRM, ``Straight.movsxRM, ``Straight.loadInt, ``Straight.storeInt, ``Straight.storeImm, ``Straight.store8RM, ``Straight.loadGlobal_of, ``Straight.storeGlobal_of, ``Straight.xorSelf,
+  ``Straight.loadIndexed, ``Straight.storeIndexed]
 
 private unsafe def evalInstrUnsafe (e : Expr) : MetaM Instr :=
   evalExpr Instr (mkConst ``Instr) e
@@ -495,8 +573,11 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
   if let some (_, lhs, rhs) := ty.eq? then
     -- what a register must hold
     if lhs.isAppOfArity ``CtxOf.regs 3 then
-      let reg := (regName? lhs.appArg!).getD "the register"
+      let reg := (regName? (← whnf lhs.appArg!)).getD "the register"
       let actual ← ppTy (← reduce lhs)
+      if lhs.appArg!.isAppOf ``IndexReg.toReg then
+        return m!"the index register `{reg}` must hold an exactly known value, but its type \
+          is `{actual}`; `ty_name` gives an integer a name"
       let wanted :=
         if rhs.isAppOf ``Ty.ptr then
           if rhs.getAppArgs[1]!.isConstOf ``Bool.true then "a writable pointer" else "a pointer"
@@ -517,6 +598,9 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
     if rhs.isAppOf ``Option.some && actual.isAppOf ``Option.some then
       return m!"the field must have type `{← ppTy rhs.appArg!}`, but has type \
         `{← ppTy actual.appArg!}`"
+    if rhs.isAppOf ``Option.some then
+      return m!"the field is not known to be inside the block: a bound on the index is needed \
+        among the hypotheses"
     return m!"needs `{← ppClean ty}`, but the left side is `{← ppClean actual}`"
   if ty.isAppOf ``slotDisp then
     return m!"the displacement must be a non-negative multiple of 8"
@@ -537,9 +621,10 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
 
 /-- The rules for an operand judgment, in the order to try them. -/
 private def operandRules (ty : Expr) : List Name :=
-  if ty.isAppOf ``ReadOk then [``ReadOk.reg, ``ReadOk.slot, ``ReadOk.field, ``ReadOk.global_of]
-  else if ty.isAppOf ``WriteIntOk then [``WriteIntOk.reg, ``WriteIntOk.slot, ``WriteIntOk.field, ``WriteIntOk.global_of]
-  else if ty.isAppOf ``CodeAt then [``CodeAt.reg, ``CodeAt.slot, ``CodeAt.field, ``CodeAt.global_of]
+  if ty.isAppOf ``ReadOk then [``ReadOk.reg, ``ReadOk.slot, ``ReadOk.field, ``ReadOk.indexed, ``ReadOk.global_of]
+  else if ty.isAppOf ``WriteIntOk then [``WriteIntOk.reg, ``WriteIntOk.slot, ``WriteIntOk.field, ``WriteIntOk.indexed,
+    ``WriteIntOk.global_of]
+  else if ty.isAppOf ``CodeAt then [``CodeAt.reg, ``CodeAt.slot, ``CodeAt.field, ``CodeAt.indexed, ``CodeAt.global_of]
   else []
 
 /-- Applies a rule to the main goal and describes the first premise that
@@ -554,6 +639,7 @@ private partial def explainPremises (rule : Name) : TacticM (Option MessageData)
   -- Premises are attempted in order and then again, as in `ty_rule`, so that
   -- what is reported is a premise that fails once everything else is known.
   let mut failed : Array (MVarId × Expr) := #[]
+  let mut stop := false
   for pass in [0, 1] do
     for g in goals do
       if ← g.isAssigned then continue
@@ -568,10 +654,14 @@ private partial def explainPremises (rule : Name) : TacticM (Option MessageData)
           pure false
       if !ok then
         let ty ← instantiateMVars (← g.getType)
-        -- Nothing after a failed block lookup can be judged.
-        if let some (_, lhs, _) := ty.eq? then
-          if lhs.isAppOf ``MemTy.locate then return some (← describePremise ty)
+        -- Where premises build on one another, nothing after the first
+        -- failure can be judged.
+        if orderedRules.contains rule then
+          failed := #[(g, ty)]
+          stop := true
+          break
         if pass == 1 then failed := failed.push (g, ty)
+    if stop then break
   -- A premise about the displacement is reported first: the others cannot
   -- be judged until it holds. After that, prefer a premise with no unknowns.
   let isDisp (e : MVarId × Expr) : Bool := e.2.isAppOf ``slotDisp || e.2.isAppOf ``innerDisp
@@ -583,8 +673,8 @@ private partial def explainPremises (rule : Name) : TacticM (Option MessageData)
     for r in inner do
       setGoals [g]
       if let some msg ← explainPremises r then return some msg
-    return some m!"this form of operand has no rule: a memory operand must be \
-      `[register + displacement]` or `[rip + displacement]`"
+    return some m!"this form of operand has no rule: a memory operand needs a base register \
+      or `rip`"
   | none => return some m!"every premise holds separately, but not together"
 
 /-- Says why a rule did not apply: the first premise that could not be proved. -/

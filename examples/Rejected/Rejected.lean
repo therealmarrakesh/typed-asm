@@ -115,7 +115,8 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i9) Γ := by ty_step
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i10) Γ := by ty_step
 
 /-- error: at address 32: cannot type `mov rax, qword ptr [rdi+rcx*8]` in the current context
-• loadInt: this form of operand has no rule: a memory operand must be `[register + displacement]` or `[rip + displacement]` -/
+• loadIndexed: the index register `rcx` must hold an exactly known value, but its type is `int`; `ty_name` gives an integer a name
+• loadInt: the index register `rcx` must hold an exactly known value, but its type is `int`; `ty_name` gives an integer a name -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i11) Γ := by ty_step
 
@@ -145,7 +146,7 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i15) Γ := by ty_step
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i16) Γ := by ty_step
 
 /-- error: at address 53: cannot type `neg qword ptr [rdi+rcx*8]` in the current context
-• negRM: this form of operand has no rule: a memory operand must be `[register + displacement]` or `[rip + displacement]` -/
+• negRM: the index register `rcx` must hold an exactly known value, but its type is `int`; `ty_name` gives an integer a name -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i17) Γ := by ty_step
 
