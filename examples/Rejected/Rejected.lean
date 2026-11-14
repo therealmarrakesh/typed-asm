@@ -379,6 +379,36 @@ example : ∃ Γ', Straight Ψ 10 Γ₃ (.movsx .w64 .rax .w8 (.mem (.sib (some 
 example : ∃ Γ', Straight Ψ 10 Γ₃ (.mov .w32 (.rm_r (.mem (.sib (some .rsp) none 4)) .rax)) Γ' :=
   ⟨_, by ty_straight⟩
 
+/-! Through an index: a store into an array of integers, and a load from
+an array of pointers, which keeps the pointer's type. -/
+
+/-- `rdi`: four integers, writable. `rsi`: four pointers to a pair. The
+index in `rcx` is exactly 2. -/
+def Γ₄ : Ctx where
+  regs := fun r =>
+    if r = .rdi then .ptr (List.replicate 4 .int) true 0
+    else if r = .rsi then .ptr (List.replicate 4 (.ptr [.int, .int] true 0)) false 0
+    else if r = .rcx then .eq 2
+    else .int
+  stack := [.int]
+  room := 0
+  flags := Flags.Any
+
+example : ∃ Γ', Straight Ψ 10 Γ₄
+    (.mov .w64 (.rm_r (.mem (.sib (some .rdi) (some (.rcx, .s8)) 0)) .rax)) Γ' :=
+  ⟨_, by ty_straight⟩
+
+example : Straight Ψ 10 Γ₄ (.mov .w64 (.r_m .rax (.sib (some .rsi) (some (.rcx, .s8)) 8)))
+    (Γ₄.setReg .rax (.ptr [.int, .int] true 0)) := by
+  ty_straight
+
+/-! A stack slot holding an integer can be given a name, like a register. -/
+
+example (h : ∀ v : BitVec 64, BlockOk Φ fetch linux Ψ 0
+    { Γ₄ with stack := [.eq v] }) : BlockOk Φ fetch linux Ψ 0 Γ₄ := by
+  ty_name_slot 0 as v
+  exact h v
+
 /-! ## Exactly known values
 
 When the registers an instruction reads hold exactly known values, so does

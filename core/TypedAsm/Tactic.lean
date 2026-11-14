@@ -17,7 +17,10 @@ needs an argument, typically a fact about values at a branch.
 * `ty_steps` types the straight-line instructions at the start of a block.
 * `ty_step` types one. `ty_step_with r` types one with a rule you name.
 * `ty_straight` types a single instruction; the two above are built on it.
-* `ty_name r as v` gives the value in a register a name.
+* `ty_name r as v` gives the value in a register a name; `ty_name_slot i as v`
+  does the same for a stack slot.
+* `ty_open r using h` and `ty_null r` open a pointer to a kind of block and
+  split a value that may be null.
 * `ty_fn_ptr r to sig` turns a register holding a function's address into a
   pointer to that function.
 * `ty_code_ptr r to Δ` turns a register holding a label's address into a
@@ -172,6 +175,24 @@ theorem cmp_below {a b : BitVec 64} (h : Cond.eval (AluOp.apply .cmp a b).2 .b =
 theorem cmp_not_below {a b : BitVec 64}
     (h : Cond.eval (AluOp.apply .cmp a b).2 .b = some false) : b.toNat ≤ a.toNat := by
   rw [cmp_below_iff] at h
+  simpa using h
+
+/-- After `cmp a, b`, "less" holds exactly when `a` is less than `b` as
+signed numbers. -/
+theorem cmp_less_iff (a b : BitVec 64) :
+    Cond.eval (AluOp.apply .cmp a b).2 .l = some (a.slt b) := by
+  simp only [AluOp.apply, Cond.eval, subBorrow, Flags.ofResult, bind, Option.bind, pure,
+    Option.some.injEq]
+  bv_decide
+
+theorem cmp_less {a b : BitVec 64} (h : Cond.eval (AluOp.apply .cmp a b).2 .l = some true) :
+    a.slt b = true := by
+  rw [cmp_less_iff] at h
+  simpa using h
+
+theorem cmp_not_less {a b : BitVec 64} (h : Cond.eval (AluOp.apply .cmp a b).2 .l = some false) :
+    a.slt b = false := by
+  rw [cmp_less_iff] at h
   simpa using h
 
 theorem getElem?_replicate_of_lt {n i : Nat} {τ : Ty} (h : i < n) :
@@ -383,6 +404,7 @@ integer, for example one just loaded from memory, before testing it or
 computing with it, so that what is learnt about the value can be used. -/
 syntax "ty_name " term " as " ident : tactic
 
+syntax "ty_name_slot " term " as " ident : tactic
 syntax "ty_open " term " using " term : tactic
 syntax "ty_null " term : tactic
 
@@ -457,6 +479,28 @@ def refineBlocks (tac : TSyntax `tactic) : TacticM Unit := do
       setGoals [g]
       evalTactic (← `(tactic| decide))
   setGoals (blocks ++ others)
+
+/-- `ty_name_slot i as v`: from here on, the value in stack slot `i` is
+called `v` and the slot is typed as exactly `v`. -/
+elab_rules : tactic
+  | `(tactic| ty_name_slot $i as $v) => do
+    let goal ← getMainGoal
+    let others := (← getGoals).drop 1
+    setGoals [goal]
+    evalTactic (← `(tactic| refine BlockOk.nameSlot (i := $i) ?_ ?_))
+    let mut rest? : Option MVarId := none
+    for g in ← getGoals do
+      let t ← instantiateMVars (← g.getType)
+      if t.isForall then rest? := some g
+      else
+        setGoals [g]
+        try
+          evalTactic (← `(tactic| first | decide | (simp; done) | omega))
+        catch _ => throwError "ty_name_slot: there is no such stack slot here"
+    let some rest := rest? | throwError "ty_name_slot: unexpected goals"
+    setGoals [rest]
+    evalTactic (← `(tactic| (intro $v:ident; ty_normalize)))
+    setGoals ((← getGoals) ++ others)
 
 /-- `ty_open r using h`: register `r` holds a pointer to a block of some
 kind, and `h` says what fields blocks of that kind have. From here on `r`

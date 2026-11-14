@@ -143,6 +143,37 @@ theorem BlockOk.name {a : BitVec 64} {Γ : Ctx} {r : Reg} (hr : r ≠ .rsp)
   .cover (Γ' := fun v => Γ.setReg r (.eq v))
     (fun _ s h => ⟨s.getReg r, h.retype hr (hasTy_eq.mpr rfl)⟩) hrest
 
+/-- A stack slot may be given a name for the value it holds: the rest of
+the block is typed for every value `v`, with the slot typed as exactly `v`.
+Whatever else was known about the slot is given up, so this is for slots
+typed as integers. -/
+theorem BlockOk.nameSlot {a : BitVec 64} {Γ : Ctx} {i : Nat} (hi : i < Γ.stack.length)
+    (hrest : ∀ v, BlockOk Φ fetch sys Ψ a { Γ with stack := Γ.stack.set i (.eq v) }) :
+    BlockOk Φ fetch sys Ψ a Γ :=
+  .cover (Γ' := fun v => { Γ with stack := Γ.stack.set i (.eq v) })
+    (fun n s h => ⟨s.load64 (s.getReg .rsp + BitVec.ofNat 64 (8 * i)),
+      { regs := h.regs
+        flags := h.flags
+        stackPerm := by
+          have := h.stackPerm
+          simpa only [stackBase, stackSize, List.length_set] using this
+        stackSize_lt := by
+          have := h.stackSize_lt
+          simpa only [stackSize, List.length_set] using this
+        stack := fun j τ hj => by
+          by_cases hji : j = i
+          · subst hji
+            rw [List.getElem?_set_self hi] at hj
+            cases hj
+            exact hasTy_eq.mpr rfl
+          · rw [List.getElem?_set_ne (Ne.symm hji)] at hj
+            exact h.stack j τ hj
+        heapPerm := h.heapPerm
+        heap := h.heap
+        stackHeap := fun b l hl => by
+          have := h.stackHeap b l hl
+          simpa only [stackBase, stackSize, List.length_set] using this }⟩) hrest
+
 /-! ## Blocks of a kind, and values that may be null -/
 
 /-- Every block of kind `tag` has these fields. A pointer of type `Ty.ref`
