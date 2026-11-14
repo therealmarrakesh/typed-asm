@@ -83,6 +83,14 @@ structure OperandBytes where
   b : Bool
   bytes : List Byte
 
+/-- The `ModRM` mode and the bytes for a displacement from base register `b`:
+the shortest that fits. A base of `rbp` or `r13` cannot have none, because
+that bit pattern means something else. -/
+def dispEnc (b : Reg) (disp : BitVec 32) : Nat × List Byte :=
+  if disp == 0 && b.low != 5 then (0, [])
+  else if fits8 disp then (1, imm8 disp)
+  else (2, le32 disp)
+
 /-- A memory operand, with `reg` in the register field of the `ModRM` byte. -/
 def Mem.encode (reg : Nat) : Mem → OperandBytes
   | .rip disp => ⟨false, false, modrmByte 0 reg 5 :: le32 disp⟩
@@ -90,12 +98,8 @@ def Mem.encode (reg : Nat) : Mem → OperandBytes
   | .sib none (some (i, s)) disp =>
     ⟨i.toReg.ext, false, [modrmByte 0 reg 4, sibByte s.code i.toReg.num 5] ++ le32 disp⟩
   | .sib (some b) index disp =>
-    -- The shortest displacement that fits. A base of `rbp` or `r13` cannot
-    -- have none, because that bit pattern means something else.
-    let (mode, dispBytes) :=
-      if disp == 0 && b.low != 5 then (0, [])
-      else if fits8 disp then (1, imm8 disp)
-      else (2, le32 disp)
+    let mode := (dispEnc b disp).1
+    let dispBytes := (dispEnc b disp).2
     match index with
     | none =>
       -- A base of `rsp` or `r12` needs a `SIB` byte.
