@@ -10,7 +10,6 @@ import TypedAsm.Typing
 import TypedAsm.Soundness
 import TypedAsm.Fn
 import TypedAsm.Program
-import TypedAsm.Tactic
 import TypedAsm.Asm
 import TypedAsm.Linux
 import TypedAsm.Blocks
@@ -19,4 +18,8 @@ import TypedAsm.Blocks
 # TypedAsm
 
 Root module of the core library. Submodules go in `core/TypedAsm/` and are imported here.
+
+`TypedAsm.Tactic` is deliberately not imported here. It depends on Lean's
+metaprogramming library, which a program that only runs the model should not
+have to link. Files that type programs import it themselves.
 -/

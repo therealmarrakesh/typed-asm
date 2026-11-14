@@ -105,10 +105,13 @@ macro "ctx_sub" : tactic =>
     case flags => ty_flags
     sub_regs))
 
-/-- `ty_accept h`, where `h : Φ a Δ`, proves `Accepts Φ a Γ` by comparing
-`Γ` with `Δ`. Holes in `h` become goals. -/
+/-- `ty_accept h` proves `Accepts Φ a Γ` by comparing `Γ` with a context `Δ`
+that is allowed at `a`. The fact `h` is either `Φ a Δ` itself or, for a
+labelled program, a statement that `Δ` is allowed at the label whose address
+is `a`. Holes in `h` become goals. -/
 macro "ty_accept " h:term : tactic =>
-  `(tactic| (refine ⟨_, $h, ?sub⟩; case' sub => ctx_sub))
+  `(tactic| ((first | refine ⟨_, $h, ?sub⟩ | refine ⟨_, CodeTy.ofLabels.intro $h, ?sub⟩);
+             case' sub => ctx_sub))
 
 /-! ## Typing instructions -/
 
@@ -239,6 +242,36 @@ private def ppClean (e : Expr) : MetaM String := do
   -- One line, however long: these appear inside sentences.
   return fmt.pretty (width := 100000)
 
+/-- The elements of a list written out in full, if the term is one. -/
+private partial def listElems? (e : Expr) : Option (List Expr) :=
+  if e.isAppOfArity ``List.nil 1 then some []
+  else if e.isAppOfArity ``List.cons 3 then
+    (listElems? e.appArg!).map (e.appFn!.appArg! :: ·)
+  else none
+
+/-- A type in the notation used in messages: `int`, `exactly 5`,
+`pointer to [int, int]`. Falls back to the Lean term for anything else. -/
+private partial def ppTy (e : Expr) : MetaM String := do
+  let e ← instantiateMVars e
+  if e.isConstOf ``Ty.int then return "int"
+  if e.isAppOfArity ``Ty.eq 1 then return s!"exactly {← ppClean e.appArg!}"
+  if e.isAppOfArity ``Ty.code 1 then return "code pointer"
+  if e.isAppOfArity ``Ty.ptr 3 then
+    let args := e.getAppArgs
+    let kind := if args[1]!.isConstOf ``Bool.true then "pointer" else "read-only pointer"
+    let fields ← match listElems? args[0]! with
+      | some elems => do
+        let parts ← elems.mapM ppTy
+        pure s!"[{", ".intercalate parts}]"
+      | none =>
+        if args[0]!.isAppOfArity ``List.replicate 3 then
+          let n ← ppClean args[0]!.appFn!.appArg!
+          pure s!"{n} × {← ppTy args[0]!.appArg!}"
+        else ppClean args[0]!
+    let index ← ppClean args[2]!
+    return s!"{kind} to {fields}" ++ (if index == "0" then "" else s!", at field {index}")
+  ppClean e
+
 /-- The name of a register, if the term is one. -/
 private def regName? (e : Expr) : Option String :=
   match e.constName? with
@@ -252,7 +285,7 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
     -- what a register must hold
     if lhs.isAppOfArity ``CtxOf.regs 3 then
       let reg := (regName? lhs.appArg!).getD "the register"
-      let actual ← ppClean (← reduce lhs)
+      let actual ← ppTy (← reduce lhs)
       let wanted :=
         if rhs.isAppOf ``Ty.ptr then
           if rhs.getAppArgs[1]!.isConstOf ``Bool.true then "a writable pointer" else "a pointer"
@@ -268,16 +301,16 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
     if actual.isAppOf ``Option.none then
       return m!"there is no field or stack slot at that offset"
     if rhs.isAppOf ``Option.some && actual.isAppOf ``Option.some then
-      return m!"the field must have type `{← ppClean rhs.appArg!}`, but has type \
-        `{← ppClean actual.appArg!}`"
+      return m!"the field must have type `{← ppTy rhs.appArg!}`, but has type \
+        `{← ppTy actual.appArg!}`"
     return m!"needs `{← ppClean ty}`, but the left side is `{← ppClean actual}`"
   if ty.isAppOf ``slotDisp then
     return m!"the displacement must be a non-negative multiple of 8"
   if ty.isAppOf ``innerDisp then
     return m!"the displacement must be non-negative"
   if ty.isAppOfArity ``Sub 2 then
-    return m!"a value of type `{← ppClean (← reduce ty.appFn!.appArg!)}` cannot be stored \
-      where `{← ppClean ty.appArg!}` is required"
+    return m!"a value of type `{← ppTy (← reduce ty.appFn!.appArg!)}` cannot be stored \
+      where `{← ppTy ty.appArg!}` is required"
   if ty.isAppOfArity ``Ne 3 && (regName? ty.appArg!) == some "rsp" then
     return m!"`rsp` cannot be this operand"
   if ty.isAppOf ``LE.le then

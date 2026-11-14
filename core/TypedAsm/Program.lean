@@ -1,4 +1,6 @@
 import TypedAsm.Soundness
+import TypedAsm.Asm
+import TypedAsm.Fn
 
 /-!
 # Typing a program block by block
@@ -90,6 +92,42 @@ theorem BlockOk.castPtr {a : BitVec 64} {Γ : Ctx} {r : Reg} {v base : BitVec 64
     have := h.regs r hr
     rw [hΓ, hasTy_eq] at this
     rw [this, hv]⟩)) hrest
+
+/-! ## Contexts attached to labels -/
+
+section Labels
+
+variable {L : Type} [DecidableEq L] {prog : List (Asm L)} {base : BitVec 64}
+  {T : L → Ctx → Prop}
+
+/-- The code typing of a labelled program, given the contexts allowed at each
+label: an address may be entered in a context if it is the address of a
+label that allows that context. -/
+def CodeTy.ofLabels (prog : List (Asm L)) (base : BitVec 64) (T : L → Ctx → Prop) : CodeTy :=
+  fun a Γ => ∃ l, Asm.addr prog base l = a ∧ T l Γ
+
+/-- A context allowed at a label is allowed at the label's address. -/
+theorem CodeTy.ofLabels.intro {l : L} {Γ : Ctx} (h : T l Γ) :
+    CodeTy.ofLabels prog base T (Asm.addr prog base l) Γ :=
+  ⟨l, rfl, h⟩
+
+/-- To type a labelled program block by block, type the block at each label. -/
+theorem BlocksOk.of_labels
+    (h : ∀ l Γ, T l Γ →
+      BlockOk (CodeTy.ofLabels prog base T) fetch sys Ψ (Asm.addr prog base l) Γ) :
+    BlocksOk (CodeTy.ofLabels prog base T) fetch sys Ψ := by
+  rintro a Γ ⟨l, rfl, hl⟩
+  exact h l Γ hl
+
+/-- A label that allows a signature's entry context for every caller is a
+function with that signature. -/
+theorem FnSig.at_label {sig : FnSig} {l : L}
+    (h : ∀ saved ret rest room, sig.CallerOk saved ret rest room →
+      T l (sig.entry saved ret rest room)) :
+    sig.At (CodeTy.ofLabels prog base T) (Asm.addr prog base l) :=
+  fun saved ret rest room hK => .intro (h saved ret rest room hK)
+
+end Labels
 
 /-- **Soundness, block by block.** -/
 theorem soundness_blocks {s : State} (hB : BlocksOk Φ fetch sys Ψ)
