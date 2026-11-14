@@ -106,6 +106,51 @@ example : BlockOk Φ fetch linux Ψ 9 Γ := by ty_step
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ 10 Γ := by ty_step
 
+/-! ## Control transfers
+
+A small labelled program, for jumps and returns the tactic refuses. -/
+
+inductive Target
+  | start | far | needsSlot | needsPtr
+  deriving DecidableEq
+
+def jumps : List (Asm Target) := [
+  .label .start, .jmp .needsSlot,
+  .label .far, .jmp .needsPtr,
+  .label .needsSlot, .ins .ret 1,
+  .label .needsPtr, .ins .ret 1]
+
+def jumpFetch : Fetch := Asm.fetch 0 jumps
+
+/-- Nothing is known, and the stack is empty. -/
+def bare : Ctx := ⟨fun _ => .int, [], 0, Flags.Any⟩
+
+/-- One integer on the stack. -/
+def oneSlot : Ctx := ⟨fun _ => .int, [.int], 0, Flags.Any⟩
+
+inductive AtTarget : Target → Ctx → Prop
+  | start : AtTarget .start bare
+  | far : AtTarget .far bare
+  | needsSlot : AtTarget .needsSlot oneSlot
+  | needsPtr :
+    AtTarget .needsPtr ⟨fun r => if r = .rdi then .ptr [.int] true 0 else .int, [], 0, Flags.Any⟩
+
+def Φj : CodeTy := .ofLabels jumps 0 AtTarget
+
+/-- error: no context allowed at label `needsSlot` accepts the current one
+• needsSlot: the stack, the free room or the flags do not match -/
+#guard_msgs in
+example : BlockOk Φj jumpFetch linux Ψ (Asm.addr jumps 0 .start) bare := by ty_block
+
+/-- error: no context allowed at label `needsPtr` accepts the current one
+• needsPtr: `rdi` has type `int`, but `pointer to [int]` is required -/
+#guard_msgs in
+example : BlockOk Φj jumpFetch linux Ψ (Asm.addr jumps 0 .far) bare := by ty_block
+
+/-- error: `ret` needs a return address on top of the stack, but the context does not have one there -/
+#guard_msgs in
+example : BlockOk Φj jumpFetch linux Ψ (Asm.addr jumps 0 .needsSlot) oneSlot := by ty_block
+
 /-! ## Accepted, for contrast
 
 Storing a writable pointer into a field typed as a read-only pointer is

@@ -57,27 +57,11 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   refine BlocksOk.of_labels ?_
   intro l Γ h
   cases h with
-  | start =>
-    -- mov rbx, rdi; call swap
-    ty_steps
-    exact .last rfl (FnSig.call_ok (sig := swapSig)
-      (FnSig.at_label fun _ _ _ _ hK => At.swap _ _ _ _ hK) rfl (.intro At.afterFirst)
-      (by sub_regs) (by ctx_sub) (by decide))
-  | afterFirst =>
-    -- push rbx; mov rdi, rbx; call swap
-    ty_steps
-    exact .last rfl (FnSig.call_ok (sig := swapSig)
-      (FnSig.at_label fun _ _ _ _ hK => At.swap _ _ _ _ hK) rfl (.intro At.afterSecond)
-      (by sub_regs) (by ctx_sub) (by decide))
-  | afterSecond =>
-    -- pop rdi; mov eax, 60; xor edi, edi; syscall
-    ty_steps
-    exact .last rfl (.syscall (by ty_accept At.spin))
-  | spin => exact .last rfl (.jmp (by ty_accept At.spin))
-  | swap saved ret rest room hK =>
-    -- the four moves, then ret
-    ty_steps
-    exact .last rfl (FnSig.ret_of hK (by sub_regs) rfl rfl)
+  | start => ty_block; ty_call swapSig
+  | afterFirst => ty_block; ty_call swapSig
+  | afterSecond => ty_block
+  | spin => ty_block
+  | swap saved ret rest room hK => ty_block
 
 /-! ## The memory typing and the starting state -/
 

@@ -56,40 +56,14 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   refine BlocksOk.of_labels ?_
   intro l Γ h
   cases h with
-  | start =>
-    -- mov esi, 7; mov edx, 7; cmp rsi, rdx
-    ty_steps
-    -- jne spin: both values are exactly 7, so the jump cannot be taken
-    refine .branch rfl ?_ ?_ ?_
-    · rintro f rfl; exact ⟨_, rfl⟩
-    · rintro f rfl hne
-      exact absurd hne (by decide)
-    · rintro f rfl -
-      -- call pick
-      exact .last rfl (FnSig.call_ok (sig := pickSig)
-        (FnSig.at_label fun _ _ _ _ hK => At.pick _ _ _ _ hK) rfl (.intro At.afterCall)
-        (by sub_regs) (by ctx_sub) (by decide))
-  | afterCall =>
-    ty_steps
-    exact .last rfl (.syscall (by ty_accept At.spin))
-  | spin => exact .last rfl (.jmp (by ty_accept At.spin))
+  | start => ty_block; ty_call pickSig
+  | afterCall => ty_block
+  | spin => ty_block
   | pick saved ret rest room hK =>
+    -- make the two slots the signature guarantees visible, so the frame can be allocated
     obtain ⟨m, rfl⟩ := hK.room_split
-    -- sub rsp, 16; mov [rsp], rdi; mov eax, [rdi+8]; mov [rsp+8], rax;
-    -- mov [rdi+12], eax; mov [rdi+1], al; test rax, rax
-    ty_steps
-    -- je skip
-    refine .branch rfl (Cond.decided_of_known (fun _ h => h) _) ?_ ?_
-    · intro f _ _
-      ty_accept (At.skip saved ret rest m hK)
-    · intro f _ _
-      -- mov rcx, [rsp]; movzx eax, byte ptr [rcx]; add rsp, 16
-      ty_steps
-      exact .last rfl (FnSig.ret_of hK (by sub_regs) rfl rfl)
-  | skip saved ret rest m hK =>
-    -- add rsp, 16; ret
-    ty_steps
-    exact .last rfl (FnSig.ret_of hK (by sub_regs) rfl rfl)
+    ty_block
+  | skip saved ret rest m hK => ty_block
 
 /-! ## The memory typing and the starting state -/
 

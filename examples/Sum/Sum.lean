@@ -88,45 +88,26 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     -- `rdi` holds exactly the array's address, so it is a pointer to its first element
     refine BlockOk.castPtr (r := .rdi) (base := 0x1000) (i := 0) (w := false) (by decide) rfl rfl
       (by decide) (fun h => absurd h (by decide)) ?_
-    -- call sum
-    exact .last rfl (FnSig.call_ok (sig := sumSig 5)
-      (FnSig.at_label fun _ _ _ _ hK => At.sum 5 _ _ _ _ hK) rfl (.intro At.afterCall)
-      (by sub_regs) (by ctx_sub) (by decide))
-  | afterCall =>
-    -- mov edi, eax; mov eax, 60; syscall
-    ty_steps
-    exact .last rfl (.syscall (by ty_accept At.spin))
-  | spin => exact .last rfl (.jmp (by ty_accept At.spin))
+    ty_call (sumSig 5)
+  | afterCall => ty_block
+  | spin => ty_block
   | sum n saved ret rest room hK =>
-    -- xor eax, eax; test rsi, rsi; je done
-    ty_steps
-    refine .last rfl (.jcc ?_ ?_ ?_)
-    · rintro f rfl; exact ⟨_, rfl⟩
-    · rintro f rfl -
-      ty_accept (At.done n saved ret rest room hK)
-    · -- not taken: the count is not zero, so the invariant holds with `i = 0`
-      rintro f rfl hne
-      ty_accept (At.loop n 0 saved ret rest room hK ?_)
-      apply left_ne_zero
-      intro h0
-      simp [Cond.eval, Flags.ofResult, h0] at hne
+    ty_block
+    -- entering the loop: the count is not zero, so the invariant holds with `i = 0`
+    apply left_ne_zero
+    intro h0
+    simp [Cond.eval, Flags.ofResult, h0] at hcond
   | loop n i saved ret rest room hK hi =>
-    -- add rax, [rdi]; add rdi, 8; sub rsi, 1; jne loop
-    ty_steps
-    refine .last rfl (.jcc ?_ ?_ ?_)
-    · rintro f rfl; exact ⟨_, rfl⟩
-    · -- taken: the counter is not zero, so `i + 1 < n` and the invariant holds again
-      rintro f rfl hne
-      have h0 : left n (i + 1) ≠ 0 := by
-        intro h0
-        rw [← decr hi] at h0
-        simp [Cond.eval, AluOp.apply, subBorrow_zf] at hne
-        exact hne (by simpa [AluOp.apply] using h0)
-      ty_accept (At.loop n (i + 1) saved ret rest room hK (left_ne_zero h0))
-      exact Sub.of_eq (decr hi)
-    · rintro f rfl -
-      ty_accept (At.done n saved ret rest room hK)
-  | done n saved ret rest room hK => exact .last rfl (FnSig.ret_ok hK)
+    ty_block
+    -- going round again: the counter is the one for `i + 1` elements consumed,
+    · exact Sub.of_eq (decr hi)
+    -- and it is not zero, so `i + 1 < n`
+    · apply left_ne_zero
+      intro h0
+      rw [← decr hi] at h0
+      simp [Cond.eval, AluOp.apply, subBorrow_zf] at hcond
+      exact hcond (by simpa [AluOp.apply] using h0)
+  | done n saved ret rest room hK => ty_block
 
 /-! ## The memory typing and the starting state -/
 
