@@ -36,33 +36,31 @@ namespace Sum
 
 /-! ## The program -/
 
-def code : List (Instr × BitVec 64) := [
-  (.mov .w32 (.rm_i (.reg .rsi) 5), 5),
-  (.call (.rel 14), 5),
-  (.mov .w32 (.rm_r (.reg .rdi) .rax), 2),
-  (.mov .w32 (.rm_i (.reg .rax) 60), 5),
-  (.syscall, 2),
-  (.jmp (.rel (-5)), 5),
-  -- sum
-  (.alu .xor .w32 (.rm_r (.reg .rax) .rax), 2),
-  (.test .w64 (.reg .rsi) (.reg .rsi), 3),
-  (.jcc .e 17, 6),
-  -- loop
-  (.alu .add .w64 (.r_m .rax (.sib (some .rdi) none 0)), 3),
-  (.alu .add .w64 (.rm_i (.reg .rdi) 8), 4),
-  (.alu .sub .w64 (.rm_i (.reg .rsi) 1), 4),
-  (.jcc .ne (-17), 6),
-  -- done
-  (.ret, 1)]
+inductive Label
+  | sum | loop | done | spin
+  deriving DecidableEq
 
-def fetch : Fetch := .layout 0 code
+def code : List (Asm Label) := [
+  .ins (.mov .w32 (.rm_i (.reg .rsi) 5)) 5,
+  .call .sum,
+  .ins (.mov .w32 (.rm_r (.reg .rdi) .rax)) 2,
+  .ins (.mov .w32 (.rm_i (.reg .rax) 60)) 5,
+  .ins .syscall 2,
+  .label .spin,
+  .jmp .spin,
+  .label .sum,
+  .ins (.alu .xor .w32 (.rm_r (.reg .rax) .rax)) 2,
+  .ins (.test .w64 (.reg .rsi) (.reg .rsi)) 3,
+  .jcc .e .done,
+  .label .loop,
+  .ins (.alu .add .w64 (.r_m .rax (.sib (some .rdi) none 0))) 3,
+  .ins (.alu .add .w64 (.rm_i (.reg .rdi) 8)) 4,
+  .ins (.alu .sub .w64 (.rm_i (.reg .rsi) 1)) 4,
+  .jcc .ne .loop,
+  .label .done,
+  .ins .ret 1]
 
-/-- A small model of Linux: `exit` ends the program; every other system call
-fails with `-ENOSYS` in `rax`. Like the real kernel, it overwrites `rcx` and
-`r11` and leaves the flags unknown. -/
-def linux : Syscall := fun s =>
-  if s.getReg .rax = 60 then .exit (s.readReg .w32 .rdi)
-  else .next { ((s.setReg .rax (-38)).setReg .rcx s.rip).setReg .r11 0 with flags := .unknown }
+def fetch : Fetch := Asm.fetch 0 code
 
 def array : List (BitVec 64) := [3, 1, 4, 1, 5]
 
@@ -130,7 +128,9 @@ inductive Φ : BitVec 64 → Ctx → Prop
 def arrayLayout : Layout := ⟨List.replicate 5 .int, false⟩
 
 /-- One memory block: the array. -/
-def Ψ : MemTy := fun a => if a = 0x1000 then some arrayLayout else none
+def blocks : List (BitVec 64 × Layout) := [(0x1000, arrayLayout)]
+
+def Ψ : MemTy := .ofList blocks
 
 /-! ## Arithmetic facts the loop relies on -/
 
@@ -261,61 +261,23 @@ theorem programOk : ProgramOk Φ fetch := by
     | decremented => exact absurd (by decide) ha
     | done => exact absurd (by decide) ha
 
-/-! ## The memory typing, the starting state and the operating system -/
+/-! ## The memory typing and the starting state -/
 
-theorem Ψ_cases {a : BitVec 64} {l : Layout} (h : Ψ a = some l) :
-    a = 0x1000 ∧ l = arrayLayout := by
-  unfold Ψ at h
-  split at h
-  · next ha => exact ⟨ha, (Option.some.inj h).symm⟩
-  · cases h
-
-theorem memOk : Ψ.WF := by
-  constructor
-  · intro a l h
-    obtain ⟨rfl, rfl⟩ := Ψ_cases h
-    decide
-  · intro a b la lb ha hb hne
-    obtain ⟨rfl, rfl⟩ := Ψ_cases ha
-    obtain ⟨rfl, rfl⟩ := Ψ_cases hb
-    exact absurd rfl hne
+theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 
 theorem startOk : StateOk Φ fetch linux Ψ start := by
-  refine ⟨_, Φ.start, fun n => ?_⟩
-  constructor
+  refine ⟨_, Φ.start, fun n => Matches.ofCheck (by decide) ?_ trivial ?_ ?_⟩
   · intro r _
     cases r <;> first
       | exact HasTy.int _
       | exact hasTy_ptr.mpr ⟨0x1000, arrayLayout, rfl, rfl, fun h => absurd h (by decide), by decide⟩
-  · trivial
-  · decide
-  · decide
   · intro i τ h; simp at h
-  · intro a l h
-    obtain ⟨rfl, rfl⟩ := Ψ_cases h
-    exact ⟨by decide, fun h => absurd h (by decide)⟩
-  · intro a l h i τ hi
-    obtain ⟨rfl, rfl⟩ := Ψ_cases h
-    have : τ = .int := by
-      have := List.mem_of_getElem? hi
-      simpa [arrayLayout] using this
+  · intro x hx i τ hi
+    simp only [blocks, List.mem_singleton] at hx
+    subst hx
+    have : τ = .int := by simpa [arrayLayout] using List.mem_of_getElem? hi
     subst this
     exact HasTy.int _
-  · intro a l h
-    obtain ⟨rfl, rfl⟩ := Ψ_cases h
-    constructor <;> decide
-
-/-- The Linux model satisfies what the type system assumes of the operating
-system, for any program and memory typing. -/
-theorem linuxOk (fetch : Fetch) (Ψ : MemTy) : SysOk fetch linux Ψ := by
-  intro n Γ s h
-  unfold linux
-  split
-  · exact ⟨rfl, fun s' he => by cases he⟩
-  · refine ⟨rfl, fun s' he => ?_⟩
-    cases he
-    exact ⟨rfl, (((h.setReg (by decide) (HasTy.int _)).setReg (by decide) (HasTy.int _)).setReg
-      (by decide) (HasTy.int _)).setFlags (P := Flags.Any) trivial⟩
 
 /-! ## Safety -/
 
@@ -346,4 +308,4 @@ def exitsWith (code : BitVec 32) : Outcome → Bool
 end Sum
 
 def main : IO Unit :=
-  IO.println (Sum.describe (run Sum.fetch Sum.linux 100 Sum.start))
+  IO.println (Sum.describe (run Sum.fetch linux 100 Sum.start))

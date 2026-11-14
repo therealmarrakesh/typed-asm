@@ -34,29 +34,28 @@ namespace Swap
 
 def field (disp : BitVec 32) : Mem := .sib (some .rdi) none disp
 
-def code : List (Instr × BitVec 64) := [
-  (.call (.rel 21), 5),
-  (.push .rdi, 1),
-  (.call (.rel 15), 5),
-  (.pop .rdi, 1),
-  (.mov .w32 (.rm_i (.reg .rax) 60), 5),
-  (.alu .xor .w32 (.rm_r (.reg .rdi) .rdi), 2),
-  (.syscall, 2),
-  (.jmp (.rel (-5)), 5),
-  (.mov .w64 (.r_m .rax (field 0)), 3),
-  (.mov .w64 (.r_m .rcx (field 8)), 4),
-  (.mov .w64 (.rm_r (.mem (field 0)) .rcx), 3),
-  (.mov .w64 (.rm_r (.mem (field 8)) .rax), 4),
-  (.ret, 1)]
+inductive Label
+  | swap | spin
+  deriving DecidableEq
 
-def fetch : Fetch := .layout 0 code
+def code : List (Asm Label) := [
+  .call .swap,
+  .ins (.push .rdi) 1,
+  .call .swap,
+  .ins (.pop .rdi) 1,
+  .ins (.mov .w32 (.rm_i (.reg .rax) 60)) 5,
+  .ins (.alu .xor .w32 (.rm_r (.reg .rdi) .rdi)) 2,
+  .ins .syscall 2,
+  .label .spin,
+  .jmp .spin,
+  .label .swap,
+  .ins (.mov .w64 (.r_m .rax (field 0))) 3,
+  .ins (.mov .w64 (.r_m .rcx (field 8))) 4,
+  .ins (.mov .w64 (.rm_r (.mem (field 0)) .rcx)) 3,
+  .ins (.mov .w64 (.rm_r (.mem (field 8)) .rax)) 4,
+  .ins .ret 1]
 
-/-- A small model of Linux: `exit` ends the program; every other system call
-fails with `-ENOSYS` in `rax`. Like the real kernel, it overwrites `rcx` and
-`r11` and leaves the flags unknown. -/
-def linux : Syscall := fun s =>
-  if s.getReg .rax = 60 then .exit (s.readReg .w32 .rdi)
-  else .next { ((s.setReg .rax (-38)).setReg .rcx s.rip).setReg .r11 0 with flags := .unknown }
+def fetch : Fetch := Asm.fetch 0 code
 
 /-- The starting state: a record holding 3 and 5 at `0x1000`, two free stack
 slots below `rsp`, and `rdi` pointing at the record. -/
@@ -103,7 +102,9 @@ inductive Φ : BitVec 64 → Ctx → Prop
 def recordLayout : Layout := ⟨[.int, .int], true⟩
 
 /-- One memory block: the record. -/
-def Ψ : MemTy := fun a => if a = 0x1000 then some recordLayout else none
+def blocks : List (BitVec 64 × Layout) := [(0x1000, recordLayout)]
+
+def Ψ : MemTy := .ofList blocks
 
 /-! ## The program is well typed -/
 
@@ -183,62 +184,23 @@ theorem programOk : ProgramOk Φ fetch := by
       exact ⟨_, _, rfl, .jmp (accDone (by decide) _ rfl rfl)⟩
   | swap a ret rest room ha hK => exact swapOk ha hK
 
-/-! ## The memory typing, the starting state and the operating system -/
+/-! ## The memory typing and the starting state -/
 
-theorem Ψ_cases {a : BitVec 64} {l : Layout} (h : Ψ a = some l) :
-    a = 0x1000 ∧ l = recordLayout := by
-  unfold Ψ at h
-  split at h
-  · next ha => exact ⟨ha, (Option.some.inj h).symm⟩
-  · cases h
-
-theorem memOk : Ψ.WF := by
-  constructor
-  · intro a l h
-    obtain ⟨rfl, rfl⟩ := Ψ_cases h
-    decide
-  · intro a b la lb ha hb hne
-    obtain ⟨rfl, rfl⟩ := Ψ_cases ha
-    obtain ⟨rfl, rfl⟩ := Ψ_cases hb
-    exact absurd rfl hne
+theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 
 theorem startOk : StateOk Φ fetch linux Ψ start := by
-  refine ⟨withPtr [] 2, Φ.start, fun n => ?_⟩
-  constructor
+  refine ⟨withPtr [] 2, Φ.start, fun n => Matches.ofCheck (by decide) ?_ trivial ?_ ?_⟩
   · intro r _
-    simp only [withPtr, ptrRegs]
-    split
-    · next h => subst h; exact hasTy_ptr.mpr ⟨0x1000, recordLayout, rfl, rfl, fun _ => rfl, by decide⟩
-    · exact HasTy.int _
-  · trivial
-  · decide
-  · decide
+    cases r <;> first
+      | exact HasTy.int _
+      | exact hasTy_ptr.mpr ⟨0x1000, recordLayout, rfl, rfl, fun _ => rfl, by decide⟩
   · intro i τ h; simp [withPtr] at h
-  · intro a l h
-    obtain ⟨rfl, rfl⟩ := Ψ_cases h
-    constructor <;> decide
-  · intro a l h i τ hi
-    obtain ⟨rfl, rfl⟩ := Ψ_cases h
-    have : τ = .int := by
-      have := List.mem_of_getElem? hi
-      simpa [recordLayout] using this
+  · intro x hx i τ hi
+    simp only [blocks, List.mem_singleton] at hx
+    subst hx
+    have : τ = .int := by simpa [recordLayout] using List.mem_of_getElem? hi
     subst this
     exact HasTy.int _
-  · intro a l h
-    obtain ⟨rfl, rfl⟩ := Ψ_cases h
-    constructor <;> decide
-
-/-- The Linux model satisfies what the type system assumes of the operating
-system, for any program and memory typing. -/
-theorem linuxOk (fetch : Fetch) (Ψ : MemTy) : SysOk fetch linux Ψ := by
-  intro n Γ s h
-  unfold linux
-  split
-  · exact ⟨rfl, fun s' he => by cases he⟩
-  · refine ⟨rfl, fun s' he => ?_⟩
-    cases he
-    exact ⟨rfl, (((h.setReg (by decide) (HasTy.int _)).setReg (by decide) (HasTy.int _)).setReg
-      (by decide) (HasTy.int _)).setFlags (P := Flags.Any) trivial⟩
 
 /-! ## Safety -/
 
@@ -270,7 +232,7 @@ def recordIs (x y : BitVec 64) : Outcome → Bool
 end Swap
 
 def main : IO Unit := do
-  IO.println (Swap.describe (run Swap.fetch Swap.linux 0 Swap.start))
-  IO.println (Swap.describe (run Swap.fetch Swap.linux 6 Swap.start))
-  IO.println (Swap.describe (run Swap.fetch Swap.linux 13 Swap.start))
-  IO.println (Swap.describe (run Swap.fetch Swap.linux 100 Swap.start))
+  IO.println (Swap.describe (run Swap.fetch linux 0 Swap.start))
+  IO.println (Swap.describe (run Swap.fetch linux 6 Swap.start))
+  IO.println (Swap.describe (run Swap.fetch linux 13 Swap.start))
+  IO.println (Swap.describe (run Swap.fetch linux 100 Swap.start))
