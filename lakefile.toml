@@ -1,16 +1,17 @@
 name = "typed-assembly"
 version = "0.1.0"
-defaultTargets = ["Core"]
+defaultTargets = ["Core", "sum"]
 
 # The core library: machine model, instruction set, semantics.
 [[lean_lib]]
 name = "Core"
 srcDir = "core"
 
-# Examples live in examples/<Name>/, one folder each. To register one, add:
-#
-# [[lean_lib]]
-# name = "<Name>"
-# srcDir = "examples/<Name>"
-#
-# with its root module at examples/<Name>/<Name>.lean (it can `import Core`).
+# Examples live in examples/<Name>/, one folder each, with the program in
+# examples/<Name>/<Name>.lean. Each is an executable that can `import Core`.
+# Run one with `lake exe <name>`.
+
+[[lean_exe]]
+name = "sum"
+root = "Sum"
+srcDir = "examples/Sum"
