@@ -107,7 +107,7 @@ theorem canWrite_congr {s t : State} (h : t.perm = s.perm) (a : BitVec 64) (n : 
   simp only [canWrite, h]
 
 theorem store64_regs (s : State) (a v : BitVec 64) : (s.store64 a v).regs = s.regs := by
-  simp only [store64, store32, store16, store8]
+  simp only [store64, store32, store16, regs_store8]
 
 theorem store64_flags (s : State) (a v : BitVec 64) : (s.store64 a v).flags = s.flags := by
   simp only [store64, store32, store16, store8]
@@ -623,7 +623,7 @@ theorem retype {r : Reg} {τ : Ty} (h : WellTyped fetch sys Ψ ix Γ s) (hr : r 
     (hv : HasTy fetch sys Ψ ix τ (s.getReg r)) : WellTyped fetch sys Ψ ix (Γ.setReg r τ) s := by
   refine (h.setReg hr hv).congr ?_ rfl rfl rfl
   funext r'
-  simp only [State.setReg, State.getReg]
+  simp only [State.regs_setReg, State.getReg]
   split
   · next h' => rw [h']
   · rfl

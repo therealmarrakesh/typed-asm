@@ -53,7 +53,7 @@ and given to the program as its input.
 
 With `--elf FILE` it writes the program as a Linux executable. -/
 def exeMain (entry : Nat) (image data : List Byte) (start : State) (args : List String)
-    (writable : Bool := false) (readsInput : Bool := false) (fuel : Nat := 100000) :
+    (writable : Bool := false) (readsInput : Bool := false) (fuel : Nat := 1000000000) :
     IO UInt32 := do
   match args with
   | ["--elf", path] =>

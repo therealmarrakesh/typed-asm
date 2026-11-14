@@ -119,6 +119,13 @@ def startWith (input : List ReadEvent) : State :=
 #guard wroteAndExited "ab" 0
   (runMemFinal linux 1000 (startWith [.bytes (bytesOf "ab"), .error (-4), .bytes (bytesOf "cd")]))
 
+-- A longer input, 4,096 bytes in one piece, comes back intact. The model
+-- runs at a steady speed however much it has stored; if that were lost,
+-- this check would be the first thing to slow down.
+def sample : List Byte := (List.range 4096).map (BitVec.ofNat 8 ·)
+
+#guard (runMemFinal linux 100000 (startWith [.bytes sample])).1.world.output == sample
+
 end Echo
 
 /-- With no arguments, runs the program on the machine with code in memory,

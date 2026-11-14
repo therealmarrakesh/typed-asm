@@ -75,7 +75,7 @@ theorem write8_frame (s : State) (a : BitVec 64) (v : BitVec 8) : (s.write8 a v)
     have h := outside_of_not_writable (n := 1) (by decide) hc hx
     have hne : x ≠ a := by
       intro e; subst e; simp at h
-    simp only [store8, hne, ite_false]
+    simp only [mem_store8, hne, ite_false]
   · trivial
 
 theorem writeRM_frame (s : State) (w : Width) (dst : RM) (v : BitVec w.bits) :

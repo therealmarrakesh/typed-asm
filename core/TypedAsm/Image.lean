@@ -109,16 +109,26 @@ theorem Asm.loaded {L : Type} [DecidableEq L] {base : BitVec 64} {prog : List (A
 
 /-- The state with these bytes placed in executable memory from `a`. -/
 def State.loadCode (s : State) (a : BitVec 64) (bytes : List Byte) : State :=
+  let n := bytes.length
   { s with
-    mem := fun x => if h : (x - a).toNat < bytes.length then bytes[(x - a).toNat] else s.mem x
-    perm := fun x => if (x - a).toNat < bytes.length then .rx else s.perm x }
+    memory := s.memory.setBytes a bytes
+    perm := fun x => if (x - a).toNat < n then .rx else s.perm x }
+
+/-- Loading bytes changes the addresses they cover and no other. -/
+theorem State.mem_loadCode (s : State) (a x : BitVec 64) (bytes : List Byte)
+    (hlen : bytes.length ≤ 2 ^ 64) :
+    (s.loadCode a bytes).mem x = (bytes[(x - a).toNat]?).getD (s.mem x) :=
+  Memory.get_setBytes _ _ _ _ hlen
 
 /-- Loading bytes puts them in memory, executable. -/
 theorem State.hasCode_loadCode (s : State) (a : BitVec 64) (bytes : List Byte)
     (hlen : bytes.length ≤ 2 ^ 64) : (s.loadCode a bytes).HasCode a bytes := by
   intro k hk
   have e : (a + BitVec.ofNat 64 k - a).toNat = k := by bv_omega
-  simp only [State.loadCode, e, hk, dite_true, ite_true, and_self]
+  refine ⟨?_, ?_⟩
+  · rw [State.mem_loadCode s a _ bytes hlen, e, List.getElem?_eq_getElem hk]
+    rfl
+  · simp only [State.loadCode, e, hk, ite_true]
 
 /-- Loading code does not change permissions outside the code. -/
 theorem State.perm_loadCode_outside {s : State} {a x : BitVec 64} {bytes : List Byte}

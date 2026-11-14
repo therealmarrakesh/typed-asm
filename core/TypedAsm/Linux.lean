@@ -38,7 +38,7 @@ def write (s : State) : State :=
   let count := (s.getReg .rdx).toNat
   if fd ≠ 1 ∧ fd ≠ 2 then ret s (-9)
   else if s.canRead buf count then
-    ret { s with world := { s.world with output := s.world.output ++ s.loadBytes buf count } }
+    ret { s with world := { s.world with writes := s.loadBytes buf count :: s.world.writes } }
       (BitVec.ofNat 64 count)
   else ret s (-14)
 
@@ -55,11 +55,11 @@ def read (s : State) : State :=
     | [] => ret s 0
     | .error e :: rest => ret { s with world := { s.world with input := rest } } e
     | .bytes data :: rest =>
-      let n := min count data.length
-      let left := data.drop n
-      ret { s.storeBytes buf (data.take n) with
+      let chunk := data.take count
+      let left := data.drop count
+      ret { s.storeBytes buf chunk with
           world := { s.world with input := if left.isEmpty then rest else .bytes left :: rest } }
-        (BitVec.ofNat 64 n)
+        (BitVec.ofNat 64 chunk.length)
   else ret s (-14)
 
 end Linux
@@ -130,10 +130,9 @@ theorem read_ok {sys : Syscall} {fields : List Ty} {off : Nat} {len : BitVec 64}
         rw [hdx, hva]
         by_cases hc : (len.toNat + 7) / 8 = 0
         · -- nothing is asked for, so nothing is stored
-          have hz : min len.toNat data.length = 0 := by omega
-          refine h.congr rfl rfl ?_ rfl
-          funext x
-          simp [State.storeBytes, hz]
+          have hz : len.toNat = 0 := by omega
+          rw [hz, List.take_zero, State.storeBytes_nil]
+          exact h.congr rfl rfl rfl rfl
         · have hlast := hints ((len.toNat + 7) / 8 - 1) (by omega)
           have hle : off + (len.toNat + 7) / 8 ≤ l.fields.length := by
             have := (List.getElem?_eq_some_iff.mp hlast).1
@@ -145,7 +144,7 @@ theorem read_ok {sys : Syscall} {fields : List Ty} {off : Nat} {len : BitVec 64}
               have := hints (j - off) (by omega)
               rwa [show off + (j - off) = j by omega] at this)
             rfl rfl rfl (fun y hd => ?_)
-          have htake : (data.take (min len.toNat data.length)).length ≤ len.toNat := by
+          have htake : (data.take len.toNat).length ≤ len.toNat := by
             simp only [List.length_take]; omega
           refine (State.load64_congr (s := s.storeBytes _ _) rfl y).trans
             (State.load64_storeBytes_disjoint s _ (by omega) ?_ hd.2)
@@ -228,10 +227,12 @@ theorem linux_frame (s : State) : (linux s).All (Frame s) := by
             · next data rest _ =>
               refine ⟨rfl, fun x hx => ?_⟩
               show (s.storeBytes _ _).mem x = s.mem x
-              simp only [State.storeBytes]
-              split
-              · next hin =>
-                -- a byte inside the buffer is writable, so it is not one of these
+              have hlen : (data.take (s.getReg .rdx).toNat).length ≤ 2 ^ 64 := by
+                have := (s.getReg .rdx).isLt
+                simp only [List.length_take]; omega
+              rw [State.mem_storeBytes s _ x _ hlen]
+              by_cases hin : (x - s.getReg .rsi).toNat < (data.take (s.getReg .rdx).toNat).length
+              · -- a byte inside the buffer is writable, so it is not one of these
                 rw [State.canWrite_iff] at hw
                 have hlt : (x - s.getReg .rsi).toNat < (s.getReg .rdx).toNat := by
                   simp only [List.length_take] at hin; omega
@@ -240,7 +241,8 @@ theorem linux_frame (s : State) : (linux s).All (Frame s) := by
                   bv_omega] at this
                 rw [this] at hx
                 cases hx
-              · rfl
+              · rw [List.getElem?_eq_none (by omega)]
+                rfl
           · exact Frame.of_eq rfl rfl
       · exact Frame.of_eq rfl rfl
 

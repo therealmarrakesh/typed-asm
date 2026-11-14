@@ -66,7 +66,16 @@ def load (s : State) (w : Width) (a : BitVec 64) : BitVec w.bits :=
 /-! ## Stores -/
 
 def store8 (s : State) (a : BitVec 64) (v : BitVec 8) : State :=
-  { s with mem := fun x => if x = a then v else s.mem x }
+  { s with memory := s.memory.set a v }
+
+/-- Storing a byte does not change the registers. -/
+theorem regs_store8 (s : State) (a : BitVec 64) (v : BitVec 8) : (s.store8 a v).regs = s.regs :=
+  rfl
+
+/-- Storing a byte changes that byte and no other. -/
+theorem mem_store8 (s : State) (a x : BitVec 64) (v : BitVec 8) :
+    (s.store8 a v).mem x = if x = a then v else s.mem x :=
+  Memory.get_set _ _ _ _
 
 def store16 (s : State) (a : BitVec 64) (v : BitVec 16) : State :=
   (s.store8 a (v.extractLsb' 0 8)).store8 (a + 1) (v.extractLsb' 8 8)
@@ -88,13 +97,13 @@ def store (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) : State :=
 /-- Loading from an address just stored to returns the stored value. -/
 theorem load8_store8_same (s : State) (a : BitVec 64) (v : BitVec 8) :
     (s.store8 a v).load8 a = v := by
-  simp [load8, store8]
+  simp [load8, mem_store8]
 
 /-- Loading from an address just stored to returns the stored value. -/
 theorem load_store_same (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) :
     (s.store w a v).load w a = v := by
   cases w <;>
-    simp [load, store, load64, load32, load16, load8, store64, store32, store16, store8,
+    simp [load, store, load64, load32, load16, load8, store64, store32, store16, mem_store8,
       BitVec.add_assoc] <;>
     bv_decide
 
@@ -102,7 +111,7 @@ theorem load_store_same (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bi
 theorem mem_store_of_disjoint (s : State) (w : Width) (a x : BitVec 64) (v : BitVec w.bits)
     (h : w.bytes ≤ x - a) : (s.store w a v).mem x = s.mem x := by
   cases w <;>
-    simp only [store, store64, store32, store16, store8, Width.bytes] at * <;>
+    simp only [store, store64, store32, store16, mem_store8, Width.bytes] at * <;>
     bv_decide
 
 private theorem load32_congr {s t : State} {b : BitVec 64}
@@ -136,7 +145,7 @@ theorem load_store_disjoint (s : State) (w w' : Width) (a b : BitVec 64) (v : Bi
 theorem load64_store8_disjoint (s : State) {a b : BitVec 64} (v : BitVec 8) (h : 8 ≤ a - b) :
     (s.store8 a v).load64 b = s.load64 b := by
   apply load64_congr <;>
-    (simp only [store8]
+    (simp only [mem_store8]
      split
      · next hx => exact absurd hx (by bv_decide)
      · rfl)
@@ -154,7 +163,7 @@ theorem flags_store (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) 
 /-- A store does not change the registers. -/
 theorem regs_store (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) :
     (s.store w a v).regs = s.regs := by
-  cases w <;> simp only [store, store64, store32, store16, store8]
+  cases w <;> simp only [store, store64, store32, store16, regs_store8]
 
 /-- A store does not change any permission. -/
 theorem perm_store (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) :
@@ -164,7 +173,7 @@ theorem perm_store (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) :
 /-- A store does not change any register. -/
 theorem getReg_store (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) (r : Reg) :
     (s.store w a v).getReg r = s.getReg r := by
-  cases w <;> simp only [store, store64, store32, store16, store8, getReg]
+  cases w <;> simp only [store, store64, store32, store16, getReg, regs_store8]
 
 /-- A register write does not change memory. -/
 theorem load_setReg (s : State) (r : Reg) (v : BitVec 64) (w : Width) (a : BitVec 64) :
@@ -177,7 +186,17 @@ theorem load_setReg (s : State) (r : Reg) (v : BitVec 64) (w : Width) (a : BitVe
 
 /-- Store a list of bytes at consecutive addresses. -/
 def storeBytes (s : State) (a : BitVec 64) (l : List (BitVec 8)) : State :=
-  { s with mem := fun x => if h : (x - a).toNat < l.length then l[(x - a).toNat] else s.mem x }
+  { s with memory := s.memory.setBytes a l }
+
+/-- Storing no bytes changes nothing. -/
+theorem storeBytes_nil (s : State) (a : BitVec 64) : s.storeBytes a [] = s := by
+  simp only [storeBytes, Memory.setBytes_nil]
+
+/-- Storing bytes changes the addresses they cover and no other. -/
+theorem mem_storeBytes (s : State) (a x : BitVec 64) (l : List (BitVec 8))
+    (hlen : l.length ≤ 2 ^ 64) :
+    (s.storeBytes a l).mem x = (l[(x - a).toNat]?).getD (s.mem x) :=
+  Memory.get_setBytes _ _ _ _ hlen
 
 /-- The `n` bytes starting at `a`. -/
 def loadBytes (s : State) (a : BitVec 64) (n : Nat) : List (BitVec 8) :=
@@ -187,12 +206,9 @@ def loadBytes (s : State) (a : BitVec 64) (n : Nat) : List (BitVec 8) :=
 theorem load64_storeBytes_disjoint (s : State) {a y : BitVec 64} (l : List (BitVec 8))
     (hlen : l.length < 2 ^ 64) (h1 : BitVec.ofNat 64 l.length ≤ y - a)
     (h2 : BitVec.ofNat 64 8 ≤ a - y) : (s.storeBytes a l).load64 y = s.load64 y := by
-  generalize hn : l.length = n at hlen h1
   apply load64_congr <;>
-    (simp only [storeBytes, hn]
-     split
-     · next hx => exact absurd hx (by bv_omega)
-     · rfl)
+    (rw [mem_storeBytes s a _ l (Nat.le_of_lt hlen), List.getElem?_eq_none (by bv_omega)]
+     rfl)
 
 /-- Whether all `n` bytes starting at `a` are readable. -/
 def canRead (s : State) (a : BitVec 64) (n : Nat) : Bool :=
