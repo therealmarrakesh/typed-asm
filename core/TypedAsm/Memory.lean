@@ -1,5 +1,5 @@
-import Core.State
-import Core.Result
+import TypedAsm.State
+import TypedAsm.Result
 
 /-!
 # Memory access
@@ -12,7 +12,7 @@ permissions and always succeed. `read` and `write` are what instructions use:
 they check permissions first and fault if any byte of the access is not allowed.
 -/
 
-namespace Core
+namespace TypedAsm
 
 /-- The left shift that multiplies by the scale factor. -/
 def Scale.shift : Scale → Nat
@@ -209,4 +209,4 @@ theorem read_write_same {s s' : State} {w : Width} {a : BitVec 64} {v : BitVec w
 
 end State
 
-end Core
+end TypedAsm

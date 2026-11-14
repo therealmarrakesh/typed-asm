@@ -1,4 +1,4 @@
-import Core
+import TypedAsm
 
 /-!
 # Summing an array
@@ -31,7 +31,7 @@ Instruction lengths are those of the real encodings. Jump and call offsets are
 relative to the address of the following instruction.
 -/
 
-open Core
+open TypedAsm
 
 namespace Sum
 

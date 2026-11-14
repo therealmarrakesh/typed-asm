@@ -6,7 +6,7 @@ instructions meaning; semantics, encoding and typing are defined over `Instr`
 elsewhere.
 -/
 
-namespace Core
+namespace TypedAsm
 
 /-- The sixteen 64-bit general-purpose registers, in hardware encoding order. -/
 inductive Reg
@@ -145,4 +145,4 @@ inductive Instr
 example : Instr :=
   .alu .add .w64 (.r_m .rax (.sib (some .rbx) (some (.rcx, .s8)) 16))
 
-end Core
+end TypedAsm

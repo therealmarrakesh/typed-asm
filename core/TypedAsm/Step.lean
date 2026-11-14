@@ -1,4 +1,4 @@
-import Core.Memory
+import TypedAsm.Memory
 
 /-!
 # Executing instructions
@@ -9,7 +9,7 @@ one instruction to the next.
 Flags the hardware leaves undefined after an instruction become `none`.
 -/
 
-namespace Core
+namespace TypedAsm
 
 /-- The result of trying to execute one instruction. -/
 abbrev Outcome := Result State
@@ -392,4 +392,4 @@ theorem subBorrow_of (w : Width) (a b : BitVec w.bits) :
   cases w <;> simp only [Width.bits] <;> intro a b <;>
     simp only [subBorrow, Flags.ofResult, Option.some.injEq] <;> bv_decide
 
-end Core
+end TypedAsm

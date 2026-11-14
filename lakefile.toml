@@ -1,14 +1,14 @@
 name = "typed-assembly"
 version = "0.1.0"
-defaultTargets = ["Core", "sum"]
+defaultTargets = ["TypedAsm", "sum"]
 
 # The core library: machine model, instruction set, semantics.
 [[lean_lib]]
-name = "Core"
+name = "TypedAsm"
 srcDir = "core"
 
 # Examples live in examples/<Name>/, one folder each, with the program in
-# examples/<Name>/<Name>.lean. Each is an executable that can `import Core`.
+# examples/<Name>/<Name>.lean. Each is an executable that can `import TypedAsm`.
 # Run one with `lake exe <name>`.
 
 [[lean_exe]]

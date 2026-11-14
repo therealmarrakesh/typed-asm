@@ -1,4 +1,4 @@
-import Core.Instr
+import TypedAsm.Instr
 import Std.Tactic.BVDecide
 
 /-!
@@ -11,7 +11,7 @@ Memory has a byte at every address, and separately a permission for every
 address that says whether programs may read or write it.
 -/
 
-namespace Core
+namespace TypedAsm
 
 /-- The number of bits in an operand of the given width. -/
 def Width.bits : Width → Nat
@@ -106,4 +106,4 @@ theorem writeReg_w32_upper_zero (s : State) (r : Reg) (v : BitVec 32) :
 
 end State
 
-end Core
+end TypedAsm

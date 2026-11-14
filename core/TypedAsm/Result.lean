@@ -6,7 +6,7 @@ three reasons. `Result` is a monad, so a sequence of operations stops at the
 first one that does not continue.
 -/
 
-namespace Core
+namespace TypedAsm
 
 /-- Exceptions the hardware raises. -/
 inductive Fault
@@ -64,4 +64,4 @@ def ofOption {α : Type} : Option α → Result α
 
 end Result
 
-end Core
+end TypedAsm
