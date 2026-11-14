@@ -1,6 +1,6 @@
 name = "typed-assembly"
 version = "0.1.0"
-defaultTargets = ["TypedAsm", "sum", "swap", "frame"]
+defaultTargets = ["TypedAsm", "sum", "swap", "frame", "Rejected"]
 
 # The core library: machine model, instruction set, semantics.
 [[lean_lib]]
@@ -25,3 +25,9 @@ srcDir = "examples/Swap"
 name = "frame"
 root = "Frame"
 srcDir = "examples/Frame"
+
+# Not a program to run: instructions the type system rejects, with the
+# messages it gives, checked at build time.
+[[lean_lib]]
+name = "Rejected"
+srcDir = "examples/Rejected"
