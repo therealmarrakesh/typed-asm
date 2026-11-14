@@ -814,6 +814,27 @@ theorem slot_add (a : BitVec 64) (off i : Nat) :
 
 /-! ## Operands -/
 
+/-- A register typed as exactly `a` holds `a`. -/
+theorem WellTyped.eqReg {Γ : Ctx} {s : State} {r : Reg} {a : BitVec 64}
+    (h : WellTyped fetch sys Ψ ix Γ s) (hr : r ≠ .rsp) (hΓ : Γ.regs r = .eq a) :
+    s.getReg r = a := by
+  have := h.regs r hr
+  rwa [hΓ, hasTy_eq] at this
+
+theorem State.readReg_of {s : State} {r : Reg} {a : BitVec 64} (hp : s.getReg r = a) (w : Width) :
+    s.readReg w r = a.setWidth w.bits := by
+  rw [State.readReg, hp]
+
+theorem IndexReg.toReg_ne_rsp (x : IndexReg) : x.toReg ≠ .rsp := by
+  cases x <;> decide
+
+/-- The address an indexed operand refers to, when the index is known. -/
+theorem State.ea_indexed (s : State) {b : Reg} {x : IndexReg} {sc : Scale} {disp : BitVec 32}
+    {c D : BitVec 64} (hx : s.getReg x.toReg = c) (hD : (c <<< sc.shift) + disp.signExtend 64 = D) :
+    s.ea (.sib (some b) (some (x, sc)) disp) = s.getReg b + D := by
+  simp only [State.ea, hx]
+  rw [BitVec.add_assoc, hD]
+
 section Operands
 
 variable {Γ : Ctx} {s : State} {next : BitVec 64}
@@ -831,6 +852,14 @@ theorem ReadOk.canRead {n : Nat} {m : Mem} (hr : ReadOk Ψ next Γ n (.mem m))
     have hea : s.ea (.rip disp) = base + BitVec.ofNat 64 (8 * i + k) := by
       simp only [State.ea, hrip, haddr]
     rw [hea]
+    exact h.canRead_inner hl hilt hk
+  | @indexed b x sc fields writable off i k disp c τ hb hΓ hΓx hD hi hk =>
+    have hp := h.regs b hb
+    rw [hΓ] at hp
+    obtain ⟨a, l, hl, rfl, -, hva⟩ := hasTy_ptr.mp hp
+    have hilt : off + i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
+    have hx := h.eqReg x.toReg_ne_rsp hΓx
+    rw [State.ea_indexed s hx hD, hva, slot_add_inner]
     exact h.canRead_inner hl hilt hk
   | @field b fields writable off i k disp τ hb hΓ hdisp hi hk =>
     have hp := h.regs b hb
@@ -877,6 +906,21 @@ theorem WriteIntOk.writeRM {w : Width} {rm : RM} {Γ' : Ctx}
     (hrip : s.rip = next) (v : BitVec w.bits) :
     ∃ s', s.writeRM w rm v = .next s' ∧ s'.rip = s.rip ∧ WellTyped fetch sys Ψ ix Γ' s' := by
   cases hw with
+  | @indexed b x sc fields off i k disp c hb hΓ hΓx hD hi hk =>
+    have hp := h.regs b hb
+    rw [hΓ] at hp
+    obtain ⟨a, l, hl, rfl, hwr, hva⟩ := hasTy_ptr.mp hp
+    have hilt : off + i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
+    have hx := h.eqReg x.toReg_ne_rsp hΓx
+    have hea : s.ea (.sib (some b) (some (x, sc)) disp)
+        = a + BitVec.ofNat 64 (8 * (off + i) + k) := by
+      rw [State.ea_indexed s hx hD, hva, slot_add_inner]
+    have hc := h.canWrite_inner (m := w.bytes.toNat) hl (hwr rfl) hilt hk
+    refine ⟨s.store w (a + BitVec.ofNat 64 (8 * (off + i) + k)) v, ?_, State.rip_store _ _ _ _,
+      h.writeInt hΨ hl hi (State.regs_store _ _ _ _) (State.flags_store _ _ _ _)
+        (State.perm_store _ _ _ _) (fun y hd => by
+          rw [inner_split]; exact State.load64_store_inner s w _ hk hd)⟩
+    simp only [State.writeRM, hea, State.write, hc, ite_true]
   | @global base l i k disp hl hwr haddr hi hk =>
     have hilt : i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
     have hea : s.ea (.rip disp) = base + BitVec.ofNat 64 (8 * i + k) := by
@@ -916,6 +960,20 @@ theorem WriteIntOk.writeRM8 {rm : RM} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 1 
     (h : WellTyped fetch sys Ψ ix Γ s) (hΨ : Ψ.WF) (hrip : s.rip = next) (v : BitVec 8) :
     ∃ s', s.writeRM8 rm v = .next s' ∧ s'.rip = s.rip ∧ WellTyped fetch sys Ψ ix Γ' s' := by
   cases hw with
+  | @indexed b x sc fields off i k disp c hb hΓ hΓx hD hi hk =>
+    have hp := h.regs b hb
+    rw [hΓ] at hp
+    obtain ⟨a, l, hl, rfl, hwr, hva⟩ := hasTy_ptr.mp hp
+    have hilt : off + i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
+    have hx := h.eqReg x.toReg_ne_rsp hΓx
+    have hea : s.ea (.sib (some b) (some (x, sc)) disp)
+        = a + BitVec.ofNat 64 (8 * (off + i) + k) := by
+      rw [State.ea_indexed s hx hD, hva, slot_add_inner]
+    have hc := h.canWrite_inner (m := 1) hl (hwr rfl) hilt hk
+    refine ⟨s.store8 (a + BitVec.ofNat 64 (8 * (off + i) + k)) v, ?_, rfl,
+      h.writeInt hΨ hl hi rfl rfl rfl (fun y hd => by
+        rw [inner_split]; exact State.load64_store8_inner s _ hk hd)⟩
+    simp only [State.writeRM8, hea, State.write8, hc, ite_true]
   | @global base l i k disp hl hwr haddr hi hk =>
     have hilt : i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
     have hea : s.ea (.rip disp) = base + BitVec.ofNat 64 (8 * i + k) := by
@@ -952,6 +1010,16 @@ theorem CodeAt.sound {rm : RM} {Δ : Ctx} (hc : CodeAt Ψ next Γ rm Δ)
     (h : WellTyped fetch sys Ψ ix Γ s) (hrip : s.rip = next) :
     ∃ v, s.readRM .w64 rm = .next v ∧ HasTy fetch sys Ψ ix (.code Δ) v := by
   cases hc with
+  | @indexed b x sc fields writable off i disp c Δ hb hΓ hΓx hD hi =>
+    have hp := h.regs b hb
+    rw [hΓ] at hp
+    obtain ⟨a, l, hl, rfl, -, hva⟩ := hasTy_ptr.mp hp
+    have hilt : off + i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
+    have hx := h.eqReg x.toReg_ne_rsp hΓx
+    have hea : s.ea (.sib (some b) (some (x, sc)) disp) = a + BitVec.ofNat 64 (8 * (off + i)) := by
+      rw [State.ea_indexed s hx hD, hva, slot_add]
+    refine ⟨s.load64 (a + BitVec.ofNat 64 (8 * (off + i))), ?_, h.heap _ l hl (off + i) _ hi⟩
+    simp [State.readRM, hea, State.read_w64 (h.canRead_field hl hilt)]
   | @global base l i disp Δ hl haddr hi =>
     have hilt : i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
     have hea : s.ea (.rip disp) = base + BitVec.ofNat 64 (8 * i) := by
@@ -979,20 +1047,6 @@ theorem CodeAt.sound {rm : RM} {Δ : Ctx} (hc : CodeAt Ψ next Γ rm Δ)
 end Operands
 
 /-! ## Exactly known values -/
-
-/-- A register typed as exactly `a` holds `a`. -/
-theorem WellTyped.eqReg {Γ : Ctx} {s : State} {r : Reg} {a : BitVec 64}
-    (h : WellTyped fetch sys Ψ ix Γ s) (hr : r ≠ .rsp) (hΓ : Γ.regs r = .eq a) :
-    s.getReg r = a := by
-  have := h.regs r hr
-  rwa [hΓ, hasTy_eq] at this
-
-theorem State.readReg_of {s : State} {r : Reg} {a : BitVec 64} (hp : s.getReg r = a) (w : Width) :
-    s.readReg w r = a.setWidth w.bits := by
-  rw [State.readReg, hp]
-
-theorem IndexReg.toReg_ne_rsp (x : IndexReg) : x.toReg ≠ .rsp := by
-  cases x <;> decide
 
 /-- The value a shift or rotate produces does not depend on the flags. -/
 theorem ShiftOp.eval_fst {n : Nat} (op : ShiftOp) (old : Flags) (a : BitVec n) (c : Nat) :
@@ -1444,6 +1498,30 @@ theorem Straight.sound_next {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
       State.store64_rip _ _ _, h.storeField hΨ hl hi ((h.regs src hs).sub hsub)⟩
     simp [exec, State.writeRM, Operands.src, Operands.dst, hea,
       State.readReg_w64, State.write_w64 _ (h.canWrite_field hl (hw rfl) hilt)]
+  | @loadIndexed d b x sc fields writable off i disp c τ hd hb hΓ hΓx hD hi =>
+    have hp := h.regs b hb
+    rw [hΓ] at hp
+    obtain ⟨a, l, hl, rfl, -, hva⟩ := hasTy_ptr.mp hp
+    have hilt : off + i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
+    have hx := h.eqReg x.toReg_ne_rsp hΓx
+    have hea : s.ea (.sib (some b) (some (x, sc)) disp) = a + BitVec.ofNat 64 (8 * (off + i)) := by
+      rw [State.ea_indexed s hx hD, hva, slot_add]
+    refine ⟨s.setReg d (s.load64 (a + BitVec.ofNat 64 (8 * (off + i)))), ?_, rfl,
+      h.setReg hd (h.heap _ l hl (off + i) τ hi)⟩
+    simp [exec, State.writeRM, Operands.src, Operands.dst, hea,
+      State.read_w64 (h.canRead_field hl hilt), State.writeReg]
+  | @storeIndexed b src x sc fields off i disp c τ hb hs hΓ hΓx hD hi hsub =>
+    have hp := h.regs b hb
+    rw [hΓ] at hp
+    obtain ⟨a, l, hl, rfl, hwr, hva⟩ := hasTy_ptr.mp hp
+    have hilt : off + i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
+    have hx := h.eqReg x.toReg_ne_rsp hΓx
+    have hea : s.ea (.sib (some b) (some (x, sc)) disp) = a + BitVec.ofNat 64 (8 * (off + i)) := by
+      rw [State.ea_indexed s hx hD, hva, slot_add]
+    refine ⟨s.store64 (a + BitVec.ofNat 64 (8 * (off + i))) (s.getReg src), ?_,
+      State.store64_rip _ _ _, h.storeField hΨ hl hi ((h.regs src hs).sub hsub)⟩
+    simp [exec, State.writeRM, Operands.src, Operands.dst, hea,
+      State.readReg_w64, State.write_w64 _ (h.canWrite_field hl (hwr rfl) hilt)]
   | @loadGlobal d base l i disp τ hd hl haddr hi =>
     have hilt : i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
     have hea : s.ea (.rip disp) = base + BitVec.ofNat 64 (8 * i) := by

@@ -13,10 +13,11 @@ adds the instructions that transfer control, and checks every possible
 successor address against the code typing.
 
 A memory operand is `[register + constant]`, a field of a typed pointer or a
-stack slot, or `[rip + constant]`, a field of a block at a fixed address. A
+stack slot; `[register + index * scale + constant]`, a field chosen by an
+exactly known index; or `[rip + constant]`, a field of a block at a fixed
+address. A
 whole 8-byte field or slot keeps its type when loaded or stored at 64 bits;
 any other access, narrower or inside a field, reads and writes integers.
-Indexed operands have no rule.
 
 Every instruction of the machine has a rule. What the rules do not track:
 an operation on values that are not exactly known gives a plain integer,
@@ -137,6 +138,14 @@ inductive ReadOk (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) (n : Nat) : RM → P
   | slot {i k : Nat} {disp : BitVec 32} {τ : Ty} :
     innerDisp i k disp → Γ.stack[i]? = some τ → k + n ≤ 8 →
     ReadOk Ψ next Γ n (.mem (.sib (some .rsp) none disp))
+  /-- An indexed access: the index register holds an exactly known value,
+  and scaled and added to the displacement it lands inside a field. -/
+  | indexed {b : Reg} {x : IndexReg} {sc : Scale} {fields : List Ty} {writable : Bool}
+      {off i k : Nat} {disp : BitVec 32} {c : BitVec 64} {τ : Ty} :
+    b ≠ .rsp → Γ.regs b = .ptr fields writable off → Γ.regs x.toReg = .eq c →
+    (c <<< sc.shift) + disp.signExtend 64 = BitVec.ofNat 64 (8 * i + k) →
+    fields[off + i]? = some τ → k + n ≤ 8 →
+    ReadOk Ψ next Γ n (.mem (.sib (some b) (some (x, sc)) disp))
   /-- A global: bytes inside one field of a block, at a fixed distance from
   the next instruction. -/
   | global {base : BitVec 64} {l : Layout} {i k : Nat} {disp : BitVec 32} {τ : Ty} :
@@ -156,6 +165,12 @@ inductive WriteIntOk (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) (n : Nat) : RM �
   | slot {i k : Nat} {disp : BitVec 32} {τ : Ty} :
     innerDisp i k disp → Γ.stack[i]? = some τ → k + n ≤ 8 →
     WriteIntOk Ψ next Γ n (.mem (.sib (some .rsp) none disp)) { Γ with stack := Γ.stack.set i .int }
+  | indexed {b : Reg} {x : IndexReg} {sc : Scale} {fields : List Ty} {off i k : Nat}
+      {disp : BitVec 32} {c : BitVec 64} :
+    b ≠ .rsp → Γ.regs b = .ptr fields true off → Γ.regs x.toReg = .eq c →
+    (c <<< sc.shift) + disp.signExtend 64 = BitVec.ofNat 64 (8 * i + k) →
+    fields[off + i]? = some .int → k + n ≤ 8 →
+    WriteIntOk Ψ next Γ n (.mem (.sib (some b) (some (x, sc)) disp)) Γ
   | global {base : BitVec 64} {l : Layout} {i k : Nat} {disp : BitVec 32} :
     Ψ base = some l → l.writable = true →
     next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i + k) →
@@ -163,6 +178,12 @@ inductive WriteIntOk (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) (n : Nat) : RM �
 
 /-- `CodeAt Ψ next Γ rm Δ`: `rm` holds a pointer to code that expects `Δ`. -/
 inductive CodeAt (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) : RM → Ctx → Prop
+  | indexed {b : Reg} {x : IndexReg} {sc : Scale} {fields : List Ty} {writable : Bool}
+      {off i : Nat} {disp : BitVec 32} {c : BitVec 64} {Δ : Ctx} :
+    b ≠ .rsp → Γ.regs b = .ptr fields writable off → Γ.regs x.toReg = .eq c →
+    (c <<< sc.shift) + disp.signExtend 64 = BitVec.ofNat 64 (8 * i) →
+    fields[off + i]? = some (.code Δ) →
+    CodeAt Ψ next Γ (.mem (.sib (some b) (some (x, sc)) disp)) Δ
   | global {base : BitVec 64} {l : Layout} {i : Nat} {disp : BitVec 32} {Δ : Ctx} :
     Ψ base = some l → next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i) →
     l.fields[i]? = some (.code Δ) → CodeAt Ψ next Γ (.mem (.rip disp)) Δ
@@ -265,6 +286,21 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
     b ≠ .rsp → s ≠ .rsp → Γ.regs b = .ptr fields true off → slotDisp i disp →
     fields[off + i]? = some τ → Sub (Γ.regs s) τ →
     Straight Ψ next Γ (.mov .w64 (.rm_r (.mem (.sib (some b) none disp)) s)) Γ
+  /-- Load a whole field through an index, keeping its type. -/
+  | loadIndexed {Γ : Ctx} {d b : Reg} {x : IndexReg} {sc : Scale} {fields : List Ty}
+      {writable : Bool} {off i : Nat} {disp : BitVec 32} {c : BitVec 64} {τ : Ty} :
+    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .ptr fields writable off → Γ.regs x.toReg = .eq c →
+    (c <<< sc.shift) + disp.signExtend 64 = BitVec.ofNat 64 (8 * i) →
+    fields[off + i]? = some τ →
+    Straight Ψ next Γ (.mov .w64 (.r_m d (.sib (some b) (some (x, sc)) disp))) (Γ.setReg d τ)
+  /-- Store into a whole field through an index. The stored value must have
+  the field's type. -/
+  | storeIndexed {Γ : Ctx} {b s : Reg} {x : IndexReg} {sc : Scale} {fields : List Ty}
+      {off i : Nat} {disp : BitVec 32} {c : BitVec 64} {τ : Ty} :
+    b ≠ .rsp → s ≠ .rsp → Γ.regs b = .ptr fields true off → Γ.regs x.toReg = .eq c →
+    (c <<< sc.shift) + disp.signExtend 64 = BitVec.ofNat 64 (8 * i) →
+    fields[off + i]? = some τ → Sub (Γ.regs s) τ →
+    Straight Ψ next Γ (.mov .w64 (.rm_r (.mem (.sib (some b) (some (x, sc)) disp)) s)) Γ
   /-- Load a whole field of a block at a fixed address, keeping its type. -/
   | loadGlobal {Γ : Ctx} {d : Reg} {base : BitVec 64} {l : Layout} {i : Nat} {disp : BitVec 32}
       {τ : Ty} :
