@@ -34,10 +34,23 @@ inductive Scale
   | s1 | s2 | s4 | s8
   deriving DecidableEq, Repr
 
+/-- Registers usable as an index in an address. Every register except `rsp`,
+which the hardware cannot encode in that position. -/
+inductive IndexReg
+  | rax | rcx | rdx | rbx | rbp | rsi | rdi
+  | r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15
+  deriving DecidableEq, Repr
+
+def IndexReg.toReg : IndexReg → Reg
+  | .rax => .rax | .rcx => .rcx | .rdx => .rdx | .rbx => .rbx
+  | .rbp => .rbp | .rsi => .rsi | .rdi => .rdi
+  | .r8 => .r8 | .r9 => .r9 | .r10 => .r10 | .r11 => .r11
+  | .r12 => .r12 | .r13 => .r13 | .r14 => .r14 | .r15 => .r15
+
 /-- An address expression. -/
 inductive Mem
   /-- `[base + index*scale + disp]` -/
-  | sib (base : Option Reg) (index : Option (Reg × Scale)) (disp : BitVec 32)
+  | sib (base : Option Reg) (index : Option (IndexReg × Scale)) (disp : BitVec 32)
   /-- `[rip + disp]` -/
   | rip (disp : BitVec 32)
   deriving DecidableEq, Repr
@@ -55,9 +68,15 @@ inductive Operands
   | rm_i (dst : RM) (imm : BitVec 32)
   deriving DecidableEq, Repr
 
-/-- Two-operand arithmetic and logic. `cmp` and `test` write only the flags. -/
+/-- A register or an immediate. -/
+inductive RI
+  | reg (r : Reg)
+  | imm (i : BitVec 32)
+  deriving DecidableEq, Repr
+
+/-- Two-operand arithmetic and logic. `cmp` writes only the flags. -/
 inductive AluOp
-  | add | sub | adc | sbb | and | or | xor | cmp | test
+  | add | sub | adc | sbb | and | or | xor | cmp
   deriving DecidableEq, Repr
 
 inductive UnOp
@@ -88,6 +107,8 @@ inductive Target
 inductive Instr
   -- arithmetic and logic
   | alu (op : AluOp) (w : Width) (ops : Operands)
+  /-- Bitwise AND that writes only the flags. It has no register-from-memory form. -/
+  | test (w : Width) (dst : RM) (src : RI)
   | unary (op : UnOp) (w : Width) (dst : RM)
   | shift (op : ShiftOp) (w : Width) (dst : RM) (c : Count)
   | mulDiv (op : MulDivOp) (w : Width) (src : RM)
