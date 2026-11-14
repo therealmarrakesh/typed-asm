@@ -346,14 +346,21 @@ def Φe : CodeTy := .ofLabels exact 0
 example : BlockOk Φe exactFetch linux Ψ (Asm.addr exact 0 .start) bare := by
   ty_block
 
-/-! A divisor that is not a constant, but is known not to be zero. The
-context is indexed by the value `v` in `rcx`; `rdx` has just been cleared. -/
+/-! A divisor loaded from memory, checked, and then used. The loaded value
+is only an integer until it is given a name; the test then says something
+about that name, and the label `start` is entered only with the divisor
+known not to be zero, so the divide there cannot raise a divide error. -/
 
 inductive Divide
-  | start | out
+  | check | start | out
   deriving DecidableEq
 
 def divide : List (Asm Divide) := [
+  .label .check,
+  .ins (.mov .w64 (.r_m .rcx (.sib (some .rdi) none 0))),
+  .ins (.test .w64 (.reg .rcx) (.reg .rcx)),
+  .jcc .ne .start,
+  .jmp .out,
   .label .start,
   .ins (.alu .xor .w32 (.rm_r (.reg .rdx) .rdx)),
   .ins (.mulDiv .div .w64 (.reg .rcx)),
@@ -362,6 +369,8 @@ def divide : List (Asm Divide) := [
 def divideFetch : Fetch := Asm.fetch 0 divide
 
 inductive AtDivide : Divide → Ctx → Prop
+  | check : AtDivide .check
+      ⟨fun r => if r = .rdi then .ptr [.int] false 0 else .int, [], 0, Flags.Any⟩
   | start (a v : BitVec 64) : v ≠ 0 →
     AtDivide .start ⟨fun r => if r = .rax then .eq a else if r = .rcx then .eq v else .int,
       [], 0, Flags.Any⟩
@@ -373,6 +382,14 @@ theorem divide_ok : BlocksOk Φd divideFetch linux Ψ := by
   refine BlocksOk.of_labels ?_
   intro l Γ h
   cases h with
+  | check =>
+    -- mov rcx, [rdi]
+    ty_step
+    ty_name .rcx as v
+    ty_name .rax as a
+    ty_block
+    -- entering `start`: the test found `v` not to be zero
+    simpa [Cond.eval, Flags.ofResult] using hcond
   | start a v hv =>
     ty_step
     ty_step_with Straight.divSafe

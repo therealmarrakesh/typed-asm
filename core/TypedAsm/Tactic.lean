@@ -16,6 +16,7 @@ needs an argument, typically a fact about values at a branch.
 * `ty_steps` types the straight-line instructions at the start of a block.
 * `ty_step` types one. `ty_step_with r` types one with a rule you name.
 * `ty_straight` types a single instruction; the two above are built on it.
+* `ty_name r as v` gives the value in a register a name.
 * `ty_code_ptr r to Δ` turns a register holding a label's address into a
   code pointer, for indirect jumps and calls.
 * `ty_accept h` shows the current context is accepted at an address, given
@@ -274,6 +275,15 @@ macro "ty_normalize" : tactic =>
       AluOp.writesDst, List.set_cons_zero, List.set_cons_succ,
       Bool.cond_true, Bool.cond_false, Nat.add_zero, Nat.zero_add, BitVec.reduceToNat, Nat.reduceDiv,
       Nat.reduceMod, Nat.reduceAdd, Nat.reduceMul])
+
+/-- `ty_name r as v`: from here on, the value in register `r` is called `v`
+and the register is typed as exactly `v`. Use it on a register typed as an
+integer, for example one just loaded from memory, before testing it or
+computing with it, so that what is learnt about the value can be used. -/
+macro "ty_name " r:term " as " v:ident : tactic =>
+  `(tactic| (refine BlockOk.name (r := $r) ?ne ?rest
+             case ne => decide
+             case' rest => intro $v:ident; ty_normalize))
 
 /-! ## Choosing the rule from the instruction
 
