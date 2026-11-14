@@ -141,41 +141,41 @@ inductive Straight (next : BitVec 64) : Ctx → Instr → Ctx → Prop
   /-- Load the field `i` slots past where a register points. -/
   | loadField {Γ : Ctx} {d b : Reg} {fields : List Ty} {writable : Bool} {off i : Nat}
       {disp : BitVec 32} {τ : Ty} :
-    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .ptr fields writable off → fields[off + i]? = some τ →
-    slotDisp i disp →
+    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .ptr fields writable off → slotDisp i disp →
+    fields[off + i]? = some τ →
     Straight next Γ (.mov .w64 (.r_m d (.sib (some b) none disp))) (Γ.setReg d τ)
   /-- Store into the field `i` slots past where a writable pointer points.
   The stored value must have the field's type. -/
   | storeField {Γ : Ctx} {b s : Reg} {fields : List Ty} {off i : Nat} {disp : BitVec 32}
       {τ : Ty} :
-    b ≠ .rsp → s ≠ .rsp → Γ.regs b = .ptr fields true off → fields[off + i]? = some τ →
-    Sub (Γ.regs s) τ → slotDisp i disp →
+    b ≠ .rsp → s ≠ .rsp → Γ.regs b = .ptr fields true off → slotDisp i disp →
+    fields[off + i]? = some τ → Sub (Γ.regs s) τ →
     Straight next Γ (.mov .w64 (.rm_r (.mem (.sib (some b) none disp)) s)) Γ
   /-- A 32- or 64-bit store of a register into an integer field. Any value
   may be written, because any value is an integer. -/
   | storeIntR {Γ : Ctx} {w : Width} {b s : Reg} {fields : List Ty} {off i k : Nat}
       {disp : BitVec 32} :
-    b ≠ .rsp → Γ.regs b = .ptr fields true off → fields[off + i]? = some .int →
-    innerDisp i k disp → k + w.bytes.toNat ≤ 8 →
+    b ≠ .rsp → Γ.regs b = .ptr fields true off → innerDisp i k disp →
+    fields[off + i]? = some .int → k + w.bytes.toNat ≤ 8 →
     Straight next Γ (.mov w (.rm_r (.mem (.sib (some b) none disp)) s)) Γ
   /-- A 32- or 64-bit store of a constant into an integer field. -/
   | storeIntI {Γ : Ctx} {w : Width} {b : Reg} {fields : List Ty} {off i k : Nat}
       {disp imm : BitVec 32} :
-    b ≠ .rsp → Γ.regs b = .ptr fields true off → fields[off + i]? = some .int →
-    innerDisp i k disp → k + w.bytes.toNat ≤ 8 →
+    b ≠ .rsp → Γ.regs b = .ptr fields true off → innerDisp i k disp →
+    fields[off + i]? = some .int → k + w.bytes.toNat ≤ 8 →
     Straight next Γ (.mov w (.rm_i (.mem (.sib (some b) none disp)) imm)) Γ
   /-- A byte store into an integer field. -/
   | store8Field {Γ : Ctx} {b s : Reg} {fields : List Ty} {off i k : Nat} {disp : BitVec 32} :
-    b ≠ .rsp → Γ.regs b = .ptr fields true off → fields[off + i]? = some .int →
-    innerDisp i k disp → k + 1 ≤ 8 →
+    b ≠ .rsp → Γ.regs b = .ptr fields true off → innerDisp i k disp →
+    fields[off + i]? = some .int → k + 1 ≤ 8 →
     Straight next Γ (.store8 (.sib (some b) none disp) s) Γ
   /-- Load stack slot `i`. -/
   | loadStack {Γ : Ctx} {d : Reg} {i : Nat} {disp : BitVec 32} {τ : Ty} :
-    d ≠ .rsp → Γ.stack[i]? = some τ → slotDisp i disp →
+    d ≠ .rsp → slotDisp i disp → Γ.stack[i]? = some τ →
     Straight next Γ (.mov .w64 (.r_m d (.sib (some .rsp) none disp))) (Γ.setReg d τ)
   /-- Store into stack slot `i`. The slot takes the type of the stored value. -/
   | storeStack {Γ : Ctx} {s : Reg} {i : Nat} {disp : BitVec 32} {τ : Ty} :
-    s ≠ .rsp → Γ.stack[i]? = some τ → slotDisp i disp →
+    s ≠ .rsp → slotDisp i disp → Γ.stack[i]? = some τ →
     Straight next Γ (.mov .w64 (.rm_r (.mem (.sib (some .rsp) none disp)) s))
       { Γ with stack := Γ.stack.set i (Γ.regs s) }
   | push {Γ : Ctx} {r : Reg} {n : Nat} : r ≠ .rsp → Γ.room = n + 1 →
@@ -192,8 +192,8 @@ inductive Straight (next : BitVec 64) : Ctx → Instr → Ctx → Prop
   /-- Arithmetic with a field of a block as the source. -/
   | aluMem {Γ : Ctx} {op : AluOp} {d b : Reg} {fields : List Ty} {writable : Bool}
       {off i : Nat} {disp : BitVec 32} {τ : Ty} :
-    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .ptr fields writable off → fields[off + i]? = some τ →
-    slotDisp i disp → (op.readsCarry = true → ∀ f, Γ.flags f → f.cf.isSome = true) →
+    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .ptr fields writable off → slotDisp i disp →
+    fields[off + i]? = some τ → (op.readsCarry = true → ∀ f, Γ.flags f → f.cf.isSome = true) →
     Straight next Γ (.alu op .w64 (.r_m d (.sib (some b) none disp))) (Γ.afterAlu op d)
   /-- Arithmetic on an exactly known value with a constant: the result and
   the flags are exactly known too. -/
@@ -221,20 +221,20 @@ inductive Straight (next : BitVec 64) : Ctx → Instr → Ctx → Prop
   /-- A 32-bit load from inside a field. The result is an integer whatever the field holds. -/
   | loadField32 {Γ : Ctx} {d b : Reg} {fields : List Ty} {writable : Bool} {off i k : Nat}
       {disp : BitVec 32} {τ : Ty} :
-    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .ptr fields writable off → fields[off + i]? = some τ →
-    innerDisp i k disp → k + 4 ≤ 8 →
+    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .ptr fields writable off → innerDisp i k disp →
+    fields[off + i]? = some τ → k + 4 ≤ 8 →
     Straight next Γ (.mov .w32 (.r_m d (.sib (some b) none disp))) (Γ.setReg d .int)
   /-- A zero-extending 8- or 16-bit load from inside a field. -/
   | movzxField {Γ : Ctx} {w : Width} {sw : NarrowW} {d b : Reg} {fields : List Ty}
       {writable : Bool} {off i k : Nat} {disp : BitVec 32} {τ : Ty} :
-    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .ptr fields writable off → fields[off + i]? = some τ →
-    innerDisp i k disp → k + sw.bytes ≤ 8 →
+    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .ptr fields writable off → innerDisp i k disp →
+    fields[off + i]? = some τ → k + sw.bytes ≤ 8 →
     Straight next Γ (.movzx w d sw (.mem (.sib (some b) none disp))) (Γ.setReg d .int)
   /-- A sign-extending 8- or 16-bit load from inside a field. -/
   | movsxField {Γ : Ctx} {w : Width} {sw : NarrowW} {d b : Reg} {fields : List Ty}
       {writable : Bool} {off i k : Nat} {disp : BitVec 32} {τ : Ty} :
-    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .ptr fields writable off → fields[off + i]? = some τ →
-    innerDisp i k disp → k + sw.bytes ≤ 8 →
+    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .ptr fields writable off → innerDisp i k disp →
+    fields[off + i]? = some τ → k + sw.bytes ≤ 8 →
     Straight next Γ (.movsx w d sw (.mem (.sib (some b) none disp))) (Γ.setReg d .int)
   /-- Advancing a pointer by whole slots keeps it a pointer into the same block. -/
   | addPtr {Γ : Ctx} {d : Reg} {fields : List Ty} {writable : Bool} {off k : Nat}

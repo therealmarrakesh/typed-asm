@@ -756,7 +756,7 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr} (ht : Strai
   | @lea w d m hd =>
     refine ⟨s.writeReg w d ((s.ea m).setWidth w.bits), ?_, rfl, h.setReg hd (HasTy.int _)⟩
     simp [exec]
-  | @loadField d b fields writable off i disp τ hd hb hΓ hi hdisp =>
+  | @loadField d b fields writable off i disp τ hd hb hΓ hdisp hi =>
     have hp := h.regs b hb
     rw [hΓ] at hp
     obtain ⟨a, l, hl, rfl, -, hva⟩ := hasTy_ptr.mp hp
@@ -767,7 +767,7 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr} (ht : Strai
       h.setReg hd (h.heap _ l hl (off + i) τ hi)⟩
     simp [exec, State.writeRM, Operands.src, Operands.dst, hea,
       State.read_w64 (h.canRead_field hl hilt), State.writeReg]
-  | @storeField b src fields off i disp τ hb hs hΓ hi hsub hdisp =>
+  | @storeField b src fields off i disp τ hb hs hΓ hdisp hi hsub =>
     have hp := h.regs b hb
     rw [hΓ] at hp
     obtain ⟨a, l, hl, rfl, hw, hva⟩ := hasTy_ptr.mp hp
@@ -778,7 +778,7 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr} (ht : Strai
       State.store64_rip _ _ _, h.storeField hΨ hl hi ((h.regs src hs).sub hsub)⟩
     simp [exec, State.writeRM, Operands.src, Operands.dst, hea,
       State.readReg_w64, State.write_w64 _ (h.canWrite_field hl (hw rfl) hilt)]
-  | @storeIntR w b src fields off i k disp hb hΓ hi hdisp hk =>
+  | @storeIntR w b src fields off i k disp hb hΓ hdisp hi hk =>
     have hp := h.regs b hb
     rw [hΓ] at hp
     obtain ⟨a, l, hl, rfl, hw, hva⟩ := hasTy_ptr.mp hp
@@ -792,7 +792,7 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr} (ht : Strai
         (State.perm_store _ _ _ _) (fun y hd => by
           rw [inner_split]; exact State.load64_store_inner s w _ hk hd)⟩
     simp [exec, State.writeRM, Operands.src, Operands.dst, hea, State.write, hc]
-  | @storeIntI w b fields off i k disp imm hb hΓ hi hdisp hk =>
+  | @storeIntI w b fields off i k disp imm hb hΓ hdisp hi hk =>
     have hp := h.regs b hb
     rw [hΓ] at hp
     obtain ⟨a, l, hl, rfl, hw, hva⟩ := hasTy_ptr.mp hp
@@ -806,7 +806,7 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr} (ht : Strai
         (State.perm_store _ _ _ _) (fun y hd => by
           rw [inner_split]; exact State.load64_store_inner s w _ hk hd)⟩
     simp [exec, State.writeRM, Operands.src, Operands.dst, hea, State.write, hc]
-  | @store8Field b src fields off i k disp hb hΓ hi hdisp hk =>
+  | @store8Field b src fields off i k disp hb hΓ hdisp hi hk =>
     have hp := h.regs b hb
     rw [hΓ] at hp
     obtain ⟨a, l, hl, rfl, hw, hva⟩ := hasTy_ptr.mp hp
@@ -818,13 +818,13 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr} (ht : Strai
       rfl, h.writeInt hΨ hl hi rfl rfl rfl (fun y hd => by
         rw [inner_split]; exact State.load64_store8_inner s _ hk hd)⟩
     simp [exec, hea, State.write8, hc]
-  | @loadStack d i disp τ hd hi hdisp =>
+  | @loadStack d i disp τ hd hdisp hi =>
     have hilt : i < Γ.stack.length := (List.getElem?_eq_some_iff.mp hi).1
     refine ⟨s.setReg d (s.load64 (s.getReg .rsp + BitVec.ofNat 64 (8 * i))), ?_, rfl,
       h.setReg hd (h.stack i τ hi)⟩
     simp [exec, State.writeRM, Operands.src, Operands.dst, State.ea_slot s .rsp hdisp,
       State.read_w64 (State.canRead_of_canWrite (h.canWrite_slot hilt)), State.writeReg]
-  | @storeStack src i disp τ hs hslot hdisp =>
+  | @storeStack src i disp τ hs hdisp hslot =>
     have hi : i < Γ.stack.length := (List.getElem?_eq_some_iff.mp hslot).1
     refine ⟨s.store64 (s.getReg .rsp + BitVec.ofNat 64 (8 * i)) (s.getReg src), ?_,
       State.store64_rip _ _ _, h.storeStack hΨ hi (h.regs src hs)⟩
@@ -865,7 +865,7 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr} (ht : Strai
         simp [exec, State.readRM, State.writeRM, Operands.src, Operands.dst, he, Result.ofOption,
           hwd, State.writeReg]
     · cases op.writesDst <;> rfl
-  | @aluMem op d b fields writable off i disp τ hd hb hΓ hi hdisp hc =>
+  | @aluMem op d b fields writable off i disp τ hd hb hΓ hdisp hi hc =>
     have hp := h.regs b hb
     rw [hΓ] at hp
     obtain ⟨a, l, hl, rfl, -, hva⟩ := hasTy_ptr.mp hp
@@ -932,7 +932,7 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr} (ht : Strai
     simp [exec, State.readRM, State.writeRM, Operands.src, Operands.dst, AluOp.eval,
       AluOp.writesDst, Result.ofOption, State.writeReg, State.readReg_w64, sext_slot hlt,
       addCarry_fst]
-  | @loadField32 d b fields writable off i k disp τ hd hb hΓ hi hdisp hk =>
+  | @loadField32 d b fields writable off i k disp τ hd hb hΓ hdisp hi hk =>
     have hp := h.regs b hb
     rw [hΓ] at hp
     obtain ⟨a, l, hl, rfl, -, hva⟩ := hasTy_ptr.mp hp
@@ -943,7 +943,7 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr} (ht : Strai
     refine ⟨s.setReg d ((s.load32 (a + BitVec.ofNat 64 (8 * (off + i) + k))).setWidth 64), ?_,
       rfl, h.setReg hd (HasTy.int _)⟩
     simp [exec, State.writeRM, Operands.src, Operands.dst, hea, State.read_w32 hc, State.writeReg]
-  | @movzxField w sw d b fields writable off i k disp τ hd hb hΓ hi hdisp hk =>
+  | @movzxField w sw d b fields writable off i k disp τ hd hb hΓ hdisp hi hk =>
     have hp := h.regs b hb
     rw [hΓ] at hp
     obtain ⟨a, l, hl, rfl, -, hva⟩ := hasTy_ptr.mp hp
@@ -962,7 +962,7 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr} (ht : Strai
         w.bits).setWidth 64), ?_, rfl, h.setReg hd (HasTy.int _)⟩
       simp only [NarrowW.bytes] at hc
       simp [exec, State.readNarrow, State.read16, hea, hc, State.writeReg]
-  | @movsxField w sw d b fields writable off i k disp τ hd hb hΓ hi hdisp hk =>
+  | @movsxField w sw d b fields writable off i k disp τ hd hb hΓ hdisp hi hk =>
     have hp := h.regs b hb
     rw [hΓ] at hp
     obtain ⟨a, l, hl, rfl, -, hva⟩ := hasTy_ptr.mp hp
