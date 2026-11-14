@@ -1,0 +1,104 @@
+import KeepProgram
+import TypedAsm.Tactic
+
+/-!
+# Keep: typing and safety
+
+The program is in `KeepProgram.lean`. This file types it and proves it safe.
+It is kept separate so that running the program does not link the tactics.
+-/
+
+open TypedAsm
+
+namespace Keep
+
+/-! ## The typing -/
+
+/-- `pause` preserves the callee-saved registers and also the stack pointer:
+when it has returned, `rsp` is where it was before the call. -/
+def pauseSig : FnSig where
+  args := fun _ => .int
+  results := fun _ => .int
+  preserved := fun r => calleeSaved r || r == .rsp
+  need := 0
+
+/-- Back from the call: the stack pointer is exactly `sp`, as before it,
+and `rbx` holds the address of the buffer, which is where `rsp` points. -/
+def kept (sp : BitVec 64) : Ctx :=
+  ⟨fun r => if r = .rsp then .eq sp else if r = .rbx then .eq (sp + (0 : BitVec 32).signExtend 64)
+    else .int, [.int, .int], 1, Flags.Any⟩
+
+/-- Nothing is known about any register; the buffer is still allocated. -/
+def ending : Ctx := ⟨fun _ => .int, [.int, .int], 1, Flags.Any⟩
+
+/-- The contexts allowed at each label. -/
+inductive At : Label → Ctx → Prop
+  | start : At .start (entryCtx 3)
+  | back (sp : BitVec 64) : At .back (kept sp)
+  | done : At .done ending
+  | pause (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+    pauseSig.CallerOk saved ret rest room → At .pause (pauseSig.entry saved ret rest room)
+
+/-- The code typing: those contexts, at the addresses of their labels. -/
+def Φ : CodeTy := .ofLabels code base At
+
+/-- No memory blocks. -/
+def blocks : List (BitVec 64 × Layout) := []
+
+def Ψ : MemTy := .ofList blocks
+
+/-! ## The program is well typed -/
+
+theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
+  refine BlocksOk.of_labels ?_
+  intro l Γ h
+  cases h with
+  | start =>
+    -- sub rsp, 16
+    ty_step
+    -- the stack pointer's value is called `sp`; `lea rbx, [rsp]` is then known
+    ty_name .rsp as sp
+    ty_step
+    ty_call pauseSig
+  | back sp =>
+    -- the `read` is into the address taken before the call
+    ty_block
+  | done => ty_block
+  | pause saved ret rest room hK => ty_block
+
+/-! ## The memory typing and the entry contract -/
+
+theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
+
+/-- What the program needs of the state it starts in: its bytes in
+executable memory and three writable stack slots below `rsp`. -/
+abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase [] blocks 3
+
+/-- Any state meeting the entry contract is well typed. -/
+theorem Entry.stateOk {s : State} (h : Entry s) : StateOk Φ fetch linux Ψ s :=
+  ⟨entryCtx 3, by rw [h.rip]; exact .intro At.start,
+    fun _ => h.matchesInt HasTy.int (by simp [blocks])⟩
+
+/-! ## Safety -/
+
+/-- **From any state meeting the entry contract, and whatever it is given to
+read, the program is safe on the machine that fetches instructions by
+decoding memory.** It never gets stuck and never faults. -/
+theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
+  .of_safe linux_frame (Asm.loaded h.code)
+    (soundness_blocks blocksOk memOk h.stateOk)
+
+theorem image_length : image.length = 61 := by decide +kernel
+
+/-- The starting state used by the simulator meets the entry contract. -/
+theorem start_entry : Entry start :=
+  Entry.ofLoad (by rw [image_length]; decide) (by decide)
+    ((State.hasData_loadData _ _ _ _ (by decide)).congr rfl) (by rw [image_length]; decide)
+    (by decide) (by decide) (by decide)
+    (by simp only [image_length]; decide) (by rw [image_length]; decide)
+
+/-- The simulator's run is safe whatever input it is given. -/
+theorem safeMem (input : List ReadEvent) : SafeMem linux (startWith input) :=
+  safeMem_of_entry (start_entry.withWorld _)
+
+end Keep
