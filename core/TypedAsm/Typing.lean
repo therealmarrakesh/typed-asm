@@ -146,6 +146,24 @@ inductive Straight : Ctx → Instr → Ctx → Prop
     b ≠ .rsp → s ≠ .rsp → Γ.regs b = .ptr fields true off → fields[off + i]? = some τ →
     Sub (Γ.regs s) τ → slotDisp i disp →
     Straight Γ (.mov .w64 (.rm_r (.mem (.sib (some b) none disp)) s)) Γ
+  /-- A 32- or 64-bit store of a register into an integer field. Any value
+  may be written, because any value is an integer. -/
+  | storeIntR {Γ : Ctx} {w : Width} {b s : Reg} {fields : List Ty} {off i k : Nat}
+      {disp : BitVec 32} :
+    b ≠ .rsp → Γ.regs b = .ptr fields true off → fields[off + i]? = some .int →
+    innerDisp i k disp → k + w.bytes.toNat ≤ 8 →
+    Straight Γ (.mov w (.rm_r (.mem (.sib (some b) none disp)) s)) Γ
+  /-- A 32- or 64-bit store of a constant into an integer field. -/
+  | storeIntI {Γ : Ctx} {w : Width} {b : Reg} {fields : List Ty} {off i k : Nat}
+      {disp imm : BitVec 32} :
+    b ≠ .rsp → Γ.regs b = .ptr fields true off → fields[off + i]? = some .int →
+    innerDisp i k disp → k + w.bytes.toNat ≤ 8 →
+    Straight Γ (.mov w (.rm_i (.mem (.sib (some b) none disp)) imm)) Γ
+  /-- A byte store into an integer field. -/
+  | store8Field {Γ : Ctx} {b s : Reg} {fields : List Ty} {off i k : Nat} {disp : BitVec 32} :
+    b ≠ .rsp → Γ.regs b = .ptr fields true off → fields[off + i]? = some .int →
+    innerDisp i k disp → k + 1 ≤ 8 →
+    Straight Γ (.store8 (.sib (some b) none disp) s) Γ
   /-- Load stack slot `i`. -/
   | loadStack {Γ : Ctx} {d : Reg} {i : Nat} {disp : BitVec 32} {τ : Ty} :
     d ≠ .rsp → Γ.stack[i]? = some τ → slotDisp i disp →

@@ -155,6 +155,9 @@ macro "ty_straight" : tactic =>
     | ty_rule Straight.loadField
     | ty_rule Straight.storeStack
     | ty_rule Straight.storeField
+    | ty_rule Straight.storeIntR
+    | ty_rule Straight.storeIntI
+    | ty_rule Straight.store8Field
     | ty_rule Straight.push
     | ty_rule Straight.pop
     | ty_rule Straight.allocFrame

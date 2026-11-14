@@ -132,6 +132,30 @@ theorem load_store_disjoint (s : State) (w w' : Width) (a b : BitVec 64) (v : Bi
   · refine load64_congr ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ <;> apply mem_store_of_disjoint <;>
       cases w <;> simp only [Width.bytes] at * <;> bv_decide
 
+/-- A byte store leaves a 64-bit load unchanged if the byte is outside the loaded range. -/
+theorem load64_store8_disjoint (s : State) {a b : BitVec 64} (v : BitVec 8) (h : 8 ≤ a - b) :
+    (s.store8 a v).load64 b = s.load64 b := by
+  apply load64_congr <;>
+    (simp only [store8]
+     split
+     · next hx => exact absurd hx (by bv_decide)
+     · rfl)
+
+/-- A store does not change `rip`. -/
+theorem rip_store (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) :
+    (s.store w a v).rip = s.rip := by
+  cases w <;> simp only [store, store64, store32, store16, store8]
+
+/-- A store does not change the flags. -/
+theorem flags_store (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) :
+    (s.store w a v).flags = s.flags := by
+  cases w <;> simp only [store, store64, store32, store16, store8]
+
+/-- A store does not change the registers. -/
+theorem regs_store (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) :
+    (s.store w a v).regs = s.regs := by
+  cases w <;> simp only [store, store64, store32, store16, store8]
+
 /-- A store does not change any permission. -/
 theorem perm_store (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) :
     (s.store w a v).perm = s.perm := by

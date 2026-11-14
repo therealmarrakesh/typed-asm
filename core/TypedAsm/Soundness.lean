@@ -501,6 +501,61 @@ theorem freeFrame {k : Nat} {top rest : List Ty} (h : WellTyped fetch sys Ψ ix 
       rw [State.load64_congr hm]; exact h.heap b l' hl' j τ' hj
     stackHeap := fun b l' hl' => by rw [hb, hz]; exact h.stackHeap b l' hl' }
 
+/-- Any `m` bytes inside field `i` of a writable block are writable. -/
+theorem canWrite_inner {a : BitVec 64} {l : Layout} {i k m : Nat}
+    (h : WellTyped fetch sys Ψ ix Γ s) (hl : Ψ a = some l) (hw : l.writable = true)
+    (hi : i < l.fields.length) (hk : k + m ≤ 8) :
+    s.canWrite (a + BitVec.ofNat 64 (8 * i + k)) m = true :=
+  State.canWrite_sub ((h.heapPerm a l hl).2 hw) (by simp only [Layout.size]; omega)
+
+/-- Any change to memory confined to one integer field keeps the state well
+typed: an integer field may hold anything. -/
+theorem writeInt {a : BitVec 64} {l : Layout} {i : Nat} {s' : State}
+    (h : WellTyped fetch sys Ψ ix Γ s) (hΨ : Ψ.WF) (hl : Ψ a = some l)
+    (hi : l.fields[i]? = some .int) (hregs : s'.regs = s.regs) (hflags : s'.flags = s.flags)
+    (hperm : s'.perm = s.perm)
+    (hframe : ∀ y, Disjoint (a + BitVec.ofNat 64 (8 * i)) 8 y 8 → s'.load64 y = s.load64 y) :
+    WellTyped fetch sys Ψ ix Γ s' := by
+  have hilt : i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
+  have hsz := hΨ.size_lt a l hl
+  have hg : ∀ r, s'.getReg r = s.getReg r := fun r => by simp only [State.getReg, hregs]
+  have hb : stackBase Γ s' = stackBase Γ s := by simp only [stackBase, hg]
+  exact {
+    regs := fun r hr => by rw [hg]; exact h.regs r hr
+    flags := by rw [hflags]; exact h.flags
+    stackPerm := by rw [hb, State.canWrite_congr hperm]; exact h.stackPerm
+    stackSize_lt := h.stackSize_lt
+    stack := fun j τ' hj => by
+      have hjlt : j < Γ.stack.length := (List.getElem?_eq_some_iff.mp hj).1
+      have hd := (h.stackHeap a l hl).symm.mono (o := 8 * i) (p := 8 * Γ.room + 8 * j)
+        (n' := 8) (m' := 8) hsz h.stackSize_lt (by simp only [Layout.size]; omega)
+        (by simp only [stackSize]; omega) (by omega) (by omega)
+      rw [slot_addr] at hd
+      rw [hg, hframe _ hd]
+      exact h.stack j τ' hj
+    heapPerm := fun b l' hl' => by
+      rw [State.canRead_congr hperm, State.canWrite_congr hperm]; exact h.heapPerm b l' hl'
+    heap := fun b l' hl' j τ' hj => by
+      have hjlt : j < l'.fields.length := (List.getElem?_eq_some_iff.mp hj).1
+      by_cases hab : b = a
+      · subst hab
+        have e : l' = l := Option.some.inj (hl'.symm.trans hl)
+        subst e
+        by_cases hij : j = i
+        · subst hij
+          have e : τ' = .int := Option.some.inj (hj.symm.trans hi)
+          subst e
+          exact HasTy.int _
+        · rw [hframe _ (disjoint_slots (N := l'.size) (Ne.symm hij)
+            (by simp only [Layout.size]; omega) (by simp only [Layout.size]; omega) hsz)]
+          exact h.heap b l' hl' j τ' hj
+      · have hd := (hΨ.disjoint a b l l' hl hl' (Ne.symm hab)).mono (o := 8 * i) (p := 8 * j)
+          (n' := 8) (m' := 8) hsz (hΨ.size_lt b l' hl') (by simp only [Layout.size]; omega)
+          (by simp only [Layout.size]; omega) (by omega) (by omega)
+        rw [hframe _ hd]
+        exact h.heap b l' hl' j τ' hj
+    stackHeap := fun b l' hl' => by rw [hb]; exact h.stackHeap b l' hl' }
+
 /-- Any `m` bytes inside field `i` of a block are readable. -/
 theorem canRead_inner {a : BitVec 64} {l : Layout} {i k m : Nat} (h : WellTyped fetch sys Ψ ix Γ s)
     (hl : Ψ a = some l) (hi : i < l.fields.length) (hk : k + m ≤ 8) :
@@ -620,6 +675,31 @@ theorem subBorrow_fst (a b : BitVec 64) : (subBorrow a b false).1 = a - b := by
 theorem subBorrow_zf {n : Nat} (a b : BitVec n) (c : Bool) :
     (subBorrow a b c).2.zf = some ((subBorrow a b c).1 == 0) := rfl
 
+/-- A store confined to one 8-byte slot leaves every disjoint 64-bit load unchanged. -/
+theorem State.load64_store_inner (s : State) (w : Width) {base y : BitVec 64} {k : Nat}
+    (v : BitVec w.bits) (hk : k + w.bytes.toNat ≤ 8) (hd : Disjoint base 8 y 8) :
+    (s.store w (base + BitVec.ofNat 64 k) v).load64 y = s.load64 y := by
+  simp only [Disjoint] at hd
+  cases w
+  · have hk' : k + 4 ≤ 8 := hk
+    exact State.load_store_disjoint s .w32 .w64 _ _ v
+      (by simp only [Width.bytes]; bv_omega) (by simp only [Width.bytes]; bv_omega)
+  · have hk' : k + 8 ≤ 8 := hk
+    exact State.load_store_disjoint s .w64 .w64 _ _ v
+      (by simp only [Width.bytes]; bv_omega) (by simp only [Width.bytes]; bv_omega)
+
+/-- A byte store inside one 8-byte slot leaves every disjoint 64-bit load unchanged. -/
+theorem State.load64_store8_inner (s : State) {base y : BitVec 64} {k : Nat} (v : BitVec 8)
+    (hk : k + 1 ≤ 8) (hd : Disjoint base 8 y 8) :
+    (s.store8 (base + BitVec.ofNat 64 k) v).load64 y = s.load64 y := by
+  simp only [Disjoint] at hd
+  exact State.load64_store8_disjoint s v (by bv_omega)
+
+/-- Byte `k` of slot `i`, as an offset from the start of the slot. -/
+theorem inner_split (a : BitVec 64) (i k : Nat) :
+    a + BitVec.ofNat 64 (8 * i + k) = a + BitVec.ofNat 64 (8 * i) + BitVec.ofNat 64 k := by
+  rw [BitVec.add_assoc, ← BitVec.ofNat_add]
+
 theorem AluOp.apply_defined {n : Nat} (op : AluOp) (a b : BitVec n) :
     (op.apply a b).2.defined = true := by
   cases op <;> exact Flags.ofResult_defined _ _ _
@@ -684,6 +764,46 @@ theorem Straight.sound {Γ Γ' : Ctx} {i : Instr} (ht : Straight Γ i Γ') (hΨ 
       State.store64_rip _ _ _, h.storeField hΨ hl hi ((h.regs src hs).sub hsub)⟩
     simp [exec, State.writeRM, Operands.src, Operands.dst, hea,
       State.readReg_w64, State.write_w64 _ (h.canWrite_field hl (hw rfl) hilt)]
+  | @storeIntR w b src fields off i k disp hb hΓ hi hdisp hk =>
+    have hp := h.regs b hb
+    rw [hΓ] at hp
+    obtain ⟨a, l, hl, rfl, hw, hva⟩ := hasTy_ptr.mp hp
+    have hilt : off + i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
+    have hea : s.ea (.sib (some b) none disp) = a + BitVec.ofNat 64 (8 * (off + i) + k) := by
+      rw [State.ea_inner s b hdisp, hva, slot_add_inner]
+    have hc := h.canWrite_inner (m := w.bytes.toNat) hl (hw rfl) hilt hk
+    refine ⟨s.store w (a + BitVec.ofNat 64 (8 * (off + i) + k)) (s.readReg w src), ?_,
+      State.rip_store _ _ _ _,
+      h.writeInt hΨ hl hi (State.regs_store _ _ _ _) (State.flags_store _ _ _ _)
+        (State.perm_store _ _ _ _) (fun y hd => by
+          rw [inner_split]; exact State.load64_store_inner s w _ hk hd)⟩
+    simp [exec, State.writeRM, Operands.src, Operands.dst, hea, State.write, hc]
+  | @storeIntI w b fields off i k disp imm hb hΓ hi hdisp hk =>
+    have hp := h.regs b hb
+    rw [hΓ] at hp
+    obtain ⟨a, l, hl, rfl, hw, hva⟩ := hasTy_ptr.mp hp
+    have hilt : off + i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
+    have hea : s.ea (.sib (some b) none disp) = a + BitVec.ofNat 64 (8 * (off + i) + k) := by
+      rw [State.ea_inner s b hdisp, hva, slot_add_inner]
+    have hc := h.canWrite_inner (m := w.bytes.toNat) hl (hw rfl) hilt hk
+    refine ⟨s.store w (a + BitVec.ofNat 64 (8 * (off + i) + k)) (imm.signExtend w.bits), ?_,
+      State.rip_store _ _ _ _,
+      h.writeInt hΨ hl hi (State.regs_store _ _ _ _) (State.flags_store _ _ _ _)
+        (State.perm_store _ _ _ _) (fun y hd => by
+          rw [inner_split]; exact State.load64_store_inner s w _ hk hd)⟩
+    simp [exec, State.writeRM, Operands.src, Operands.dst, hea, State.write, hc]
+  | @store8Field b src fields off i k disp hb hΓ hi hdisp hk =>
+    have hp := h.regs b hb
+    rw [hΓ] at hp
+    obtain ⟨a, l, hl, rfl, hw, hva⟩ := hasTy_ptr.mp hp
+    have hilt : off + i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
+    have hea : s.ea (.sib (some b) none disp) = a + BitVec.ofNat 64 (8 * (off + i) + k) := by
+      rw [State.ea_inner s b hdisp, hva, slot_add_inner]
+    have hc := h.canWrite_inner (m := 1) hl (hw rfl) hilt hk
+    refine ⟨s.store8 (a + BitVec.ofNat 64 (8 * (off + i) + k)) ((s.getReg src).setWidth 8), ?_,
+      rfl, h.writeInt hΨ hl hi rfl rfl rfl (fun y hd => by
+        rw [inner_split]; exact State.load64_store8_inner s _ hk hd)⟩
+    simp [exec, hea, State.write8, hc]
   | @loadStack d i disp τ hd hi hdisp =>
     have hilt : i < Γ.stack.length := (List.getElem?_eq_some_iff.mp hi).1
     refine ⟨s.setReg d (s.load64 (s.getReg .rsp + BitVec.ofNat 64 (8 * i))), ?_, rfl,
