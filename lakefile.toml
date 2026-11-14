@@ -1,0 +1,16 @@
+name = "typed-assembly"
+version = "0.1.0"
+defaultTargets = ["Core"]
+
+# The core library: machine model, instruction set, semantics.
+[[lean_lib]]
+name = "Core"
+srcDir = "core"
+
+# Examples live in examples/<Name>/, one folder each. To register one, add:
+#
+# [[lean_lib]]
+# name = "<Name>"
+# srcDir = "examples/<Name>"
+#
+# with its root module at examples/<Name>/<Name>.lean (it can `import Core`).
