@@ -99,7 +99,7 @@ theorem Entry.stateOk {s : State} (h : Entry s) : StateOk Φ fetch linux Ψ s :=
 
 /-- **From any state meeting the entry contract, the program is safe on the
 machine that fetches instructions by decoding memory.** It never gets stuck,
-never page-faults and never executes an invalid opcode. In particular the
+never faults: no page fault, no invalid opcode and no divide error. In particular the
 indexed load never reads outside the array, whatever index `get` is given. -/
 theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
   .of_safe linux_frame (Asm.loaded h.code)

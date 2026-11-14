@@ -50,7 +50,7 @@ compute:                         ; rdi = pointer to the record; result in rax
      mov   eax, edx
      cdq
      mov   ecx, 9
-     div   ecx                      ; eax = 10, edx = 5
+     idiv  ecx                      ; eax = 10, edx = 5
      imul  eax, eax, 3              ; 30
      cmp   eax, edx
      cmovg edx, eax                 ; 30
@@ -62,7 +62,8 @@ compute:                         ; rdi = pointer to the record; result in rax
      mov   ecx, 2
      mul   ecx                      ; 60
      cqo
-     idiv  rcx                      ; 30
+     xor   edx, edx
+     div   rcx                      ; 30
      test  dword ptr [rsp+8], 8
      cmp   dword ptr [rsp+8], 24
      rol   eax, cl                  ; 120
@@ -133,7 +134,7 @@ def codeWith (toCompute toFinish toRecordHigh toRecord : BitVec 32) : List (Asm 
   .ins (.mov .w32 (.rm_r (.reg .rax) .rdx)),
   .ins .cdq,
   .ins (.mov .w32 (.rm_i (.reg .rcx) 9)),
-  .ins (.mulDiv .div .w32 (.reg .rcx)),
+  .ins (.mulDiv .idiv .w32 (.reg .rcx)),
   .ins (.imul3 .w32 .rax (.reg .rax) 3),
   .ins (.alu .cmp .w32 (.rm_r (.reg .rax) .rdx)),
   .ins (.cmov .g .w32 .rdx (.reg .rax)),
@@ -145,7 +146,8 @@ def codeWith (toCompute toFinish toRecordHigh toRecord : BitVec 32) : List (Asm 
   .ins (.mov .w32 (.rm_i (.reg .rcx) 2)),
   .ins (.mulDiv .mul .w32 (.reg .rcx)),
   .ins .cqo,
-  .ins (.mulDiv .idiv .w64 (.reg .rcx)),
+  .ins (.alu .xor .w32 (.rm_r (.reg .rdx) .rdx)),
+  .ins (.mulDiv .div .w64 (.reg .rcx)),
   .ins (.test .w32 (.mem (rspSlot 8)) (.imm 8)),
   .ins (.alu .cmp .w32 (.rm_i (.mem (rspSlot 8)) 24)),
   .ins (.shift .rol .w32 (.reg .rax) .cl),

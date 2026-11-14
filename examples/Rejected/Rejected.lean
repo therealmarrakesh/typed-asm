@@ -88,6 +88,11 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i3) Γ := by ty_step
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i4) Γ := by ty_step
 
+/-- error: at address 14: cannot type `div rcx` in the current context
+• divSafe: the divisor, `rcx₀`, is not known to be non-zero: a check is needed before the divide -/
+#guard_msgs in
+example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i5) Γ := by ty_step
+
 /-- error: at address 17: cannot type `adc rax, rcx` in the current context
 • aluExactRR: this rule does not cover operations that read the carry flag
 • aluRR: the operation reads the carry flag, which is not known to be defined here -/
@@ -391,11 +396,8 @@ theorem divide_ok : BlocksOk Φd divideFetch linux Ψ := by
     ty_block
     -- entering `start`: the test found `v` not to be zero
     simpa [Cond.eval, Flags.ofResult] using hcond
-  | start a v hv =>
-    ty_step
-    ty_step_with Straight.divSafe
-    -- the divisor is not zero: the tactic finds `hv` among the hypotheses
-    ty_block
+  -- the divisor is not zero: the tactic finds `hv` among the hypotheses
+  | start a v hv => ty_block
   | out => ty_block
 
 /-! A signed divide. `cqo` sign-extends `rax` into `rdx`; with the divisor
@@ -425,12 +427,8 @@ theorem signed_ok : BlocksOk Φs signedFetch linux Ψ := by
   refine BlocksOk.of_labels ?_
   intro l Γ h
   cases h with
-  | start a v hv hv1 =>
-    ty_step
-    ty_step_with Straight.idivSafe
-    ty_block
-    -- the quotient fits: the divisor is not minus one
-    exact .inr hv1
+  -- the tactic finds both facts about the divisor among the hypotheses
+  | start a v hv hv1 => ty_block
   | out => ty_block
 
 end Rejected

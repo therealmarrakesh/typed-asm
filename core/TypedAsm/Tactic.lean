@@ -304,6 +304,12 @@ macro "ty_index" : tactic =>
     | (refine index8 _ _ ?_; decide)
     | (refine index_any _ _ _ ?_; decide))
 
+/-- Proves a fact with no unknowns in it from the hypotheses: the fact
+itself, or one side of an "or". A goal with unknowns is refused, since a
+hypothesis of the right shape would settle them whether or not it was the
+one meant. -/
+syntax "ty_known" : tactic
+
 /-- Proves a side condition of a typing rule, or fails. -/
 syntax "ty_side" : tactic
 
@@ -343,6 +349,7 @@ macro_rules
       | ty_decided
       | ty_cond_value
       | ty_index
+      | ty_known
       | ty_operand)
 
 macro_rules
@@ -364,10 +371,7 @@ macro "ty_normalize" : tactic =>
 and the register is typed as exactly `v`. Use it on a register typed as an
 integer, for example one just loaded from memory, before testing it or
 computing with it, so that what is learnt about the value can be used. -/
-macro "ty_name " r:term " as " v:ident : tactic =>
-  `(tactic| (refine BlockOk.name (r := $r) ?ne ?rest
-             case ne => decide
-             case' rest => intro $v:ident; ty_normalize))
+syntax "ty_name " term " as " ident : tactic
 
 /-! ## Choosing the rule from the instruction
 
@@ -376,6 +380,17 @@ the rules written for its shape, and when none applies they say which
 premise of each stood in the way. -/
 
 open Lean Meta Elab Tactic
+
+elab_rules : tactic
+  | `(tactic| ty_known) => withMainContext do
+    let ty ← instantiateMVars (← (← getMainGoal).getType)
+    if ty.hasExprMVar then throwError "ty_known: the goal has unknowns"
+    -- A goal that asks for a value, not a fact, is never settled this way.
+    unless ← isProp ty do throwError "ty_known: the goal is not a proposition"
+    evalTactic (← `(tactic| first
+      | assumption
+      | (refine Or.inl ?_; first | assumption | decide)
+      | (refine Or.inr ?_; first | assumption | decide)))
 
 elab_rules : tactic
   | `(tactic| ty_rule_ordered $r) => Tactic.withoutRecover do
@@ -387,6 +402,27 @@ elab_rules : tactic
       evalTactic (← `(tactic| ty_side))
       unless (← getUnsolvedGoals).isEmpty do throwError "premise not proved"
     setGoals []
+
+/-- Gives the value in a register a name, on the main goal, which must be a block. -/
+def nameRegister (r : Term) (v : Ident) : TacticM Unit := do
+  let goal ← getMainGoal
+  let others := (← getGoals).drop 1
+  setGoals [goal]
+  evalTactic (← `(tactic| refine BlockOk.name (r := $r) ?_ ?_))
+  let mut rest? : Option MVarId := none
+  for g in ← getGoals do
+    let t ← instantiateMVars (← g.getType)
+    if t.isAppOf ``Ne then
+      setGoals [g]
+      evalTactic (← `(tactic| decide))
+    else rest? := some g
+  let some rest := rest? | throwError "ty_name: unexpected goals"
+  setGoals [rest]
+  evalTactic (← `(tactic| (intro $v:ident; ty_normalize)))
+  setGoals ((← getGoals) ++ others)
+
+elab_rules : tactic
+  | `(tactic| ty_name $r as $v) => nameRegister r v
 
 /-- The rules whose premises are proved in order, stopping at the first that
 fails: those for operands, whose premises each depend on the ones before. -/
@@ -464,10 +500,9 @@ def Instr.rules : Instr → List Name
   | .mulDiv .mul _ _ => [``Straight.mulRM]
   | .mulDiv .imul _ (.reg _) => [``Straight.mulDivExact, ``Straight.imulRM]
   | .mulDiv .imul _ _ => [``Straight.imulRM]
-  | .mulDiv .div _ (.reg _) => [``Straight.mulDivExact, ``Straight.divSafe, ``Straight.divRM]
-  | .mulDiv .div _ _ => [``Straight.divRM]
-  | .mulDiv .idiv _ (.reg _) => [``Straight.mulDivExact, ``Straight.idivSafe, ``Straight.idivRM]
-  | .mulDiv .idiv _ _ => [``Straight.idivRM]
+  -- a divide is typed only when shown not to raise a divide error
+  | .mulDiv .div _ (.reg _) => [``Straight.mulDivExact, ``Straight.divSafe]
+  | .mulDiv .idiv _ (.reg _) => [``Straight.mulDivExact, ``Straight.idivSafe]
   | .imul2 _ _ (.reg _) => [``Straight.imul2Exact, ``Straight.imul2RM]
   | .imul2 _ _ _ => [``Straight.imul2RM]
   | .imul3 _ _ (.reg _) _ => [``Straight.imul3Exact, ``Straight.imul3RM]
@@ -491,9 +526,25 @@ since the general rule's reason is the one that matters. -/
 def sharpeningRules : List Name := [``Straight.mov32Exact, ``Straight.aluExact32,
   ``Straight.aluExactRR32, ``Straight.shiftExact, ``Straight.leaExactB, ``Straight.leaExactBI,
   ``Straight.negExact, ``Straight.notExact, ``Straight.imul2Exact, ``Straight.imul3Exact,
-  ``Straight.mulDivExact, ``Straight.divSafe, ``Straight.idivSafe, ``Straight.cdqExact, ``Straight.cqoExact,
+  ``Straight.mulDivExact, ``Straight.cdqExact, ``Straight.cqoExact,
   ``Straight.movsxdExact, ``Straight.movzxExact, ``Straight.movsxExact, ``Straight.popcntExact,
   ``Straight.bswapExact, ``Straight.cmovExact, ``Straight.setccExact]
+
+/-- Why an instruction form has no rule, where there is something more
+useful to say than that. -/
+def Instr.noRuleReason : Instr → Option String
+  | .mulDiv .div _ (.mem _) | .mulDiv .idiv _ (.mem _) =>
+    some "a divide is typed only when its divisor is shown not to be zero, and values in \
+      memory are not tracked: load the divisor into a register first"
+  | _ => none
+
+/-- The registers whose values an instruction's rules need to speak of. If
+one of them is typed as an integer, the tactic gives its value a name first,
+so that the rules for exactly known values apply. -/
+def Instr.wantsNamed : Instr → List Reg
+  | .mulDiv .div _ (.reg r) | .mulDiv .idiv _ (.reg r) => [.rax, .rdx, r]
+  | .cqo | .cdq => [.rax]
+  | _ => []
 
 /-- Whether the instruction can send control somewhere other than the next
 instruction, which is where a block ends. -/
@@ -502,7 +553,7 @@ def Instr.endsBlock : Instr → Bool
   | _ => false
 
 /-- Every straight-line rule, for instructions whose shape is not known. -/
-def allStraightRules : List Name := sharpeningRules ++ [``Straight.movRR64, ``Straight.movRR32, ``Straight.movRI, ``Straight.movAbs, ``Straight.leaRip, ``Straight.lea, ``Straight.loadStack, ``Straight.loadField, ``Straight.storeStack, ``Straight.storeField, ``Straight.push, ``Straight.pop, ``Straight.allocFrame, ``Straight.freeFrame', ``Straight.aluExact, ``Straight.aluExactRR, ``Straight.addPtr, ``Straight.aluRR, ``Straight.aluRI, ``Straight.testExact, ``Straight.nop, ``Straight.aluStoreR, ``Straight.aluStoreI, ``Straight.cmpR, ``Straight.cmpI, ``Straight.aluLoad, ``Straight.testRM, ``Straight.negRM, ``Straight.notRM, ``Straight.shiftImm, ``Straight.shiftCl, ``Straight.mulRM, ``Straight.imulRM, ``Straight.divRM, ``Straight.idivRM, ``Straight.imul2RM, ``Straight.imul3RM, ``Straight.popcntRM, ``Straight.bswap, ``Straight.cdq, ``Straight.cqo, ``Straight.movsxdRM, ``Straight.cmovRM, ``Straight.setccRM, ``Straight.movzxRM, ``Straight.movsxRM, ``Straight.loadInt, ``Straight.storeInt, ``Straight.storeImm, ``Straight.store8RM, ``Straight.loadGlobal_of, ``Straight.storeGlobal_of, ``Straight.xorSelf,
+def allStraightRules : List Name := sharpeningRules ++ [``Straight.movRR64, ``Straight.movRR32, ``Straight.movRI, ``Straight.movAbs, ``Straight.leaRip, ``Straight.lea, ``Straight.loadStack, ``Straight.loadField, ``Straight.storeStack, ``Straight.storeField, ``Straight.push, ``Straight.pop, ``Straight.allocFrame, ``Straight.freeFrame', ``Straight.aluExact, ``Straight.aluExactRR, ``Straight.addPtr, ``Straight.aluRR, ``Straight.aluRI, ``Straight.testExact, ``Straight.nop, ``Straight.aluStoreR, ``Straight.aluStoreI, ``Straight.cmpR, ``Straight.cmpI, ``Straight.aluLoad, ``Straight.testRM, ``Straight.negRM, ``Straight.notRM, ``Straight.shiftImm, ``Straight.shiftCl, ``Straight.mulRM, ``Straight.imulRM, ``Straight.divSafe, ``Straight.idivSafe, ``Straight.imul2RM, ``Straight.imul3RM, ``Straight.popcntRM, ``Straight.bswap, ``Straight.cdq, ``Straight.cqo, ``Straight.movsxdRM, ``Straight.cmovRM, ``Straight.setccRM, ``Straight.movzxRM, ``Straight.movsxRM, ``Straight.loadInt, ``Straight.storeInt, ``Straight.storeImm, ``Straight.store8RM, ``Straight.loadGlobal_of, ``Straight.storeGlobal_of, ``Straight.xorSelf,
   ``Straight.loadIndexed, ``Straight.storeIndexed]
 
 private unsafe def evalInstrUnsafe (e : Expr) : MetaM Instr :=
@@ -585,6 +636,13 @@ private def regName? (e : Expr) : Option String :=
 private def describePremise (ty : Expr) : MetaM MessageData := do
   let ty ← instantiateMVars ty
   if let some (_, lhs, rhs) := ty.eq? then
+    -- what a divide needs of the upper half of its dividend
+    if lhs.isAppOf ``BitVec.setWidth && rhs.isAppOf ``signFill then
+      return m!"`rdx` is not known to hold the sign extension of `rax`: use `cqo` or `cdq` \
+        before the divide"
+    if lhs.isAppOf ``BitVec.setWidth && !rhs.isAppOf ``BitVec.setWidth then
+      return m!"`rdx`, the upper half of the dividend, is not known to be zero: clear it \
+        before the divide"
     -- what a register must hold
     if lhs.isAppOfArity ``CtxOf.regs 3 then
       let reg := (regName? (← whnf lhs.appArg!)).getD "the register"
@@ -625,6 +683,14 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
       where `{← ppTy ty.appArg!}` is required"
   if ty.isAppOfArity ``Ne 3 && (regName? ty.appArg!) == some "rsp" then
     return m!"`rsp` cannot be this operand"
+  if ty.isAppOfArity ``Ne 3 && ty.appFn!.appArg!.isAppOf ``BitVec.setWidth then
+    return m!"the divisor, `{← ppClean ty.appFn!.appArg!.appArg!}`, is not known to be \
+      non-zero: a check is needed before the divide"
+  if ty.isAppOfArity ``Ne 3 then
+    return m!"`{← ppClean ty}` is not known: it is needed among the hypotheses"
+  if ty.isAppOfArity ``Or 2 then
+    return m!"neither `{← ppClean ty.appFn!.appArg!}` nor `{← ppClean ty.appArg!}` is known: \
+      one is needed among the hypotheses"
   if ty.isAppOf ``LE.le then
     return m!"the access would cross the end of an 8-byte field"
   if ty.isForall && ty.getForallBody.isAppOf ``Exists then
@@ -719,7 +785,9 @@ def typeStraight : TacticM Unit := withMainContext do
     | some i => m!"`{i.toAsm}`"
     | none => m!"{instrExpr}"
   if rules.isEmpty then
-    throwError "the type system has no rule for {shown}"
+    match instr?.bind Instr.noRuleReason with
+    | some why => throwError "cannot type {shown}: {why}"
+    | none => throwError "the type system has no rule for {shown}"
   let mut msg := m!"cannot type {shown} in the current context"
   let general := rules.filter (!sharpeningRules.contains ·)
   for rule in (if general.isEmpty then rules else general) do
@@ -739,7 +807,7 @@ private inductive StepResult
 
 /-- Types the first instruction of a block goal if it is a straight-line
 instruction, leaving the rest of the block as the main goal. -/
-private def typeStep : TacticM StepResult := withMainContext do
+private partial def typeStep (named : Bool := false) : TacticM StepResult := withMainContext do
   let goal ← getMainGoal
   let ty ← instantiateMVars (← goal.getType)
   unless ty.isAppOf ``BlockOk do return .notABlock
@@ -764,6 +832,23 @@ private def typeStep : TacticM StepResult := withMainContext do
     if instr.endsBlock then
       saved.restore
       return .endOfBlock instr
+    -- Registers the rules need to speak of, but which are only known to be
+    -- integers, are given names first.
+    unless named do
+      let ctx := ty.getAppArgs[5]!
+      let mut toName : List Reg := []
+      for r in instr.wantsNamed.eraseDups do
+        let regE := mkConst (Name.str ``Reg r.name64)
+        let regTy ← whnf (← mkAppM ``CtxOf.regs #[ctx, regE])
+        if regTy.isConstOf ``Ty.int then toName := toName ++ [r]
+      unless toName.isEmpty do
+        saved.restore
+        setGoals [goal]
+        for r in toName do
+          nameRegister (mkIdent (Name.str ``Reg r.name64))
+            (mkIdent (Name.mkSimple s!"{r.name64}₀"))
+        setGoals ((← getGoals) ++ others)
+        return ← typeStep (named := true)
   setGoals [instrGoal]
   let addr ← instantiateMVars ty.getAppArgs[4]!
   let at? ← if addr.hasExprMVar || addr.hasFVar then pure none

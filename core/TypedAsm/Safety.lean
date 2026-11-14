@@ -6,10 +6,9 @@ import TypedAsm.Step
 What it means for a machine state to be safe to run: no state it can reach
 takes a step with a bad outcome.
 
-The outcomes that count as bad are getting stuck, a page fault, and an invalid
-opcode. Continuing, exiting, and a divide error are acceptable: a divide error
-is a defined trap, and ruling it out would need knowledge of values that the
-type system does not have.
+The outcomes that count as bad are getting stuck and every fault: a page
+fault, an invalid opcode and a divide error. Only continuing and exiting are
+acceptable.
 
 Safety is relative to the instructions (`fetch`) and to the operating system
 (`sys`). A system call that itself returns a bad outcome makes a program
@@ -18,13 +17,12 @@ unsafe, so results about safety need an assumption about `sys`.
 
 namespace TypedAsm
 
-/-- Whether an outcome is acceptable for a safe program. -/
+/-- Whether an outcome is acceptable for a safe program: it continues or it
+exits. No fault is acceptable, a divide error included. -/
 def Result.isSafe {α : Type} : Result α → Bool
   | .next _ => true
   | .exit _ => true
-  | .fault .divideError => true
-  | .fault .pageFault => false
-  | .fault .invalidOpcode => false
+  | .fault _ => false
   | .stuck => false
 
 variable (fetch : Fetch) (sys : Syscall)

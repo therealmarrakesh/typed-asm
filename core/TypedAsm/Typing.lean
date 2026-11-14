@@ -20,9 +20,9 @@ whole 8-byte field or slot keeps its type when loaded or stored at 64 bits;
 any other access, narrower or inside a field, reads and writes integers.
 
 Every instruction of the machine has a rule. What the rules do not track:
-an operation on values that are not exactly known gives a plain integer,
-and a divide of such values is not shown free of a
-divide error, which safety permits.
+an operation on values that are not exactly known gives a plain integer.
+A divide is typed only when it is shown not to raise a divide error, which
+needs its operands in registers holding exactly known values.
 -/
 
 namespace TypedAsm
@@ -195,12 +195,6 @@ inductive CodeAt (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) : RM → Ctx → Pro
   | slot {i : Nat} {disp : BitVec 32} {Δ : Ctx} :
     slotDisp i disp → Γ.stack[i]? = some (.code Δ) →
     CodeAt Ψ next Γ (.mem (.sib (some .rsp) none disp)) Δ
-
-/-- The two instructions that can raise a divide error. -/
-def Instr.isDivide : Instr → Bool
-  | .mulDiv .div _ _ => true
-  | .mulDiv .idiv _ _ => true
-  | _ => false
 
 /-- At least the named flags are defined. -/
 def Flags.Defined (cf zf sf of : Bool) : Flags → Prop :=
@@ -412,12 +406,6 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
     Straight Ψ next Γ (.mulDiv .mul w src) (Γ.afterMulDiv Flags.AfterMul)
   | imulRM {Γ : Ctx} {w : Width} {src : RM} : ReadOk Ψ next Γ w.bytes.toNat src →
     Straight Ψ next Γ (.mulDiv .imul w src) (Γ.afterMulDiv Flags.AfterMul)
-  /-- A divide may raise a divide error, which is an acceptable outcome; if
-  it does not, execution continues. -/
-  | divRM {Γ : Ctx} {w : Width} {src : RM} : ReadOk Ψ next Γ w.bytes.toNat src →
-    Straight Ψ next Γ (.mulDiv .div w src) (Γ.afterMulDiv Flags.Any)
-  | idivRM {Γ : Ctx} {w : Width} {src : RM} : ReadOk Ψ next Γ w.bytes.toNat src →
-    Straight Ψ next Γ (.mulDiv .idiv w src) (Γ.afterMulDiv Flags.Any)
   | imul2RM {Γ : Ctx} {w : Width} {d : Reg} {src : RM} : d ≠ .rsp → ReadOk Ψ next Γ w.bytes.toNat src →
     Straight Ψ next Γ (.imul2 w d src) { Γ.setReg d .int with flags := Flags.AfterMul }
   | imul3RM {Γ : Ctx} {w : Width} {d : Reg} {src : RM} {imm : BitVec 32} :
@@ -515,7 +503,8 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
       { Γ.setReg d (.eq ((imulTrunc (b.setWidth w.bits) (imm.signExtend w.bits)).1.setWidth 64)) with
         flags := (· = (imulTrunc (b.setWidth w.bits) (imm.signExtend w.bits)).2) }
   /-- A multiply or divide of exactly known values that is known to produce
-  a result. For a divide this is how the divide error is ruled out. -/
+  a result. This is the only rule for a divide: a divide is typed only when
+  it is shown not to raise a divide error. -/
   | mulDivExact {Γ : Ctx} {op : MulDivOp} {w : Width} {r : Reg} {a d b : BitVec 64}
       {lo hi : BitVec w.bits} {fl : Flags} :
     r ≠ .rsp → Γ.regs .rax = .eq a → Γ.regs .rdx = .eq d → Γ.regs r = .eq b →

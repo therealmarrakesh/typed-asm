@@ -1153,21 +1153,6 @@ theorem MulDivOp.eval_idiv {n : Nat} (a b : BitVec n) (hb : b ≠ 0)
 
 /-! ## Multiply and divide -/
 
-/-- A multiply or divide either produces a result or raises a divide error. -/
-theorem MulDivOp.eval_cases {n : Nat} (op : MulDivOp) (hi lo src : BitVec n) :
-    (∃ x, op.eval hi lo src = .next x) ∨ op.eval hi lo src = .fault .divideError := by
-  cases op
-  · exact .inl ⟨_, rfl⟩
-  · exact .inl ⟨_, rfl⟩
-  · simp only [MulDivOp.eval]
-    split
-    · exact .inr rfl
-    · exact .inl ⟨_, rfl⟩
-  · simp only [MulDivOp.eval]
-    split
-    · exact .inr rfl
-    · exact .inl ⟨_, rfl⟩
-
 /-- A multiply or divide that produces a result continues, with `rax` and
 `rdx` integers. -/
 theorem mulDiv_next {Γ : Ctx} {s : State} {op : MulDivOp} {w : Width} {src : RM}
@@ -1203,33 +1188,10 @@ theorem mulDivExact_next {Γ : Ctx} {s : State} {op : MulDivOp} {w : Width} {r :
       (P := (· = fl)) rfl⟩
   simp [exec, State.readRM, State.readReg_of ha, State.readReg_of hd, State.readReg_of hb, hev]
 
-/-- A divide either raises a divide error or continues. -/
-theorem mulDiv_sound {Γ : Ctx} {s : State} {op : MulDivOp} {w : Width} {src : RM}
-    (hr : ReadOk Ψ next Γ w.bytes.toNat src) (h : WellTyped fetch sys Ψ ix Γ s)
-    (hrip : s.rip = next) :
-    (exec sys (.mulDiv op w src) s).isSafe = true ∧
-      ∀ s', exec sys (.mulDiv op w src) s = .next s' →
-        s'.rip = s.rip ∧ WellTyped fetch sys Ψ ix (Γ.afterMulDiv Flags.Any) s' := by
-  obtain ⟨a, ha⟩ := hr.readRM h hrip
-  rcases op.eval_cases (s.readReg w .rdx) (s.readReg w .rax) a with ⟨⟨lo, hi, fl⟩, hx⟩ | hx
-  · have he : exec sys (.mulDiv op w src) s
-        = .next { (s.writeReg w .rax lo).writeReg w .rdx hi with flags := fl } := by
-      simp [exec, ha, hx]
-    rw [he]
-    refine ⟨rfl, fun s' heq => ?_⟩
-    cases heq
-    exact ⟨rfl, ((h.setReg (by decide) (HasTy.int _)).setReg (by decide) (HasTy.int _)).setFlags
-      (P := Flags.Any) trivial⟩
-  · have he : exec sys (.mulDiv op w src) s = .fault .divideError := by
-      simp [exec, ha, hx]
-    rw [he]
-    exact ⟨rfl, fun s' heq => nomatch heq⟩
-
-/-- A straight-line typed instruction other than a divide, run in a matching
-state, continues to the next instruction and leaves a state matching the
-rule's result context. -/
-theorem Straight.sound_next {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
-    (ht : Straight Ψ next Γ i Γ') (hnd : i.isDivide = false)
+/-- A straight-line typed instruction, run in a matching state, continues to
+the next instruction and leaves a state matching the rule's result context. -/
+theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
+    (ht : Straight Ψ next Γ i Γ')
     (hΨ : Ψ.WF) {s : State} (h : WellTyped fetch sys Ψ ix Γ s) (hrip : s.rip = next) :
     ∃ s', exec sys i s = .next s' ∧ s'.rip = s.rip ∧ WellTyped fetch sys Ψ ix Γ' s' := by
   cases ht with
@@ -1302,8 +1264,6 @@ theorem Straight.sound_next {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
     simp [exec, ha, hrf, hs']
   | @mulRM w src hr => exact mulDiv_next hr h hrip (fun _ => ⟨_, rfl, Flags.ofMul_defined _⟩)
   | @imulRM w src hr => exact mulDiv_next hr h hrip (fun _ => ⟨_, rfl, Flags.ofMul_defined _⟩)
-  | divRM => exact absurd hnd (by simp [Instr.isDivide])
-  | idivRM => exact absurd hnd (by simp [Instr.isDivide])
   | mulDivExact hr hΓa hΓd hΓr hev => exact mulDivExact_next h hr hΓa hΓd hΓr hev
   | @xorSelf w d hd =>
     refine ⟨{ s.setReg d 0 with flags := .ofResult (0 : BitVec w.bits) false false }, ?_, rfl,
@@ -1713,31 +1673,6 @@ theorem Straight.sound_next {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
       h.setFlags (P := (· = Flags.ofResult (a &&& b) false false)) rfl⟩
     simp [exec, State.readRM, State.readRI, State.readReg_w64, hp, hp']
 
-/-- A straight-line typed instruction, run in a matching state, has an
-acceptable outcome, and if it continues, it continues to the next instruction
-in a state matching the rule's result context. (A divide may instead raise a
-divide error.) -/
-theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr} (ht : Straight Ψ next Γ i Γ')
-    (hΨ : Ψ.WF) {s : State} (h : WellTyped fetch sys Ψ ix Γ s) (hrip : s.rip = next) :
-    (exec sys i s).isSafe = true ∧
-      ∀ s', exec sys i s = .next s' → s'.rip = s.rip ∧ WellTyped fetch sys Ψ ix Γ' s' := by
-  cases hd : i.isDivide
-  · obtain ⟨s', he, hr, hw⟩ := ht.sound_next hd hΨ h hrip
-    rw [he]
-    refine ⟨rfl, fun s'' heq => ?_⟩
-    cases heq
-    exact ⟨hr, hw⟩
-  · cases ht with
-    | divRM hr => exact mulDiv_sound hr h hrip
-    | idivRM hr => exact mulDiv_sound hr h hrip
-    | mulDivExact hr hΓa hΓd hΓr hev =>
-      obtain ⟨s', he, hr', hw⟩ := mulDivExact_next h hr hΓa hΓd hΓr hev
-      rw [he]
-      refine ⟨rfl, fun s'' heq => ?_⟩
-      cases heq
-      exact ⟨hr', hw⟩
-    | _ => simp [Instr.isDivide] at hd
-
 /-! ## All typed instructions -/
 
 /-- What the induction on step count provides: every program point is safe
@@ -1763,9 +1698,10 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
   induction ht generalizing s with
   | weaken hsem _ ihw => exact ihw (hsem _ _ h) hrip
   | straight hst hacc =>
-    obtain ⟨hsafe, hnext⟩ := hst.sound hΨ h hrip
-    refine ⟨hsafe, fun s' heq => ?_⟩
-    obtain ⟨hr, hw⟩ := hnext s' heq
+    obtain ⟨s', he, hr, hw⟩ := hst.sound hΨ h hrip
+    rw [he]
+    refine ⟨rfl, fun s'' heq => ?_⟩
+    cases heq
     exact ih.accepts hacc (hr.trans hrip) hw
   | @jmp Γ d hacc =>
     refine ⟨rfl, fun s' heq => ?_⟩
@@ -1900,7 +1836,8 @@ theorem safeUpTo (hP : ProgramOk Φ fetch sys Ψ) (hΨ : Ψ.WF) (hsys : SysOk fe
 
 /-- **Soundness.** A well-typed program, started in a well-typed state, with a
 well-formed memory typing and a well-behaved operating system, is safe: it
-never gets stuck, never page-faults, and never executes an invalid opcode. -/
+never gets stuck and never faults: no page fault, no invalid opcode and no
+divide error. -/
 theorem soundness {s : State} (hP : ProgramOk Φ fetch sys Ψ) (hΨ : Ψ.WF) (hsys : SysOk fetch sys Ψ)
     (hs : StateOk Φ fetch sys Ψ s) : Safe fetch sys s := by
   obtain ⟨Γ, hΓ, hw⟩ := hs

@@ -108,14 +108,14 @@ theorem Entry.stateOk {s : State} (h : Entry s) : StateOk Φ fetch linux Ψ s :=
 
 /-- **From any state meeting the entry contract, the program is safe on the
 machine that fetches instructions by decoding memory.** It never gets stuck,
-never page-faults and never executes an invalid opcode. (The type system
-does not show that the two divisions cannot raise a divide error; that
-outcome is one safety permits.) -/
+never faults: no page fault, no invalid opcode and no divide error. The two
+divisions are by constants that are not zero, which is what the typing of a
+divide demands. -/
 theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
   .of_safe linux_frame (Asm.loaded h.code)
     (soundness_blocks blocksOk memOk (linuxOk fetch Ψ) h.stateOk)
 
-theorem image_length : image.length = 196 := by decide +kernel
+theorem image_length : image.length = 198 := by decide +kernel
 
 /-- The starting state used by the simulator meets the entry contract. -/
 theorem start_entry : Entry start :=
