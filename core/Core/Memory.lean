@@ -101,27 +101,44 @@ theorem mem_store_of_disjoint (s : State) (w : Width) (a x : BitVec 64) (v : Bit
     simp only [store, store64, store32, store16, store8, Width.bytes] at * <;>
     bv_decide
 
+private theorem load32_congr {s t : State} {b : BitVec 64}
+    (h₀ : t.mem b = s.mem b) (h₁ : t.mem (b + 1) = s.mem (b + 1))
+    (h₂ : t.mem (b + 2) = s.mem (b + 2)) (h₃ : t.mem (b + 2 + 1) = s.mem (b + 2 + 1)) :
+    t.load32 b = s.load32 b := by
+  simp only [load32, load16, load8, h₀, h₁, h₂, h₃]
+
+private theorem load64_congr {s t : State} {b : BitVec 64}
+    (h₀ : t.mem b = s.mem b) (h₁ : t.mem (b + 1) = s.mem (b + 1))
+    (h₂ : t.mem (b + 2) = s.mem (b + 2)) (h₃ : t.mem (b + 2 + 1) = s.mem (b + 2 + 1))
+    (h₄ : t.mem (b + 4) = s.mem (b + 4)) (h₅ : t.mem (b + 4 + 1) = s.mem (b + 4 + 1))
+    (h₆ : t.mem (b + 4 + 2) = s.mem (b + 4 + 2))
+    (h₇ : t.mem (b + 4 + 2 + 1) = s.mem (b + 4 + 2 + 1)) :
+    t.load64 b = s.load64 b := by
+  simp only [load64, load32, load16, load8, h₀, h₁, h₂, h₃, h₄, h₅, h₆, h₇]
+
 /-- A store leaves a load from a non-overlapping range unchanged. The two
 hypotheses say that neither range starts inside the other, which also covers
 ranges that wrap around the end of the address space. -/
 theorem load_store_disjoint (s : State) (w w' : Width) (a b : BitVec 64) (v : BitVec w.bits)
     (h₁ : w.bytes ≤ b - a) (h₂ : w'.bytes ≤ a - b) :
     (s.store w a v).load w' b = s.load w' b := by
-  cases w' <;> cases w <;>
-    simp only [Width.bytes] at h₁ h₂ <;>
-    simp only [load, load64, load32, load16, load8] <;>
-    simp (disch := simp only [Width.bytes]; bv_decide) only [mem_store_of_disjoint] <;>
-    rfl
+  cases w'
+  · refine load32_congr ?_ ?_ ?_ ?_ <;> apply mem_store_of_disjoint <;>
+      cases w <;> simp only [Width.bytes] at * <;> bv_decide
+  · refine load64_congr ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ <;> apply mem_store_of_disjoint <;>
+      cases w <;> simp only [Width.bytes] at * <;> bv_decide
 
 /-- A store does not change any register. -/
 theorem getReg_store (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) (r : Reg) :
     (s.store w a v).getReg r = s.getReg r := by
-  cases w <;> rfl
+  cases w <;> simp only [store, store64, store32, store16, store8, getReg]
 
 /-- A register write does not change memory. -/
 theorem load_setReg (s : State) (r : Reg) (v : BitVec 64) (w : Width) (a : BitVec 64) :
     (s.setReg r v).load w a = s.load w a := by
-  cases w <;> rfl
+  cases w
+  · exact load32_congr rfl rfl rfl rfl
+  · exact load64_congr rfl rfl rfl rfl rfl rfl rfl rfl
 
 end State
 
