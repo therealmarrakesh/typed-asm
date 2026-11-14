@@ -88,7 +88,7 @@ def AluOp.apply {n : Nat} (op : AluOp) (a b : BitVec n) : BitVec n × Flags :=
 /-- The context after a two-operand operation on register `d`: the flags
 become known, and `d` holds an integer if the operation writes it. -/
 def CtxOf.afterAlu (Γ : Ctx) (op : AluOp) (d : Reg) : Ctx :=
-  { (if op.writesDst then Γ.setReg d .int else Γ) with flags := Flags.Known }
+  { (bif op.writesDst then Γ.setReg d .int else Γ) with flags := Flags.Known }
 
 /-- The context after a system call: the operating system may have changed
 `rax`, `rcx`, `r11` and the flags. -/
@@ -200,13 +200,13 @@ inductive Straight (next : BitVec 64) : Ctx → Instr → Ctx → Prop
   | aluExact {Γ : Ctx} {op : AluOp} {d : Reg} {imm : BitVec 32} {a : BitVec 64} :
     d ≠ .rsp → Γ.regs d = .eq a → op.readsCarry = false →
     Straight next Γ (.alu op .w64 (.rm_i (.reg d) imm))
-      { (if op.writesDst then Γ.setReg d (.eq (op.apply a (imm.signExtend 64)).1) else Γ) with
+      { (bif op.writesDst then Γ.setReg d (.eq (op.apply a (imm.signExtend 64)).1) else Γ) with
         flags := (· = (op.apply a (imm.signExtend 64)).2) }
   /-- Arithmetic between two exactly known values. -/
   | aluExactRR {Γ : Ctx} {op : AluOp} {d s : Reg} {a b : BitVec 64} :
     d ≠ .rsp → s ≠ .rsp → Γ.regs d = .eq a → Γ.regs s = .eq b → op.readsCarry = false →
     Straight next Γ (.alu op .w64 (.rm_r (.reg d) s))
-      { (if op.writesDst then Γ.setReg d (.eq (op.apply a b).1) else Γ) with
+      { (bif op.writesDst then Γ.setReg d (.eq (op.apply a b).1) else Γ) with
         flags := (· = (op.apply a b).2) }
   /-- Reserve `k` stack slots. Their contents are unknown, so they are integers. -/
   | allocFrame {Γ : Ctx} {k m : Nat} {imm : BitVec 32} :

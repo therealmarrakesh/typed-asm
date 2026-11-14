@@ -578,9 +578,9 @@ theorem afterAlu {op : AluOp} {d : Reg} {fl : Flags} (h : WellTyped fetch sys Ψ
     WellTyped fetch sys Ψ ix (Γ.afterAlu op d)
       { (if op.writesDst then s.setReg d v else s) with flags := fl } := by
   cases hwd : op.writesDst
-  · simp only [CtxOf.afterAlu, hwd, Bool.false_eq_true, ↓reduceIte]
+  · simp only [CtxOf.afterAlu, hwd, Bool.cond_false, Bool.false_eq_true, ↓reduceIte]
     exact h.setFlags (P := Flags.Known) hdef
-  · simp only [CtxOf.afterAlu, hwd, ↓reduceIte]
+  · simp only [CtxOf.afterAlu, hwd, Bool.cond_true, ↓reduceIte]
     exact (h.setReg hd (HasTy.int v)).setFlags (P := Flags.Known) hdef
 
 end WellTyped
@@ -893,9 +893,9 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr} (ht : Strai
           Result.ofOption, hwd, State.writeReg]
     · cases op.writesDst <;> rfl
     · cases hwd : op.writesDst
-      · simp only [Bool.false_eq_true, ↓reduceIte]
+      · simp only [Bool.cond_false]
         exact h.setFlags (P := (· = fl)) rfl
-      · simp only [↓reduceIte]
+      · simp only [Bool.cond_true]
         exact (h.setReg hd (hasTy_eq.mpr rfl)).setFlags (P := (· = fl)) rfl
   | @aluExactRR op d src a b hd hs hΓ hΓ' hnc =>
     have hp := h.regs d hd
@@ -912,9 +912,9 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr} (ht : Strai
           Result.ofOption, hwd, State.writeReg]
     · cases op.writesDst <;> rfl
     · cases hwd : op.writesDst
-      · simp only [Bool.false_eq_true, ↓reduceIte]
+      · simp only [Bool.cond_false]
         exact h.setFlags (P := (· = fl)) rfl
-      · simp only [↓reduceIte]
+      · simp only [Bool.cond_true]
         exact (h.setReg hd (hasTy_eq.mpr rfl)).setFlags (P := (· = fl)) rfl
   | @allocFrame k m imm hk hroom =>
     obtain ⟨rfl, hlt⟩ := hk
