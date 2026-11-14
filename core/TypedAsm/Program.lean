@@ -42,6 +42,11 @@ inductive BlockOk (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) :
   | codePtr {a : BitVec 64} {Γ Δ : Ctx} {r : Reg} {v : BitVec 64} :
     r ≠ .rsp → Γ.regs r = .eq v → Φ v Δ → BlockOk Φ fetch sys Ψ a (Γ.setReg r (.code Δ)) →
     BlockOk Φ fetch sys Ψ a Γ
+  /-- Case analysis on the state, between instructions: continue in each of
+  a family of contexts that together cover every state matching `Γ`. -/
+  | cover {ι : Type} [Nonempty ι] {a : BitVec 64} {Γ : Ctx} {Γ' : ι → Ctx} :
+    (∀ n s, WellTyped fetch sys Ψ n Γ s → ∃ x, WellTyped fetch sys Ψ n (Γ' x) s) →
+    (∀ x, BlockOk Φ fetch sys Ψ a (Γ' x)) → BlockOk Φ fetch sys Ψ a Γ
   /-- The last instruction of the block. -/
   | last {a : BitVec 64} {Γ : Ctx} {i : Instr} {len : BitVec 64} :
     fetch a = some (i, len) → HasType Φ fetch sys Ψ (a + len) Γ i → BlockOk Φ fetch sys Ψ a Γ
@@ -70,6 +75,7 @@ theorem HasType.mono (h : ∀ a Γ, Φ a Γ → Φ' a Γ) {next : BitVec 64} {Γ
   | jmpInd hcode hsub => exact .jmpInd hcode hsub
   | callInd hcode hroom hret hsub => exact .callInd hcode hroom (h _ _ hret) hsub
   | unreachable hun => exact .unreachable hun
+  | cover hsem _ ih => exact .cover hsem ih
   | codePtr hr hΓ hΦ _ ih => exact .codePtr hr hΓ (h _ _ hΦ) ih
   | weaken hsem _ ih => exact .weaken hsem ih
 
@@ -89,6 +95,13 @@ theorem BlocksOk.programOk (h : BlocksOk Φ fetch sys Ψ) :
   | codePtr hr hΓ hΦ _ ih =>
     obtain ⟨i, len, hf, ht⟩ := ih
     exact ⟨i, len, hf, .codePtr hr hΓ (h _ _ hΦ) ht⟩
+  | @cover ι inst a Γ Γ' hsem _ ih =>
+    obtain ⟨x₀⟩ := inst
+    obtain ⟨i, len, hf, -⟩ := ih x₀
+    refine ⟨i, len, hf, .cover hsem (fun x => ?_)⟩
+    obtain ⟨i', len', hf', ht'⟩ := ih x
+    cases hf.symm.trans hf'
+    exact ht'
   | last hf ht => exact ⟨_, _, hf, ht.mono h⟩
 
 /-- A register holding exactly the address of a field of a memory block may
@@ -103,6 +116,15 @@ theorem BlockOk.castPtr {a : BitVec 64} {Γ : Ctx} {r : Reg} {v base : BitVec 64
     have := h.regs r hr
     rw [hΓ, hasTy_eq] at this
     rw [this, hv]⟩)) hrest
+
+/-- A register may be given a name for the value it holds: the rest of the
+block is typed for every value `v`, with the register typed as exactly `v`.
+Whatever else was known about the register is given up, so this is for
+registers typed as integers. -/
+theorem BlockOk.name {a : BitVec 64} {Γ : Ctx} {r : Reg} (hr : r ≠ .rsp)
+    (hrest : ∀ v, BlockOk Φ fetch sys Ψ a (Γ.setReg r (.eq v))) : BlockOk Φ fetch sys Ψ a Γ :=
+  .cover (Γ' := fun v => Γ.setReg r (.eq v))
+    (fun _ s h => ⟨s.getReg r, h.retype hr (hasTy_eq.mpr rfl)⟩) hrest
 
 /-! ## Contexts attached to labels -/
 

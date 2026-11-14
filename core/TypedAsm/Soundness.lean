@@ -1731,6 +1731,9 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
     exact hp n (Nat.lt_succ_self n) _ rfl
       (((hw'.sub hsub).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
   | @unreachable Γ i hun => exact absurd h (hun _ _)
+  | @cover ι Γ Γ' i hsem _ ihc =>
+    obtain ⟨x, hx⟩ := hsem _ _ h
+    exact ihc x hx hrip
   | @codePtr Γ Δ i r a hr hΓ hΦ _ ihc =>
     have hp := h.regs r hr
     rw [hΓ, hasTy_eq] at hp

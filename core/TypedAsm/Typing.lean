@@ -572,6 +572,13 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
   | codePtr {Γ Δ : Ctx} {i : Instr} {r : Reg} {a : BitVec 64} :
     r ≠ .rsp → Γ.regs r = .eq a → Φ a Δ →
     HasType Φ fetch sys Ψ next (Γ.setReg r (.code Δ)) i → HasType Φ fetch sys Ψ next Γ i
+  /-- Case analysis on the state: if every state matching `Γ` matches one of
+  a family of contexts, and the instruction is typed in each of them, it is
+  typed in `Γ`. This is how a value that is only known to be an integer gets
+  a name: the family has one context for each value it could be. -/
+  | cover {ι : Type} {Γ : Ctx} {Γ' : ι → Ctx} {i : Instr} :
+    (∀ n s, WellTyped fetch sys Ψ n Γ s → ∃ x, WellTyped fetch sys Ψ n (Γ' x) s) →
+    (∀ x, HasType Φ fetch sys Ψ next (Γ' x) i) → HasType Φ fetch sys Ψ next Γ i
   /-- The rule of consequence: an instruction typed in `Γ'` is typed in any
   context whose matching states all match `Γ'`. This is the escape from the
   syntactic rules to an arbitrary argument about states. -/
