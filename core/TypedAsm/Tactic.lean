@@ -10,6 +10,8 @@ These build typing derivations; the kernel checks the result, so nothing here
 is trusted. They handle the mechanical parts and leave as goals whatever
 needs an argument, typically a fact about values at a branch.
 
+* `ty_block` types a whole block of a labelled program, finding jump targets
+  by label. `ty_call sig` types a call. These are the usual entry points.
 * `ty_steps` types the straight-line instructions at the start of a block.
 * `ty_step` types one.
 * `ty_straight` types a single instruction; the two above are built on it.
@@ -89,11 +91,13 @@ macro "ty_stack" : tactic =>
     | (repeat (first | exact SubList.nil | (refine SubList.cons ?_ ?_; ty_sub)); done))
 
 /-- Shows one flags predicate implies another, in the common cases. -/
-macro "ty_flags" : tactic =>
+macro "ty_flags" : tactic => do
+  -- `rfl` must be written without macro hygiene, or `rintro` takes it for a name.
+  let subst := Lean.mkIdent `rfl
   `(tactic| first
     | exact fun _ h => h
     | exact fun _ _ => trivial
-    | (rintro f rfl; exact Flags.ofResult_defined _ _ _))
+    | (rintro f $subst:ident; exact Flags.ofResult_defined _ _ _))
 
 /-- Proves `CtxSub Γ Δ`. The stack, room and flags must be settled
 automatically; register comparisons it cannot settle are left as goals. -/
@@ -124,11 +128,12 @@ macro "ty_field" : tactic =>
     | (simp [*]; done))
 
 /-- Proves that an operation's need for the carry flag is met. -/
-macro "ty_carry" : tactic =>
+macro "ty_carry" : tactic => do
+  let subst := Lean.mkIdent `rfl
   `(tactic| first
     | (intro h; exact absurd h (by decide))
     | exact fun _ _ hf => Flags.cf_isSome_of_known hf
-    | (rintro - f rfl; rfl))
+    | (rintro - f $subst:ident; rfl))
 
 /-- Proves a side condition of a typing rule, or fails. -/
 macro "ty_side" : tactic =>
@@ -152,7 +157,8 @@ context in a record update that mentions it once per field, so without this
 the context would multiply in size with every instruction. -/
 macro "ty_normalize" : tactic =>
   `(tactic| try dsimp only [CtxOf.setReg, CtxOf.afterAlu, CtxOf.afterSyscall, AluOp.writesDst,
-      ↓reduceIte])
+      Bool.cond_true, Bool.cond_false, Nat.add_zero, Nat.zero_add, BitVec.reduceToNat, Nat.reduceDiv,
+      Nat.reduceMod, Nat.reduceAdd, Nat.reduceMul])
 
 /-! ## Choosing the rule from the instruction
 
@@ -448,5 +454,315 @@ elab "ty_steps" : tactic => do
     match ← typeStep with
     | .stepped => continue
     | _ => break
+
+/-! ## Control transfers
+
+For a labelled program the tactic can find where control goes: it looks for
+the label at the target address, then for a context allowed at that label
+which the current context is at least as strong as. Whatever it cannot
+settle is left as a goal: typically a fact about values that the target's
+context demands, such as a loop bound. -/
+
+/-- The constructors of the inductive type a term's type belongs to. -/
+private def ctorsOfType (ty : Expr) : MetaM (List Name) := do
+  let ty ← whnf (← instantiateMVars ty)
+  let some n := ty.getAppFn.constName? | return []
+  match (← getEnv).find? n with
+  | some (.inductInfo info) => return info.ctors
+  | _ => return []
+
+/-- Whether a proposition compares two values. -/
+private def isComparison (t : Expr) : Bool :=
+  t.isAppOf ``LT.lt || t.isAppOf ``LE.le || t.isAppOf ``GT.gt || t.isAppOf ``GE.ge ||
+  t.isAppOf ``Eq || t.isAppOf ``Ne || t.isAppOf ``Not
+
+/-- Runs a tactic on one goal and returns the goals it leaves. -/
+private def runOn (g : MVarId) (tac : TacticM Unit) : TacticM (List MVarId) := do
+  setGoals [g]
+  -- Without this a failing step is logged and its goal admitted, and the
+  -- caller would carry on as if it had succeeded.
+  Tactic.withoutRecover tac
+  getUnsolvedGoals
+
+/-- Proves `Φ a Δ` for a labelled program: finds the label whose address is
+`a` and a context allowed there. `check` runs once the context is chosen and
+should fail if it is the wrong one; another is then tried. Returns the goals
+`check` left, then the premises of the chosen context that remain unproved. -/
+private def proveAtLabel (g : MVarId) (check : TacticM (List MVarId)) :
+    TacticM (List MVarId) := do
+  let parts ← try
+      runOn g (do evalTactic (← `(tactic| refine ⟨?_, ?_, ?_⟩)))
+    catch _ =>
+      throwError "the code typing here is not given by labels; name the target context with \
+        `ty_accept`"
+  let mut label? : Option MVarId := none
+  let mut addr? : Option MVarId := none
+  let mut fact? : Option MVarId := none
+  for p in parts do
+    let t ← instantiateMVars (← p.getType)
+    if !(← isProp t) then label? := some p
+    else if t.isEq then addr? := some p
+    else fact? := some p
+  let (some label, some addr, some fact) := (label?, addr?, fact?)
+    | throwError "the code typing here is not given by labels; name the target context with \
+        `ty_accept`"
+  for c in ← ctorsOfType (← label.getType) do
+    let atLabel ← saveState
+    let found ← try
+        label.assign (mkConst c)
+        discard <| runOn addr (do evalTactic (← `(tactic| rfl)))
+        pure true
+      catch _ =>
+        atLabel.restore
+        pure false
+    unless found do continue
+    let mut reasons : MessageData := m!""
+    for k in ← ctorsOfType (← fact.getType) do
+      let atCtx ← saveState
+      -- A context for some other label is passed over without comment.
+      let premises? ← try
+          pure (some (← runOn fact (do evalTactic (← `(tactic| refine' $(mkIdent k) ..)))))
+        catch _ =>
+          atCtx.restore
+          pure none
+      let some premises := premises? | continue
+      try
+        -- Premises that are not comparisons, such as a caller's requirement,
+        -- are looked for among the hypotheses first. That fixes the parameters
+        -- they mention to the ones in scope, where comparing contexts could
+        -- settle on something equal in effect but different in form.
+        for p in premises do
+          if ← p.isAssigned then continue
+          let t ← instantiateMVars (← p.getType)
+          unless ← isProp t do continue
+          if isComparison t then continue
+          try
+            discard <| runOn p (do evalTactic (← `(tactic| assumption)))
+          catch _ => pure ()
+        let left ← check
+        let mut rest := left
+        for p in premises do
+          if ← p.isAssigned then continue
+          unless ← isProp (← p.getType) do continue
+          let after ← try
+              runOn p (do evalTactic (← `(tactic| first | assumption | omega | decide)))
+            catch _ => pure [p]
+          rest := rest ++ after
+        -- Parameters nothing determined are left for the user to supply.
+        for p in premises do
+          if ← p.isAssigned then continue
+          unless ← isProp (← p.getType) do rest := rest ++ [p]
+        return rest
+      catch e =>
+        atCtx.restore
+        reasons := reasons ++ m!"\n• {k.components.getLast!}: {e.toMessageData}"
+    throwError "no context allowed at label `{c.components.getLast!}` accepts the current one{reasons}"
+  throwError "there is no label at the target address"
+
+/-- Fails if a register comparison left as a goal can never hold: the two
+types are fully known and of different kinds. -/
+private def rejectImpossible (gs : List MVarId) : TacticM Unit := do
+  for g in gs do
+    let t ← instantiateMVars (← g.getType)
+    unless t.isAppOfArity ``Sub 2 do continue
+    let have_ ← g.withContext (reduce t.appFn!.appArg!)
+    let want ← g.withContext (reduce t.appArg!)
+    if have_.hasExprMVar || want.hasExprMVar then continue
+    if have_.getAppFn.constName? != want.getAppFn.constName? then
+      let reg := (← g.getTag).eraseMacroScopes.components.getLast!
+      throwError "`{reg}` has type `{← ppTy have_}`, but `{← ppTy want}` is required"
+
+/-- Proves `Accepts Φ a Γ` by finding the label at `a`. Returns what is left. -/
+private def proveAccepts (g : MVarId) : TacticM (List MVarId) := do
+  let parts ← runOn g (do evalTactic (← `(tactic| refine ⟨?_, ?_, ?_⟩)))
+  let mut here? : Option MVarId := none
+  let mut sub? : Option MVarId := none
+  for p in parts do
+    let t ← instantiateMVars (← p.getType)
+    if t.isAppOf ``CtxSub then sub? := some p
+    else if ← isProp t then here? := some p
+  let (some here, some sub) := (here?, sub?)
+    | throwError "ty_label: the goal is not of the form `Accepts Φ a Γ`"
+  proveAtLabel here (do
+    let left ← try
+        runOn sub (do evalTactic (← `(tactic| ctx_sub)))
+      catch _ =>
+        throwError "the stack, the free room or the flags do not match"
+    rejectImpossible left
+    pure left)
+
+/-- Proves `Accepts Φ a Γ` in a labelled program by finding the label at
+address `a` and a context allowed there that `Γ` is at least as strong as.
+Facts the target's context demands, and register types that do not
+obviously match, are left as goals. -/
+elab "ty_label" : tactic => do
+  let goal ← getMainGoal
+  let others := (← getGoals).drop 1
+  let left ← proveAccepts goal
+  setGoals (left ++ others)
+
+/-- Introduces the flags hypotheses of one side of a conditional jump. When
+the flags are known exactly they are substituted. The fact about which way
+the condition went is named `hcond`. -/
+private def introBranch : TacticM Unit := do
+  let hcond := mkIdent `hcond
+  -- `rfl` must be written without macro hygiene, or `rintro` takes it for a name.
+  let subst := mkIdent `rfl
+  evalTactic (← `(tactic| first | rintro f $subst:ident $hcond:ident | intro f _ $hcond:ident))
+
+/-- Shows the flags decide a condition. -/
+private def decideCond : TacticM Unit := do
+  let subst := mkIdent `rfl
+  evalTactic (← `(tactic| first
+    | (rintro f $subst:ident; exact ⟨_, rfl⟩)
+    | exact Cond.decided_of_known (fun _ h => h) _))
+
+/-- The goal among `gs` that came from the placeholder `?name`. Goals are
+found by name because the order in which `refine` returns them is not fixed. -/
+private def goalNamed (gs : List MVarId) (name : Name) : TacticM MVarId := do
+  for g in gs do
+    let tag := (← g.getTag).eraseMacroScopes
+    if !tag.isAnonymous && tag.components.getLast! == name then return g
+  throwError "ty_block: internal error, no goal named {name}"
+
+/-- What ending a block did. -/
+private inductive Finish
+  /-- The block is finished; these goals are left. -/
+  | done (left : List MVarId)
+  /-- A conditional jump was typed and the block continues in `rest`. -/
+  | continues (rest : MVarId) (left : List MVarId)
+  /-- This instruction needs information the tactic does not have. -/
+  | needsHelp (msg : MessageData)
+
+/-- Types the control transfer at the head of a block goal. -/
+private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
+  match instr with
+  | .jmp (.rel _) =>
+    let gs ← runOn goal (do evalTactic (← `(tactic| refine BlockOk.last rfl (HasType.jmp ?_))))
+    let [acc] := gs | throwError "ty_block: unexpected goals at `jmp`"
+    return .done (← proveAccepts acc)
+  | .syscall =>
+    let gs ← runOn goal (do evalTactic (← `(tactic| refine BlockOk.last rfl (HasType.syscall ?_))))
+    let [acc] := gs | throwError "ty_block: unexpected goals at `syscall`"
+    return .done (← proveAccepts acc)
+  | .ret =>
+    let gs ← try
+        runOn goal (do evalTactic (← `(tactic|
+          refine BlockOk.last rfl (FnSig.ret_of (sig := ?_) (saved := ?_) ?caller ?regs rfl rfl))))
+      catch _ =>
+        throwError "`ret` needs a return address on top of the stack, but the context does \
+          not have one there"
+    let mut left := []
+    for g in gs do
+      if ← g.isAssigned then continue
+      let t ← instantiateMVars (← g.getType)
+      if t.isAppOf ``FnSig.CallerOk then
+        try
+          discard <| runOn g (do evalTactic (← `(tactic| assumption)))
+        catch _ =>
+          throwError "`ret` needs the caller's requirement (`sig.CallerOk …`) among the hypotheses"
+      else if ← isProp t then
+        left := left ++ (← runOn g (do evalTactic (← `(tactic| sub_regs))))
+    return .done left
+  | .jcc _ _ =>
+    -- First try to end the block here, with the next instruction at a label.
+    let before ← saveState
+    try
+      let gs ← runOn goal (do evalTactic (← `(tactic|
+        refine BlockOk.last rfl (HasType.jcc ?dec ?taken ?fall))))
+      let dec ← goalNamed gs `dec
+      let taken ← goalNamed gs `taken
+      let fall ← goalNamed gs `fall
+      discard <| runOn dec decideCond
+      let [takenAcc] ← runOn taken introBranch | throwError "unexpected goals"
+      let leftTaken ← proveAccepts takenAcc
+      let [fallAcc] ← runOn fall introBranch | throwError "unexpected goals"
+      let leftFall ← proveAccepts fallAcc
+      return .done (leftTaken ++ leftFall)
+    catch _ =>
+      before.restore
+    -- Otherwise the block continues after the jump.
+    let gs ← runOn goal (do evalTactic (← `(tactic| refine BlockOk.branch rfl ?dec ?taken ?rest)))
+    let dec ← goalNamed gs `dec
+    let taken ← goalNamed gs `taken
+    let rest ← goalNamed gs `rest
+    discard <| runOn dec decideCond
+    let [takenAcc] ← runOn taken introBranch | throwError "unexpected goals"
+    let leftTaken ← proveAccepts takenAcc
+    let [rest'] ← runOn rest introBranch | throwError "unexpected goals"
+    return .continues rest' leftTaken
+  | .call _ =>
+    return .needsHelp m!"`{instr.toAsm}`: a call needs the callee's signature; use `ty_call <signature>`"
+  | _ =>
+    return .needsHelp m!"`{instr.toAsm}` is not handled by `ty_block`"
+
+/-- Types a whole block of a labelled program: the straight-line
+instructions, then the control transfer that ends it. Jump targets are found
+by label. Conditional jumps in the middle of the block are followed.
+
+Goals are left for whatever needs an argument: facts a target context
+demands (with the branch condition available as `hcond`), and register types
+that do not obviously match. The tactic stops at a `call`, which needs
+`ty_call`. -/
+elab "ty_block" : tactic => do
+  let others := (← getGoals).drop 1
+  let mut left : List MVarId := []
+  repeat
+    let mut endInstr? : Option Instr := none
+    repeat
+      match ← typeStep with
+      | .stepped => continue
+      | .endOfBlock instr => endInstr? := some instr; break
+      | .notABlock => break
+    let some instr := endInstr? | break
+    let goal ← getMainGoal
+    match ← finishBlock goal instr with
+    | .done l =>
+      left := left ++ l
+      setGoals []
+      break
+    | .continues rest l =>
+      left := left ++ l
+      setGoals [rest]
+    | .needsHelp _ => break
+  setGoals ((← getGoals) ++ left ++ others)
+
+/-- `ty_call sig` types a `call` that ends a block, to a function with
+signature `sig`. The callee and the return point are found by label. Left as
+goals: argument registers whose types do not obviously match what the
+function expects, and register types after the return that do not obviously
+match the return point's context. -/
+elab "ty_call " sig:term : tactic => do
+  let goal ← getMainGoal
+  let others := (← getGoals).drop 1
+  let gs ← runOn goal (do evalTactic (← `(tactic|
+    refine BlockOk.last rfl
+      (FnSig.call_ok (sig := $sig) (ret := ?_) ?callee rfl ?retpoint ?args ?back ?need))))
+  let mut left : List MVarId := []
+  -- the callee first: it involves no unknowns
+  for g in gs do
+    if ← g.isAssigned then continue
+    let t ← instantiateMVars (← g.getType)
+    if t.isAppOf ``FnSig.At then
+      let [entry] ← runOn g (do evalTactic (← `(tactic| intro _ _ _ _ hK)))
+        | throwError "ty_call: unexpected goals"
+      left := left ++ (← proveAtLabel entry (pure []))
+  -- then the return point, which fixes the context after the call
+  for g in gs do
+    if ← g.isAssigned then continue
+    let t ← instantiateMVars (← g.getType)
+    if !(← isProp t) then continue
+    if t.isAppOf ``FnSig.At || t.isAppOf ``CtxSub || t.isForall || t.isAppOf ``LE.le then continue
+    left := left ++ (← proveAtLabel g (pure []))
+  for g in gs do
+    if ← g.isAssigned then continue
+    let t ← instantiateMVars (← g.getType)
+    if t.isAppOf ``CtxSub then
+      left := left ++ (← runOn g (do evalTactic (← `(tactic| ctx_sub))))
+    else if t.isForall then
+      left := left ++ (← runOn g (do evalTactic (← `(tactic| sub_regs))))
+    else if t.isAppOf ``LE.le then
+      left := left ++ (← runOn g (do evalTactic (← `(tactic| first | decide | omega))))
+  setGoals (left ++ others)
 
 end TypedAsm
