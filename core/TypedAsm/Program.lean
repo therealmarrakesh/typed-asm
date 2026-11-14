@@ -21,6 +21,14 @@ inductive BlockOk (Φ : CodeTy) (fetch : Fetch) : BitVec 64 → Ctx → Prop
   | step {a : BitVec 64} {Γ Γ' : Ctx} {i : Instr} {len : BitVec 64} :
     fetch a = some (i, len) → Straight Γ i Γ' → BlockOk Φ fetch (a + len) Γ' →
     BlockOk Φ fetch a Γ
+  /-- A conditional jump in the middle of a block. The target must accept;
+  the block continues with the instruction after it. Each side may assume
+  which way the condition went. -/
+  | branch {a : BitVec 64} {Γ : Ctx} {c : Cond} {d : BitVec 32} {len : BitVec 64} :
+    fetch a = some (.jcc c d, len) → (∀ f, Γ.flags f → ∃ b, c.eval f = some b) →
+    (∀ f, Γ.flags f → c.eval f = some true → Accepts Φ (a + len + d.signExtend 64) Γ) →
+    (∀ f, Γ.flags f → c.eval f = some false → BlockOk Φ fetch (a + len) Γ) →
+    BlockOk Φ fetch a Γ
   /-- The last instruction of the block. -/
   | last {a : BitVec 64} {Γ : Ctx} {i : Instr} {len : BitVec 64} :
     fetch a = some (i, len) → HasType Φ (a + len) Γ i → BlockOk Φ fetch a Γ
@@ -54,6 +62,9 @@ theorem BlocksOk.programOk (h : BlocksOk Φ fetch) : ProgramOk (BlockOk Φ fetch
   intro a Γ hb
   cases hb with
   | step hf hst hrest => exact ⟨_, _, hf, .straight hst ⟨_, hrest, CtxSub.refl _⟩⟩
+  | branch hf hdec hacc hrest =>
+    exact ⟨_, _, hf, .jcc hdec (fun f hΓ hb => (hacc f hΓ hb).mono h)
+      (fun f hΓ hb => ⟨_, hrest f hΓ hb, CtxSub.refl _⟩)⟩
   | last hf ht => exact ⟨_, _, hf, ht.mono h⟩
 
 /-- **Soundness, block by block.** -/
