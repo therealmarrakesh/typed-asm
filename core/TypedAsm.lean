@@ -1,6 +1,7 @@
 import TypedAsm.Instr
 import TypedAsm.Print
 import TypedAsm.Encode
+import TypedAsm.Decode
 import TypedAsm.Result
 import TypedAsm.State
 import TypedAsm.Memory
