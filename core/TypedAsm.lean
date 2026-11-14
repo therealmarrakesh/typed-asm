@@ -3,6 +3,7 @@ import TypedAsm.Result
 import TypedAsm.State
 import TypedAsm.Memory
 import TypedAsm.Step
+import TypedAsm.Safety
 
 /-!
 # TypedAsm
