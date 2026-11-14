@@ -409,6 +409,25 @@ example (h : ∀ v : BitVec 64, BlockOk Φ fetch linux Ψ 0
   ty_name_slot 0 as v
   exact h v
 
+/-! A record used as a shorter one, and a stack deeper than a label cares
+about, need no rule of their own: the context is stated for every tail.
+Here `rdi` points to a record that starts with two integers and goes on in
+any way at all, and the stack holds one integer above anything at all. -/
+
+example (more rest : List Ty) :
+    ∃ Γ', Straight Ψ 10
+      ⟨fun r => if r = .rdi then .ptr ([.int, .int] ++ more) true 0 else .int, .int :: rest, 0,
+        Flags.Any⟩
+      (.mov .w64 (.r_m .rax (.sib (some .rdi) none 8))) Γ' :=
+  ⟨_, by ty_straight⟩
+
+example (more rest : List Ty) :
+    ∃ Γ', Straight Ψ 10
+      ⟨fun r => if r = .rdi then .ptr ([.int, .int] ++ more) true 0 else .int, .int :: rest, 0,
+        Flags.Any⟩
+      (.mov .w64 (.rm_r (.mem (.sib (some .rsp) none 0)) .rdi)) Γ' :=
+  ⟨_, by ty_straight⟩
+
 /-! ## Exactly known values
 
 When the registers an instruction reads hold exactly known values, so does
