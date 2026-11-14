@@ -837,24 +837,35 @@ match the return point's context. -/
 elab "ty_call " sig:term : tactic => do
   let goal ← getMainGoal
   let others := (← getGoals).drop 1
-  let direct? ← try
-      pure (some (← runOn goal (do evalTactic (← `(tactic|
-        refine BlockOk.last rfl
-          (FnSig.call_ok (sig := $sig) (ret := ?_) ?callee rfl ?retpoint ?args ?back ?need))))))
-    catch _ => pure none
-  let some gs := direct? | do
+  -- Find the instruction, to tell a direct call from an indirect one.
+  let parts ← try
+      runOn goal (do evalTactic (← `(tactic| refine BlockOk.last rfl ?typed)))
+    catch _ => throwError "ty_call: the goal is not a block with an instruction at its address"
+  let typed ← goalNamed parts `typed
+  let typedTy ← instantiateMVars (← typed.getType)
+  let instr? ← knownInstr typedTy.getAppArgs[6]!
+  let ctx := typedTy.getAppArgs[5]!
+  let noRoom (instr : Instr) : TacticM MessageData := do
+    let room ← typed.withContext do ppClean (← reduce (← mkAppM ``CtxOf.room #[ctx]))
+    return m!"`{instr.toAsm}`: there is no room on the stack for the return address: the \
+      context has room for {room}"
+  match instr? with
+  | some (.call (.rel _)) => pure ()
+  | some (.call (.ind rm)) =>
+    let instr := Instr.call (.ind rm)
     -- A call through a register, field or stack slot holding a code pointer.
-    let gs ← runOn goal (do evalTactic (← `(tactic|
-      refine BlockOk.last rfl
-        (FnSig.callInd_ok (sig := $sig) (saved := ?_) (ret := ?_) (rest := ?_)
-          ?callee rfl ?retpoint ?args ?stack))))
+    let gs ← try
+        runOn typed (do evalTactic (← `(tactic|
+          refine FnSig.callInd_ok (sig := $sig) (saved := ?_) (ret := ?_) (rest := ?_)
+            ?callee rfl ?retpoint ?args ?stack)))
+      catch _ => throwError (← noRoom instr)
     let callee ← goalNamed gs `callee
     try
       discard <| runOn callee (do evalTactic (← `(tactic| ty_operand)))
     catch _ =>
-      throwError "the operand does not hold a pointer to a function with this signature that \
-        can be called with the room available here. A register holding the exact address of \
-        a label becomes a code pointer with `ty_code_ptr`"
+      throwError "`{instr.toAsm}`: the operand does not hold a pointer to a function with this \
+        signature that can be called with the room available here. A register holding the \
+        exact address of a label becomes a code pointer with `ty_code_ptr`"
     let mut left : List MVarId := []
     left := left ++ (← proveAtLabel (← goalNamed gs `retpoint) (pure []))
     left := left ++ (← runOn (← goalNamed gs `args) (do evalTactic (← `(tactic| sub_regs))))
@@ -863,8 +874,16 @@ elab "ty_call " sig:term : tactic => do
         runOn stack (do evalTactic (← `(tactic| ty_stack)))
       catch _ => pure [stack]
     unless stackLeft.isEmpty do
-      throwError "the stack here does not match the one the function pointer expects"
+      throwError "`{instr.toAsm}`: the stack here does not match the one the function pointer \
+        expects"
     setGoals (left ++ others)
+    return
+  | some instr => throwError "ty_call: the instruction here is `{instr.toAsm}`, not a call"
+  | none => throwError "ty_call: the instruction at this address is not known"
+  let gs ← try
+      runOn typed (do evalTactic (← `(tactic|
+        refine FnSig.call_ok (sig := $sig) (ret := ?_) ?callee rfl ?retpoint ?args ?back ?need)))
+    catch _ => throwError (← noRoom (instr?.getD .nop))
   let mut left : List MVarId := []
   -- the callee first: it involves no unknowns
   for g in gs do

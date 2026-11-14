@@ -197,6 +197,49 @@ example : BlockOk Φj jumpFetch linux Ψ (Asm.addr jumps 0 .far) bare := by ty_b
 #guard_msgs in
 example : BlockOk Φj jumpFetch linux Ψ (Asm.addr jumps 0 .needsSlot) oneSlot := by ty_block
 
+/-! ## Calls -/
+
+inductive Callee
+  | direct | indirect | f
+  deriving DecidableEq
+
+def calls : List (Asm Callee) := [
+  .label .direct, .call .f,
+  .label .indirect, .ins (.call (.ind (.reg .rax))),
+  .label .f, .ins .ret]
+
+def callFetch : Fetch := Asm.fetch 0 calls
+
+/-- A function that takes and returns integers and uses no stack. -/
+def plain : FnSig where
+  args := fun _ => .int
+  results := fun _ => .int
+  preserved := calleeSaved
+  need := 0
+
+/-- Nothing is known, and there is room for one more slot. -/
+def roomy : Ctx := ⟨fun _ => .int, [], 1, Flags.Any⟩
+
+inductive AtCallee : Callee → Ctx → Prop
+  | direct : AtCallee .direct bare
+  | indirect : AtCallee .indirect roomy
+  | f (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+    plain.CallerOk saved ret rest room → AtCallee .f (plain.entry saved ret rest room)
+
+def Φc : CodeTy := .ofLabels calls 0 AtCallee
+
+/-- error: `call 2`: there is no room on the stack for the return address: the context has room for 0 -/
+#guard_msgs in
+example : BlockOk Φc callFetch linux Ψ (Asm.addr calls 0 .direct) bare := by ty_call plain
+
+/-- error: `call rax`: the operand does not hold a pointer to a function with this signature that can be called with the room available here. A register holding the exact address of a label becomes a code pointer with `ty_code_ptr` -/
+#guard_msgs in
+example : BlockOk Φc callFetch linux Ψ (Asm.addr calls 0 .indirect) roomy := by ty_call plain
+
+/-- error: ty_call: the instruction here is `ret`, not a call -/
+#guard_msgs in
+example : BlockOk Φc callFetch linux Ψ (Asm.addr calls 0 .f) bare := by ty_call plain
+
 /-! ## Accepted, for contrast
 
 Storing a writable pointer into a field typed as a read-only pointer is
