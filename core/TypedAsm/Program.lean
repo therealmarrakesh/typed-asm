@@ -22,7 +22,7 @@ inductive BlockOk (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) :
     BitVec 64 → Ctx → Prop
   /-- An instruction that continues to the next one, followed by the rest of the block. -/
   | step {a : BitVec 64} {Γ Γ' : Ctx} {i : Instr} {len : BitVec 64} :
-    fetch a = some (i, len) → Straight (a + len) Γ i Γ' → BlockOk Φ fetch sys Ψ (a + len) Γ' →
+    fetch a = some (i, len) → Straight Ψ (a + len) Γ i Γ' → BlockOk Φ fetch sys Ψ (a + len) Γ' →
     BlockOk Φ fetch sys Ψ a Γ
   /-- A conditional jump in the middle of a block. The target must accept;
   the block continues with the instruction after it. Each side may assume

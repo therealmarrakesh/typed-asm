@@ -108,7 +108,7 @@ entered with for its preserved registers, and the stack `rest` it sees
 below the return address; the caller's own must be at least as strong. -/
 theorem callInd_ok {sig : FnSig} {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
     {next : BitVec 64} {Γ ret : Ctx} {rm : RM} {saved : Reg → Ty} {rest : List Ty} {m : Nat}
-    (hf : CodeAt Γ rm (sig.entry saved ret rest m)) (hroom : Γ.room = m + 1)
+    (hf : CodeAt Ψ next Γ rm (sig.entry saved ret rest m)) (hroom : Γ.room = m + 1)
     (hret : Φ next ret) (hargs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn saved r))
     (hstack : SubList Γ.stack rest) :
     HasType Φ fetch sys Ψ next Γ (.call (.ind rm)) :=

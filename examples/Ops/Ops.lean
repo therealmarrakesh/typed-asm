@@ -115,7 +115,7 @@ theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
   .of_safe linux_frame (Asm.loaded h.code)
     (soundness_blocks blocksOk memOk (linuxOk fetch Ψ) h.stateOk)
 
-theorem image_length : image.length = 182 := by decide +kernel
+theorem image_length : image.length = 196 := by decide +kernel
 
 /-- The starting state used by the simulator meets the entry contract. -/
 theorem start_entry : Entry start :=

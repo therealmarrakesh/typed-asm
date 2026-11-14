@@ -22,6 +22,8 @@ afterCall:
      lea   rcx, [rip + finish]
      jmp   rcx
 finish:
+     add   dword ptr [rip + record+12], 1   ; a global, addressed directly
+     mov   rsi, qword ptr [rip + record]
      mov   eax, 60               ; Linux `exit`
      syscall
 spin:
@@ -88,9 +90,9 @@ inductive Label
   | start | afterCall | finish | spin | trap | compute
   deriving DecidableEq
 
-/-- The program, given the displacements of its two address computations of
-code labels, which depend on the layout. -/
-def codeWith (toCompute toFinish : BitVec 32) : List (Asm Label) := [
+/-- The program, given the displacements of its `rip`-relative operands,
+which depend on the layout. -/
+def codeWith (toCompute toFinish toRecordHigh toRecord : BitVec 32) : List (Asm Label) := [
   .label .start,
   .ins (.lea .w64 .rdi (.rip 0xf49)),
   .ins (.lea .w64 .rax (.rip toCompute)),
@@ -103,6 +105,8 @@ def codeWith (toCompute toFinish : BitVec 32) : List (Asm Label) := [
   .ins (.lea .w64 .rcx (.rip toFinish)),
   .ins (.jmp (.ind (.reg .rcx))),
   .label .finish,
+  .ins (.alu .add .w32 (.rm_i (.mem (.rip toRecordHigh)) 1)),
+  .ins (.mov .w64 (.r_m .rsi (.rip toRecord))),
   .ins (.mov .w32 (.rm_i (.reg .rax) 60)),
   .ins .syscall,
   .label .spin,
@@ -148,7 +152,7 @@ def codeWith (toCompute toFinish : BitVec 32) : List (Asm Label) := [
   .ins (.alu .add .w64 (.rm_i (.reg .rsp) 16)),
   .ins .ret]
 
-def code : List (Asm Label) := codeWith 0x28 2
+def code : List (Asm Label) := codeWith 0x36 2 0xf2d 0xf1a
 
 /-- Where the code is loaded. -/
 def base : BitVec 64 := BitVec.ofNat 64 Elf.codeBase
@@ -168,7 +172,7 @@ def entry : BitVec 64 := Asm.addr code base .start
 #guard Asm.offsetsFit base code
 
 -- The two address computations give the addresses of their labels.
-#guard base + 14 + 0x28 == Asm.addr code base .compute
+#guard base + 14 + 0x36 == Asm.addr code base .compute
 #guard Asm.addr code base .afterCall + 13 + 2 == Asm.addr code base .finish
 
 /-- The record's two fields. -/

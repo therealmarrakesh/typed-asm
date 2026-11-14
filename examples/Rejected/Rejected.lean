@@ -17,7 +17,7 @@ namespace Rejected
 /-- One label per instruction, so each can be the start of its own block. -/
 inductive Label
   | i0 | i1 | i2 | i3 | i4 | i5 | i6 | i7 | i8 | i9 | i10
-  | i11 | i12 | i13 | i14 | i15 | i16 | i17 | i18
+  | i11 | i12 | i13 | i14 | i15 | i16 | i17 | i18 | i19
   deriving DecidableEq
 
 def code : List (Asm Label) := [
@@ -39,13 +39,14 @@ def code : List (Asm Label) := [
   .label .i15, .ins (.imul2 .w32 .rax (.mem (.sib (some .rdi) none 6))),
   .label .i16, .ins (.unary .not .w64 (.mem (.sib (some .rdx) none 8))),
   .label .i17, .ins (.unary .neg .w64 (.mem (.sib (some .rdi) (some (.rcx, .s8)) 0))),
-  .label .i18, .ins (.jmp (.ind (.reg .rax)))]
+  .label .i18, .ins (.jmp (.ind (.reg .rax))),
+  .label .i19, .ins (.alu .add .w32 (.rm_i (.mem (.rip 100)) 1))]
 
 def fetch : Fetch := Asm.fetch 0 code
 
 /-- No address may be jumped to, and there are no memory blocks. -/
 def Φ : CodeTy := fun _ _ => False
-def Ψ : MemTy := fun _ => none
+def Ψ : MemTy := .ofList []
 
 /-- `rdi`: a writable record of two integers. `rsi`: the same, read-only.
 `rdx`: a writable record whose second field is a pointer. Everything else
@@ -114,7 +115,7 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i9) Γ := by ty_step
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i10) Γ := by ty_step
 
 /-- error: at address 32: cannot type `mov rax, qword ptr [rdi+rcx*8]` in the current context
-• loadInt: this form of operand has no rule: a memory operand must be `[register + displacement]` -/
+• loadInt: this form of operand has no rule: a memory operand must be `[register + displacement]` or `[rip + displacement]` -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i11) Γ := by ty_step
 
@@ -144,13 +145,18 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i15) Γ := by ty_step
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i16) Γ := by ty_step
 
 /-- error: at address 53: cannot type `neg qword ptr [rdi+rcx*8]` in the current context
-• negRM: this form of operand has no rule: a memory operand must be `[register + displacement]` -/
+• negRM: this form of operand has no rule: a memory operand must be `[register + displacement]` or `[rip + displacement]` -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i17) Γ := by ty_step
 
 /-- error: `jmp rax`: the operand does not hold a code pointer here. A register holding the exact address of a label becomes one with `ty_code_ptr` -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i18) Γ := by ty_block
+
+/-- error: at address 59: cannot type `add dword ptr [rip+100], 1` in the current context
+• aluStoreI: the address is not inside any memory block -/
+#guard_msgs in
+example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i19) Γ := by ty_step
 
 /-! ## Control transfers
 
@@ -254,7 +260,7 @@ def Γ₂ : Ctx where
   room := 0
   flags := Flags.Any
 
-example : ∃ Γ', Straight 10 Γ₂ (.mov .w64 (.rm_r (.mem (.sib (some .rdx) none 8)) .rdi)) Γ' :=
+example : ∃ Γ', Straight Ψ 10 Γ₂ (.mov .w64 (.rm_r (.mem (.sib (some .rdx) none 8)) .rdi)) Γ' :=
   ⟨_, by ty_straight⟩
 
 /-- One integer on the stack; `rdi` a writable record of two integers. -/
@@ -267,16 +273,16 @@ def Γ₃ : Ctx where
 /-! Comparing memory with a register, a one-operand signed multiply, a
 sign-extending byte load from the stack, and a 32-bit store to the stack. -/
 
-example : ∃ Γ', Straight 10 Γ₃ (.alu .cmp .w32 (.rm_r (.mem (.sib (some .rdi) none 12)) .rax)) Γ' :=
+example : ∃ Γ', Straight Ψ 10 Γ₃ (.alu .cmp .w32 (.rm_r (.mem (.sib (some .rdi) none 12)) .rax)) Γ' :=
   ⟨_, by ty_straight⟩
 
-example : ∃ Γ', Straight 10 Γ₃ (.mulDiv .imul .w64 (.mem (.sib (some .rsp) none 0))) Γ' :=
+example : ∃ Γ', Straight Ψ 10 Γ₃ (.mulDiv .imul .w64 (.mem (.sib (some .rsp) none 0))) Γ' :=
   ⟨_, by ty_straight⟩
 
-example : ∃ Γ', Straight 10 Γ₃ (.movsx .w64 .rax .w8 (.mem (.sib (some .rsp) none 7))) Γ' :=
+example : ∃ Γ', Straight Ψ 10 Γ₃ (.movsx .w64 .rax .w8 (.mem (.sib (some .rsp) none 7))) Γ' :=
   ⟨_, by ty_straight⟩
 
-example : ∃ Γ', Straight 10 Γ₃ (.mov .w32 (.rm_r (.mem (.sib (some .rsp) none 4)) .rax)) Γ' :=
+example : ∃ Γ', Straight Ψ 10 Γ₃ (.mov .w32 (.rm_r (.mem (.sib (some .rsp) none 4)) .rax)) Γ' :=
   ⟨_, by ty_straight⟩
 
 end Rejected

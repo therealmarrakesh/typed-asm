@@ -2,6 +2,7 @@ import Lean
 import TypedAsm.Program
 import TypedAsm.Fn
 import TypedAsm.Print
+import TypedAsm.Blocks
 
 /-!
 # Tactics for typing programs
@@ -43,11 +44,70 @@ theorem innerDisp_of (disp : BitVec 32) (hlt : disp.toNat < 2 ^ 31) :
   omega
 
 /-- Releasing the top `k` stack slots, with the remaining stack computed. -/
-theorem Straight.freeFrame' {next : BitVec 64} {Γ : Ctx} {k : Nat} {imm : BitVec 32}
+theorem Straight.freeFrame' {Ψ : MemTy} {next : BitVec 64} {Γ : Ctx} {k : Nat} {imm : BitVec 32}
     (hk : slotDisp k imm) (hlen : (Γ.stack.take k).length = k) :
-    Straight next Γ (.alu .add .w64 (.rm_i (.reg .rsp) imm))
+    Straight Ψ next Γ (.alu .add .w64 (.rm_i (.reg .rsp) imm))
       { Γ with stack := Γ.stack.drop k, room := Γ.room + k, flags := Flags.Known } :=
   .freeFrame hk (List.take_append_drop k _).symm hlen
+
+/-! Operands at a fixed address. Which block the address falls in, and where,
+is found by computation: the first premise of each lemma below is there only
+to be solved by `rfl`, which determines the block, the field and the byte. -/
+
+/-- The block among `bs` that contains address `a`, with the field and the
+byte within the field that `a` is at. -/
+def MemTy.locate (bs : List (BitVec 64 × Layout)) (a : BitVec 64) :
+    Option (BitVec 64 × Nat × Nat) :=
+  bs.findSome? fun x =>
+    if (a - x.1).toNat < x.2.size then some (x.1, (a - x.1).toNat / 8, (a - x.1).toNat % 8)
+    else none
+
+section Globals
+
+variable {bs : List (BitVec 64 × Layout)} {next base : BitVec 64} {Γ : Ctx} {l : Layout}
+  {i k n : Nat} {disp : BitVec 32} {τ : Ty}
+
+theorem ReadOk.global_of
+    (_ : MemTy.locate bs (next + disp.signExtend 64) = some (base, i, k))
+    (hl : MemTy.ofList bs base = some l)
+    (haddr : next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i + k))
+    (hi : l.fields[i]? = some τ) (hk : k + n ≤ 8) :
+    ReadOk (MemTy.ofList bs) next Γ n (.mem (.rip disp)) :=
+  .global hl haddr hi hk
+
+theorem WriteIntOk.global_of
+    (_ : MemTy.locate bs (next + disp.signExtend 64) = some (base, i, k))
+    (hl : MemTy.ofList bs base = some l) (hw : l.writable = true)
+    (haddr : next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i + k))
+    (hi : l.fields[i]? = some .int) (hk : k + n ≤ 8) :
+    WriteIntOk (MemTy.ofList bs) next Γ n (.mem (.rip disp)) Γ :=
+  .global hl hw haddr hi hk
+
+theorem CodeAt.global_of {Δ : Ctx}
+    (_ : MemTy.locate bs (next + disp.signExtend 64) = some (base, i, 0))
+    (hl : MemTy.ofList bs base = some l)
+    (haddr : next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i))
+    (hi : l.fields[i]? = some (.code Δ)) :
+    CodeAt (MemTy.ofList bs) next Γ (.mem (.rip disp)) Δ :=
+  .global hl haddr hi
+
+theorem Straight.loadGlobal_of {d : Reg} (hd : d ≠ .rsp)
+    (_ : MemTy.locate bs (next + disp.signExtend 64) = some (base, i, 0))
+    (hl : MemTy.ofList bs base = some l)
+    (haddr : next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i))
+    (hi : l.fields[i]? = some τ) :
+    Straight (MemTy.ofList bs) next Γ (.mov .w64 (.r_m d (.rip disp))) (Γ.setReg d τ) :=
+  .loadGlobal hd hl haddr hi
+
+theorem Straight.storeGlobal_of {s : Reg} (hs : s ≠ .rsp)
+    (_ : MemTy.locate bs (next + disp.signExtend 64) = some (base, i, 0))
+    (hl : MemTy.ofList bs base = some l) (hw : l.writable = true)
+    (haddr : next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i))
+    (hi : l.fields[i]? = some τ) (hsub : Sub (Γ.regs s) τ) :
+    Straight (MemTy.ofList bs) next Γ (.mov .w64 (.rm_r (.mem (.rip disp)) s)) Γ :=
+  .storeGlobal hs hl hw haddr hi hsub
+
+end Globals
 
 theorem getElem?_replicate_of_lt {n i : Nat} {τ : Ty} (h : i < n) :
     (List.replicate n τ)[i]? = some τ := by
@@ -153,12 +213,14 @@ determine what an earlier one refers to. -/
 syntax "ty_rule " term : tactic
 
 /-- Proves that an operand can be read, can be written, or holds a code
-pointer: it is a register, a stack slot, or a field of a pointer. -/
+pointer: it is a register, a stack slot, a field of a pointer, or a field
+of a block at a fixed address. -/
 macro "ty_operand" : tactic =>
   `(tactic| first
-    | ty_rule ReadOk.reg | ty_rule ReadOk.slot | ty_rule ReadOk.field
+    | ty_rule ReadOk.reg | ty_rule ReadOk.slot | ty_rule ReadOk.field | ty_rule ReadOk.global_of
     | ty_rule WriteIntOk.reg | ty_rule WriteIntOk.slot | ty_rule WriteIntOk.field
-    | ty_rule CodeAt.reg | ty_rule CodeAt.slot | ty_rule CodeAt.field)
+    | ty_rule WriteIntOk.global_of
+    | ty_rule CodeAt.reg | ty_rule CodeAt.slot | ty_rule CodeAt.field | ty_rule CodeAt.global_of)
 
 macro_rules
   | `(tactic| ty_side) =>
@@ -208,6 +270,7 @@ def Instr.rules : Instr → List Name
   -- loads: a whole slot or field keeps its type, anything else is an integer
   | .mov .w64 (.r_m _ (.sib (some .rsp) none _)) => [``Straight.loadStack]
   | .mov .w64 (.r_m _ (.sib (some _) none _)) => [``Straight.loadField]
+  | .mov .w64 (.r_m _ (.rip _)) => [``Straight.loadGlobal_of]
   | .mov _ (.r_m _ _) => [``Straight.loadInt]
   | .movzx _ _ _ _ => [``Straight.movzxRM]
   | .movsx _ _ _ _ => [``Straight.movsxRM]
@@ -216,6 +279,7 @@ def Instr.rules : Instr → List Name
   | .mov .w64 (.rm_r (.mem (.sib (some .rsp) none _)) _) => [``Straight.storeStack]
   | .mov .w64 (.rm_r (.mem (.sib (some _) none _)) _) =>
     [``Straight.storeField, ``Straight.storeInt]
+  | .mov .w64 (.rm_r (.mem (.rip _)) _) => [``Straight.storeGlobal_of, ``Straight.storeInt]
   | .mov _ (.rm_r (.mem _) _) => [``Straight.storeInt]
   | .mov _ (.rm_i (.mem _) _) => [``Straight.storeImm]
   | .store8 _ _ => [``Straight.store8RM]
@@ -260,7 +324,7 @@ def Instr.endsBlock : Instr → Bool
   | _ => false
 
 /-- Every straight-line rule, for instructions whose shape is not known. -/
-def allStraightRules : List Name := [``Straight.movRR64, ``Straight.movRR32, ``Straight.movRI, ``Straight.movAbs, ``Straight.leaRip, ``Straight.lea, ``Straight.loadStack, ``Straight.loadField, ``Straight.storeStack, ``Straight.storeField, ``Straight.push, ``Straight.pop, ``Straight.allocFrame, ``Straight.freeFrame', ``Straight.aluExact, ``Straight.aluExactRR, ``Straight.addPtr, ``Straight.aluRR, ``Straight.aluRI, ``Straight.testExact, ``Straight.nop, ``Straight.aluStoreR, ``Straight.aluStoreI, ``Straight.cmpR, ``Straight.cmpI, ``Straight.aluLoad, ``Straight.testRM, ``Straight.negRM, ``Straight.notRM, ``Straight.shiftRM, ``Straight.mulRM, ``Straight.imulRM, ``Straight.divRM, ``Straight.idivRM, ``Straight.imul2RM, ``Straight.imul3RM, ``Straight.popcntRM, ``Straight.bswap, ``Straight.cdq, ``Straight.cqo, ``Straight.movsxdRM, ``Straight.cmovRM, ``Straight.setccRM, ``Straight.movzxRM, ``Straight.movsxRM, ``Straight.loadInt, ``Straight.storeInt, ``Straight.storeImm, ``Straight.store8RM]
+def allStraightRules : List Name := [``Straight.movRR64, ``Straight.movRR32, ``Straight.movRI, ``Straight.movAbs, ``Straight.leaRip, ``Straight.lea, ``Straight.loadStack, ``Straight.loadField, ``Straight.storeStack, ``Straight.storeField, ``Straight.push, ``Straight.pop, ``Straight.allocFrame, ``Straight.freeFrame', ``Straight.aluExact, ``Straight.aluExactRR, ``Straight.addPtr, ``Straight.aluRR, ``Straight.aluRI, ``Straight.testExact, ``Straight.nop, ``Straight.aluStoreR, ``Straight.aluStoreI, ``Straight.cmpR, ``Straight.cmpI, ``Straight.aluLoad, ``Straight.testRM, ``Straight.negRM, ``Straight.notRM, ``Straight.shiftRM, ``Straight.mulRM, ``Straight.imulRM, ``Straight.divRM, ``Straight.idivRM, ``Straight.imul2RM, ``Straight.imul3RM, ``Straight.popcntRM, ``Straight.bswap, ``Straight.cdq, ``Straight.cqo, ``Straight.movsxdRM, ``Straight.cmovRM, ``Straight.setccRM, ``Straight.movzxRM, ``Straight.movsxRM, ``Straight.loadInt, ``Straight.storeInt, ``Straight.storeImm, ``Straight.store8RM, ``Straight.loadGlobal_of, ``Straight.storeGlobal_of]
 
 private unsafe def evalInstrUnsafe (e : Expr) : MetaM Instr :=
   evalExpr Instr (mkConst ``Instr) e
@@ -350,6 +414,8 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
         else if rhs.isAppOf ``Ty.code then "a code pointer"
         else "a value of another type"
       return m!"`{reg}` must hold {wanted}, but its type is `{actual}`"
+    if lhs.isAppOf ``MemTy.locate then
+      return m!"the address is not inside any memory block"
     if lhs.isAppOf ``AluOp.readsCarry then
       return m!"this rule does not cover operations that read the carry flag"
     if lhs.isAppOfArity ``CtxOf.room 2 then
@@ -381,9 +447,9 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
 
 /-- The rules for an operand judgment, in the order to try them. -/
 private def operandRules (ty : Expr) : List Name :=
-  if ty.isAppOf ``ReadOk then [``ReadOk.reg, ``ReadOk.slot, ``ReadOk.field]
-  else if ty.isAppOf ``WriteIntOk then [``WriteIntOk.reg, ``WriteIntOk.slot, ``WriteIntOk.field]
-  else if ty.isAppOf ``CodeAt then [``CodeAt.reg, ``CodeAt.slot, ``CodeAt.field]
+  if ty.isAppOf ``ReadOk then [``ReadOk.reg, ``ReadOk.slot, ``ReadOk.field, ``ReadOk.global_of]
+  else if ty.isAppOf ``WriteIntOk then [``WriteIntOk.reg, ``WriteIntOk.slot, ``WriteIntOk.field, ``WriteIntOk.global_of]
+  else if ty.isAppOf ``CodeAt then [``CodeAt.reg, ``CodeAt.slot, ``CodeAt.field, ``CodeAt.global_of]
   else []
 
 /-- Applies a rule to the main goal and describes the first premise that
@@ -424,7 +490,7 @@ private partial def explainPremises (rule : Name) : TacticM (Option MessageData)
       setGoals [g]
       if let some msg ← explainPremises r then return some msg
     return some m!"this form of operand has no rule: a memory operand must be \
-      `[register + displacement]`"
+      `[register + displacement]` or `[rip + displacement]`"
   | none => return some m!"every premise holds separately, but not together"
 
 /-- Says why a rule did not apply: the first premise that could not be proved. -/
@@ -438,13 +504,13 @@ private def explainRule (rule : Name) : TacticM MessageData := do
   finally
     saved.restore
 
-/-- Types the instruction in a `Straight next Γ i ?Γ'` goal, or explains why not. -/
+/-- Types the instruction in a `Straight Ψ next Γ i ?Γ'` goal, or explains why not. -/
 def typeStraight : TacticM Unit := withMainContext do
   let goal ← getMainGoal
   let ty ← instantiateMVars (← goal.getType)
-  unless ty.isAppOfArity ``Straight 4 do
-    throwError "ty_straight: the goal is not of the form `Straight next Γ i Γ'`"
-  let instrExpr := ty.getAppArgs[2]!
+  unless ty.isAppOfArity ``Straight 5 do
+    throwError "ty_straight: the goal is not of the form `Straight Ψ next Γ i Γ'`"
+  let instrExpr := ty.getAppArgs[3]!
   let instr? ← knownInstr instrExpr
   let rules := match instr? with
     | some i => i.rules
@@ -495,7 +561,7 @@ private def typeStep : TacticM StepResult := withMainContext do
   let (some instrGoal, some restGoal) := (instrGoal?, restGoal?)
     | saved.restore; throwError "ty_step: unexpected goals after taking a step"
   let instrTy ← instantiateMVars (← instrGoal.getType)
-  if let some instr ← knownInstr instrTy.getAppArgs[2]! then
+  if let some instr ← knownInstr instrTy.getAppArgs[3]! then
     if instr.endsBlock then
       saved.restore
       return .endOfBlock instr
