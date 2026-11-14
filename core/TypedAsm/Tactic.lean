@@ -15,6 +15,8 @@ needs an argument, typically a fact about values at a branch.
 * `ty_steps` types the straight-line instructions at the start of a block.
 * `ty_step` types one.
 * `ty_straight` types a single instruction; the two above are built on it.
+* `ty_code_ptr r to Δ` turns a register holding a label's address into a
+  code pointer, for indirect jumps and calls.
 * `ty_accept h` shows the current context is accepted at an address, given
   the fact `h` that the code typing allows some context there.
 * `ctx_sub` and `sub_regs` compare contexts.
@@ -88,7 +90,7 @@ macro "sub_regs" : tactic =>
 macro "ty_stack" : tactic =>
   `(tactic| first
     | exact SubList.refl _
-    | (repeat (first | exact SubList.nil | (refine SubList.cons ?_ ?_; ty_sub)); done))
+    | ((repeat (first | exact SubList.nil | (refine SubList.cons ?_ ?_; ty_sub))); done))
 
 /-- Shows one flags predicate implies another, in the common cases. -/
 macro "ty_flags" : tactic => do
@@ -135,28 +137,52 @@ macro "ty_carry" : tactic => do
     | exact fun _ _ hf => Flags.cf_isSome_of_known hf
     | (rintro - f $subst:ident; rfl))
 
-/-- Proves a side condition of a typing rule, or fails. -/
-macro "ty_side" : tactic =>
+/-- Proves that the flags decide a condition. -/
+macro "ty_decided" : tactic => do
+  let subst := Lean.mkIdent `rfl
   `(tactic| first
-    | rfl
-    | decide
-    | (refine slotDisp_of _ ?_ ?_ <;> decide)
-    | (refine innerDisp_of _ ?_ <;> decide)
-    | ty_field
-    | ty_sub
-    | ty_carry)
+    | exact Cond.decided_of_known (fun _ h => h) _
+    | (rintro f $subst:ident; exact ⟨_, rfl⟩))
+
+/-- Proves a side condition of a typing rule, or fails. -/
+syntax "ty_side" : tactic
 
 /-- Applies one typing rule and proves all its premises, or fails. The
 premises are attempted in order and then again, because proving one can
 determine what an earlier one refers to. -/
-macro "ty_rule " r:term : tactic =>
-  `(tactic| (((refine' $r .. <;> try ty_side) <;> try ty_side); done))
+syntax "ty_rule " term : tactic
+
+/-- Proves that an operand can be read, can be written, or holds a code
+pointer: it is a register, a stack slot, or a field of a pointer. -/
+macro "ty_operand" : tactic =>
+  `(tactic| first
+    | ty_rule ReadOk.reg | ty_rule ReadOk.slot | ty_rule ReadOk.field
+    | ty_rule WriteIntOk.reg | ty_rule WriteIntOk.slot | ty_rule WriteIntOk.field
+    | ty_rule CodeAt.reg | ty_rule CodeAt.slot | ty_rule CodeAt.field)
+
+macro_rules
+  | `(tactic| ty_side) =>
+    `(tactic| first
+      | rfl
+      | decide
+      | (refine slotDisp_of _ ?_ ?_ <;> decide)
+      | (refine innerDisp_of _ ?_ <;> decide)
+      | ty_field
+      | ty_sub
+      | ty_carry
+      | ty_decided
+      | ty_operand)
+
+macro_rules
+  | `(tactic| ty_rule $r) =>
+    `(tactic| (((refine' $r .. <;> try ty_side) <;> try ty_side); done))
 
 /-- Simplifies the context in a block goal. Each rule wraps the previous
 context in a record update that mentions it once per field, so without this
 the context would multiply in size with every instruction. -/
 macro "ty_normalize" : tactic =>
-  `(tactic| try dsimp only [CtxOf.setReg, CtxOf.afterAlu, CtxOf.afterSyscall, AluOp.writesDst,
+  `(tactic| try dsimp only [CtxOf.setReg, CtxOf.afterAlu, CtxOf.afterSyscall, CtxOf.afterMulDiv,
+      AluOp.writesDst, List.set_cons_zero, List.set_cons_succ,
       Bool.cond_true, Bool.cond_false, Nat.add_zero, Nat.zero_add, BitVec.reduceToNat, Nat.reduceDiv,
       Nat.reduceMod, Nat.reduceAdd, Nat.reduceMul])
 
@@ -178,6 +204,14 @@ def Instr.rules : Instr → List Name
   | .movAbs _ _ => [``Straight.movAbs]
   | .lea .w64 _ (.rip _) => [``Straight.leaRip, ``Straight.lea]
   | .lea _ _ _ => [``Straight.lea]
+  | .mov .w32 (.r_m _ (.sib (some .rsp) none _)) => [``Straight.loadInt]
+  | .mov .w32 (.rm_r (.mem (.sib (some .rsp) none _)) _) => [``Straight.storeInt]
+  | .mov _ (.rm_i (.mem (.sib (some .rsp) none _)) _) => [``Straight.storeImm]
+  | .store8 (.sib (some .rsp) none _) _ => [``Straight.store8RM]
+  | .movzx _ _ _ (.mem (.sib (some .rsp) none _)) => [``Straight.movzxRM]
+  | .movsx _ _ _ (.mem (.sib (some .rsp) none _)) => [``Straight.movsxRM]
+  | .movzx _ _ _ (.reg _) => [``Straight.movzxRM]
+  | .movsx _ _ _ (.reg _) => [``Straight.movsxRM]
   | .mov .w64 (.r_m _ (.sib (some .rsp) none _)) => [``Straight.loadStack]
   | .mov .w64 (.r_m _ (.sib (some _) none _)) => [``Straight.loadField]
   | .mov .w32 (.r_m _ (.sib (some _) none _)) => [``Straight.loadField32]
@@ -197,9 +231,32 @@ def Instr.rules : Instr → List Name
   | .alu _ _ (.rm_i (.reg _) _) => [``Straight.aluRI]
   | .alu _ .w64 (.rm_r (.reg _) _) => [``Straight.aluExactRR, ``Straight.aluRR]
   | .alu _ _ (.rm_r (.reg _) _) => [``Straight.aluRR]
+  | .alu _ .w64 (.r_m _ (.sib (some .rsp) none _)) => [``Straight.aluLoad]
   | .alu _ .w64 (.r_m _ (.sib (some _) none _)) => [``Straight.aluMem]
+  | .alu _ _ (.r_m _ _) => [``Straight.aluLoad]
+  | .alu op _ (.rm_r (.mem _) _) =>
+    if op.writesDst then [``Straight.aluStoreR] else [``Straight.cmpR]
+  | .alu op _ (.rm_i (.mem _) _) =>
+    if op.writesDst then [``Straight.aluStoreI] else [``Straight.cmpI]
   | .test .w64 (.reg _) (.reg _) => [``Straight.testExact, ``Straight.test]
   | .test _ (.reg _) _ => [``Straight.test]
+  | .test _ (.mem _) _ => [``Straight.testRM]
+  | .unary .neg _ _ => [``Straight.negRM]
+  | .unary .not _ _ => [``Straight.notRM]
+  | .shift _ _ _ _ => [``Straight.shiftRM]
+  | .mulDiv .mul _ _ => [``Straight.mulRM]
+  | .mulDiv .imul _ _ => [``Straight.imulRM]
+  | .mulDiv .div _ _ => [``Straight.divRM]
+  | .mulDiv .idiv _ _ => [``Straight.idivRM]
+  | .imul2 _ _ _ => [``Straight.imul2RM]
+  | .imul3 _ _ _ _ => [``Straight.imul3RM]
+  | .popcnt _ _ _ => [``Straight.popcntRM]
+  | .bswap _ _ => [``Straight.bswap]
+  | .cdq => [``Straight.cdq]
+  | .cqo => [``Straight.cqo]
+  | .movsxd _ _ => [``Straight.movsxdRM]
+  | .cmov _ _ _ _ => [``Straight.cmovRM]
+  | .setcc _ _ => [``Straight.setccRM]
   | _ => []
 
 /-- Whether the instruction can send control somewhere other than the next
@@ -209,7 +266,7 @@ def Instr.endsBlock : Instr → Bool
   | _ => false
 
 /-- Every straight-line rule, for instructions whose shape is not known. -/
-def allStraightRules : List Name := [``Straight.movRR64, ``Straight.movRR32, ``Straight.movRI, ``Straight.movAbs, ``Straight.leaRip, ``Straight.lea, ``Straight.loadStack, ``Straight.loadField, ``Straight.storeStack, ``Straight.storeField, ``Straight.storeIntR, ``Straight.storeIntI, ``Straight.store8Field, ``Straight.push, ``Straight.pop, ``Straight.allocFrame, ``Straight.freeFrame', ``Straight.aluExact, ``Straight.aluExactRR, ``Straight.loadField32, ``Straight.movzxField, ``Straight.movsxField, ``Straight.addPtr, ``Straight.aluMem, ``Straight.aluRR, ``Straight.aluRI, ``Straight.testExact, ``Straight.test, ``Straight.nop]
+def allStraightRules : List Name := [``Straight.movRR64, ``Straight.movRR32, ``Straight.movRI, ``Straight.movAbs, ``Straight.leaRip, ``Straight.lea, ``Straight.loadStack, ``Straight.loadField, ``Straight.storeStack, ``Straight.storeField, ``Straight.storeIntR, ``Straight.storeIntI, ``Straight.store8Field, ``Straight.push, ``Straight.pop, ``Straight.allocFrame, ``Straight.freeFrame', ``Straight.aluExact, ``Straight.aluExactRR, ``Straight.loadField32, ``Straight.movzxField, ``Straight.movsxField, ``Straight.addPtr, ``Straight.aluMem, ``Straight.aluRR, ``Straight.aluRI, ``Straight.testExact, ``Straight.test, ``Straight.nop, ``Straight.aluStoreR, ``Straight.aluStoreI, ``Straight.cmpR, ``Straight.cmpI, ``Straight.aluLoad, ``Straight.testRM, ``Straight.negRM, ``Straight.notRM, ``Straight.shiftRM, ``Straight.mulRM, ``Straight.imulRM, ``Straight.divRM, ``Straight.idivRM, ``Straight.imul2RM, ``Straight.imul3RM, ``Straight.popcntRM, ``Straight.bswap, ``Straight.cdq, ``Straight.cqo, ``Straight.movsxdRM, ``Straight.cmovRM, ``Straight.setccRM, ``Straight.movzxRM, ``Straight.movsxRM, ``Straight.loadInt, ``Straight.storeInt, ``Straight.storeImm, ``Straight.store8RM]
 
 private unsafe def evalInstrUnsafe (e : Expr) : MetaM Instr :=
   evalExpr Instr (mkConst ``Instr) e
@@ -296,6 +353,7 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
         if rhs.isAppOf ``Ty.ptr then
           if rhs.getAppArgs[1]!.isConstOf ``Bool.true then "a writable pointer" else "a pointer"
         else if rhs.isAppOf ``Ty.eq then "an exactly known value"
+        else if rhs.isAppOf ``Ty.code then "a code pointer"
         else "a value of another type"
       return m!"`{reg}` must hold {wanted}, but its type is `{actual}`"
     if lhs.isAppOf ``AluOp.readsCarry then
@@ -321,44 +379,68 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
     return m!"`rsp` cannot be this operand"
   if ty.isAppOf ``LE.le then
     return m!"the access would cross the end of an 8-byte field"
+  if ty.isForall && ty.getForallBody.isAppOf ``Exists then
+    return m!"the flags are not known here, so they do not decide the condition"
   if ty.isForall then
     return m!"the operation reads the carry flag, which is not known to be defined here"
   return m!"needs `{← ppClean ty}`"
+
+/-- The rules for an operand judgment, in the order to try them. -/
+private def operandRules (ty : Expr) : List Name :=
+  if ty.isAppOf ``ReadOk then [``ReadOk.reg, ``ReadOk.slot, ``ReadOk.field]
+  else if ty.isAppOf ``WriteIntOk then [``WriteIntOk.reg, ``WriteIntOk.slot, ``WriteIntOk.field]
+  else if ty.isAppOf ``CodeAt then [``CodeAt.reg, ``CodeAt.slot, ``CodeAt.field]
+  else []
+
+/-- Applies a rule to the main goal and describes the first premise that
+cannot be proved. `none` if the rule is for a goal of a different form. A
+premise about an operand is explained by the rule for that kind of operand. -/
+private partial def explainPremises (rule : Name) : TacticM (Option MessageData) := do
+  try
+    evalTactic (← `(tactic| refine' $(mkIdent rule) ..))
+  catch _ =>
+    return none
+  let goals ← getGoals
+  -- Premises are attempted in order and then again, as in `ty_rule`, so that
+  -- what is reported is a premise that fails once everything else is known.
+  let mut failed : Array (MVarId × Expr) := #[]
+  for pass in [0, 1] do
+    for g in goals do
+      if ← g.isAssigned then continue
+      unless ← isProp (← g.getType) do continue
+      setGoals [g]
+      let attempt ← saveState
+      let ok ← try
+          evalTactic (← `(tactic| ty_side))
+          pure true
+        catch _ =>
+          attempt.restore
+          pure false
+      if !ok && pass == 1 then
+        failed := failed.push (g, ← instantiateMVars (← g.getType))
+  -- A premise about the displacement is reported first: the others cannot
+  -- be judged until it holds. After that, prefer a premise with no unknowns.
+  let isDisp (e : MVarId × Expr) : Bool := e.2.isAppOf ``slotDisp || e.2.isAppOf ``innerDisp
+  let chosen := (failed.find? isDisp <|> failed.find? (!·.2.hasExprMVar) <|> failed[0]?)
+  match chosen with
+  | some (g, ty) =>
+    let inner := operandRules ty
+    if inner.isEmpty then return some (← describePremise ty)
+    for r in inner do
+      setGoals [g]
+      if let some msg ← explainPremises r then return some msg
+    return some m!"this form of operand has no rule: a memory operand must be \
+      `[register + displacement]`"
+  | none => return some m!"every premise holds separately, but not together"
 
 /-- Says why a rule did not apply: the first premise that could not be proved. -/
 private def explainRule (rule : Name) : TacticM MessageData := do
   let saved ← saveState
   let name := rule.components.getLast!
   try
-    try
-      evalTactic (← `(tactic| refine' $(mkIdent rule) ..))
-    catch _ =>
-      return m!"{name}: is for a different form of this instruction"
-    let goals ← getGoals
-    -- Premises are attempted in order and then again, as in `ty_rule`, so that
-    -- what is reported is a premise that fails once everything else is known.
-    let mut failed : Array Expr := #[]
-    for pass in [0, 1] do
-      for g in goals do
-        if ← g.isAssigned then continue
-        unless ← isProp (← g.getType) do continue
-        setGoals [g]
-        let attempt ← saveState
-        let ok ← try
-            evalTactic (← `(tactic| ty_side))
-            pure true
-          catch _ =>
-            attempt.restore
-            pure false
-        if !ok && pass == 1 then
-          failed := failed.push (← instantiateMVars (← g.getType))
-    -- A premise about the displacement is reported first: the others cannot
-    -- be judged until it holds. After that, prefer a premise with no unknowns.
-    let isDisp (e : Expr) : Bool := e.isAppOf ``slotDisp || e.isAppOf ``innerDisp
-    let chosen := (failed.find? isDisp <|> failed.find? (!·.hasExprMVar) <|> failed[0]?)
-    match chosen with
-    | some ty => return m!"{name}: {← describePremise ty}"
-    | none => return m!"{name}: every premise holds separately, but not together"
+    match ← explainPremises rule with
+    | some msg => return m!"{name}: {msg}"
+    | none => return m!"{name}: is for a different form of this instruction"
   finally
     saved.restore
 
@@ -691,6 +773,32 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
     let leftTaken ← proveAccepts takenAcc
     let [rest'] ← runOn rest introBranch | throwError "unexpected goals"
     return .continues rest' leftTaken
+  | .jmp (.ind _) =>
+    let gs ← runOn goal (do evalTactic (← `(tactic|
+      refine BlockOk.last rfl (HasType.jmpInd (Δ := ?_) ?code ?sub))))
+    let code ← goalNamed gs `code
+    let sub ← goalNamed gs `sub
+    try
+      discard <| runOn code (do evalTactic (← `(tactic| ty_operand)))
+    catch _ =>
+      throwError "`{instr.toAsm}`: the operand does not hold a code pointer here. A register \
+        holding the exact address of a label becomes one with `ty_code_ptr`"
+    let left ← try
+        runOn sub (do evalTactic (← `(tactic| ctx_sub)))
+      catch _ =>
+        throwError "`{instr.toAsm}`: the stack, the free room or the flags do not match what \
+          the target expects"
+    rejectImpossible left
+    return .done left
+  | .ud2 =>
+    -- Reached only if no state matches the context; that is left to prove
+    -- unless the flags predicate is plainly unsatisfiable.
+    let hstate := mkIdent `hstate
+    let gs ← runOn goal (do evalTactic (← `(tactic|
+      (refine BlockOk.last rfl (HasType.unreachable ?_)
+       intro _ _ $hstate:ident
+       first | exact ($hstate).flags | skip))))
+    return .done gs
   | .call _ =>
     return .needsHelp m!"`{instr.toAsm}`: a call needs the callee's signature; use `ty_call <signature>`"
   | _ =>
@@ -735,9 +843,34 @@ match the return point's context. -/
 elab "ty_call " sig:term : tactic => do
   let goal ← getMainGoal
   let others := (← getGoals).drop 1
-  let gs ← runOn goal (do evalTactic (← `(tactic|
-    refine BlockOk.last rfl
-      (FnSig.call_ok (sig := $sig) (ret := ?_) ?callee rfl ?retpoint ?args ?back ?need))))
+  let direct? ← try
+      pure (some (← runOn goal (do evalTactic (← `(tactic|
+        refine BlockOk.last rfl
+          (FnSig.call_ok (sig := $sig) (ret := ?_) ?callee rfl ?retpoint ?args ?back ?need))))))
+    catch _ => pure none
+  let some gs := direct? | do
+    -- A call through a register, field or stack slot holding a code pointer.
+    let gs ← runOn goal (do evalTactic (← `(tactic|
+      refine BlockOk.last rfl
+        (FnSig.callInd_ok (sig := $sig) (saved := ?_) (ret := ?_) (rest := ?_)
+          ?callee rfl ?retpoint ?args ?stack))))
+    let callee ← goalNamed gs `callee
+    try
+      discard <| runOn callee (do evalTactic (← `(tactic| ty_operand)))
+    catch _ =>
+      throwError "the operand does not hold a pointer to a function with this signature that \
+        can be called with the room available here. A register holding the exact address of \
+        a label becomes a code pointer with `ty_code_ptr`"
+    let mut left : List MVarId := []
+    left := left ++ (← proveAtLabel (← goalNamed gs `retpoint) (pure []))
+    left := left ++ (← runOn (← goalNamed gs `args) (do evalTactic (← `(tactic| sub_regs))))
+    let stack ← goalNamed gs `stack
+    let stackLeft ← try
+        runOn stack (do evalTactic (← `(tactic| ty_stack)))
+      catch _ => pure [stack]
+    unless stackLeft.isEmpty do
+      throwError "the stack here does not match the one the function pointer expects"
+    setGoals (left ++ others)
   let mut left : List MVarId := []
   -- the callee first: it involves no unknowns
   for g in gs do
@@ -764,5 +897,34 @@ elab "ty_call " sig:term : tactic => do
     else if t.isAppOf ``LE.le then
       left := left ++ (← runOn g (do evalTactic (← `(tactic| first | decide | omega))))
   setGoals (left ++ others)
+
+/-- `ty_code_ptr r to Δ`: register `r` holds exactly the address of a label
+that allows context `Δ`; from here on it is a pointer to code expecting `Δ`,
+which can be stored, jumped through or called through. What the label
+demands of `Δ`, such as a function's requirement on its caller, is proved
+where it is routine and otherwise left as goals. -/
+elab "ty_code_ptr " r:term " to " Δ:term : tactic => do
+  let goal ← getMainGoal
+  let others := (← getGoals).drop 1
+  let gs ← try
+      runOn goal (do evalTactic (← `(tactic|
+        refine BlockOk.codePtr (r := $r) (Δ := $Δ) ?ne rfl ?here ?rest)))
+    catch _ =>
+      throwError "ty_code_ptr: the register does not hold an exactly known address here"
+  discard <| runOn (← goalNamed gs `ne) (do evalTactic (← `(tactic| decide)))
+  let mut left : List MVarId := []
+  for g in ← proveAtLabel (← goalNamed gs `here) (pure []) do
+    let t ← instantiateMVars (← g.getType)
+    if t.isAppOf ``FnSig.CallerOk then
+      let parts ← runOn g (do evalTactic (← `(tactic| refine FnSig.CallerOk.mk ?ret ?room)))
+      for p in parts do
+        let after ← try
+            runOn p (do evalTactic (← `(tactic| first | ctx_sub | decide | omega)))
+          catch _ => pure [p]
+        left := left ++ after
+    else left := left ++ [g]
+  setGoals [← goalNamed gs `rest]
+  evalTactic (← `(tactic| ty_normalize))
+  setGoals ((← getGoals) ++ left ++ others)
 
 end TypedAsm
