@@ -24,6 +24,11 @@ structure FnSig where
   /-- The number of stack slots the function uses below its return address. -/
   need : Nat
 
+/-- The registers a function must preserve under the System V calling convention. -/
+def calleeSaved : Reg → Bool
+  | .rbx | .rbp | .r12 | .r13 | .r14 | .r15 => true
+  | _ => false
+
 namespace FnSig
 
 /-- Register types on entry, when the preserved registers have types `saved`. -/
@@ -64,6 +69,17 @@ theorem ret_ok {sig : FnSig} {Φ : CodeTy} {next : BitVec 64} {saved : Reg → T
     {rest : List Ty} {room : Nat} (hK : sig.CallerOk saved ret rest room) :
     HasType Φ next (sig.exit saved ret rest room) .ret :=
   .ret rfl hK.ret
+
+/-- Returning is well typed from any context at least as strong as the
+function's exit context. -/
+theorem ret_of {sig : FnSig} {Φ : CodeTy} {next : BitVec 64} {saved : Reg → Ty} {Γ ret : Ctx}
+    {rest : List Ty} {room : Nat} (hK : sig.CallerOk saved ret rest room)
+    (hregs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsOut saved r))
+    (hstack : Γ.stack = .code ret :: rest) (hroom : Γ.room = room) :
+    HasType Φ next Γ .ret :=
+  .ret hstack
+    ⟨fun r hr => (hregs r hr).trans (hK.ret.regs r hr), hK.ret.stack,
+      by rw [hroom]; exact hK.ret.room, fun f _ => hK.ret.flags f trivial⟩
 
 /-- Calling a function is well typed if there is room for the return address
 and the function's stack use, the argument registers hold what the function
