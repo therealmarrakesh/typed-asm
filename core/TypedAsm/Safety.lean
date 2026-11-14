@@ -99,4 +99,34 @@ theorem Safe.run {s : State} (hs : Safe fetch sys s) (n : Nat) :
       have := hs s (.refl s)
       cases h : TypedAsm.step fetch sys s <;> simp_all [Result.isSafe]
 
+/-! ## Safety for a bounded number of steps
+
+`SafeN n s` says the first `n` steps from `s` have acceptable outcomes. It is
+what the meaning of a code-pointer type is built on, because it can be
+defined by recursion on `n` where `Safe` cannot. -/
+
+/-- The next `n` steps from `s` all have acceptable outcomes. -/
+def SafeN (fetch : Fetch) (sys : Syscall) : Nat → State → Prop
+  | 0, _ => True
+  | n + 1, s =>
+    (TypedAsm.step fetch sys s).isSafe = true ∧
+    ∀ s', TypedAsm.step fetch sys s = .next s' → SafeN fetch sys n s'
+
+/-- Being safe for more steps implies being safe for fewer. -/
+theorem SafeN.mono {n m : Nat} {s : State} (h : SafeN fetch sys n s) (hle : m ≤ n) :
+    SafeN fetch sys m s := by
+  induction m generalizing n s with
+  | zero => trivial
+  | succ m ih =>
+    cases n with
+    | zero => omega
+    | succ n => exact ⟨h.1, fun s' hs' => ih (h.2 s' hs') (by omega)⟩
+
+/-- A state that is safe for every number of steps is safe. -/
+theorem safe_of_safeN {s : State} (h : ∀ n, SafeN fetch sys n s) : Safe fetch sys s := by
+  intro s' hs'
+  induction hs' with
+  | refl => exact (h 1).1
+  | step hstep _ ih => exact ih (fun n => (h (n + 1)).2 _ hstep)
+
 end TypedAsm

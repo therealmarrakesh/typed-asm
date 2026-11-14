@@ -137,8 +137,9 @@ inductive HasType (Φ : CodeTy) (next : BitVec 64) : Ctx → Instr → Prop
   /-- Jump through a register holding a code pointer. -/
   | jmpReg {Γ Δ : Ctx} {r : Reg} : r ≠ .rsp → Γ.regs r = .code Δ → CtxSub Γ Δ →
     HasType Φ next Γ (.jmp (.ind (.reg r)))
-  /-- A call pushes the return address, whose type is the context required at
-  the instruction after the call. The callee sees it on top of the stack. -/
+  /-- A call pushes the return address, typed as a pointer to code expecting
+  the context required at the instruction after the call. The callee sees it
+  on top of the stack. -/
   | call {Γ ret : Ctx} {d : BitVec 32} {n : Nat} : Γ.room = n + 1 → Φ next = some ret →
     Accepts Φ (next + d.signExtend 64) { Γ with stack := .code ret :: Γ.stack, room := n } →
     HasType Φ next Γ (.call (.rel d))
@@ -155,17 +156,18 @@ an instruction that is well typed in the context given for that address. -/
 def ProgramOk (Φ : CodeTy) (fetch : Fetch) : Prop :=
   ∀ a Γ, Φ a = some Γ → ∃ i len, fetch a = some (i, len) ∧ HasType Φ (a + len) Γ i
 
-/-- A state is well typed if it matches the context the code typing gives for its `rip`. -/
-def StateOk (Φ : CodeTy) (Ψ : MemTy) (s : State) : Prop :=
-  ∃ Γ, Φ s.rip = some Γ ∧ WellTyped Φ Ψ Γ s
+/-- A state is well typed if it matches the context the code typing gives
+for its `rip`, at every step count. -/
+def StateOk (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (s : State) : Prop :=
+  ∃ Γ, Φ s.rip = some Γ ∧ ∀ n, WellTyped fetch sys Ψ n Γ s
 
 /-- What the type system assumes about the operating system: a system call
 from a well-typed state has an acceptable outcome, and if it returns, it
 returns to the same place with a state that is still well typed, having
 changed at most `rax`, `rcx`, `r11` and the flags as far as types can tell. -/
-def SysOk (Φ : CodeTy) (Ψ : MemTy) (sys : Syscall) : Prop :=
-  ∀ Γ s, WellTyped Φ Ψ Γ s →
+def SysOk (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) : Prop :=
+  ∀ n Γ s, WellTyped fetch sys Ψ n Γ s →
     (sys s).isSafe = true ∧
-    ∀ s', sys s = .next s' → s'.rip = s.rip ∧ WellTyped Φ Ψ Γ.afterSyscall s'
+    ∀ s', sys s = .next s' → s'.rip = s.rip ∧ WellTyped fetch sys Ψ n Γ.afterSyscall s'
 
 end TypedAsm

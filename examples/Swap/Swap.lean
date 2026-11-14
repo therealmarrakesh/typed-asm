@@ -169,14 +169,14 @@ theorem memOk : Ψ.WF := by
     obtain ⟨rfl, rfl⟩ := Ψ_cases hb
     exact absurd rfl hne
 
-theorem startOk : StateOk Φ Ψ start := by
-  refine ⟨entry, rfl, ?_⟩
+theorem startOk : StateOk Φ fetch linux Ψ start := by
+  refine ⟨entry, rfl, fun n => ?_⟩
   constructor
   · intro r _
     simp only [entry]
     split
-    · next h => subst h; exact ⟨recordLayout, rfl, rfl, fun _ => rfl⟩
-    · trivial
+    · next h => subst h; exact hasTy_ptr.mpr ⟨recordLayout, rfl, rfl, fun _ => rfl⟩
+    · exact HasTy.int _
   · intro h; exact absurd h (by decide)
   · decide
   · decide
@@ -190,15 +190,15 @@ theorem startOk : StateOk Φ Ψ start := by
       have := List.mem_of_getElem? hi
       simpa [recordLayout] using this
     subst this
-    trivial
+    exact HasTy.int _
   · intro a l h
     obtain ⟨rfl, rfl⟩ := Ψ_cases h
     constructor <;> decide
 
 /-- The Linux model satisfies what the type system assumes of the operating
-system, for any code and memory typing. -/
-theorem linuxOk (Φ : CodeTy) (Ψ : MemTy) : SysOk Φ Ψ linux := by
-  intro Γ s h
+system, for any program and memory typing. -/
+theorem linuxOk (fetch : Fetch) (Ψ : MemTy) : SysOk fetch linux Ψ := by
+  intro n Γ s h
   unfold linux
   split
   · exact ⟨rfl, fun s' he => by cases he⟩
@@ -211,7 +211,7 @@ theorem linuxOk (Φ : CodeTy) (Ψ : MemTy) : SysOk Φ Ψ linux := by
 
 /-- The program never gets stuck, never page-faults and never executes an invalid opcode. -/
 theorem safe : Safe fetch linux start :=
-  soundness programOk memOk (linuxOk Φ Ψ) startOk
+  soundness programOk memOk (linuxOk fetch Ψ) startOk
 
 /-- So running it for any number of steps gives an acceptable outcome. -/
 theorem run_safe (n : Nat) : (run fetch linux n start).isSafe = true :=
