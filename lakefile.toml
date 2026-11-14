@@ -1,6 +1,6 @@
 name = "typed-assembly"
 version = "0.1.0"
-defaultTargets = ["TypedAsm", "sum"]
+defaultTargets = ["TypedAsm", "sum", "swap"]
 
 # The core library: machine model, instruction set, semantics.
 [[lean_lib]]
@@ -15,3 +15,8 @@ srcDir = "core"
 name = "sum"
 root = "Sum"
 srcDir = "examples/Sum"
+
+[[lean_exe]]
+name = "swap"
+root = "Swap"
+srcDir = "examples/Swap"

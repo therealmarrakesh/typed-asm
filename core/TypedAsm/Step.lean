@@ -335,6 +335,12 @@ def step (fetch : Fetch) (sys : Syscall) (s : State) : Outcome :=
   | none => .stuck
   | some (i, len) => exec sys i { s with rip := s.rip + len }
 
+/-- The instructions of a program laid out one after another from `base`,
+each given with its length in bytes. -/
+def Fetch.layout (base : BitVec 64) : List (Instr × BitVec 64) → Fetch
+  | [], _ => none
+  | (i, len) :: rest, a => if a = base then some (i, len) else Fetch.layout (base + len) rest a
+
 /-- Take up to `n` steps, stopping early at a fault, at exit, or when stuck. -/
 def run (fetch : Fetch) (sys : Syscall) : Nat → State → Outcome
   | 0, s => .next s

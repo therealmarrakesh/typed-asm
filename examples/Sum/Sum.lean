@@ -60,12 +60,7 @@ def code : List (Instr × BitVec 64) := [
   -- done
   (.ret, 1)]
 
-/-- Lay instructions out one after another starting at `base`. -/
-def layout (base : BitVec 64) : List (Instr × BitVec 64) → Fetch
-  | [], _ => none
-  | (i, len) :: rest, a => if a = base then some (i, len) else layout (base + len) rest a
-
-def fetch : Fetch := layout codeBase code
+def fetch : Fetch := .layout codeBase code
 
 /-- The one system call this program uses: `exit`, number 60 on Linux. -/
 def linux : Syscall := fun s =>
