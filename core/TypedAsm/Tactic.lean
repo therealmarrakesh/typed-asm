@@ -1,5 +1,7 @@
+import Lean
 import TypedAsm.Program
 import TypedAsm.Fn
+import TypedAsm.Print
 
 /-!
 # Tactics for typing programs
@@ -9,7 +11,8 @@ is trusted. They handle the mechanical parts and leave as goals whatever
 needs an argument, typically a fact about values at a branch.
 
 * `ty_steps` types the straight-line instructions at the start of a block.
-* `ty_step` types one, and shows the instruction and context if it cannot.
+* `ty_step` types one.
+* `ty_straight` types a single instruction; the two above are built on it.
 * `ty_accept h` shows the current context is accepted at an address, given
   the fact `h` that the code typing allows some context there.
 * `ctx_sub` and `sub_regs` compare contexts.
@@ -141,40 +144,6 @@ determine what an earlier one refers to. -/
 macro "ty_rule " r:term : tactic =>
   `(tactic| (((refine' $r .. <;> try ty_side) <;> try ty_side); done))
 
-/-- Proves `Straight Γ i ?Γ'` for a known instruction `i`, choosing the most
-informative rule that applies. -/
-macro "ty_straight" : tactic =>
-  `(tactic| first
-    | exact Straight.nop
-    | ty_rule Straight.movRR64
-    | ty_rule Straight.movRR32
-    | ty_rule Straight.movRI
-    | ty_rule Straight.movAbs
-    | ty_rule Straight.leaRip
-    | ty_rule Straight.lea
-    | ty_rule Straight.loadStack
-    | ty_rule Straight.loadField
-    | ty_rule Straight.storeStack
-    | ty_rule Straight.storeField
-    | ty_rule Straight.storeIntR
-    | ty_rule Straight.storeIntI
-    | ty_rule Straight.store8Field
-    | ty_rule Straight.push
-    | ty_rule Straight.pop
-    | ty_rule Straight.allocFrame
-    | ty_rule Straight.freeFrame'
-    | ty_rule Straight.aluExact
-    | ty_rule Straight.aluExactRR
-    | ty_rule Straight.loadField32
-    | ty_rule Straight.movzxField
-    | ty_rule Straight.movsxField
-    | ty_rule Straight.addPtr
-    | ty_rule Straight.aluMem
-    | ty_rule Straight.aluRR
-    | ty_rule Straight.aluRI
-    | ty_rule Straight.testExact
-    | exact Straight.test)
-
 /-- Simplifies the context in a block goal. Each rule wraps the previous
 context in a record update that mentions it once per field, so without this
 the context would multiply in size with every instruction. -/
@@ -182,19 +151,269 @@ macro "ty_normalize" : tactic =>
   `(tactic| try dsimp only [CtxOf.setReg, CtxOf.afterAlu, CtxOf.afterSyscall, AluOp.writesDst,
       ↓reduceIte])
 
-/-- Types one straight-line instruction. If no rule applies, the goal that is
-left shows the instruction and the context, which is the place to look when
-`ty_steps` stops earlier than expected. -/
-macro "ty_step" : tactic =>
-  `(tactic| (refine BlockOk.step (Γ' := ?_) rfl ?instruction ?_
-             case' instruction => try ty_straight
-             all_goals ty_normalize))
+/-! ## Choosing the rule from the instruction
 
-/-- Types as many straight-line instructions as it can from the start of a
-block, leaving the rest of the block as the goal. -/
-macro "ty_steps" : tactic =>
-  `(tactic| repeat (refine BlockOk.step (Γ' := ?_) rfl ?instruction ?_
-                    case instruction => ty_straight
-                    ty_normalize))
+The tactics below are metaprograms. They look at the instruction, try only
+the rules written for its shape, and when none applies they say which
+premise of each stood in the way. -/
+
+open Lean Meta Elab Tactic
+
+/-- The straight-line rules that can type an instruction of this shape, most
+informative first. An empty list means the type system has no rule for it. -/
+def Instr.rules : Instr → List Name
+  | .nop => [``Straight.nop]
+  | .mov .w64 (.rm_r (.reg _) _) => [``Straight.movRR64]
+  | .mov .w32 (.rm_r (.reg _) _) => [``Straight.movRR32]
+  | .mov _ (.rm_i (.reg _) _) => [``Straight.movRI]
+  | .movAbs _ _ => [``Straight.movAbs]
+  | .lea .w64 _ (.rip _) => [``Straight.leaRip, ``Straight.lea]
+  | .lea _ _ _ => [``Straight.lea]
+  | .mov .w64 (.r_m _ (.sib (some .rsp) none _)) => [``Straight.loadStack]
+  | .mov .w64 (.r_m _ (.sib (some _) none _)) => [``Straight.loadField]
+  | .mov .w32 (.r_m _ (.sib (some _) none _)) => [``Straight.loadField32]
+  | .mov .w64 (.rm_r (.mem (.sib (some .rsp) none _)) _) => [``Straight.storeStack]
+  | .mov .w64 (.rm_r (.mem (.sib (some _) none _)) _) =>
+    [``Straight.storeField, ``Straight.storeIntR]
+  | .mov .w32 (.rm_r (.mem (.sib (some _) none _)) _) => [``Straight.storeIntR]
+  | .mov _ (.rm_i (.mem (.sib (some _) none _)) _) => [``Straight.storeIntI]
+  | .store8 (.sib (some _) none _) _ => [``Straight.store8Field]
+  | .movzx _ _ _ (.mem (.sib (some _) none _)) => [``Straight.movzxField]
+  | .movsx _ _ _ (.mem (.sib (some _) none _)) => [``Straight.movsxField]
+  | .push _ => [``Straight.push]
+  | .pop _ => [``Straight.pop]
+  | .alu .sub .w64 (.rm_i (.reg .rsp) _) => [``Straight.allocFrame]
+  | .alu .add .w64 (.rm_i (.reg .rsp) _) => [``Straight.freeFrame']
+  | .alu _ .w64 (.rm_i (.reg _) _) => [``Straight.aluExact, ``Straight.addPtr, ``Straight.aluRI]
+  | .alu _ _ (.rm_i (.reg _) _) => [``Straight.aluRI]
+  | .alu _ .w64 (.rm_r (.reg _) _) => [``Straight.aluExactRR, ``Straight.aluRR]
+  | .alu _ _ (.rm_r (.reg _) _) => [``Straight.aluRR]
+  | .alu _ .w64 (.r_m _ (.sib (some _) none _)) => [``Straight.aluMem]
+  | .test .w64 (.reg _) (.reg _) => [``Straight.testExact, ``Straight.test]
+  | .test _ (.reg _) _ => [``Straight.test]
+  | _ => []
+
+/-- Whether the instruction can send control somewhere other than the next
+instruction, which is where a block ends. -/
+def Instr.endsBlock : Instr → Bool
+  | .jmp _ | .jcc _ _ | .call _ | .ret | .syscall | .ud2 => true
+  | _ => false
+
+/-- Every straight-line rule, for instructions whose shape is not known. -/
+def allStraightRules : List Name := [``Straight.movRR64, ``Straight.movRR32, ``Straight.movRI, ``Straight.movAbs, ``Straight.leaRip, ``Straight.lea, ``Straight.loadStack, ``Straight.loadField, ``Straight.storeStack, ``Straight.storeField, ``Straight.storeIntR, ``Straight.storeIntI, ``Straight.store8Field, ``Straight.push, ``Straight.pop, ``Straight.allocFrame, ``Straight.freeFrame', ``Straight.aluExact, ``Straight.aluExactRR, ``Straight.loadField32, ``Straight.movzxField, ``Straight.movsxField, ``Straight.addPtr, ``Straight.aluMem, ``Straight.aluRR, ``Straight.aluRI, ``Straight.testExact, ``Straight.test, ``Straight.nop]
+
+private unsafe def evalInstrUnsafe (e : Expr) : MetaM Instr :=
+  evalExpr Instr (mkConst ``Instr) e
+
+private unsafe def evalAddrUnsafe (e : Expr) : MetaM Nat := do
+  let v ← evalExpr (BitVec 64) (mkApp (mkConst ``BitVec) (mkNatLit 64)) e
+  return v.toNat
+
+/-- The number a closed address term denotes. -/
+@[implemented_by evalAddrUnsafe]
+private opaque evalAddr (e : Expr) : MetaM Nat
+
+/-- The instruction a closed term denotes. -/
+@[implemented_by evalInstrUnsafe]
+private opaque evalInstr (e : Expr) : MetaM Instr
+
+/-- The instruction in a goal, if it is fully known. -/
+private def knownInstr (e : Expr) : MetaM (Option Instr) := do
+  let e ← instantiateMVars e
+  if e.hasExprMVar || e.hasFVar then return none
+  try return some (← evalInstr e) catch _ => return none
+
+/-- Tries one rule on the main goal, undoing everything if it does not finish. -/
+private def tryRule (rule : Name) : TacticM Bool := do
+  let saved ← saveState
+  try
+    evalTactic (← `(tactic| ty_rule $(mkIdent rule)))
+    return true
+  catch _ =>
+    saved.restore
+    return false
+
+/-- Shows a term without the internal names of unknowns. -/
+private def ppClean (e : Expr) : MetaM String := do
+  let fmt ← withOptions (fun o => o.setBool `pp.mvars false) (ppExpr (← instantiateMVars e))
+  -- One line, however long: these appear inside sentences.
+  return fmt.pretty (width := 100000)
+
+/-- The name of a register, if the term is one. -/
+private def regName? (e : Expr) : Option String :=
+  match e.constName? with
+  | some (.str ``Reg n) => some n
+  | _ => none
+
+/-- Describes, in terms of the program, a rule premise that could not be proved. -/
+private def describePremise (ty : Expr) : MetaM MessageData := do
+  let ty ← instantiateMVars ty
+  if let some (_, lhs, rhs) := ty.eq? then
+    -- what a register must hold
+    if lhs.isAppOfArity ``CtxOf.regs 3 then
+      let reg := (regName? lhs.appArg!).getD "the register"
+      let actual ← ppClean (← reduce lhs)
+      let wanted :=
+        if rhs.isAppOf ``Ty.ptr then
+          if rhs.getAppArgs[1]!.isConstOf ``Bool.true then "a writable pointer" else "a pointer"
+        else if rhs.isAppOf ``Ty.eq then "an exactly known value"
+        else "a value of another type"
+      return m!"`{reg}` must hold {wanted}, but its type is `{actual}`"
+    if lhs.isAppOf ``AluOp.readsCarry then
+      return m!"this rule does not cover operations that read the carry flag"
+    if lhs.isAppOfArity ``CtxOf.room 2 then
+      return m!"there is not enough free stack: the context has room for {← ppClean (← reduce lhs)}"
+    -- a field or stack slot lookup
+    let actual ← reduce lhs
+    if actual.isAppOf ``Option.none then
+      return m!"there is no field or stack slot at that offset"
+    if rhs.isAppOf ``Option.some && actual.isAppOf ``Option.some then
+      return m!"the field must have type `{← ppClean rhs.appArg!}`, but has type \
+        `{← ppClean actual.appArg!}`"
+    return m!"needs `{← ppClean ty}`, but the left side is `{← ppClean actual}`"
+  if ty.isAppOf ``slotDisp then
+    return m!"the displacement must be a non-negative multiple of 8"
+  if ty.isAppOf ``innerDisp then
+    return m!"the displacement must be non-negative"
+  if ty.isAppOfArity ``Sub 2 then
+    return m!"a value of type `{← ppClean (← reduce ty.appFn!.appArg!)}` cannot be stored \
+      where `{← ppClean ty.appArg!}` is required"
+  if ty.isAppOfArity ``Ne 3 && (regName? ty.appArg!) == some "rsp" then
+    return m!"`rsp` cannot be this operand"
+  if ty.isAppOf ``LE.le then
+    return m!"the access would cross the end of an 8-byte field"
+  if ty.isForall then
+    return m!"the operation reads the carry flag, which is not known to be defined here"
+  return m!"needs `{← ppClean ty}`"
+
+/-- Says why a rule did not apply: the first premise that could not be proved. -/
+private def explainRule (rule : Name) : TacticM MessageData := do
+  let saved ← saveState
+  let name := rule.components.getLast!
+  try
+    try
+      evalTactic (← `(tactic| refine' $(mkIdent rule) ..))
+    catch _ =>
+      return m!"{name}: is for a different form of this instruction"
+    let goals ← getGoals
+    -- Premises are attempted in order and then again, as in `ty_rule`, so that
+    -- what is reported is a premise that fails once everything else is known.
+    let mut failed : Array Expr := #[]
+    for pass in [0, 1] do
+      for g in goals do
+        if ← g.isAssigned then continue
+        unless ← isProp (← g.getType) do continue
+        setGoals [g]
+        let attempt ← saveState
+        let ok ← try
+            evalTactic (← `(tactic| ty_side))
+            pure true
+          catch _ =>
+            attempt.restore
+            pure false
+        if !ok && pass == 1 then
+          failed := failed.push (← instantiateMVars (← g.getType))
+    -- A premise about the displacement is reported first: the others cannot
+    -- be judged until it holds. After that, prefer a premise with no unknowns.
+    let isDisp (e : Expr) : Bool := e.isAppOf ``slotDisp || e.isAppOf ``innerDisp
+    let chosen := (failed.find? isDisp <|> failed.find? (!·.hasExprMVar) <|> failed[0]?)
+    match chosen with
+    | some ty => return m!"{name}: {← describePremise ty}"
+    | none => return m!"{name}: every premise holds separately, but not together"
+  finally
+    saved.restore
+
+/-- Types the instruction in a `Straight next Γ i ?Γ'` goal, or explains why not. -/
+def typeStraight : TacticM Unit := withMainContext do
+  let goal ← getMainGoal
+  let ty ← instantiateMVars (← goal.getType)
+  unless ty.isAppOfArity ``Straight 4 do
+    throwError "ty_straight: the goal is not of the form `Straight next Γ i Γ'`"
+  let instrExpr := ty.getAppArgs[2]!
+  let instr? ← knownInstr instrExpr
+  let rules := match instr? with
+    | some i => i.rules
+    | none => allStraightRules
+  for rule in rules do
+    if ← tryRule rule then return
+  let shown : MessageData := match instr? with
+    | some i => m!"`{i.toAsm}`"
+    | none => m!"{instrExpr}"
+  if rules.isEmpty then
+    throwError "the type system has no rule for {shown}"
+  let mut msg := m!"cannot type {shown} in the current context"
+  for rule in rules do
+    msg := msg ++ m!"\n• {← explainRule rule}"
+  throwError msg
+
+/-- Types the instruction in a `Straight` goal, choosing the rule from the
+instruction's shape. When no rule applies, the error names the instruction
+and, for each rule that could have applied, the premise that failed. -/
+elab "ty_straight" : tactic => typeStraight
+
+/-- The outcome of trying to take one step in a block. -/
+private inductive StepResult
+  | stepped
+  | endOfBlock (instr : Instr)
+  | notABlock
+
+/-- Types the first instruction of a block goal if it is a straight-line
+instruction, leaving the rest of the block as the main goal. -/
+private def typeStep : TacticM StepResult := withMainContext do
+  let goal ← getMainGoal
+  let ty ← instantiateMVars (← goal.getType)
+  unless ty.isAppOf ``BlockOk do return .notABlock
+  let saved ← saveState
+  let others := (← getGoals).drop 1
+  setGoals [goal]
+  try
+    evalTactic (← `(tactic| refine BlockOk.step (Γ' := ?_) rfl ?_ ?_))
+  catch _ =>
+    saved.restore
+    throwError "there is no instruction at this address"
+  let mut instrGoal? : Option MVarId := none
+  let mut restGoal? : Option MVarId := none
+  for g in ← getGoals do
+    let t ← instantiateMVars (← g.getType)
+    if t.isAppOf ``Straight then instrGoal? := some g
+    else if t.isAppOf ``BlockOk then restGoal? := some g
+  let (some instrGoal, some restGoal) := (instrGoal?, restGoal?)
+    | saved.restore; throwError "ty_step: unexpected goals after taking a step"
+  let instrTy ← instantiateMVars (← instrGoal.getType)
+  if let some instr ← knownInstr instrTy.getAppArgs[2]! then
+    if instr.endsBlock then
+      saved.restore
+      return .endOfBlock instr
+  setGoals [instrGoal]
+  let addr ← instantiateMVars ty.getAppArgs[4]!
+  let at? ← if addr.hasExprMVar || addr.hasFVar then pure none
+    else try pure (some (← evalAddr addr)) catch _ => pure none
+  try
+    typeStraight
+  catch e =>
+    match at? with
+    | some n => throwError "at address {n}: {e.toMessageData}"
+    | none => throw e
+  setGoals [restGoal]
+  evalTactic (← `(tactic| ty_normalize))
+  setGoals ((← getGoals) ++ others)
+  return .stepped
+
+/-- Types one straight-line instruction at the start of a block. -/
+elab "ty_step" : tactic => do
+  match ← typeStep with
+  | .stepped => pure ()
+  | .endOfBlock instr =>
+    throwError "`{instr.toAsm}` can transfer control, so it ends the block and is not typed by `ty_step`"
+  | .notABlock => throwError "ty_step: the goal is not a block"
+
+/-- Types the straight-line instructions at the start of a block, stopping
+at the first instruction that can transfer control and leaving it as the
+goal. A straight-line instruction that cannot be typed is an error. -/
+elab "ty_steps" : tactic => do
+  repeat
+    match ← typeStep with
+    | .stepped => continue
+    | _ => break
 
 end TypedAsm
