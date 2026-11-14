@@ -3,8 +3,8 @@ import TypedAsm
 /-!
 # A function with a stack frame, proved safe
 
-Exercises stack-frame allocation, locals, 32-bit and byte loads, a
-conditional jump in the middle of a block, and a comparison of two exactly
+Exercises stack-frame allocation, locals, 32-bit and byte loads and stores,
+a conditional jump in the middle of a block, and a comparison of two exactly
 known values.
 
 ```asm
@@ -24,13 +24,15 @@ pick:                         ; rdi = pointer to the record; result in rax
   42  mov   [rsp], rdi        ; local 0: the pointer
   46  mov   eax, [rdi+8]      ; low half of the second field
   49  mov   [rsp+8], rax      ; local 1: that value
-  54  test  rax, rax
-  57  je    skip
-  63  mov   rcx, [rsp]        ; the local is still a pointer
-  67  movzx eax, byte ptr [rcx]
+  54  mov   [rdi+12], eax     ; 32-bit store into the top half of the second field
+  57  mov   [rdi+1], al       ; byte store into the first field
+  60  test  rax, rax
+  63  je    skip
+  69  mov   rcx, [rsp]        ; the local is still a pointer
+  73  movzx eax, byte ptr [rcx]
 skip:
-  70  add   rsp, 16
-  74  ret
+  76  add   rsp, 16
+  80  ret
 ```
 -/
 
@@ -62,6 +64,8 @@ def code : List (Asm Label) := [
   .ins (.mov .w64 (.rm_r (.mem (rspSlot 0)) .rdi)) 4,
   .ins (.mov .w32 (.r_m .rax (.sib (some .rdi) none 8))) 3,
   .ins (.mov .w64 (.rm_r (.mem (rspSlot 8)) .rax)) 5,
+  .ins (.mov .w32 (.rm_r (.mem (.sib (some .rdi) none 12)) .rax)) 3,
+  .ins (.store8 (.sib (some .rdi) none 1) .rax) 3,
   .ins (.test .w64 (.reg .rax) (.reg .rax)) 3,
   .jcc .e .skip,
   .ins (.mov .w64 (.r_m .rcx (rspSlot 0))) 4,
@@ -104,7 +108,7 @@ inductive Φ : BitVec 64 → Ctx → Prop
   /-- At `skip` the frame is still allocated: local 0 is the pointer, local 1 an integer. -/
   | skip (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (m : Nat) :
     pickSig.CallerOk saved ret rest (m + 2) →
-    Φ 70 ⟨fun r => if calleeSaved r then saved r else .int,
+    Φ 76 ⟨fun r => if calleeSaved r then saved r else .int,
       pair :: .int :: .code ret :: rest, m, Flags.Any⟩
 
 def recordLayout : Layout := ⟨[.int, .int], true⟩
@@ -136,7 +140,8 @@ theorem blocksOk : BlocksOk Φ fetch := by
   | spin => exact .last rfl (.jmp (by ty_accept Φ.spin))
   | pick saved ret rest room hK =>
     obtain ⟨m, rfl⟩ := hK.room_split
-    -- sub rsp, 16; mov [rsp], rdi; mov eax, [rdi+8]; mov [rsp+8], rax; test rax, rax
+    -- sub rsp, 16; mov [rsp], rdi; mov eax, [rdi+8]; mov [rsp+8], rax;
+    -- mov [rdi+12], eax; mov [rdi+1], al; test rax, rax
     ty_steps
     -- je skip
     refine .branch rfl (Cond.decided_of_known (fun _ h => h) _) ?_ ?_
@@ -188,6 +193,7 @@ def exitsWith (code : BitVec 32) : Outcome → Bool
   | _ => false
 
 -- The second field is not zero, so the result is the low byte of the first: 0x34.
+-- (The byte store changed the first field's second byte, not its low byte.)
 #guard exitsWith 0x34 (run fetch linux 100 start)
 
 end Frame
