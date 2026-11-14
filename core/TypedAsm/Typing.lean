@@ -43,6 +43,16 @@ structure CtxSub (Γ Δ : Ctx) : Prop where
 
 theorem Sub.rfl {τ : Ty} : Sub τ τ := .refl τ
 
+theorem Sub.trans {τ υ φ : Ty} (h₁ : Sub τ υ) (h₂ : Sub υ φ) : Sub τ φ := by
+  cases h₁ with
+  | refl => exact h₂
+  | int => cases h₂ <;> exact .int _
+  | readOnly fields w index =>
+    cases h₂ with
+    | refl => exact .readOnly fields w index
+    | int => exact .int _
+    | readOnly => exact .readOnly fields _ index
+
 theorem SubList.refl : ∀ σ : List Ty, SubList σ σ
   | [] => .nil
   | τ :: σ => .cons (.refl τ) (SubList.refl σ)
@@ -64,6 +74,16 @@ def CtxOf.setReg (Γ : Ctx) (r : Reg) (τ : Ty) : Ctx :=
 def AluOp.readsCarry : AluOp → Bool
   | .adc | .sbb => true
   | _ => false
+
+/-- The result and flags of an operation that does not read the carry flag.
+(For the two that do, this is the result with the carry clear.) -/
+def AluOp.apply {n : Nat} (op : AluOp) (a b : BitVec n) : BitVec n × Flags :=
+  match op with
+  | .add | .adc => addCarry a b false
+  | .sub | .sbb | .cmp => subBorrow a b false
+  | .and => (a &&& b, .ofResult (a &&& b) false false)
+  | .or => (a ||| b, .ofResult (a ||| b) false false)
+  | .xor => (a ^^^ b, .ofResult (a ^^^ b) false false)
 
 /-- The context after a two-operand operation on register `d`: the flags
 become known, and `d` holds an integer if the operation writes it. -/
@@ -142,10 +162,11 @@ inductive Straight : Ctx → Instr → Ctx → Prop
     Straight Γ (.alu op .w64 (.r_m d (.sib (some b) none disp))) (Γ.afterAlu op d)
   /-- Arithmetic on an exactly known value with a constant: the result and
   the flags are exactly known too. -/
-  | aluExact {Γ : Ctx} {op : AluOp} {d : Reg} {imm : BitVec 32} {a r : BitVec 64} {fl : Flags} :
-    d ≠ .rsp → Γ.regs d = .eq a → op.eval none a (imm.signExtend 64) = some (r, fl) →
+  | aluExact {Γ : Ctx} {op : AluOp} {d : Reg} {imm : BitVec 32} {a : BitVec 64} :
+    d ≠ .rsp → Γ.regs d = .eq a → op.readsCarry = false →
     Straight Γ (.alu op .w64 (.rm_i (.reg d) imm))
-      { (if op.writesDst then Γ.setReg d (.eq r) else Γ) with flags := (· = fl) }
+      { (if op.writesDst then Γ.setReg d (.eq (op.apply a (imm.signExtend 64)).1) else Γ) with
+        flags := (· = (op.apply a (imm.signExtend 64)).2) }
   /-- Advancing a pointer by whole slots keeps it a pointer into the same block. -/
   | addPtr {Γ : Ctx} {d : Reg} {fields : List Ty} {writable : Bool} {off k : Nat}
       {imm : BitVec 32} :

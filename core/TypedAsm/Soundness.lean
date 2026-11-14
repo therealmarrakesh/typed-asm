@@ -494,11 +494,11 @@ theorem AluOp.eval_some {n : Nat} (op : AluOp) {cf : Option Bool} (a b : BitVec 
     | (obtain ⟨c, rfl⟩ := Option.isSome_iff_exists.mp (h rfl)
        exact ⟨_, _, rfl, Flags.ofResult_defined _ _ _⟩)
 
-/-- An operation that produces a result without the carry flag produces the
-same result whatever the carry flag is. -/
-theorem AluOp.eval_of_none {n : Nat} {op : AluOp} {a b : BitVec n} {x : BitVec n × Flags}
-    (h : op.eval none a b = some x) (cf : Option Bool) : op.eval cf a b = some x := by
-  cases op <;> simp_all [AluOp.eval]
+/-- An operation that does not read the carry flag evaluates to `apply`,
+whatever the carry flag is. -/
+theorem AluOp.eval_eq_apply {n : Nat} {op : AluOp} (h : op.readsCarry = false) (a b : BitVec n)
+    (cf : Option Bool) : op.eval cf a b = some (op.apply a b) := by
+  cases op <;> first | rfl | exact absurd h (by decide)
 
 theorem addCarry_fst (a b : BitVec 64) : (addCarry a b false).1 = a + b := by
   simp only [addCarry]
@@ -627,12 +627,13 @@ theorem Straight.sound {Γ Γ' : Ctx} {i : Instr} (ht : Straight Γ i Γ') (hΨ 
         simp [exec, State.readRM, State.writeRM, Operands.src, Operands.dst, hea,
           State.read_w64 (h.canRead_field hl hilt), he, Result.ofOption, hwd, State.writeReg]
     · cases op.writesDst <;> rfl
-  | @aluExact op d imm a r fl hd hΓ he =>
+  | @aluExact op d imm a hd hΓ hnc =>
     have hp := h.regs d hd
     rw [hΓ, hasTy_eq] at hp
+    generalize hrf : op.apply a (imm.signExtend 64) = rf
+    obtain ⟨r, fl⟩ := rf
     have he' : op.eval s.flags.cf (s.readReg .w64 d) (imm.signExtend 64) = some (r, fl) := by
-      rw [State.readReg_w64, hp]
-      exact AluOp.eval_of_none he _
+      rw [State.readReg_w64, hp, AluOp.eval_eq_apply hnc, hrf]
     refine ⟨{ (if op.writesDst then s.setReg d r else s) with flags := fl }, ?_, ?_, ?_⟩
     · cases hwd : op.writesDst <;>
         simp [exec, State.readRM, State.writeRM, Operands.src, Operands.dst, he',
