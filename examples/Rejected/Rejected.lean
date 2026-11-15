@@ -346,6 +346,36 @@ example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .overPointer)
     (buffer [.int, .ptr [.int] false 0]) := by
   ty_block
 
+/-! ## Arguments
+
+An argument's slot is loaded by its number only when the number is exactly
+known and is one of the slots the context has. -/
+
+inductive Arg
+  | unknown | beyond
+  deriving DecidableEq
+
+def argLoads : List (Asm Arg) := [
+  .label .unknown, .ins (.mov .w64 (.r_m .rsi (.sib (some .rsp) (some (.rax, .s8)) 8))), .ins .ud2,
+  .label .beyond, .ins (.mov .w32 (.rm_i (.reg .rax) 7)),
+    .ins (.mov .w64 (.r_m .rsi (.sib (some .rsp) (some (.rax, .s8)) 8))), .ins .ud2]
+
+def argFetch : Fetch := Asm.fetch 0 argLoads
+
+/--
+error: at address 0: cannot type `mov rsi, qword ptr [rsp+rax*8+8]` in the current context
+• loadStackIndexed: the index register `rax` must hold an exactly known value, but its type is `int`; `ty_name` gives an integer a name
+-/
+#guard_msgs in
+example : BlockOk Φy argFetch linux Ψ (Asm.addr argLoads 0 .unknown) (argsCtx 0 2) := by ty_block
+
+/--
+error: at address 12: cannot type `mov rsi, qword ptr [rsp+rax*8+8]` in the current context
+• loadStackIndexed: there is no field or stack slot at that offset
+-/
+#guard_msgs in
+example : BlockOk Φy argFetch linux Ψ (Asm.addr argLoads 0 .beyond) (argsCtx 0 2) := by ty_block
+
 /-! ## Other calls that store into a buffer
 
 `fstat`, `clock_gettime` and `getrandom` are typed by the condition of a

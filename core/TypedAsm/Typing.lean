@@ -347,6 +347,16 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
   | loadStack {Γ : Ctx} {d : Reg} {i : Nat} {disp : BitVec 32} {τ : Ty} :
     d ≠ .rsp → slotDisp i disp → Γ.stack[i]? = some τ →
     Straight Ψ next Γ (.mov .w64 (.r_m d (.sib (some .rsp) none disp))) (Γ.setReg d τ)
+  /-- Load the stack slot an index picks out, keeping its type. The index
+  register holds an exactly known value, and scaled and added to the
+  displacement it is the offset of a whole slot. This is how a program gets
+  at an argument whose number it has computed. -/
+  | loadStackIndexed {Γ : Ctx} {d : Reg} {x : IndexReg} {sc : Scale} {i : Nat}
+      {disp : BitVec 32} {c : BitVec 64} {τ : Ty} :
+    d ≠ .rsp → Γ.regs x.toReg = .eq c →
+    (c <<< sc.shift) + disp.signExtend 64 = BitVec.ofNat 64 (8 * i) →
+    Γ.stack[i]? = some τ →
+    Straight Ψ next Γ (.mov .w64 (.r_m d (.sib (some .rsp) (some (x, sc)) disp))) (Γ.setReg d τ)
   /-- Store into stack slot `i`. The slot takes the type of the stored value. -/
   | storeStack {Γ : Ctx} {s : Reg} {i : Nat} {disp : BitVec 32} {τ : Ty} :
     s ≠ .rsp → slotDisp i disp → Γ.stack[i]? = some τ →
@@ -653,6 +663,7 @@ local macro "ext_rule" : tactic =>
     | (apply Straight.loadIndexed <;> ext_premise)
     | (apply Straight.storeIndexed <;> ext_premise)
     | (apply Straight.loadStack <;> ext_premise)
+    | (apply Straight.loadStackIndexed <;> ext_premise)
     | (apply Straight.storeStack <;> ext_premise)
     | (apply Straight.push <;> ext_premise)
     | (apply Straight.pop <;> ext_premise)

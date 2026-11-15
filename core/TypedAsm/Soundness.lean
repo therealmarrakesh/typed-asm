@@ -1839,6 +1839,15 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
       h.setReg hd (h.stack i τ hi)⟩
     simp [exec, State.writeRM, Operands.src, Operands.dst, State.ea_slot s .rsp hdisp,
       State.read_w64 (State.canRead_of_canWrite (h.canWrite_slot hilt)), State.writeReg]
+  | @loadStackIndexed d x sc i disp c τ hd hΓx hD hi =>
+    have hilt : i < Γ.stack.length := (List.getElem?_eq_some_iff.mp hi).1
+    have hx := h.eqReg x.toReg_ne_rsp hΓx
+    have hea : s.ea (.sib (some .rsp) (some (x, sc)) disp)
+        = s.getReg .rsp + BitVec.ofNat 64 (8 * i) := State.ea_indexed s hx hD
+    refine ⟨s.setReg d (s.load64 (s.getReg .rsp + BitVec.ofNat 64 (8 * i))), ?_, rfl,
+      h.setReg hd (h.stack i τ hi)⟩
+    simp [exec, State.writeRM, Operands.src, Operands.dst, hea,
+      State.read_w64 (State.canRead_of_canWrite (h.canWrite_slot hilt)), State.writeReg]
   | @storeStack src i disp τ hs hdisp hslot =>
     have hi : i < Γ.stack.length := (List.getElem?_eq_some_iff.mp hslot).1
     refine ⟨s.store64 (s.getReg .rsp + BitVec.ofNat 64 (8 * i)) (s.getReg src), ?_,

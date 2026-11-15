@@ -202,6 +202,23 @@ theorem cmp_not_less {a b : BitVec 64} (h : Cond.eval (AluOp.apply .cmp a b).2 .
   rw [cmp_less_iff] at h
   simpa using h
 
+/-- After `cmp a, b`, "above or equal" failing means `a` is less than `b` as
+unsigned numbers: the way a loop over a count carries on. -/
+theorem cmp_not_ae {a b : BitVec 64}
+    (h : Cond.eval (AluOp.apply .cmp a b).2 .ae = some false) : a.toNat < b.toNat := by
+  have e : Cond.eval (AluOp.apply .cmp a b).2 .ae
+      = (Cond.eval (AluOp.apply .cmp a b).2 .b).map (!·) := rfl
+  rw [e, cmp_below_iff] at h
+  simpa using h
+
+/-- After `cmp a, b`, "above or equal" holding means `b` is at most `a`. -/
+theorem cmp_ae {a b : BitVec 64}
+    (h : Cond.eval (AluOp.apply .cmp a b).2 .ae = some true) : b.toNat ≤ a.toNat := by
+  have e : Cond.eval (AluOp.apply .cmp a b).2 .ae
+      = (Cond.eval (AluOp.apply .cmp a b).2 .b).map (!·) := rfl
+  rw [e, cmp_below_iff] at h
+  simpa using h
+
 theorem getElem?_replicate_of_lt {n i : Nat} {τ : Ty} (h : i < n) :
     (List.replicate n τ)[i]? = some τ := by
   simp [h]
@@ -362,6 +379,11 @@ macro "ty_field" : tactic =>
   `(tactic| first
     | rfl
     | (refine getElem?_replicate_of_lt ?_
+       first | assumption | omega | (simp; first | assumption | omega))
+    -- a slot after the first of a list that goes on as a run of one type
+    | (show (_ :: _)[_ + 1]? = _
+       rw [List.getElem?_cons_succ]
+       refine getElem?_replicate_of_lt ?_
        first | assumption | omega | (simp; first | assumption | omega))
     | (simp [*]; done))
 
@@ -639,6 +661,7 @@ def Instr.rules : Instr → List Name
   | .mov .w64 (.r_m _ (.sib (some .rsp) none _)) => [``Straight.loadStack]
   | .mov .w64 (.r_m _ (.sib (some _) none _)) => [``Straight.loadField]
   | .mov .w64 (.r_m _ (.rip _)) => [``Straight.loadGlobal_of]
+  | .mov .w64 (.r_m _ (.sib (some .rsp) (some _) _)) => [``Straight.loadStackIndexed]
   | .mov .w64 (.r_m _ (.sib (some _) (some _) _)) => [``Straight.loadIndexed, ``Straight.loadInt]
   | .mov _ (.r_m _ _) => [``Straight.loadInt]
   | .movzx _ _ _ (.reg _) => [``Straight.movzxExact, ``Straight.movzxRM]
@@ -745,7 +768,7 @@ def Instr.endsBlock : Instr → Bool
 
 /-- Every straight-line rule, for instructions whose shape is not known. -/
 def allStraightRules : List Name := sharpeningRules ++ [``Straight.movRR64, ``Straight.movRR32, ``Straight.movRI, ``Straight.movAbs, ``Straight.leaRip, ``Straight.lea, ``Straight.loadStack, ``Straight.loadField, ``Straight.storeStack, ``Straight.storeField, ``Straight.push, ``Straight.pop, ``Straight.allocFrame, ``Straight.freeFrame', ``Straight.aluExact, ``Straight.aluExactRR, ``Straight.addPtr, ``Straight.aluRR, ``Straight.aluRI, ``Straight.testExact, ``Straight.nop, ``Straight.aluStoreR, ``Straight.aluStoreI, ``Straight.cmpR, ``Straight.cmpI, ``Straight.aluLoad, ``Straight.testRM, ``Straight.negRM, ``Straight.notRM, ``Straight.shiftImm, ``Straight.shiftCl, ``Straight.mulRM, ``Straight.imulRM, ``Straight.divSafe, ``Straight.idivSafe, ``Straight.imul2RM, ``Straight.imul3RM, ``Straight.popcntRM, ``Straight.bswap, ``Straight.cdq, ``Straight.cqo, ``Straight.movsxdRM, ``Straight.cmovRM, ``Straight.setccRM, ``Straight.movzxRM, ``Straight.movsxRM, ``Straight.loadInt, ``Straight.storeInt, ``Straight.storeImm, ``Straight.store8RM, ``Straight.store16RM, ``Straight.loadGlobal_of, ``Straight.storeGlobal_of, ``Straight.xorSelf,
-  ``Straight.loadIndexed, ``Straight.storeIndexed]
+  ``Straight.loadIndexed, ``Straight.storeIndexed, ``Straight.loadStackIndexed]
 
 private unsafe def evalInstrUnsafe (e : Expr) : MetaM Instr :=
   evalExpr Instr (mkConst ``Instr) e
