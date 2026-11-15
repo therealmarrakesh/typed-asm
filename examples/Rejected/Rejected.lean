@@ -701,7 +701,7 @@ example : Straight Ψ 10 Γ₄ (.mov .w64 (.r_m .rax (.sib (some .rsi) (some (.r
 example (h : ∀ v : BitVec 64, BlockOk Φ fetch linux Ψ 0
     { Γ₄ with stack := [.eq v] }) : BlockOk Φ fetch linux Ψ 0 Γ₄ := by
   ty_name_slot 0 as v
-  exact h v
+  exact (h v).asTable
 
 /-! A record used as a shorter one, and a stack deeper than a label cares
 about, need no rule of their own: the context is stated for every tail.

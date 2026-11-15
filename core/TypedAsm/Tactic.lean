@@ -5,6 +5,8 @@ import TypedAsm.Print
 import TypedAsm.Blocks
 import TypedAsm.Linux
 import TypedAsm.Owned
+import TypedAsm.RegMap
+import TypedAsm.Entry
 
 /-!
 # Tactics for typing programs
@@ -310,7 +312,8 @@ elab "ty_sub_exact" : tactic => do
     -- Constants added one after another are first added up, so that a value
     -- moved down and back up is seen to be the value it was.
     evalTactic (← `(tactic|
-      try simp only [BitVec.add_assoc, BitVec.reduceNeg, BitVec.reduceAdd, BitVec.add_zero]))
+      try simp only [BitVec.add_assoc, BitVec.reduceNeg, BitVec.reduceSignExtend,
+        BitVec.reduceSetWidth, BitVec.reduceAdd, BitVec.reduceSub, BitVec.add_zero]))
     evalTactic (← `(tactic| first
       | (with_reducible exact Sub.refl _)
       | (refine Sub.of_eq ?_; first | assumption | bv_omega)))
@@ -549,18 +552,39 @@ macro_rules
   | `(tactic| ty_rule $r) =>
     `(tactic| (((refine' $r .. <;> try ty_side) <;> try ty_side); done))
 
-/-- Simplifies the context in a block goal. Each rule wraps the previous
-context in a record update that mentions it once per field, so without this
-the context would multiply in size with every instruction. -/
-macro "ty_normalize" : tactic =>
-  `(tactic| try dsimp only [CtxOf.setReg, CtxOf.moveSp, Ty.shift, CtxOf.afterAlu, CtxOf.afterSyscall,
+open Lean Meta Simp in
+/-- Decides a test of whether one named register is another, and takes the
+branch. Looking a register up in a context leaves such tests behind. -/
+dsimproc_decl regIte (ite (@Eq Reg _ _) _ _) := fun e => do
+  let_expr ite _ c _ a b := e | return .continue
+  let_expr Eq _ x y := c | return .continue
+  let .const nx _ := x | return .continue
+  let .const ny _ := y | return .continue
+  unless (← isConstructorApp x) && (← isConstructorApp y) do return .continue
+  return .visit (if nx == ny then a else b)
+
+/-- Simplifies the context in a block goal, without changing its shape. Each
+rule wraps the previous context in a record update that mentions it once per
+field, so without this the context would multiply in size with every
+instruction. -/
+macro "ty_dsimp_ctx" : tactic =>
+  `(tactic| try dsimp only [↓regIte, RegMap.get, entryCtx, entryCtxArgs,
+      CtxOf.setReg, CtxOf.moveSp, Ty.shift, CtxOf.afterAlu, CtxOf.afterSyscall,
       CtxOf.afterMulDiv,
       ShiftOp.apply, Scale.shift,
       ShiftOp.flagsAfter, Width.bits, Nat.reduceEqDiff, Nat.reduceBEq, ↓reduceIte,
       AluOp.writesDst, List.set_cons_zero, List.set_cons_succ, List.eraseIdx_cons_zero,
       List.eraseIdx_cons_succ,
       Bool.cond_true, Bool.cond_false, Nat.add_zero, Nat.zero_add, BitVec.reduceToNat, Nat.reduceDiv,
-      Nat.reduceMod, Nat.reduceAdd, Nat.reduceMul])
+      Nat.reduceMod, Nat.reduceAdd, Nat.reduceMul, Nat.reduceSub,
+      BitVec.reduceSetWidth, BitVec.reduceSignExtend, BitVec.reduceAdd, BitVec.reduceSub,
+      BitVec.reduceNeg, BitVec.reduceOfNat])
+
+/-- Brings a block goal to the form it is kept in between instructions: the
+address as a number, the register types as a table, and everything in the
+context that can be worked out, worked out. A goal of another kind has its
+context simplified. -/
+syntax "ty_normalize" : tactic
 
 /-- `ty_name r as v`: from here on, the value in register `r` is called `v`
 and the register is typed as exactly `v`. Use it on a register typed as an
@@ -873,6 +897,84 @@ private unsafe def evalAddrUnsafe (e : Expr) : MetaM Nat := do
 /-- The number a closed address term denotes. -/
 @[implemented_by evalAddrUnsafe]
 private opaque evalAddr (e : Expr) : MetaM Nat
+
+deriving instance ToExpr for Reg
+deriving instance ToExpr for Width
+deriving instance ToExpr for NarrowW
+deriving instance ToExpr for Cond
+deriving instance ToExpr for Scale
+deriving instance ToExpr for IndexReg
+deriving instance ToExpr for Mem
+deriving instance ToExpr for RM
+deriving instance ToExpr for Operands
+deriving instance ToExpr for RI
+deriving instance ToExpr for AluOp
+deriving instance ToExpr for UnOp
+deriving instance ToExpr for ShiftOp
+deriving instance ToExpr for MulDivOp
+deriving instance ToExpr for Count
+deriving instance ToExpr for Target
+deriving instance ToExpr for Instr
+
+private unsafe def evalFetchUnsafe (e : Expr) : MetaM (Option (Instr × BitVec 64)) := do
+  evalExpr (Option (Instr × BitVec 64)) (← inferType e) e
+
+/-- What a closed lookup of an instruction comes to. -/
+@[implemented_by evalFetchUnsafe]
+private opaque evalFetch (e : Expr) : MetaM (Option (Instr × BitVec 64))
+
+/-- `ty_fetch` proves `fetch a = some (i, len)` for a known program and
+address by running the lookup, and fills in whatever of `i` and `len` is
+unknown with what it found, written out in full. The proof is `rfl`, but it
+is the kernel alone that checks it: found by unifying, the instruction would
+be an unevaluated term that walks the whole program again each time it is
+looked at. -/
+elab "ty_fetch" : tactic => withMainContext do
+  let g ← getMainGoal
+  let t ← instantiateMVars (← g.getType)
+  let some (_, lhs, rhs) := t.consumeMData.eq? | throwError "ty_fetch: not an equation"
+  if lhs.hasFVar || lhs.hasMVar then
+    evalTactic (← `(tactic| rfl))
+    return
+  let v? ← try pure (some (← evalFetch lhs)) catch _ => pure none
+  let some v := v? | do
+    evalTactic (← `(tactic| rfl))
+    return
+  let some (i, len) := v | throwError "there is no instruction at this address"
+  let found := toExpr (some (i, len))
+  unless ← isDefEq rhs found do
+    throwError "the instruction at this address is{indentExpr (toExpr i)}"
+  g.assign (← mkExpectedTypeHint (← mkEqRefl lhs) (← mkEq lhs found))
+  replaceMainGoal []
+
+/-- Whether a term is an address written as a number. -/
+private def isAddrLit (e : Expr) : Bool :=
+  e.isAppOfArity ``BitVec.ofNat 2 && e.appArg!.nat?.isSome
+
+elab_rules : tactic
+  | `(tactic| ty_normalize) => do
+    let g ← getMainGoal
+    let t := (← instantiateMVars (← g.getType)).consumeMData
+    unless t.isAppOfArity ``BlockOk 6 do
+      evalTactic (← `(tactic| ty_dsimp_ctx))
+      return
+    -- the register types, as a table of the sixteen
+    let regs ← whnfR (← mkAppM ``CtxOf.regs #[t.appArg!])
+    unless regs.isAppOf ``RegMap.get && regs.appArg!.isAppOf ``RegMap.mk do
+      evalTactic (← `(tactic| refine BlockOk.regsEta ?_))
+    evalTactic (← `(tactic| ty_dsimp_ctx))
+    -- the address, as a number
+    let g ← getMainGoal
+    let t := (← instantiateMVars (← g.getType)).consumeMData
+    if t.isAppOfArity ``BlockOk 6 then
+      let a := t.appFn!.appArg!
+      unless isAddrLit a || a.hasFVar || a.hasMVar do
+        try
+          let n ← evalAddr a
+          let lit := toExpr (BitVec.ofNat 64 n)
+          let g' ← g.replaceTargetDefEq (mkApp (mkApp t.appFn!.appFn! lit) t.appArg!)
+          replaceMainGoal [g']
+        catch _ => pure ()
 
 /-- The instruction a closed term denotes. -/
 @[implemented_by evalInstrUnsafe]
@@ -1209,19 +1311,23 @@ private def applySysRule (goal : MVarId) (rule : Name) (shape : SysShape) :
     TacticM (List MVarId) := do
   let r := mkIdent rule
   let tac ← match shape with
-    | .plain => `(tactic| refine BlockOk.sys rfl ($r ?_) ?_)
+    | .plain => `(tactic| refine BlockOk.sys (by ty_fetch) ($r ?_) ?_)
     | .block true =>
-      `(tactic| refine BlockOk.sys rfl ($r (fields := ?_) (off := ?_) (len := ?_) ?_ ?_ ?_ ?_) ?_)
+      `(tactic| refine BlockOk.sys (by ty_fetch) ($r (fields := ?_) (off := ?_) (len := ?_) ?_ ?_ ?_ ?_) ?_)
     | .block false =>
-      `(tactic| refine BlockOk.sys rfl ($r (fields := ?_) (off := ?_) ?_ ?_ ?_) ?_)
+      `(tactic| refine BlockOk.sys (by ty_fetch) ($r (fields := ?_) (off := ?_) ?_ ?_ ?_) ?_)
     | .stack true =>
-      `(tactic| refine BlockOk.sys rfl
+      `(tactic| refine BlockOk.sys (by ty_fetch)
           ($r (v := ?_) (d := ?_) (len := ?_) ?_ ?_ ?_ ?_ ?_ ?_) ?_)
     | .stack false =>
-      `(tactic| refine BlockOk.sys rfl ($r (v := ?_) (d := ?_) ?_ ?_ ?_ ?_ ?_) ?_)
+      `(tactic| refine BlockOk.sys (by ty_fetch) ($r (v := ?_) (d := ?_) ?_ ?_ ?_ ?_ ?_) ?_)
   try
     runOn goal (do evalTactic tac)
   catch _ => throwError "`syscall`: the operating system here is not the Linux model"
+
+/-- An exactly known value is itself with nothing added: an address that is
+the stack pointer's own is zero bytes above it. -/
+theorem Ty.eq_add_zero (v : BitVec 64) : Ty.eq v = Ty.eq (v + 0) := by simp
 
 /-- Types a call whose buffer is on the stack, at the head of a block goal.
 Returns the rest of the block. -/
@@ -1233,7 +1339,7 @@ private def typeBufferStack (goal : MVarId) (rule : Name) (sized : Bool) : Tacti
     let t ← instantiateMVars (← g.getType)
     if let some (_, lhs, _) := t.eq? then
       if lhs.isAppOf ``CtxOf.regs then
-        discard <| runOn g (do evalTactic (← `(tactic| rfl)))
+        discard <| runOn g (do evalTactic (← `(tactic| first | rfl | exact Ty.eq_add_zero _)))
   let mut rest? : Option MVarId := none
   for g in gs do
     if ← g.isAssigned then continue
@@ -1328,7 +1434,7 @@ private partial def typeStep (named : Bool := false) : TacticM StepResult :=
   let others := (← getGoals).drop 1
   setGoals [goal]
   try
-    evalTactic (← `(tactic| refine BlockOk.step (Γ' := ?_) rfl ?_ ?_))
+    evalTactic (← `(tactic| refine BlockOk.step (Γ' := ?_) (by ty_fetch) ?_ ?_))
   catch _ =>
     saved.restore
     throwError "there is no instruction at this address"
@@ -1558,7 +1664,9 @@ private def introBranch : TacticM Unit := do
   let hcond := mkIdent `hcond
   -- `rfl` must be written without macro hygiene, or `rintro` takes it for a name.
   let subst := mkIdent `rfl
-  evalTactic (← `(tactic| first | rintro f $subst:ident $hcond:ident | intro f _ $hcond:ident))
+  evalTactic (← `(tactic| first
+    | rintro f $subst:ident $hcond:ident
+    | (intro f hflags $hcond:ident; try dsimp only at hflags)))
 
 /-- Closes a goal reached under an assumption about a condition that the
 exactly known flags contradict. Returns whether it did. -/
@@ -1616,7 +1724,7 @@ elab "ty_step_with " r:term : tactic => withMainContext do
   let goal ← getMainGoal
   let others := (← getGoals).drop 1
   let gs ← try
-      runOn goal (do evalTactic (← `(tactic| refine BlockOk.step (Γ' := ?_) rfl ?instr ?rest)))
+      runOn goal (do evalTactic (← `(tactic| refine BlockOk.step (Γ' := ?_) (by ty_fetch) ?instr ?rest)))
     catch _ => throwError "ty_step_with: there is no instruction at this address"
   let instr ← goalNamed gs `instr
   let rest ← goalNamed gs `rest
@@ -1649,7 +1757,7 @@ private inductive Finish
 private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
   match instr with
   | .jmp (.rel _) =>
-    let gs ← runOn goal (do evalTactic (← `(tactic| refine BlockOk.last rfl (HasType.jmp ?_))))
+    let gs ← runOn goal (do evalTactic (← `(tactic| refine BlockOk.last (by ty_fetch) (HasType.jmp ?_))))
     let [acc] := gs | throwError "ty_block: unexpected goals at `jmp`"
     return .done (← proveAccepts acc)
   | .syscall =>
@@ -1660,13 +1768,13 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
     | some 60 =>
       let gs ← try
           runOn goal (do evalTactic (← `(tactic|
-            refine BlockOk.last rfl (HasType.syscallExit (linux_exit rfl)))))
+            refine BlockOk.last (by ty_fetch) (HasType.syscallExit (linux_exit rfl)))))
         catch _ => throwError "`syscall`: the operating system here is not the Linux model"
       return .done gs
     | some 231 =>
       let gs ← try
           runOn goal (do evalTactic (← `(tactic|
-            refine BlockOk.last rfl (HasType.syscallExit (linux_exit_group rfl)))))
+            refine BlockOk.last (by ty_fetch) (HasType.syscallExit (linux_exit_group rfl)))))
         catch _ => throwError "`syscall`: the operating system here is not the Linux model"
       return .done gs
     | some 9 =>
@@ -1683,7 +1791,7 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
   | .ret =>
     let gs ← try
         runOn goal (do evalTactic (← `(tactic|
-          refine BlockOk.last rfl
+          refine BlockOk.last (by ty_fetch)
             (FnSig.ret_of (sig := ?_) (saved := ?_) ?caller ?regs ?sp rfl rfl ?own))))
       catch _ =>
         throwError "`ret` needs a return address on top of the stack, but the context does \
@@ -1713,7 +1821,7 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
     let before ← saveState
     try
       let gs ← runOn goal (do evalTactic (← `(tactic|
-        refine BlockOk.last rfl (HasType.jcc ?dec ?taken ?fall))))
+        refine BlockOk.last (by ty_fetch) (HasType.jcc ?dec ?taken ?fall))))
       let dec ← goalNamed gs `dec
       let taken ← goalNamed gs `taken
       let fall ← goalNamed gs `fall
@@ -1726,7 +1834,7 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
     catch _ =>
       before.restore
     -- Otherwise the block continues after the jump.
-    let gs ← runOn goal (do evalTactic (← `(tactic| refine BlockOk.branch rfl ?dec ?taken ?rest)))
+    let gs ← runOn goal (do evalTactic (← `(tactic| refine BlockOk.branch (by ty_fetch) ?dec ?taken ?rest)))
     let dec ← goalNamed gs `dec
     let taken ← goalNamed gs `taken
     let rest ← goalNamed gs `rest
@@ -1745,7 +1853,7 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
     -- a tail call through a function pointer, on behalf of this function's caller
     let tail? ← try
         let gs ← runOn goal (do evalTactic (← `(tactic|
-          refine BlockOk.last rfl (HasType.jmpFn (sig := ?_) (saved := ?_) (ret := ?_)
+          refine BlockOk.last (by ty_fetch) (HasType.jmpFn (sig := ?_) (saved := ?_) (ret := ?_)
             (rest := ?_) (room := ?_) ?fn ?caller ?sub))))
         discard <| runOn (← goalNamed gs `fn) (do evalTactic (← `(tactic| ty_operand)))
         discard <| runOn (← goalNamed gs `caller) (do evalTactic (← `(tactic| assumption)))
@@ -1756,7 +1864,7 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
         pure none
     if let some left := tail? then return .done left
     let gs ← runOn goal (do evalTactic (← `(tactic|
-      refine BlockOk.last rfl (HasType.jmpInd (Δ := ?_) ?code ?sub))))
+      refine BlockOk.last (by ty_fetch) (HasType.jmpInd (Δ := ?_) ?code ?sub))))
     let code ← goalNamed gs `code
     let sub ← goalNamed gs `sub
     try
@@ -1777,7 +1885,7 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
     -- unless the flags predicate is plainly unsatisfiable.
     let hstate := mkIdent `hstate
     let gs ← runOn goal (do evalTactic (← `(tactic|
-      (refine BlockOk.last rfl (HasType.unreachable ?_)
+      (refine BlockOk.last (by ty_fetch) (HasType.unreachable ?_)
        intro _ _ _ _ _ $hstate:ident
        first | exact ($hstate).flags | skip))))
     return .done gs
@@ -1845,7 +1953,7 @@ elab "ty_call " sig:term : tactic => do
   let others := (← getGoals).drop 1
   -- Find the instruction, to tell a direct call from an indirect one.
   let parts ← try
-      runOn goal (do evalTactic (← `(tactic| refine BlockOk.last rfl ?typed)))
+      runOn goal (do evalTactic (← `(tactic| refine BlockOk.last (by ty_fetch) ?typed)))
     catch _ => throwError "ty_call: the goal is not a block with an instruction at its address"
   let typed ← goalNamed parts `typed
   let typedTy ← instantiateMVars (← typed.getType)
@@ -2022,7 +2130,7 @@ private def typeMmap (rule : TSyntax `term) : TacticM Unit := do
   let others := (← getGoals).drop 1
   setGoals [goal]
   try
-    evalTactic (← `(tactic| refine BlockOk.sys rfl $rule ?_))
+    evalTactic (← `(tactic| refine BlockOk.sys (by ty_fetch) $rule ?_))
   catch _ =>
     throwError "`mmap` is system call 9 of the Linux model: `rax` must hold exactly 9"
   let gs ← getGoals
@@ -2118,7 +2226,7 @@ elab_rules : tactic
     let others := (← getGoals).drop 1
     setGoals [goal]
     try
-      evalTactic (← `(tactic| refine BlockOk.strByte rfl ?_ ?_ ?_ rfl ?_ ?_))
+      evalTactic (← `(tactic| refine BlockOk.strByte (by ty_fetch) ?_ ?_ ?_ rfl ?_ ?_))
     catch _ =>
       throwError "ty_byte: the instruction here must be `movzx r, byte ptr [p]` with `p` a \
         pointer into text"
@@ -2153,7 +2261,7 @@ elab_rules : tactic
     setGoals [goal]
     try
       evalTactic (← `(tactic|
-        refine BlockOk.mmapOwn (len := ?_) (cnt := ?_) rfl rfl ?_ ?_ ?_ ?_ ?_ ?_))
+        refine BlockOk.mmapOwn (len := ?_) (cnt := ?_) (by ty_fetch) rfl ?_ ?_ ?_ ?_ ?_ ?_))
     catch _ =>
       throwError "`mmap` is system call 9 of the Linux model: `rax` must hold exactly 9"
     let gs ← getGoals
@@ -2233,7 +2341,7 @@ elab_rules : tactic
     let others := (← getGoals).drop 1
     let gs ← withOwnedPlace (fun k => do
         let kq := Syntax.mkNumLit (toString k)
-        `(tactic| refine BlockOk.sys rfl
+        `(tactic| refine BlockOk.sys (by ty_fetch)
             (linux_munmap (k := $kq) (a := ?_) (len := ?_) (F := ?_) ?_ ?_ ?_ ?_ ?_) ?_))
       m!"`munmap` is typed for a block the context owns: `rax` must hold exactly 11, `rdi` \
         exactly the address of an owned block, and `rsi` an exactly known length"
@@ -2352,7 +2460,7 @@ that label's context instead of typing the label's code a second time; `h`
 is the fact that the label allows some context, as for `ty_accept`. -/
 macro_rules
   | `(tactic| ty_into $h) =>
-    `(tactic| (refine BlockOk.last rfl (HasType.straight (Γ' := ?_) ?st ?acc)
+    `(tactic| (refine BlockOk.last (by ty_fetch) (HasType.straight (Γ' := ?_) ?st ?acc)
                case' st => ty_straight
                case' acc => ty_accept $h))
 

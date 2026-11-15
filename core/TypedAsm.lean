@@ -24,6 +24,7 @@ import TypedAsm.Blocks
 import TypedAsm.Run
 import TypedAsm.ArgText
 import TypedAsm.Owned
+import TypedAsm.RegMap
 
 /-!
 # TypedAsm
