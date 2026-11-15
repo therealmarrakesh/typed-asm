@@ -55,12 +55,12 @@ namespace Dispatch
 
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive Label
-  | start | afterFirst | afterSecond | afterThird | bad | double | square
+  | start | afterFirst | afterSecond | afterThird | bad | double | square | table
   deriving DecidableEq
 
 def code : List (Asm Label) := [
   .label .start,
-  .ins (.lea .w64 .rbx (.rip 0xf49)),
+  .ref (.lea .w64 .rbx (.rip 0)) .table,
   .ins (.mov .w32 (.rm_i (.reg .rdi) 5)),
   .ins (.mov .w32 (.rm_i (.reg .rcx) 1)),
   .ins (.alu .cmp .w64 (.rm_i (.reg .rcx) 2)),
@@ -87,13 +87,15 @@ def code : List (Asm Label) := [
   .label .square,
   .ins (.mov .w64 (.rm_r (.reg .rax) .rdi)),
   .ins (.imul2 .w64 .rax (.reg .rdi)),
-  .ins .ret]
+  .ins .ret,
+  .segment false,
+  .label .table, .quad .double, .quad .square]
 
 /-- Where the code is loaded. -/
-def base : BitVec 64 := BitVec.ofNat 64 Elf.codeBase
+def base : BitVec 64 := Asm.base code
 
 /-- Where the table is loaded. -/
-def dataBase : BitVec 64 := BitVec.ofNat 64 Elf.dataBase
+def dataBase : BitVec 64 := Asm.addr code base .table
 
 def fetch : Fetch := Asm.fetch base code
 
@@ -103,14 +105,12 @@ def image : List Byte := Asm.image base code
 /-- The address execution starts at. -/
 def entry : BitVec 64 := Asm.addr code base .start
 
--- Every jump reaches the label it names, and the address computation gives
--- the address of the table.
-#guard Asm.offsetsFit base code
-#guard base + 7 + 0xf49 == dataBase
+-- The instructions come first and the data after, and every jump, call and
+-- reference to data reaches the label it names.
+#guard Asm.wellFormed code && Asm.offsetsFit base code
 
 /-- The table's bytes: the addresses of the two functions. -/
-def tableBytes : List Byte :=
-  le64 (Asm.addr code base .double) ++ le64 (Asm.addr code base .square)
+def tableBytes : List Byte := Asm.dataImage base code
 
 /-- Everything in the starting state except the program itself: the table,
 and one free stack slot below `rsp`. -/
@@ -132,5 +132,5 @@ def Dispatch.program : Runnable where
   name := "dispatch"
   entry := Dispatch.entry.toNat
   image := Dispatch.image
-  data := Dispatch.tableBytes
+  segments := (Asm.segments Dispatch.base Dispatch.code).map fun (b, w, bs) => (b.toNat, w, bs)
   start := Dispatch.start

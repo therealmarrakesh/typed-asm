@@ -43,12 +43,17 @@ namespace Sum
 
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive Label
-  | start | afterCall | sum | loop | done
+  | start | afterCall | sum | loop | done | array
   deriving DecidableEq
+
+def array : List (BitVec 64) := [3, 1, 4, 1, 5]
+
+/-- The array's bytes, as they sit in the file and in memory. -/
+def arrayBytes : List Byte := array.flatMap le64
 
 def code : List (Asm Label) := [
   .label .start,
-  .ins (.lea .w64 .rdi (.rip 0xf49)),
+  .ref (.lea .w64 .rdi (.rip 0)) .array,
   .ins (.mov .w32 (.rm_i (.reg .rsi) 5)),
   .call .sum,
   .label .afterCall,
@@ -65,13 +70,15 @@ def code : List (Asm Label) := [
   .ins (.alu .sub .w64 (.rm_i (.reg .rsi) 1)),
   .jcc .ne .loop,
   .label .done,
-  .ins .ret]
+  .ins .ret,
+  .segment false,
+  .label .array, .bytes arrayBytes]
 
 /-- Where the code is loaded. -/
-def base : BitVec 64 := BitVec.ofNat 64 Elf.codeBase
+def base : BitVec 64 := Asm.base code
 
 /-- Where the array is loaded. -/
-def dataBase : BitVec 64 := BitVec.ofNat 64 Elf.dataBase
+def dataBase : BitVec 64 := Asm.addr code base .array
 
 def fetch : Fetch := Asm.fetch base code
 
@@ -81,13 +88,9 @@ def image : List Byte := Asm.image base code
 /-- The address execution starts at. -/
 def entry : BitVec 64 := Asm.addr code base .start
 
--- Every jump and call reaches the label it names.
-#guard Asm.offsetsFit base code
-
-def array : List (BitVec 64) := [3, 1, 4, 1, 5]
-
-/-- The array's bytes, as they sit in the file and in memory. -/
-def arrayBytes : List Byte := array.flatMap le64
+-- The instructions come first and the data after, and every jump, call and
+-- reference to data reaches the label it names.
+#guard Asm.wellFormed code && Asm.offsetsFit base code
 
 /-- Everything in the starting state except the program itself: the array
 in read-only memory, and one free stack slot below `rsp`. -/
@@ -111,5 +114,5 @@ def Sum.program : Runnable where
   name := "sum"
   entry := Sum.entry.toNat
   image := Sum.image
-  data := Sum.arrayBytes
+  segments := (Asm.segments Sum.base Sum.code).map fun (b, w, bs) => (b.toNat, w, bs)
   start := Sum.start

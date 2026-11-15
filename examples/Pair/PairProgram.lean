@@ -96,12 +96,9 @@ def askPage : List (Asm Label) := [
   .ins (.test .w64 (.reg .rax) (.reg .rax)),
   .jcc .s .fail]
 
-/-- How far the function is from the instruction after the `lea`. -/
-def toTwo : BitVec 32 := 61
-
 def code : List (Asm Label) := [
   .label .start,
-  .ins (.lea .w64 .r12 (.rip toTwo)),
+  .ref (.lea .w64 .r12 (.rip 0)) .two,
   .ins (.call (.ind (.reg .r12))),
   .label .back,
   .ins (.mov .w64 (.rm_r (.reg .rbx) .rax)),
@@ -145,10 +142,9 @@ def image : List Byte := Asm.image base code
 /-- The address execution starts at. -/
 def entry : BitVec 64 := Asm.addr code base .start
 
--- Every jump reaches the label it names, and the address computation gives
--- the address of the function.
+-- Every jump reaches the label it names, and so does the instruction that
+-- takes the function's address.
 #guard Asm.offsetsFit base code
-#guard base + 7 + toTwo.signExtend 64 == Asm.addr code base .two
 
 /-- Everything in the starting state except the program itself: two free
 stack slots, for a return address and the page the function keeps while it

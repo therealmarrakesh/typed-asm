@@ -86,26 +86,32 @@ def field (disp : BitVec 32) : Mem := .sib (some .rdi) none disp
 
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive Label
-  | start | afterCall | finish | trap | compute
+  | start | afterCall | finish | trap | compute | record
   deriving DecidableEq
 
-/-- The program, given the displacements of its `rip`-relative operands,
-which depend on the layout. -/
-def codeWith (toCompute toFinish toRecordHigh toRecord : BitVec 32) : List (Asm Label) := [
+/-- The record's two fields. -/
+def record : List (BitVec 64) := [5, 0]
+
+/-- The record's bytes, as they sit in the file and in memory. -/
+def recordBytes : List Byte := record.flatMap le64
+
+/-- The program. Its `rip`-relative operands name what they reach by label:
+the record in the data, and two places in the code whose addresses it takes. -/
+def code : List (Asm Label) := [
   .label .start,
-  .ins (.lea .w64 .rdi (.rip 0xf49)),
-  .ins (.lea .w64 .rax (.rip toCompute)),
+  .ref (.lea .w64 .rdi (.rip 0)) .record,
+  .ref (.lea .w64 .rax (.rip 0)) .compute,
   .ins (.alu .sub .w64 (.rm_i (.reg .rsp) 8)),
   .ins (.mov .w64 (.rm_r (.mem (rspSlot 0)) .rax)),
   .ins (.call (.ind (.mem (rspSlot 0)))),
   .label .afterCall,
   .ins (.alu .add .w64 (.rm_i (.reg .rsp) 8)),
   .ins (.mov .w32 (.rm_r (.reg .rdi) .rax)),
-  .ins (.lea .w64 .rcx (.rip toFinish)),
+  .ref (.lea .w64 .rcx (.rip 0)) .finish,
   .ins (.jmp (.ind (.reg .rcx))),
   .label .finish,
-  .ins (.alu .add .w32 (.rm_i (.mem (.rip toRecordHigh)) 1)),
-  .ins (.mov .w64 (.r_m .rsi (.rip toRecord))),
+  .ref (.alu .add .w32 (.rm_i (.mem (.rip 0)) 1)) .record 12,
+  .ref (.mov .w64 (.r_m .rsi (.rip 0))) .record,
   .ins (.mov .w32 (.rm_i (.reg .rax) 60)),
   .ins .syscall,
   .label .trap,
@@ -148,15 +154,15 @@ def codeWith (toCompute toFinish toRecordHigh toRecord : BitVec 32) : List (Asm 
   .ins (.alu .cmp .w32 (.rm_i (.mem (rspSlot 8)) 24)),
   .ins (.shift .rol .w32 (.reg .rax) .cl),
   .ins (.alu .add .w64 (.rm_i (.reg .rsp) 16)),
-  .ins .ret]
-
-def code : List (Asm Label) := codeWith 0x31 2 0xf2d 0xf1a
+  .ins .ret,
+  .segment true,
+  .label .record, .bytes recordBytes]
 
 /-- Where the code is loaded. -/
-def base : BitVec 64 := BitVec.ofNat 64 Elf.codeBase
+def base : BitVec 64 := Asm.base code
 
 /-- Where the record is loaded. -/
-def dataBase : BitVec 64 := BitVec.ofNat 64 Elf.dataBase
+def dataBase : BitVec 64 := Asm.addr code base .record
 
 def fetch : Fetch := Asm.fetch base code
 
@@ -166,18 +172,9 @@ def image : List Byte := Asm.image base code
 /-- The address execution starts at. -/
 def entry : BitVec 64 := Asm.addr code base .start
 
--- Every jump and call reaches the label it names.
-#guard Asm.offsetsFit base code
-
--- The two address computations give the addresses of their labels.
-#guard base + 14 + 0x31 == Asm.addr code base .compute
-#guard Asm.addr code base .afterCall + 13 + 2 == Asm.addr code base .finish
-
-/-- The record's two fields. -/
-def record : List (BitVec 64) := [5, 0]
-
-/-- The record's bytes, as they sit in the file and in memory. -/
-def recordBytes : List Byte := record.flatMap le64
+-- The instructions come first and the data after, and every jump, call and
+-- reference to data or code reaches the label it names.
+#guard Asm.wellFormed code && Asm.offsetsFit base code
 
 /-- Everything in the starting state except the program itself: the record
 in writable memory, and four free stack slots below `rsp`. -/
@@ -203,6 +200,5 @@ def Ops.program : Runnable where
   name := "ops"
   entry := Ops.entry.toNat
   image := Ops.image
-  data := Ops.recordBytes
+  segments := (Asm.segments Ops.base Ops.code).map fun (b, w, bs) => (b.toNat, w, bs)
   start := Ops.start
-  writable := true

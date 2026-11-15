@@ -45,14 +45,17 @@ namespace Echo
 
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive Label
-  | start | done
+  | start | done | buffer
   deriving DecidableEq
+
+/-- The buffer's bytes as they sit in the file: sixteen zeros. -/
+def bufferBytes : List Byte := List.replicate 16 0
 
 def code : List (Asm Label) := [
   .label .start,
   .ins (.alu .xor .w32 (.rm_r (.reg .rax) .rax)),
   .ins (.alu .xor .w32 (.rm_r (.reg .rdi) .rdi)),
-  .ins (.lea .w64 .rsi (.rip 0xf45)),
+  .ref (.lea .w64 .rsi (.rip 0)) .buffer,
   .ins (.mov .w32 (.rm_i (.reg .rdx) 16)),
   .ins .syscall,
   .ins (.test .w64 (.reg .rax) (.reg .rax)),
@@ -65,13 +68,15 @@ def code : List (Asm Label) := [
   .label .done,
   .ins (.mov .w32 (.rm_i (.reg .rax) 60)),
   .ins (.alu .xor .w32 (.rm_r (.reg .rdi) .rdi)),
-  .ins .syscall]
+  .ins .syscall,
+  .segment true,
+  .label .buffer, .bytes bufferBytes]
 
 /-- Where the code is loaded. -/
-def base : BitVec 64 := BitVec.ofNat 64 Elf.codeBase
+def base : BitVec 64 := Asm.base code
 
 /-- Where the buffer is loaded. -/
-def dataBase : BitVec 64 := BitVec.ofNat 64 Elf.dataBase
+def dataBase : BitVec 64 := Asm.addr code base .buffer
 
 def fetch : Fetch := Asm.fetch base code
 
@@ -81,13 +86,9 @@ def image : List Byte := Asm.image base code
 /-- The address execution starts at. -/
 def entry : BitVec 64 := Asm.addr code base .start
 
--- Every jump reaches the label it names, and the address computation gives
--- the address of the buffer.
-#guard Asm.offsetsFit base code
-#guard base + 11 + 0xf45 == dataBase
-
-/-- The buffer's bytes as they sit in the file: sixteen zeros. -/
-def bufferBytes : List Byte := List.replicate 16 0
+-- The instructions come first and the data after, and every jump, call and
+-- reference to data reaches the label it names.
+#guard Asm.wellFormed code && Asm.offsetsFit base code
 
 /-- Everything in the starting state except the program itself: the buffer
 in writable memory. The program uses no stack. -/
@@ -141,7 +142,6 @@ def Echo.program : Runnable where
   name := "echo"
   entry := Echo.entry.toNat
   image := Echo.image
-  data := Echo.bufferBytes
+  segments := (Asm.segments Echo.base Echo.code).map fun (b, w, bs) => (b.toNat, w, bs)
   start := Echo.start
-  writable := true
   readsInput := true

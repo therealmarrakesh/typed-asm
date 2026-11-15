@@ -66,6 +66,9 @@ for. Each is typed by the same condition as a `read`: that many bytes from
 the buffer are plain bytes of a writable block. The buffer is 144 bytes,
 so all three fit.
 
+The program has two data segments. The file's name is in one that can only
+be read; the buffer is in another, a page on, that can be written.
+
 `lake exe stat --file input.txt` runs it in the model on that file;
 `lake exe stat --elf FILE` writes an executable that Linux can run.
 -/
@@ -77,21 +80,24 @@ namespace Stat
 /-! ## The program -/
 
 inductive Label
-  | start | fail
+  | start | fail | path | buffer
   deriving DecidableEq
+
+/-- The file's name, `input.txt`, as bytes. -/
+def name : List Byte := [0x69, 0x6e, 0x70, 0x75, 0x74, 0x2e, 0x74, 0x78, 0x74]
 
 def code : List (Asm Label) := [
   .label .start,
   .ins (.mov .w32 (.rm_i (.reg .rax) 257)),
   .ins (.mov .w32 (.rm_i (.reg .rdi) (-100))),
-  .ins (.lea .w64 .rsi (.rip 0xf3f)),
+  .ref (.lea .w64 .rsi (.rip 0)) .path,
   .ins (.alu .xor .w32 (.rm_r (.reg .rdx) .rdx)),
   .ins (.alu .xor .w32 (.rm_r (.reg .r10) .r10)),
   .ins .syscall,
   .ins (.test .w64 (.reg .rax) (.reg .rax)),
   .jcc .s .fail,
   .ins (.mov .w64 (.rm_r (.reg .r12) .rax)),
-  .ins (.lea .w64 .r13 (.rip 0xf35)),
+  .ref (.lea .w64 .r13 (.rip 0)) .buffer,
   .ins (.mov .w32 (.rm_i (.reg .rax) 5)),
   .ins (.mov .w64 (.rm_r (.reg .rdi) .r12)),
   .ins (.mov .w64 (.rm_r (.reg .rsi) .r13)),
@@ -128,16 +134,20 @@ def code : List (Asm Label) := [
   .label .fail,
   .ins (.mov .w32 (.rm_i (.reg .rdi) 255)),
   .ins (.mov .w32 (.rm_i (.reg .rax) 231)),
-  .ins .syscall]
+  .ins .syscall,
+  .segment false,
+  .label .path, .bytes (name ++ [0]),
+  .segment true,
+  .label .buffer, .space 144]
 
 /-- Where the code is loaded. -/
-def base : BitVec 64 := BitVec.ofNat 64 Elf.codeBase
+def base : BitVec 64 := Asm.base code
 
 /-- Where the data is loaded: the file's name, then the buffer. -/
-def dataBase : BitVec 64 := BitVec.ofNat 64 Elf.dataBase
+def dataBase : BitVec 64 := Asm.addr code base .path
 
 /-- Where the buffer is. -/
-def bufferAt : BitVec 64 := dataBase + 16
+def bufferAt : BitVec 64 := Asm.addr code base .buffer
 
 def fetch : Fetch := Asm.fetch base code
 
@@ -147,26 +157,22 @@ def image : List Byte := Asm.image base code
 /-- The address execution starts at. -/
 def entry : BitVec 64 := Asm.addr code base .start
 
--- Every jump reaches the label it names, and the two address computations
--- give the addresses of the name and of the buffer.
-#guard Asm.offsetsFit base code
-#guard base + 17 + 0xf3f == dataBase
-#guard base + 43 + 0xf35 == bufferAt
-
-/-- The file's name, `input.txt`, as bytes. -/
-def name : List Byte := [0x69, 0x6e, 0x70, 0x75, 0x74, 0x2e, 0x74, 0x78, 0x74]
+-- The instructions come first and the data after, and every jump, call and
+-- reference to data reaches the label it names.
+#guard Asm.wellFormed code && Asm.offsetsFit base code
 
 #guard name == bytesOf "input.txt"
 
-/-- The data's bytes: the name with the zero that ends it, filled out to 16
-bytes, then a buffer of 144. -/
-def dataBytes : List Byte :=
-  name ++ List.replicate 7 0 ++ List.replicate 144 0
+/-- The data's bytes, from the first segment to the end of the last: the
+name with the zero that ends it, zeros up to the next page, then the 144
+bytes of the buffer. -/
+def dataBytes : List Byte := Asm.dataImage base code
 
-/-- Everything in the starting state except the program itself: the data in
-writable memory. The program uses no stack. -/
+/-- Everything in the starting state except the program itself: its two
+data segments in memory, the name readable and the buffer writable. The
+program uses no stack. -/
 def prepared : State :=
-  (State.init.loadData dataBase dataBytes .rw).setReg .rsp 0x80000000
+  (Asm.loadSegments State.init base code).setReg .rsp 0x80000000
 
 /-- A starting state: `prepared`, with the program's bytes in executable
 memory and `rip` at the entry. There are no files. -/
@@ -201,6 +207,5 @@ def Stat.program : Runnable where
   name := "stat"
   entry := Stat.entry.toNat
   image := Stat.image
-  data := Stat.dataBytes
+  segments := (Asm.segments Stat.base Stat.code).map fun (b, w, bs) => (b.toNat, w, bs)
   start := Stat.start
-  writable := true

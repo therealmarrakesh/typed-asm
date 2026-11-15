@@ -56,9 +56,10 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
 theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 
 /-- What the program needs of the state it starts in: its bytes in
-executable memory, and its data readable and writable. Nothing is asked of
-the files there are, of the time, or of what the random bytes are. -/
-abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase dataBytes blocks 0 0
+executable memory, and its buffer readable and writable. Nothing is asked of
+what its data holds, of the files there are, of the time, or of what the
+random bytes are. -/
+abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase [] blocks 0 0
 
 /-! ## Safety -/
 

@@ -58,8 +58,11 @@ namespace Args
 /-! ## The program -/
 
 inductive Label
-  | start | arg | scan | found | done
+  | start | arg | scan | found | done | newline
   deriving DecidableEq
+
+/-- The data's bytes: the end of a line, filled out to eight bytes. -/
+def dataBytes : List Byte := [0x0a, 0, 0, 0, 0, 0, 0, 0]
 
 def code : List (Asm Label) := [
   .label .start,
@@ -84,7 +87,7 @@ def code : List (Asm Label) := [
   .ins .syscall,
   .ins (.mov .w32 (.rm_i (.reg .rax) 1)),
   .ins (.mov .w32 (.rm_i (.reg .rdi) 1)),
-  .ins (.lea .w64 .rsi (.rip 0xefd)),
+  .ref (.lea .w64 .rsi (.rip 0)) .newline,
   .ins (.mov .w32 (.rm_i (.reg .rdx) 1)),
   .ins .syscall,
   .ins (.alu .add .w64 (.rm_i (.reg .r14) 1)),
@@ -92,13 +95,15 @@ def code : List (Asm Label) := [
   .label .done,
   .ins (.alu .xor .w32 (.rm_r (.reg .rdi) .rdi)),
   .ins (.mov .w32 (.rm_i (.reg .rax) 231)),
-  .ins .syscall]
+  .ins .syscall,
+  .segment false,
+  .label .newline, .bytes dataBytes]
 
 /-- Where the code is loaded. -/
-def base : BitVec 64 := BitVec.ofNat 64 Elf.codeBase
+def base : BitVec 64 := Asm.base code
 
 /-- Where the data is loaded: the byte that ends a line. -/
-def dataBase : BitVec 64 := BitVec.ofNat 64 Elf.dataBase
+def dataBase : BitVec 64 := Asm.addr code base .newline
 
 def fetch : Fetch := Asm.fetch base code
 
@@ -108,13 +113,9 @@ def image : List Byte := Asm.image base code
 /-- The address execution starts at. -/
 def entry : BitVec 64 := Asm.addr code base .start
 
--- Every jump reaches the label it names, and the address computation gives
--- the address of the byte that ends a line.
-#guard Asm.offsetsFit base code
-#guard base + 83 + 0xefd == dataBase
-
-/-- The data's bytes: the end of a line, filled out to eight bytes. -/
-def dataBytes : List Byte := [0x0a, 0, 0, 0, 0, 0, 0, 0]
+-- The instructions come first and the data after, and every jump, call and
+-- reference to data reaches the label it names.
+#guard Asm.wellFormed code && Asm.offsetsFit base code
 
 /-- Everything in a starting state except the stack and the program itself:
 the data. -/
@@ -148,6 +149,6 @@ def Args.program : Runnable where
   name := "args"
   entry := Args.entry.toNat
   image := Args.image
-  data := Args.dataBytes
+  segments := (Asm.segments Args.base Args.code).map fun (b, w, bs) => (b.toNat, w, bs)
   start := Args.startArgs []
   startArgs := some Args.startArgs

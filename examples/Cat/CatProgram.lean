@@ -75,8 +75,11 @@ namespace Cat
 /-! ## The program -/
 
 inductive Label
-  | start | file | next | eof | done | fail
+  | start | file | next | eof | done | fail | buffer
   deriving DecidableEq
+
+/-- The data's bytes: a buffer of 64. -/
+def dataBytes : List Byte := List.replicate 64 0
 
 def code : List (Asm Label) := [
   .label .start,
@@ -97,7 +100,7 @@ def code : List (Asm Label) := [
   .label .next,
   .ins (.alu .xor .w32 (.rm_r (.reg .rax) .rax)),
   .ins (.mov .w64 (.rm_r (.reg .rdi) .r12)),
-  .ins (.lea .w64 .rsi (.rip 0xf0f)),
+  .ref (.lea .w64 .rsi (.rip 0)) .buffer,
   .ins (.mov .w32 (.rm_i (.reg .rdx) 64)),
   .ins .syscall,
   .ins (.test .w64 (.reg .rax) (.reg .rax)),
@@ -120,13 +123,15 @@ def code : List (Asm Label) := [
   .label .fail,
   .ins (.mov .w32 (.rm_i (.reg .rdi) 1)),
   .ins (.mov .w32 (.rm_i (.reg .rax) 231)),
-  .ins .syscall]
+  .ins .syscall,
+  .segment true,
+  .label .buffer, .bytes dataBytes]
 
 /-- Where the code is loaded. -/
-def base : BitVec 64 := BitVec.ofNat 64 Elf.codeBase
+def base : BitVec 64 := Asm.base code
 
 /-- Where the buffer is loaded. -/
-def dataBase : BitVec 64 := BitVec.ofNat 64 Elf.dataBase
+def dataBase : BitVec 64 := Asm.addr code base .buffer
 
 def fetch : Fetch := Asm.fetch base code
 
@@ -136,13 +141,9 @@ def image : List Byte := Asm.image base code
 /-- The address execution starts at. -/
 def entry : BitVec 64 := Asm.addr code base .start
 
--- Every jump reaches the label it names, and the address computation gives
--- the address of the buffer.
-#guard Asm.offsetsFit base code
-#guard base + 65 + 0xf0f == dataBase
-
-/-- The data's bytes: a buffer of 64. -/
-def dataBytes : List Byte := List.replicate 64 0
+-- The instructions come first and the data after, and every jump, call and
+-- reference to data reaches the label it names.
+#guard Asm.wellFormed code && Asm.offsetsFit base code
 
 /-- Everything in a starting state except the stack and the program itself:
 the buffer in writable memory. -/
@@ -202,7 +203,6 @@ def Cat.program : Runnable where
   name := "cat"
   entry := Cat.entry.toNat
   image := Cat.image
-  data := Cat.dataBytes
+  segments := (Asm.segments Cat.base Cat.code).map fun (b, w, bs) => (b.toNat, w, bs)
   start := Cat.startArgs []
-  writable := true
   startArgs := some Cat.startArgs

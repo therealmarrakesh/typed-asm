@@ -43,12 +43,17 @@ namespace Index
 
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive Label
-  | start | afterCall | get | inbounds
+  | start | afterCall | get | inbounds | array
   deriving DecidableEq
+
+def array : List (BitVec 64) := [10, 20, 30, 40, 50]
+
+/-- The array's bytes, as they sit in the file and in memory. -/
+def arrayBytes : List Byte := array.flatMap le64
 
 def code : List (Asm Label) := [
   .label .start,
-  .ins (.lea .w64 .rdi (.rip 0xf49)),
+  .ref (.lea .w64 .rdi (.rip 0)) .array,
   .ins (.mov .w32 (.rm_i (.reg .rsi) 5)),
   .ins (.mov .w32 (.rm_i (.reg .rdx) 3)),
   .call .get,
@@ -63,13 +68,15 @@ def code : List (Asm Label) := [
   .ins .ret,
   .label .inbounds,
   .ins (.mov .w64 (.r_m .rax (.sib (some .rdi) (some (.rdx, .s8)) 0))),
-  .ins .ret]
+  .ins .ret,
+  .segment false,
+  .label .array, .bytes arrayBytes]
 
 /-- Where the code is loaded. -/
-def base : BitVec 64 := BitVec.ofNat 64 Elf.codeBase
+def base : BitVec 64 := Asm.base code
 
 /-- Where the array is loaded. -/
-def dataBase : BitVec 64 := BitVec.ofNat 64 Elf.dataBase
+def dataBase : BitVec 64 := Asm.addr code base .array
 
 def fetch : Fetch := Asm.fetch base code
 
@@ -79,13 +86,9 @@ def image : List Byte := Asm.image base code
 /-- The address execution starts at. -/
 def entry : BitVec 64 := Asm.addr code base .start
 
--- Every jump and call reaches the label it names.
-#guard Asm.offsetsFit base code
-
-def array : List (BitVec 64) := [10, 20, 30, 40, 50]
-
-/-- The array's bytes, as they sit in the file and in memory. -/
-def arrayBytes : List Byte := array.flatMap le64
+-- The instructions come first and the data after, and every jump, call and
+-- reference to data reaches the label it names.
+#guard Asm.wellFormed code && Asm.offsetsFit base code
 
 /-- Everything in the starting state except the program itself: the array
 in read-only memory, and one free stack slot below `rsp`. -/
@@ -108,5 +111,5 @@ def Index.program : Runnable where
   name := "index"
   entry := Index.entry.toNat
   image := Index.image
-  data := Index.arrayBytes
+  segments := (Asm.segments Index.base Index.code).map fun (b, w, bs) => (b.toNat, w, bs)
   start := Index.start

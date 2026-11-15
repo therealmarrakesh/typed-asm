@@ -7,6 +7,7 @@ import TypedAsm.Linux
 import TypedAsm.Owned
 import TypedAsm.RegMap
 import TypedAsm.Entry
+import TypedAsm.Segments
 import TypedAsm.EndToEnd
 import TypedAsm.Lookup
 import TypedAsm.FnEx
@@ -3385,9 +3386,10 @@ elab "ty_loaded" : tactic => withMainContext do
     let t ← instantiateMVars (← g.getType)
     try
       if t.isAppOf ``State.HasData then
-        discard <| runOn g (do evalTactic (← `(tactic| first
-          | exact (State.hasData_loadData _ _ _ _ (by decide +kernel)).congr rfl
-          | exact State.hasData_loadData _ _ _ _ (by decide +kernel))))
+        -- each byte is looked at, by the kernel: comparing the state with
+        -- the way it was made would mean working the whole state out
+        discard <| runOn g (do evalTactic (← `(tactic|
+          exact State.hasData_of_check (by decide +kernel))))
       else
         discard <| runOn g (do evalTactic (← `(tactic| decide +kernel)))
     catch _ =>

@@ -26,10 +26,11 @@ inductive Asm (L : Type)
   | jmp (l : L)
   | jcc (c : Cond) (l : L)
   | call (l : L)
-  /-- An instruction that reaches memory relative to `rip`, aimed at a label:
-  `mov rax, [table]`, `lea rdi, [buffer]`. The distance is worked out from
-  where the two end up. -/
-  | ref (i : Instr) (l : L)
+  /-- An instruction that reaches memory relative to `rip`, aimed at a label
+  or so many bytes past it: `mov rax, [table]`, `lea rdi, [buffer]`,
+  `add dword ptr [record + 12], 1`. The distance is worked out from where the
+  two end up. -/
+  | ref (i : Instr) (l : L) (past : BitVec 64 := 0)
   /-- The start of a data segment, readable and writable or readable only.
   What follows is loaded from the next page boundary on. -/
   | segment (writable : Bool)
@@ -52,7 +53,7 @@ def len : Asm L → Nat
   | .jmp _ => (Instr.jmp (.rel 0)).length
   | .jcc c _ => (Instr.jcc c 0).length
   | .call _ => (Instr.call (.rel 0)).length
-  | .ref i _ => i.length
+  | .ref i _ _ => i.length
   | .segment _ => 0
   | .bytes bs => bs.length
   | .quad _ => 8
@@ -104,8 +105,8 @@ def resolve (target : L → BitVec 64) : BitVec 64 → List (Asm L) → List (In
     | .jcc c l => (.jcc c (offset next (target l)), BitVec.ofNat 64 x.len) :: resolve target next rest
     | .call l =>
       (.call (.rel (offset next (target l))), BitVec.ofNat 64 x.len) :: resolve target next rest
-    | .ref i l =>
-      (i.aim (offset next (target l)), BitVec.ofNat 64 x.len) :: resolve target next rest
+    | .ref i l past =>
+      (i.aim (offset next (target l + past)), BitVec.ofNat 64 x.len) :: resolve target next rest
     | .segment _ | .bytes _ | .quad _ | .space _ => []
 
 /-- Whether every jump, call and reference to data in the lines from address
@@ -115,7 +116,8 @@ def offsetsFitFrom (target : L → BitVec 64) : BitVec 64 → List (Asm L) → B
   | a, x :: rest =>
     let nxt := next a x
     (match x with
-      | .jmp l | .jcc _ l | .call l | .ref _ l => reaches nxt (target l)
+      | .jmp l | .jcc _ l | .call l => reaches nxt (target l)
+      | .ref _ l past => reaches nxt (target l + past)
       | _ => true) && offsetsFitFrom target nxt rest
 
 /-- Whether every jump, call and reference to data in a program loaded at
@@ -131,7 +133,7 @@ def fetch (base : BitVec 64) (prog : List (Asm L)) : Fetch :=
 /-- Whether a line is one of the instructions' part of a program: an
 instruction, a jump, a call or a label. -/
 def isCode : Asm L → Bool
-  | .ins _ | .label _ | .jmp _ | .jcc _ _ | .call _ | .ref _ _ => true
+  | .ins _ | .label _ | .jmp _ | .jcc _ _ | .call _ | .ref _ _ _ => true
   | _ => false
 
 /-- Whether a line may stand in a data segment: data, or a label. -/

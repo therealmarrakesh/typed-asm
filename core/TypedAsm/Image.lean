@@ -101,7 +101,7 @@ theorem Asm.resolve_lengthsOk {L : Type} [DecidableEq L] (target : L → BitVec 
       rcases hp with rfl | hp
       · rfl
       · exact ih _ p hp
-    | ref i l =>
+    | ref i l past =>
       simp only [Asm.resolve, List.mem_cons] at hp
       rcases hp with rfl | hp
       · show BitVec.ofNat 64 i.length = BitVec.ofNat 64 (i.aim _).length

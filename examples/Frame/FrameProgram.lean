@@ -52,12 +52,18 @@ def rspSlot (disp : BitVec 32) : Mem := .sib (some .rsp) none disp
 
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive Label
-  | start | afterCall | spin | pick | skip
+  | start | afterCall | spin | pick | skip | record
   deriving DecidableEq
+
+/-- The record's two fields. -/
+def record : List (BitVec 64) := [0x1234, 1]
+
+/-- The record's bytes, as they sit in the file and in memory. -/
+def recordBytes : List Byte := record.flatMap le64
 
 def code : List (Asm Label) := [
   .label .start,
-  .ins (.lea .w64 .rdi (.rip 0xf49)),
+  .ref (.lea .w64 .rdi (.rip 0)) .record,
   .ins (.mov .w32 (.rm_i (.reg .rsi) 7)),
   .ins (.mov .w32 (.rm_i (.reg .rdx) 7)),
   .ins (.alu .cmp .w64 (.rm_r (.reg .rsi) .rdx)),
@@ -82,13 +88,15 @@ def code : List (Asm Label) := [
   .ins (.movzx .w32 .rax .w8 (.mem (.sib (some .rcx) none 0))),
   .label .skip,
   .ins (.alu .add .w64 (.rm_i (.reg .rsp) 16)),
-  .ins .ret]
+  .ins .ret,
+  .segment true,
+  .label .record, .bytes recordBytes]
 
 /-- Where the code is loaded. -/
-def base : BitVec 64 := BitVec.ofNat 64 Elf.codeBase
+def base : BitVec 64 := Asm.base code
 
 /-- Where the record is loaded. -/
-def dataBase : BitVec 64 := BitVec.ofNat 64 Elf.dataBase
+def dataBase : BitVec 64 := Asm.addr code base .record
 
 def fetch : Fetch := Asm.fetch base code
 
@@ -98,14 +106,9 @@ def image : List Byte := Asm.image base code
 /-- The address execution starts at. -/
 def entry : BitVec 64 := Asm.addr code base .start
 
--- Every jump and call reaches the label it names.
-#guard Asm.offsetsFit base code
-
-/-- The record's two fields. -/
-def record : List (BitVec 64) := [0x1234, 1]
-
-/-- The record's bytes, as they sit in the file and in memory. -/
-def recordBytes : List Byte := record.flatMap le64
+-- The instructions come first and the data after, and every jump, call and
+-- reference to data reaches the label it names.
+#guard Asm.wellFormed code && Asm.offsetsFit base code
 
 /-- Everything in the starting state except the program itself: the record
 in writable memory, and three free stack slots below `rsp`. -/
@@ -130,6 +133,5 @@ def Frame.program : Runnable where
   name := "frame"
   entry := Frame.entry.toNat
   image := Frame.image
-  data := Frame.recordBytes
+  segments := (Asm.segments Frame.base Frame.code).map fun (b, w, bs) => (b.toNat, w, bs)
   start := Frame.start
-  writable := true

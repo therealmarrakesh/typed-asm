@@ -43,12 +43,12 @@ namespace List3
 
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive Label
-  | start | loop | done
+  | start | loop | done | first | second | third
   deriving DecidableEq
 
 def code : List (Asm Label) := [
   .label .start,
-  .ins (.lea .w64 .rdi (.rip 0xf49)),
+  .ref (.lea .w64 .rdi (.rip 0)) .first,
   .ins (.alu .xor .w32 (.rm_r (.reg .rax) .rax)),
   .label .loop,
   .ins (.test .w64 (.reg .rdi) (.reg .rdi)),
@@ -59,13 +59,17 @@ def code : List (Asm Label) := [
   .label .done,
   .ins (.mov .w32 (.rm_r (.reg .rdi) .rax)),
   .ins (.mov .w32 (.rm_i (.reg .rax) 60)),
-  .ins .syscall]
+  .ins .syscall,
+  .segment false,
+  .label .first, .bytes (le64 3), .quad .second,
+  .label .second, .bytes (le64 4), .quad .third,
+  .label .third, .bytes (le64 5 ++ le64 0)]
 
 /-- Where the code is loaded. -/
-def base : BitVec 64 := BitVec.ofNat 64 Elf.codeBase
+def base : BitVec 64 := Asm.base code
 
 /-- Where the list is loaded. Each node is sixteen bytes. -/
-def dataBase : BitVec 64 := BitVec.ofNat 64 Elf.dataBase
+def dataBase : BitVec 64 := Asm.addr code base .first
 
 def fetch : Fetch := Asm.fetch base code
 
@@ -75,14 +79,12 @@ def image : List Byte := Asm.image base code
 /-- The address execution starts at. -/
 def entry : BitVec 64 := Asm.addr code base .start
 
--- Every jump reaches the label it names, and the address computation gives
--- the address of the first node.
-#guard Asm.offsetsFit base code
-#guard base + 7 + 0xf49 == dataBase
+-- The instructions come first and the data after, and every jump, call and
+-- reference to data reaches the label it names.
+#guard Asm.wellFormed code && Asm.offsetsFit base code
 
 /-- The data's bytes: three nodes, each a value and the address of the next. -/
-def listBytes : List Byte :=
-  le64 3 ++ le64 (dataBase + 16) ++ le64 4 ++ le64 (dataBase + 32) ++ le64 5 ++ le64 0
+def listBytes : List Byte := Asm.dataImage base code
 
 /-- Everything in the starting state except the program itself: the list.
 The program uses no stack. -/
@@ -104,5 +106,5 @@ def List3.program : Runnable where
   name := "list"
   entry := List3.entry.toNat
   image := List3.image
-  data := List3.listBytes
+  segments := (Asm.segments List3.base List3.code).map fun (b, w, bs) => (b.toNat, w, bs)
   start := List3.start

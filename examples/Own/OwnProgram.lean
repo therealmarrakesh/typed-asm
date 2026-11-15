@@ -88,8 +88,11 @@ namespace Own
 /-! ## The program -/
 
 inductive Label
-  | start | fail
+  | start | fail | record
   deriving DecidableEq
+
+/-- The data's bytes: a record of one number, 58. -/
+def recordBytes : List Byte := [58, 0, 0, 0, 0, 0, 0, 0]
 
 def code : List (Asm Label) := [
   .label .start,
@@ -129,7 +132,7 @@ def code : List (Asm Label) := [
   .ins (.mov .w32 (.rm_i (.reg .rsi) 4096)),
   .ins (.mov .w32 (.rm_i (.reg .rax) 11)),
   .ins .syscall,
-  .ins (.lea .w64 .rcx (.rip 0xeb3)),
+  .ref (.lea .w64 .rcx (.rip 0)) .record,
   .ins (.mov .w64 (.rm_r (.mem (.sib (some .rbx) none 0)) .rcx)),
   .ins (.mov .w64 (.r_m .rdx (.sib (some .rbx) none 0))),
   .ins (.mov .w64 (.r_m .rdi (.sib (some .rdx) none 0))),
@@ -139,13 +142,15 @@ def code : List (Asm Label) := [
   .label .fail,
   .ins (.mov .w32 (.rm_i (.reg .rdi) 1)),
   .ins (.mov .w32 (.rm_i (.reg .rax) 231)),
-  .ins .syscall]
+  .ins .syscall,
+  .segment false,
+  .label .record, .bytes recordBytes]
 
 /-- Where the code is loaded. -/
-def base : BitVec 64 := BitVec.ofNat 64 Elf.codeBase
+def base : BitVec 64 := Asm.base code
 
 /-- Where the record is loaded. -/
-def dataBase : BitVec 64 := BitVec.ofNat 64 Elf.dataBase
+def dataBase : BitVec 64 := Asm.addr code base .record
 
 def fetch : Fetch := Asm.fetch base code
 
@@ -155,13 +160,9 @@ def image : List Byte := Asm.image base code
 /-- The address execution starts at. -/
 def entry : BitVec 64 := Asm.addr code base .start
 
--- Every jump reaches the label it names, and the address computation gives
--- the address of the record.
-#guard Asm.offsetsFit base code
-#guard base + 157 + 0xeb3 == dataBase
-
-/-- The data's bytes: a record of one number, 58. -/
-def recordBytes : List Byte := [58, 0, 0, 0, 0, 0, 0, 0]
+-- The instructions come first and the data after, and every jump, call and
+-- reference to data reaches the label it names.
+#guard Asm.wellFormed code && Asm.offsetsFit base code
 
 /-- Everything in the starting state except the program itself: the record,
 in read-only memory. The program uses no stack. -/
@@ -212,5 +213,5 @@ def Own.program : Runnable where
   name := "own"
   entry := Own.entry.toNat
   image := Own.image
-  data := Own.recordBytes
+  segments := (Asm.segments Own.base Own.code).map fun (b, w, bs) => (b.toNat, w, bs)
   start := Own.start
