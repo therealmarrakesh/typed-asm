@@ -697,7 +697,7 @@ def making : List (Asm Mk) := [.label .make, .ins .ret]
 def makingFetch : Fetch := Asm.fetch 0 making
 
 /-- Whatever address `x` is in `rax` at the return, the caller owns a page there. -/
-def makeSig : FnSigEx where
+def makeSig : FnSigEx (BitVec 64) where
   args := fun _ => .int
   preserved := calleeSaved
   need := 0
@@ -728,6 +728,18 @@ example (saved : Reg → Ty) (ret : BitVec 64 → Ctx) (rest : List Ty) (room : 
   ty_name .rax as v
   ty_return_as v
   ty_block
+
+/-! A call through a register needs the register to be a pointer to the
+function: holding some number is not enough. -/
+
+def calling : List (Asm Mk) := [.label .make, .ins (.call (.ind (.reg .r12)))]
+
+def callingFetch : Fetch := Asm.fetch 0 calling
+
+/-- error: ty_call: the operand does not hold a pointer to a function with this signature. A register holding the exact address of a function becomes a pointer to it with `ty_fn_ptr` -/
+#guard_msgs in
+example : BlockOk Φk callingFetch linux Ψ (Asm.addr calling 0 .make) roomy := by
+  ty_call makeSig returning fun x => ⟨fun _ => .int, [], 1, Flags.Any, [(x, List.replicate 512 .int)]⟩
 
 /-! ## Accepted, for contrast
 

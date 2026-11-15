@@ -20,7 +20,7 @@ abbrev words : List Ty := List.replicate 512 .int
 
 /-- `page` takes nothing and uses no stack. Whatever address `x` it returns
 in `rax`, it hands its caller a page of numbers there. -/
-def pageSig : FnSigEx where
+def pageSig : FnSigEx (BitVec 64) where
   args := fun _ => .int
   preserved := calleeSaved
   need := 0
