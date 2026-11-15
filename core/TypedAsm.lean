@@ -26,6 +26,7 @@ import TypedAsm.ArgText
 import TypedAsm.Owned
 import TypedAsm.RegMap
 import TypedAsm.EndToEnd
+import TypedAsm.Lookup
 
 /-!
 # TypedAsm

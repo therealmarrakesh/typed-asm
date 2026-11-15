@@ -8,6 +8,7 @@ import TypedAsm.Owned
 import TypedAsm.RegMap
 import TypedAsm.Entry
 import TypedAsm.EndToEnd
+import TypedAsm.Lookup
 
 /-!
 # Tactics for typing programs
@@ -930,12 +931,71 @@ private unsafe def evalFetchUnsafe (e : Expr) : MetaM (Option (Instr × BitVec 6
 @[implemented_by evalFetchUnsafe]
 private opaque evalFetch (e : Expr) : MetaM (Option (Instr × BitVec 64))
 
+private unsafe def evalItemsUnsafe (e : Expr) : MetaM (List (Instr × BitVec 64)) := do
+  evalExpr (List (Instr × BitVec 64)) (← inferType e) e
+
+/-- The instructions a closed layout term comes to. -/
+@[implemented_by evalItemsUnsafe]
+private opaque evalItems (e : Expr) : MetaM (List (Instr × BitVec 64))
+
+deriving instance ToExpr for Lookup
+
+instance : Inhabited Lookup := ⟨.none⟩
+
+/-- A balanced search tree over instructions listed with their addresses. -/
+private partial def lookupTree (xs : Array (Nat × Instr × BitVec 64)) (lo hi : Nat) : Lookup :=
+  if hi ≤ lo then .none
+  else if hi = lo + 1 then
+    match xs[lo]? with
+    | some (a, i, len) => .leaf a i len
+    | none => .none
+  else
+    let m := (lo + hi) / 2
+    .node (lookupTree xs lo m) ((xs[m]?.map (·.1)).getD 0) (lookupTree xs m hi)
+
+/-- For each program's instruction table met so far: its base, its
+instructions as the program gives them, and its search tree written out. -/
+initialize layoutCache : IO.Ref (Std.HashMap Expr (Expr × Expr × Expr)) ← IO.mkRef {}
+
+/-- A program's instruction table as a function that searches a tree written
+out in full, with a proof that the table is that function. The proof is
+`Lookup.sound`, whose premises the kernel settles by computing once for the
+program; it is kept as a lemma of its own, and every lookup afterwards is a
+few comparisons of numbers. -/
+private def layoutOf (fetch : Expr) : MetaM (Option (Expr × Expr)) := do
+  let (base, items, tree) ← do
+    if let some r := (← layoutCache.get)[fetch]? then pure r
+    else
+      -- unfold to `Asm.fetch base prog`, then to `Fetch.layout base (resolve …)`
+      let mut f := fetch
+      for _ in [0:8] do
+        if f.isAppOf ``Fetch.layout then break
+        let some f' ← unfoldDefinition? f | return none
+        f := f'.headBeta
+      unless f.isAppOfArity ``Fetch.layout 2 do return none
+      let base := f.appFn!.appArg!
+      let items := f.appArg!
+      let (b, given) ← try pure (← evalAddr base, ← evalItems items) catch _ => return none
+      let listed := (Lookup.addrs b given).toArray
+      let r := (base, items, toExpr (lookupTree listed 0 listed.size))
+      layoutCache.modify (·.insert fetch r)
+      pure r
+  let a := mkApp (mkConst ``BitVec) (mkNatLit 64)
+  let found ← withLocalDeclD `a a fun x => do
+    mkLambdaFVars #[x] (mkApp2 (mkConst ``Lookup.find) tree (← mkAppM ``BitVec.toNat #[x]))
+  let type ← mkEq fetch found
+  let rflTrue ← mkEqRefl (mkConst ``Bool.true)
+  let value := mkAppN (mkConst ``Lookup.sound)
+    #[base, items, tree, rflTrue, ← mkEqRefl (mkApp (mkConst ``Lookup.toList) tree), rflTrue]
+  let name ← mkAuxLemma [] type (← mkExpectedTypeHint value type)
+  return some (found, mkConst name)
+
 /-- `ty_fetch` proves `fetch a = some (i, len)` for a known program and
 address by running the lookup, and fills in whatever of `i` and `len` is
-unknown with what it found, written out in full. The proof is `rfl`, but it
-is the kernel alone that checks it: found by unifying, the instruction would
-be an unevaluated term that walks the whole program again each time it is
-looked at. -/
+unknown with what it found, written out in full. The proof is by `rfl`, but
+it is the kernel alone that checks it: found by unifying, the instruction
+would be an unevaluated term that walks the whole program again each time it
+is looked at. -/
 elab "ty_fetch" : tactic => withMainContext do
   let g ← getMainGoal
   let t ← instantiateMVars (← g.getType)
@@ -951,7 +1011,17 @@ elab "ty_fetch" : tactic => withMainContext do
   let found := toExpr (some (i, len))
   unless ← isDefEq rhs found do
     throwError "the instruction at this address is{indentExpr (toExpr i)}"
-  g.assign (← mkExpectedTypeHint (← mkEqRefl lhs) (← mkEq lhs found))
+  let direct ← mkExpectedTypeHint (← mkEqRefl lhs) (← mkEq lhs found)
+  let proof ←
+    if lhs.isApp then
+      match ← layoutOf lhs.appFn! with
+      | some (table, h) =>
+        let walked := mkApp table lhs.appArg!
+        mkEqTrans (← mkCongrFun h lhs.appArg!)
+          (← mkExpectedTypeHint (← mkEqRefl walked) (← mkEq walked found))
+      | none => pure direct
+    else pure direct
+  g.assign proof
   replaceMainGoal []
 
 /-- Whether a term is an address written as a number. -/
