@@ -379,24 +379,40 @@ theorem addCarry_cf (w : Width) (a b : BitVec w.bits) :
     (addCarry a b false).2.cf = some (BitVec.uaddOverflow a b) := by
   revert a b
   cases w <;> simp only [Width.bits] <;> intro a b <;>
-    simp only [addCarry, Flags.ofResult, Option.some.injEq] <;> bv_decide
+    (have := a.isLt; have := b.isLt
+     simp [addCarry, Flags.ofResult, BitVec.uaddOverflow, BitVec.msb_eq_decide, BitVec.toNat_add,
+       BitVec.toNat_setWidth]
+     omega)
 
 theorem addCarry_of (w : Width) (a b : BitVec w.bits) :
     (addCarry a b false).2.of = some (BitVec.saddOverflow a b) := by
   revert a b
   cases w <;> simp only [Width.bits] <;> intro a b <;>
-    simp only [addCarry, Flags.ofResult, Option.some.injEq] <;> bv_decide
+    (have := a.isLt; have := b.isLt
+     simp only [addCarry, Flags.ofResult, Option.some.injEq, BitVec.saddOverflow]
+     rw [Bool.eq_iff_iff]
+     simp [BitVec.msb_eq_decide, BitVec.toNat_add, BitVec.toNat_setWidth,
+       BitVec.toInt_eq_toNat_cond]
+     omega)
 
 theorem subBorrow_cf (w : Width) (a b : BitVec w.bits) :
     (subBorrow a b false).2.cf = some (BitVec.usubOverflow a b) := by
   revert a b
   cases w <;> simp only [Width.bits] <;> intro a b <;>
-    simp only [subBorrow, Flags.ofResult, Option.some.injEq] <;> bv_decide
+    (have := a.isLt; have := b.isLt
+     simp [subBorrow, Flags.ofResult, BitVec.usubOverflow, BitVec.msb_eq_decide, BitVec.toNat_sub,
+       BitVec.toNat_setWidth]
+     omega)
 
 theorem subBorrow_of (w : Width) (a b : BitVec w.bits) :
     (subBorrow a b false).2.of = some (BitVec.ssubOverflow a b) := by
   revert a b
   cases w <;> simp only [Width.bits] <;> intro a b <;>
-    simp only [subBorrow, Flags.ofResult, Option.some.injEq] <;> bv_decide
+    (have := a.isLt; have := b.isLt
+     simp only [subBorrow, Flags.ofResult, Option.some.injEq, BitVec.ssubOverflow]
+     rw [Bool.eq_iff_iff]
+     simp [BitVec.msb_eq_decide, BitVec.toNat_sub, BitVec.toNat_setWidth,
+       BitVec.toInt_eq_toNat_cond]
+     omega)
 
 end TypedAsm

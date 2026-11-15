@@ -201,9 +201,15 @@ theorem cmp_not_below {a b : BitVec 64}
 signed numbers. -/
 theorem cmp_less_iff (a b : BitVec 64) :
     Cond.eval (AluOp.apply .cmp a b).2 .l = some (a.slt b) := by
+  have := a.isLt; have := b.isLt
   simp only [AluOp.apply, Cond.eval, subBorrow, Flags.ofResult, bind, Option.bind, pure,
-    Option.some.injEq]
-  bv_decide
+    Option.some.injEq, BitVec.slt]
+  rw [Bool.eq_iff_iff]
+  simp [BitVec.msb_eq_decide, BitVec.toNat_sub, BitVec.toNat_setWidth, BitVec.toInt_eq_toNat_cond]
+  generalize hr : (36893488147419103232 - b.toNat % 36893488147419103232 + a.toNat)
+    % 18446744073709551616 = r
+  by_cases h1 : 9223372036854775808 ≤ a.toNat <;> by_cases h2 : 9223372036854775808 ≤ b.toNat <;>
+    by_cases h3 : 9223372036854775808 ≤ r <;> simp [h1, h2, h3] <;> omega
 
 theorem cmp_less {a b : BitVec 64} (h : Cond.eval (AluOp.apply .cmp a b).2 .l = some true) :
     a.slt b = true := by
@@ -1695,7 +1701,13 @@ private def closeIfImpossible (g : MVarId) : TacticM Bool := do
           try simp only [SysErr] at *
           simp only [Cond.eval, Flags.ofResult, AluOp.apply, subBorrow, bind, Option.bind, pure,
             Option.map, Option.some.injEq]
-          bv_decide)))
+          try simp only [BitVec.and_self, BitVec.or_self]
+          first
+            | bv_omega
+            | (simp only [BitVec.msb_eq_decide, beq_iff_eq, decide_eq_true_eq,
+                 decide_eq_false_iff_not, Bool.not_eq_true, Bool.not_eq_false, Nat.not_le,
+                 Nat.not_lt]
+               bv_omega))))
       return (← getUnsolvedGoals).isEmpty
     catch _ =>
       saved.restore

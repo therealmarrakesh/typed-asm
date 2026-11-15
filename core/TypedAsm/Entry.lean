@@ -1,7 +1,6 @@
 import TypedAsm.Blocks
 import TypedAsm.Soundness
 import TypedAsm.Image
-import Std.Tactic.BVDecide
 
 /-!
 # The entry contract
@@ -295,11 +294,30 @@ theorem argCount_toNat (args : List (List Byte)) : (argCount args).toNat ≤ 100
   simp only [argCount, BitVec.toNat_ofNat]
   omega
 
+/-- The eight bytes of a value, put back together, are the value. -/
+private theorem bytes_le64 (v : BitVec 64) :
+    BitVec.extractLsb' 24 8 (BitVec.extractLsb' 32 32 v) ++
+            BitVec.extractLsb' 16 8 (BitVec.extractLsb' 32 32 v) ++
+          (BitVec.extractLsb' 8 8 (BitVec.extractLsb' 32 32 v) ++
+            BitVec.extractLsb' 0 8 (BitVec.extractLsb' 32 32 v)) ++
+        (BitVec.extractLsb' 24 8 (BitVec.extractLsb' 0 32 v) ++
+            BitVec.extractLsb' 16 8 (BitVec.extractLsb' 0 32 v) ++
+          (BitVec.extractLsb' 8 8 (BitVec.extractLsb' 0 32 v) ++
+            BitVec.extractLsb' 0 8 (BitVec.extractLsb' 0 32 v))) = v := by
+  ext i hi
+  have key : ∀ j, j = i → v.getLsbD j = v[i] := by
+    rintro _ rfl; exact BitVec.getLsbD_eq_getElem _
+  simp only [BitVec.getElem_append, BitVec.getElem_extractLsb', BitVec.getLsbD_extractLsb']
+  repeat' split
+  all_goals first
+    | exact key _ (by omega)
+    | (rw [key _ (by omega)]; generalize v[i] = b; cases b <;> simp <;> omega)
+
 /-- Eight bytes spelling a value, read back, are the value. -/
 theorem word64_le64 (v : BitVec 64) (rest : List Byte) : word64 (le64 v ++ rest) 0 = v := by
   simp only [word64, le64, le32, List.cons_append, List.nil_append, List.getD_cons_succ,
     List.getD_cons_zero, Nat.zero_add, Nat.reduceAdd]
-  bv_decide
+  exact bytes_le64 v
 
 /-- The state with a stack for a program given these arguments: `room`
 writable slots below the stack pointer, and from the stack pointer up, 64

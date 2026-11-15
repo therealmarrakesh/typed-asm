@@ -1,5 +1,4 @@
 import TypedAsm.Instr
-import Std.Tactic.BVDecide
 import Std.Data.TreeMap
 
 /-!
@@ -685,7 +684,11 @@ theorem writeReg_w32_upper_zero (s : State) (r : Reg) (v : BitVec 32) :
     ((s.writeReg .w32 r v).getReg r).extractLsb 63 32 = 0 := by
   simp only [writeReg, getReg_setReg_same]
   show (BitVec.setWidth 64 v).extractLsb 63 32 = 0
-  bv_decide
+  apply BitVec.eq_of_toNat_eq
+  have := v.isLt
+  have h0 : (0 : BitVec (63 - 32 + 1)).toNat = 0 := rfl
+  rw [h0, BitVec.extractLsb_toNat, BitVec.toNat_setWidth]
+  omega
 
 end State
 

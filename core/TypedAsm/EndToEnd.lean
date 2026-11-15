@@ -115,4 +115,23 @@ theorem EntryTexts.safeMem
     SafeMem linux s :=
   .of_safe linux_frame (Asm.loaded h.choose_spec.1.code) (h.safe hty hkinds hstart hfields)
 
+/-! These rest on Lean's three standard axioms and nothing else: no proof in
+the library is taken on trust from a solver or from compiled code. -/
+
+/-- info: 'TypedAsm.Entry.safeMem' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms Entry.safeMem
+
+/--
+info: 'TypedAsm.EntryArgs.safeMem' depends on axioms: [propext, Classical.choice, Quot.sound]
+-/
+#guard_msgs in
+#print axioms EntryArgs.safeMem
+
+/--
+info: 'TypedAsm.EntryTexts.safeMem' depends on axioms: [propext, Classical.choice, Quot.sound]
+-/
+#guard_msgs in
+#print axioms EntryTexts.safeMem
+
 end TypedAsm

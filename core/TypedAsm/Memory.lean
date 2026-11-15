@@ -99,20 +99,49 @@ theorem load8_store8_same (s : State) (a : BitVec 64) (v : BitVec 8) :
     (s.store8 a v).load8 a = v := by
   simp [load8, mem_store8]
 
+/-- Four bytes taken out of a value and put back together are the value. -/
+private theorem bytes4 (v : BitVec 32) :
+    BitVec.extractLsb' 8 8 (BitVec.extractLsb' 16 16 v) ++ BitVec.extractLsb' 0 8 (BitVec.extractLsb' 16 16 v) ++
+      (BitVec.extractLsb' 8 8 v ++ BitVec.extractLsb' 0 8 v) = v := by
+  ext i hi
+  have key : ∀ j, j = i → v.getLsbD j = v[i] := by
+    rintro _ rfl; exact BitVec.getLsbD_eq_getElem _
+  simp only [BitVec.getElem_append, BitVec.getElem_extractLsb', BitVec.getLsbD_extractLsb']
+  repeat' split
+  all_goals first
+    | exact key _ (by omega)
+    | (rw [key _ (by omega)]; generalize v[i] = b; cases b <;> simp <;> omega)
+
+/-- The same for eight bytes. -/
+private theorem bytes8 (v : BitVec 64) :
+    BitVec.extractLsb' 8 8 (BitVec.extractLsb' 16 16 (BitVec.extractLsb' 32 32 v)) ++
+          BitVec.extractLsb' 0 8 (BitVec.extractLsb' 16 16 (BitVec.extractLsb' 32 32 v)) ++
+        (BitVec.extractLsb' 8 8 (BitVec.extractLsb' 32 32 v) ++ BitVec.extractLsb' 0 8 (BitVec.extractLsb' 32 32 v)) ++
+      (BitVec.extractLsb' 8 8 (BitVec.extractLsb' 16 16 v) ++ BitVec.extractLsb' 0 8 (BitVec.extractLsb' 16 16 v) ++
+        (BitVec.extractLsb' 8 8 v ++ BitVec.extractLsb' 0 8 v)) = v := by
+  ext i hi
+  have key : ∀ j, j = i → v.getLsbD j = v[i] := by
+    rintro _ rfl; exact BitVec.getLsbD_eq_getElem _
+  simp only [BitVec.getElem_append, BitVec.getElem_extractLsb', BitVec.getLsbD_extractLsb']
+  repeat' split
+  all_goals first
+    | exact key _ (by omega)
+    | (rw [key _ (by omega)]; generalize v[i] = b; cases b <;> simp <;> omega)
+
 /-- Loading from an address just stored to returns the stored value. -/
 theorem load_store_same (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) :
     (s.store w a v).load w a = v := by
   cases w <;>
     simp [load, store, load64, load32, load16, load8, store64, store32, store16, mem_store8,
       BitVec.add_assoc] <;>
-    bv_decide
+    first | exact bytes4 v | exact bytes8 v
 
 /-- A store changes only the bytes in its own range. -/
 theorem mem_store_of_disjoint (s : State) (w : Width) (a x : BitVec 64) (v : BitVec w.bits)
     (h : w.bytes ≤ x - a) : (s.store w a v).mem x = s.mem x := by
   cases w <;>
     simp only [store, store64, store32, store16, mem_store8, Width.bytes] at * <;>
-    bv_decide
+    (repeat' split) <;> first | rfl | bv_omega
 
 private theorem load32_congr {s t : State} {b : BitVec 64}
     (h₀ : t.mem b = s.mem b) (h₁ : t.mem (b + 1) = s.mem (b + 1))
@@ -137,9 +166,9 @@ theorem load_store_disjoint (s : State) (w w' : Width) (a b : BitVec 64) (v : Bi
     (s.store w a v).load w' b = s.load w' b := by
   cases w'
   · refine load32_congr ?_ ?_ ?_ ?_ <;> apply mem_store_of_disjoint <;>
-      cases w <;> simp only [Width.bytes] at * <;> bv_decide
+      cases w <;> simp only [Width.bytes] at * <;> bv_omega
   · refine load64_congr ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ <;> apply mem_store_of_disjoint <;>
-      cases w <;> simp only [Width.bytes] at * <;> bv_decide
+      cases w <;> simp only [Width.bytes] at * <;> bv_omega
 
 /-- Two states with the same eight bytes at an address load the same 64-bit
 value from it. -/
@@ -161,7 +190,7 @@ theorem load64_store8_disjoint (s : State) {a b : BitVec 64} (v : BitVec 8) (h :
   apply load64_congr <;>
     (simp only [mem_store8]
      split
-     · next hx => exact absurd hx (by bv_decide)
+     · next hx => exact absurd hx (by bv_omega)
      · rfl)
 
 /-- A store does not change `rip`. -/

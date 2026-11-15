@@ -1,5 +1,4 @@
 import TypedAsm.Decode
-import Std.Tactic.BVDecide
 
 /-!
 # Decoding inverts encoding
@@ -91,11 +90,17 @@ theorem sib_base {scale index base : Nat} (h : scale < 4) :
 
 theorem take32_le32 (v : BitVec 32) (rest : List Byte) : take32 (le32 v ++ rest) = some (v, rest) := by
   have h : v.extractLsb' 24 8 ++ v.extractLsb' 16 8 ++ v.extractLsb' 8 8 ++ v.extractLsb' 0 8 = v := by
-    bv_decide
+    ext i hi
+    simp only [BitVec.getElem_append, BitVec.getElem_extractLsb']
+    repeat' split
+    all_goals (rw [BitVec.getLsbD_eq_getElem (by omega)]; congr 1; omega)
   simp only [le32, take32, List.cons_append, List.nil_append, h]
 
 theorem take64_le64 (v : BitVec 64) (rest : List Byte) : take64 (le64 v ++ rest) = some (v, rest) := by
-  have h : v.extractLsb' 32 32 ++ v.extractLsb' 0 32 = v := by bv_decide
+  have h : v.extractLsb' 32 32 ++ v.extractLsb' 0 32 = v := by
+    ext i hi
+    simp only [BitVec.getElem_append, BitVec.getElem_extractLsb']
+    split <;> (rw [BitVec.getLsbD_eq_getElem (by omega)]; congr 1; omega)
   simp only [le64, take64, List.append_assoc, take32_le32, Option.bind_eq_bind, Option.bind_some,
     Option.pure_def, h]
 

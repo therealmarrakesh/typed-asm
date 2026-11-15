@@ -315,7 +315,7 @@ theorem strByte_steps {next : BitVec 64} {Γ : Ctx} {d r : Reg} {more : Bool} {w
   · have hB : ((s.load8 (s.getReg r)).setWidth w.bits).setWidth 64 ≠ (0 : BitVec 64) ∧
         ((s.load8 (s.getReg r)).setWidth w.bits).setWidth 64 < (256 : BitVec 64) := by
       generalize s.load8 (s.getReg r) = m at hz
-      cases w <;> (constructor <;> (simp only [Width.bits]; bv_decide))
+      cases w <;> (constructor <;> (simp only [Width.bits]; bv_omega))
     -- a byte that is not zero is not the text's last
     have hmore : off + 1 < l.text := by
       apply Classical.byContradiction

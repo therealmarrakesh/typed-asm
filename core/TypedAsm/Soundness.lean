@@ -1415,12 +1415,15 @@ theorem AluOp.eval_eq_apply {n : Nat} {op : AluOp} (h : op.readsCarry = false) (
   cases op <;> first | rfl | exact absurd h (by decide)
 
 theorem addCarry_fst (a b : BitVec 64) : (addCarry a b false).1 = a + b := by
-  simp only [addCarry]
-  bv_decide
+  apply BitVec.eq_of_toNat_eq
+  have := a.isLt; have := b.isLt
+  simp [addCarry, BitVec.toNat_add, BitVec.toNat_setWidth]
 
 theorem subBorrow_fst (a b : BitVec 64) : (subBorrow a b false).1 = a - b := by
-  simp only [subBorrow]
-  bv_decide
+  apply BitVec.eq_of_toNat_eq
+  have := a.isLt; have := b.isLt
+  simp [subBorrow, BitVec.toNat_sub, BitVec.toNat_setWidth]
+  omega
 
 /-- The zero flag after a subtraction says whether the result is zero. -/
 theorem subBorrow_zf {n : Nat} (a b : BitVec n) (c : Bool) :
