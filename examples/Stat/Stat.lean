@@ -76,3 +76,8 @@ theorem safeMem (files : List File) : SafeMem linux (startWith files) :=
   safeMem_of_entry (start_entry.withWorld _)
 
 end Stat
+
+-- The proof rests on Lean's three standard axioms and nothing else.
+/-- info: 'Stat.safeMem' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms Stat.safeMem

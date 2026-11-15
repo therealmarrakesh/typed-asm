@@ -106,3 +106,8 @@ theorem safeMem (place : Nat → Option (BitVec 64)) : SafeMem linux (startWith 
   safeMem_of_entry (start_entry.withWorld _)
 
 end Own
+
+-- The proof rests on Lean's three standard axioms and nothing else.
+/-- info: 'Own.safeMem' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms Own.safeMem

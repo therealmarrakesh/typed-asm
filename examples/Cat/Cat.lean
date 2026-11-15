@@ -107,3 +107,8 @@ theorem safeMem (args : List String) (files : List File) : SafeMem linux (startW
   safeMem_of_entry ((start_entry _).withWorld _)
 
 end Cat
+
+-- The proof rests on Lean's three standard axioms and nothing else.
+/-- info: 'Cat.safeMem' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms Cat.safeMem

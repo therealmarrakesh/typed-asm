@@ -108,3 +108,8 @@ theorem safeMem (args : List String) : SafeMem linux (startWith args) :=
   safeMem_of_entry (start_entry _)
 
 end Args
+
+-- The proof rests on Lean's three standard axioms and nothing else.
+/-- info: 'Args.safeMem' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms Args.safeMem

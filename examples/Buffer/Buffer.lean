@@ -79,3 +79,8 @@ theorem safeMem (input : List ReadEvent) : SafeMem linux (startWith input) :=
   safeMem_of_entry (startWith_entry input)
 
 end Buffer
+
+-- The proof rests on Lean's three standard axioms and nothing else.
+/-- info: 'Buffer.safeMem' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms Buffer.safeMem

@@ -99,3 +99,8 @@ theorem safeMem (input : List ReadEvent) (place : Nat → Option (BitVec 64)) :
   safeMem_of_entry (start_entry.withWorld _)
 
 end Alloc
+
+-- The proof rests on Lean's three standard axioms and nothing else.
+/-- info: 'Alloc.safeMem' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms Alloc.safeMem

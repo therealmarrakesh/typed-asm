@@ -89,3 +89,8 @@ theorem safeMem (input : List ReadEvent) : SafeMem linux (startWith input) :=
   safeMem_of_entry (start_entry.withWorld _)
 
 end Keep
+
+-- The proof rests on Lean's three standard axioms and nothing else.
+/-- info: 'Keep.safeMem' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms Keep.safeMem

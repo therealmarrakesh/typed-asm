@@ -119,3 +119,8 @@ theorem safe : Safe fetch linux start :=
   start_entry.safe blocksOk memOk At.start (Entry.fieldsInt (by simp [blocks, recordLayout]))
 
 end Ops
+
+-- The proof rests on Lean's three standard axioms and nothing else.
+/-- info: 'Ops.safeMem' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms Ops.safeMem

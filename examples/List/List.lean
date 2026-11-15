@@ -143,3 +143,8 @@ theorem safeMem : SafeMem linux start :=
   safeMem_of_entry start_entry
 
 end List3
+
+-- The proof rests on Lean's three standard axioms and nothing else.
+/-- info: 'List3.safeMem' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms List3.safeMem
