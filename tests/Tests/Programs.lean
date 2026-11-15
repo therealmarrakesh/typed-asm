@@ -16,6 +16,7 @@ import CatProgram
 import StatProgram
 import ArgsProgram
 import OwnProgram
+import DoubleProgram
 
 /-!
 # Whole programs, against a real machine
@@ -85,7 +86,11 @@ def cases : List Case := [
   { label := "args-none", program := Args.program },
   { label := "args-one", program := Args.program, args := ["one"] },
   { label := "args-several", program := Args.program,
-    args := ["one", "two words", "", "héllo", "--flag=3"] }]
+    args := ["one", "two words", "", "héllo", "--flag=3"] },
+  { label := "double-empty", program := Double.program },
+  { label := "double-short", program := Double.program, input := pattern 100 },
+  { label := "double-page", program := Double.program, input := pattern 4096 },
+  { label := "double-more", program := Double.program, input := pattern 5000 }]
 
 /-- A run as it is recorded: the exit status as Linux reports it, then what
 was written to standard output. -/
