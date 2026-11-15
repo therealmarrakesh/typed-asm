@@ -55,6 +55,11 @@ inductive Ty
   /-- What a system call hands back when success gives a value of type `τ`:
   an error number (a value from -4095 to -1), or a value of type `τ`. -/
   | orErr (τ : Ty)
+  /-- The address of a byte of some block's text. With `more` set it is not
+  the text's last byte, so the address after it is a byte of that text too.
+  A text's last byte is zero, so a byte that is not zero is not the last:
+  that is how a program walks along a text without knowing its length. -/
+  | str (more : Bool)
 
 /-- A description of the machine at one program point. -/
 abbrev Ctx := CtxOf Ty
@@ -154,6 +159,8 @@ inductive Sub : Ty → Ty → Prop
   /-- A value may be used where it or an error number is expected. -/
   | orErr {τ υ : Ty} : Sub τ υ → Sub τ (.orErr υ)
   | orErrMono {τ υ : Ty} : Sub τ υ → Sub (.orErr τ) (.orErr υ)
+  /-- An address known not to be a text's last may be used as any address in it. -/
+  | strLess (more : Bool) : Sub (.str true) (.str more)
 
 /-- Subtyping slot by slot, for two stacks of the same length. -/
 inductive SubList : List Ty → List Ty → Prop
@@ -321,6 +328,9 @@ def HasTy (fetch : Fetch) (sys : Syscall) : MemTy → Nat → Ty → BitVec 64 �
       v = a + BitVec.ofNat 64 (8 * index)
   | Ψ, n, .nullable τ, v => v = 0 ∨ HasTy fetch sys Ψ n τ v
   | Ψ, n, .orErr τ, v => SysErr v ∨ HasTy fetch sys Ψ n τ v
+  | Ψ, _, .str more, v =>
+    ∃ a l off, Ψ a = some l ∧ off + (if more then 1 else 0) < l.text ∧
+      v = a + BitVec.ofNat 64 (8 * l.fields.length + off)
   | Ψ, n, .fn args results preserved need, v =>
     ∀ k, (hk : k < n) → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF →
       ∀ (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat),
@@ -373,6 +383,12 @@ theorem hasTy_orErr {τ : Ty} {v : BitVec 64} :
     HasTy fetch sys Ψ n (.orErr τ) v ↔ SysErr v ∨ HasTy fetch sys Ψ n τ v := by
   rw [HasTy]
 
+theorem hasTy_str {more : Bool} {v : BitVec 64} :
+    HasTy fetch sys Ψ n (.str more) v ↔
+      ∃ a l off, Ψ a = some l ∧ off + (if more then 1 else 0) < l.text ∧
+        v = a + BitVec.ofNat 64 (8 * l.fields.length + off) := by
+  simp [HasTy]
+
 /-- A value is a pointer to a function if entering it, from any caller that
 meets the signature, is safe for any smaller number of steps. -/
 theorem hasTy_fn {sig : FnSig} {v : BitVec 64} :
@@ -394,6 +410,7 @@ theorem HasTy.mono {m : Nat} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys Ψ n
   | orErr τ =>
     rw [hasTy_orErr] at h ⊢
     exact h.imp id (fun h' => HasTy.mono h' hle)
+  | str more => exact hasTy_str.mpr (hasTy_str.mp h)
   | int => exact HasTy.int v
   | eq x => exact hasTy_eq.mpr (hasTy_eq.mp h)
   | ptr fields writable index => exact hasTy_ptr.mpr (hasTy_ptr.mp h)
@@ -419,6 +436,9 @@ theorem HasTy.ext {Ψ' : MemTy} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys �
   | orErr τ =>
     rw [hasTy_orErr] at h ⊢
     exact h.imp id (fun h' => HasTy.ext h' he)
+  | str more =>
+    obtain ⟨a, l, off, hl, h'⟩ := hasTy_str.mp h
+    exact hasTy_str.mpr ⟨a, l, off, he.blocks a l hl, h'⟩
   | int => exact HasTy.int v
   | eq x => exact hasTy_eq.mpr (hasTy_eq.mp h)
   | ptr fields writable index =>

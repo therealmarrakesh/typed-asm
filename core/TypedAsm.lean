@@ -22,6 +22,7 @@ import TypedAsm.Entry
 import TypedAsm.Linux
 import TypedAsm.Blocks
 import TypedAsm.Run
+import TypedAsm.ArgText
 
 /-!
 # TypedAsm

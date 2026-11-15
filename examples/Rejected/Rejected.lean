@@ -376,6 +376,40 @@ error: at address 12: cannot type `mov rsi, qword ptr [rsp+rax*8+8]` in the curr
 #guard_msgs in
 example : BlockOk Φy argFetch linux Ψ (Asm.addr argLoads 0 .beyond) (argsCtx 0 2) := by ty_block
 
+/-! ## Text
+
+A pointer into text may be read through, one byte at a time. Stepped
+forward where the byte it points at is not known to be other than zero, it
+is a number and no longer a pointer; and nothing may be stored through it. -/
+
+inductive Txt
+  | onward | store
+  deriving DecidableEq
+
+def texts : List (Asm Txt) := [
+  .label .onward, .ins (.alu .add .w64 (.rm_i (.reg .rdi) 1)),
+    .ins (.movzx .w32 .rax .w8 (.mem (.sib (some .rdi) none 0))), .ins .ud2,
+  .label .store, .ins (.store8 (.sib (some .rdi) none 0) .rax), .ins .ud2]
+
+def textFetch : Fetch := Asm.fetch 0 texts
+
+/-- `rdi` points into text. -/
+def atText : Ctx := ⟨fun r => if r = .rdi then .str false else .int, [], 0, Flags.Any⟩
+
+/--
+error: at address 4: cannot type `movzx eax, byte ptr [rdi]` in the current context
+• movzxRM: `rdi` must hold a pointer, but its type is `int`
+-/
+#guard_msgs in
+example : BlockOk Φy textFetch linux Ψ (Asm.addr texts 0 .onward) atText := by ty_block
+
+/--
+error: at address 9: cannot type `mov byte ptr [rdi], al` in the current context
+• store8RM: `rdi` must hold a writable pointer, but its type is `pointer into text`
+-/
+#guard_msgs in
+example : BlockOk Φy textFetch linux Ψ (Asm.addr texts 0 .store) atText := by ty_block
+
 /-! ## Other calls that store into a buffer
 
 `fstat`, `clock_gettime` and `getrandom` are typed by the condition of a

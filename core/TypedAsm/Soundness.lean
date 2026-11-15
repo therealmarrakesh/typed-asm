@@ -26,6 +26,11 @@ theorem HasTy.sub {τ υ : Ty} {v : BitVec 64} (h : Sub τ υ) (hv : HasTy fetch
   | nullable _ ih => exact hasTy_nullable.mpr (.inr (ih hv))
   | null τ => exact hasTy_nullable.mpr (.inl (hasTy_eq.mp hv))
   | nullableMono _ ih => exact hasTy_nullable.mpr ((hasTy_nullable.mp hv).imp id ih)
+  | strLess more =>
+    obtain ⟨a, l, off, hl, hoff, hva⟩ := hasTy_str.mp hv
+    exact hasTy_str.mpr ⟨a, l, off, hl, by
+      simp only [↓reduceIte] at hoff
+      cases more <;> simp only [Bool.false_eq_true, ↓reduceIte] <;> omega, hva⟩
   | orErr _ ih => exact hasTy_orErr.mpr (.inr (ih hv))
   | orErrMono _ ih => exact hasTy_orErr.mpr ((hasTy_orErr.mp hv).imp id ih)
 
@@ -269,6 +274,17 @@ theorem text_outside_stack {lo cnt : Nat} (h : WellTyped fetch sys Ψ ix Γ s) (
     (m' := 1) h.stackSize_lt (hΨ.size_lt b l' hl') (by simp only [stackSize]; omega) (by omega)
     (by omega) (by omega)
   exact hd.1 (by decide)
+
+/-- The byte of text a register points at is readable. -/
+theorem canRead_text {b : Reg} {more : Bool} (h : WellTyped fetch sys Ψ ix Γ s) (hb : b ≠ .rsp)
+    (hΓ : Γ.regs b = .str more) : s.canRead (s.ea (.sib (some b) none 0)) 1 = true := by
+  have hp := h.regs b hb
+  rw [hΓ] at hp
+  obtain ⟨a, l, off, hl, hoff, hva⟩ := hasTy_str.mp hp
+  have hea : s.ea (.sib (some b) none 0) = a + BitVec.ofNat 64 (8 * l.fields.length + off) := by
+    simp [State.ea, hva]
+  rw [hea]
+  exact State.canRead_sub (h.heapPerm a l hl).1 (by simp only [Layout.size]; omega)
 
 /-- Field `i` of a block is readable. -/
 theorem canRead_field {a : BitVec 64} {l : Layout} {i : Nat} (h : WellTyped fetch sys Ψ ix Γ s)
@@ -1217,6 +1233,9 @@ theorem ReadOk.canRead {n : Nat} {m : Mem} (hr : ReadOk Ψ next Γ n (.mem m))
     have hilt : i < Γ.stack.length := (List.getElem?_eq_some_iff.mp hi).1
     rw [State.ea_inner s .rsp hdisp]
     exact State.canRead_of_canWrite (h.canWrite_slot_inner hilt hk)
+  | @text b more hb hΓ hn =>
+    subst hn
+    exact h.canRead_text hb hΓ
 
 /-- Reading a readable operand succeeds. -/
 theorem ReadOk.readRM {w : Width} {rm : RM} (hr : ReadOk Ψ next Γ w.bytes.toNat rm)
@@ -2089,6 +2108,25 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
     simp [exec, State.readRM, State.writeRM, Operands.src, Operands.dst, AluOp.eval,
       AluOp.writesDst, Result.ofOption, State.writeReg, State.readReg_w64, sext_slot hlt,
       addCarry_fst]
+  | @strNext d hd hΓ =>
+    have hp := h.regs d hd
+    rw [hΓ] at hp
+    obtain ⟨a, l, off, hl, hoff, hva⟩ := hasTy_str.mp hp
+    simp only [↓reduceIte] at hoff
+    have hsz := hΨ.size_lt a l hl
+    have hv : HasTy fetch sys Ψ ix (.str false) (s.getReg d + 1) :=
+      hasTy_str.mpr ⟨a, l, off + 1, hl, by simpa using hoff, by
+        rw [hva]
+        simp only [Layout.size] at hsz
+        bv_omega⟩
+    refine ⟨{ s.setReg d (s.getReg d + 1) with
+        flags := (addCarry (s.getReg d) 1 false).2 }, ?_, rfl,
+      (h.setReg hd hv).setFlags (P := Flags.Known) (Flags.ofResult_defined _ _ _)⟩
+    have e1 : BitVec.signExtend 64 (1 : BitVec 32) = 1 := by decide
+    simp only [exec, State.readRM, State.readRI, State.writeRM, Operands.src, Operands.dst,
+      AluOp.eval, AluOp.writesDst, Result.ofOption, State.writeReg, State.readReg_w64,
+      addCarry_fst, Width.bits, e1, bind, pure, BitVec.setWidth_eq, ↓reduceIte]
+    simp [Result.bind, addCarry_fst]
   | @testExact r r' a b hr hr' hΓ hΓ' =>
     have hp := h.regs r hr
     have hp' := h.regs r' hr'
@@ -2233,6 +2271,12 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
     cases heq
     exact hp n (Nat.lt_succ_self n) Ψ' (.refl _) hΨ _ rfl
       (((hw'.sub hsub).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
+  | @sem ι Γ Γ' i hsem hacc =>
+    obtain ⟨s', x, hex, hr, Ψ₂, he₂, hΨ₂, hw⟩ := hsem Ψ' he hΨ _ _ h hrip
+    rw [hex]
+    refine ⟨rfl, fun s'' heq => ?_⟩
+    cases heq
+    exact ih.accepts (he.trans he₂) hΨ₂ (hacc x) (hr.trans hrip) hw
   | @unreachable Γ i hun => exact absurd h (hun Ψ' he hΨ _ _)
   | @fnPtr Γ i r a sig hr hΓ hat _ ihc =>
     have hp := h.eqReg hr hΓ

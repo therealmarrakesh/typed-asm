@@ -241,14 +241,27 @@ ended by a zero byte. -/
 arguments. -/
 def argBase : BitVec 64 := 0x7fff0000
 
+/-- Where each argument's text goes when the texts are laid end to end from
+address `a`: its address, and its length counting the zero that ends it. -/
+def textsAt : List (List Byte) → Nat → List (Nat × Nat)
+  | [], _ => []
+  | t :: ts, a => (a, t.length + 1) :: textsAt ts (a + (t.length + 1))
+
+/-- The texts laid end to end, each ended by a zero. -/
+def textBytes : List (List Byte) → List Byte
+  | [] => []
+  | t :: ts => t ++ 0 :: textBytes ts
+
+/-- Where the first argument's text goes: after the count, an address for
+each argument, and four more words. -/
+def textBase (args : List (List Byte)) : Nat :=
+  argBase.toNat + 8 * (args.length + 5)
+
 /-- The words and texts for the given arguments, as they lie from `argBase`. -/
 def argBlock (args : List (List Byte)) : List Byte :=
-  let texts := args.map (· ++ [0])
-  let first := argBase.toNat + 8 * (args.length + 5)
-  let addrs := (texts.foldl (fun (acc : List Nat × Nat) t => (acc.1 ++ [acc.2], acc.2 + t.length))
-    ([], first)).1
-  le64 (BitVec.ofNat 64 args.length) ++ (addrs.flatMap (fun a => le64 (BitVec.ofNat 64 a)) ++
-    (le64 0 ++ (le64 0 ++ (le64 0 ++ (le64 0 ++ texts.flatten)))))
+  le64 (BitVec.ofNat 64 args.length) ++
+    ((textsAt args (textBase args)).flatMap (fun t => le64 (BitVec.ofNat 64 t.1)) ++
+    (le64 0 ++ (le64 0 ++ (le64 0 ++ (le64 0 ++ textBytes args)))))
 
 /-- The arguments a program is started with: the ones asked for, unless
 there are too many or they would not fit in the space the model sets aside,

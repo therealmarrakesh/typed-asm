@@ -53,6 +53,10 @@ theorem Sub.trans {τ υ φ : Ty} (h₁ : Sub τ υ) (h₂ : Sub υ φ) : Sub τ
     | nullable h' => exact .nullable (ih h')
     | null => exact .null _
     | nullableMono h' => exact .nullableMono (ih h')
+  | strLess more =>
+    cases h₁ with
+    | refl => exact .strLess more
+    | strLess => exact .strLess more
   | orErr _ ih => exact .orErr (ih h₁)
   | orErrMono h ih =>
     cases h₁ with
@@ -180,6 +184,9 @@ inductive ReadOk (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) (n : Nat) : RM → P
   | global {base : BitVec 64} {l : Layout} {i k : Nat} {disp : BitVec 32} {τ : Ty} :
     Ψ base = some l → next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i + k) →
     l.fields[i]? = some τ → k + n ≤ 8 → ReadOk Ψ next Γ n (.mem (.rip disp))
+  /-- The byte of text a register points at. -/
+  | text {b : Reg} {more : Bool} : b ≠ .rsp → Γ.regs b = .str more → n = 1 →
+    ReadOk Ψ next Γ n (.mem (.sib (some b) none 0))
 
 /-- `WriteIntOk Ψ next Γ n rm Γ'`: overwriting `n` bytes of `rm` with an arbitrary
 value is safe and leaves a state matching `Γ'`. A register or stack slot
@@ -405,6 +412,11 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
     d ≠ .rsp → Γ.regs d = .ptr fields writable off → slotDisp k imm →
     Straight Ψ next Γ (.alu .add .w64 (.rm_i (.reg d) imm))
       { Γ.setReg d (.ptr fields writable (off + k)) with flags := Flags.Known }
+  /-- Step to the next byte of a text, from one known not to be its last. -/
+  | strNext {Γ : Ctx} {d : Reg} :
+    d ≠ .rsp → Γ.regs d = .str true →
+    Straight Ψ next Γ (.alu .add .w64 (.rm_i (.reg d) 1))
+      { Γ.setReg d (.str false) with flags := Flags.Known }
   -- The rules below are stated over operands, so each covers registers,
   -- fields and stack slots at once. Where an operand is written, its new
   -- contents are an integer.
@@ -617,6 +629,7 @@ theorem ReadOk.ext {Ψ Ψ' : MemTy} {next : BitVec 64} {Γ : Ctx} {n : Nat} {rm 
     | (apply ReadOk.field <;> assumption)
     | (apply ReadOk.slot <;> assumption)
     | (apply ReadOk.indexed <;> assumption)
+    | (apply ReadOk.text <;> assumption)
 
 theorem WriteIntOk.ext {Ψ Ψ' : MemTy} {next : BitVec 64} {Γ Γ' : Ctx} {n : Nat} {rm : RM}
     (h : WriteIntOk Ψ next Γ n rm Γ') (he : Ψ.Ext Ψ') : WriteIntOk Ψ' next Γ n rm Γ' := by
@@ -664,6 +677,7 @@ local macro "ext_rule" : tactic =>
     | (apply Straight.storeIndexed <;> ext_premise)
     | (apply Straight.loadStack <;> ext_premise)
     | (apply Straight.loadStackIndexed <;> ext_premise)
+    | (apply Straight.strNext <;> ext_premise)
     | (apply Straight.storeStack <;> ext_premise)
     | (apply Straight.push <;> ext_premise)
     | (apply Straight.pop <;> ext_premise)
@@ -746,6 +760,17 @@ def SysReturns (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (Γ Γ' : Ctx) : Pro
     ∃ s', sys s = .next s' ∧ s'.rip = s.rip ∧
       ∃ Ψ₂ : MemTy, Ψ₁.Ext Ψ₂ ∧ Ψ₂.WF ∧ WellTyped fetch sys Ψ₂ n Γ' s'
 
+/-- From any state matching `Γ`, instruction `i` runs and continues at the
+next instruction in a state matching one of the contexts `Γ' x`. This is
+the escape from the rules above to an argument about states, for a single
+instruction: a step whose effect depends on what it finds, such as reading a
+byte that may or may not be the end of a text, is typed by proving this. -/
+def StepsTo (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) (i : Instr)
+    {ι : Type} (Γ' : ι → Ctx) : Prop :=
+  ∀ Ψ₁ : MemTy, Ψ.Ext Ψ₁ → Ψ₁.WF → ∀ n s, WellTyped fetch sys Ψ₁ n Γ s → s.rip = next →
+    ∃ s' x, exec sys i s = .next s' ∧ s'.rip = s.rip ∧
+      ∃ Ψ₂ : MemTy, Ψ₁.Ext Ψ₂ ∧ Ψ₂.WF ∧ WellTyped fetch sys Ψ₂ n (Γ' x) s'
+
 /-- From any state matching `Γ`, the system call ends the program. -/
 def SysExits (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (Γ : Ctx) : Prop :=
   ∀ Ψ₁ : MemTy, Ψ.Ext Ψ₁ → Ψ₁.WF → ∀ n s, WellTyped fetch sys Ψ₁ n Γ s → ∃ c, sys s = .exit c
@@ -813,6 +838,12 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
       {room : Nat} :
     Holds Ψ next Γ rm sig.ty → sig.CallerOk saved ret rest room →
     CtxSub Γ (sig.entry saved ret rest room) → HasType Φ fetch sys Ψ next Γ (.jmp (.ind rm))
+  /-- An instruction shown, by an argument about states, to continue at the
+  next instruction in one of a family of contexts, each of which the code
+  there accepts. -/
+  | sem {ι : Type} {Γ : Ctx} {Γ' : ι → Ctx} {i : Instr} :
+    StepsTo fetch sys Ψ next Γ i Γ' → (∀ x, Accepts Φ next (Γ' x)) →
+    HasType Φ fetch sys Ψ next Γ i
   /-- Any instruction is well typed in a context no state can match. This is
   how code that is never reached, such as a `ud2` after an impossible branch,
   is typed. -/

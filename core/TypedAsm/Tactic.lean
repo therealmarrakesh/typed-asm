@@ -33,6 +33,8 @@ needs an argument, typically a fact about values at a branch.
   the fact `h` that the code typing allows some context there.
 * `ty_into h` types one instruction and ends the block there, handing over
   to the label that follows.
+* `ty_byte as b` types the load of a byte of text and splits on it: zero, or
+  some `b` that is not, after which the pointer may be stepped forward.
 * `ctx_sub` and `sub_regs` compare contexts.
 -/
 
@@ -327,6 +329,7 @@ macro_rules
          | exact Sub.null _
          | (refine Sub.nullableMono ?_; ty_sub)
          | (refine Sub.nullable ?_; ty_sub)
+         | exact Sub.strLess _
          | (refine Sub.orErrMono ?_; ty_sub)
          | (refine Sub.orErr ?_; ty_sub)
          -- the stack pointer's type after moves that cancel or add up
@@ -383,6 +386,12 @@ macro "ty_field" : tactic =>
     -- a slot after the first of a list that goes on as a run of one type
     | (show (_ :: _)[_ + 1]? = _
        rw [List.getElem?_cons_succ]
+       refine getElem?_replicate_of_lt ?_
+       first | assumption | omega | (simp; first | assumption | omega))
+    -- a slot after the first, in the first of two runs that follow it
+    | (show (_ :: _)[_ + 1]? = _
+       rw [List.getElem?_cons_succ,
+         List.getElem?_append_left (by simp only [List.length_replicate]; omega)]
        refine getElem?_replicate_of_lt ?_
        first | assumption | omega | (simp; first | assumption | omega))
     | (simp [*]; done))
@@ -492,6 +501,7 @@ syntax "ty_err " term " as " ident : tactic
 syntax "ty_mmap " term : tactic
 syntax "ty_mmap_kind " term : tactic
 syntax "ty_into " term : tactic
+syntax "ty_byte " "as " ident : tactic
 
 /-! ## Choosing the rule from the instruction
 
@@ -638,7 +648,7 @@ elab_rules : tactic
 /-- The rules whose premises are proved in order, stopping at the first that
 fails: those for operands, whose premises each depend on the ones before. -/
 def orderedRules : List Name := [``Straight.loadGlobal_of, ``Straight.storeGlobal_of,
-  ``ReadOk.reg, ``ReadOk.slot, ``ReadOk.field, ``ReadOk.indexed, ``ReadOk.global_of,
+  ``ReadOk.reg, ``ReadOk.slot, ``ReadOk.field, ``ReadOk.indexed, ``ReadOk.global_of, ``ReadOk.text,
   ``WriteIntOk.reg, ``WriteIntOk.slot, ``WriteIntOk.field, ``WriteIntOk.indexed,
   ``WriteIntOk.global_of, ``Holds.reg, ``Holds.slot, ``Holds.field, ``Holds.indexed,
   ``Holds.global_of]
@@ -686,7 +696,8 @@ def Instr.rules : Instr → List Name
   -- arithmetic
   | .alu .sub .w64 (.rm_i (.reg .rsp) _) => [``Straight.allocFrame]
   | .alu .add .w64 (.rm_i (.reg .rsp) _) => [``Straight.freeFrame']
-  | .alu _ .w64 (.rm_i (.reg _) _) => [``Straight.aluExact, ``Straight.addPtr, ``Straight.aluRI]
+  | .alu _ .w64 (.rm_i (.reg _) _) =>
+    [``Straight.aluExact, ``Straight.addPtr, ``Straight.strNext, ``Straight.aluRI]
   | .alu _ _ (.rm_i (.reg _) _) => [``Straight.aluExact32, ``Straight.aluRI]
   | .alu .xor w (.rm_r (.reg d) s) =>
     -- `xor r, r` clears `r` whatever it held
@@ -827,6 +838,9 @@ private partial def ppTy (e : Expr) : MetaM String := do
   if e.isAppOf ``Ty.fn || e.isAppOf ``FnSig.ty then return "function pointer"
   if e.isAppOfArity ``Ty.nullable 1 then return s!"{← ppTy e.appArg!} or null"
   if e.isAppOfArity ``Ty.orErr 1 then return s!"{← ppTy e.appArg!} or an error number"
+  if e.isAppOfArity ``Ty.str 1 then
+    return if e.appArg!.isConstOf ``Bool.true then "pointer into text, not at its end"
+      else "pointer into text"
   if e.isAppOfArity ``Ty.ref 3 then
     let args := e.getAppArgs
     let kind := if args[1]!.isConstOf ``Bool.true then "pointer" else "read-only pointer"
@@ -934,7 +948,8 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
 
 /-- The rules for an operand judgment, in the order to try them. -/
 private def operandRules (ty : Expr) : List Name :=
-  if ty.isAppOf ``ReadOk then [``ReadOk.reg, ``ReadOk.slot, ``ReadOk.field, ``ReadOk.indexed, ``ReadOk.global_of]
+  if ty.isAppOf ``ReadOk then
+    [``ReadOk.reg, ``ReadOk.slot, ``ReadOk.field, ``ReadOk.indexed, ``ReadOk.global_of, ``ReadOk.text]
   else if ty.isAppOf ``WriteIntOk then [``WriteIntOk.reg, ``WriteIntOk.slot, ``WriteIntOk.field, ``WriteIntOk.indexed,
     ``WriteIntOk.global_of]
   else if ty.isAppOf ``Holds then [``Holds.reg, ``Holds.slot, ``Holds.field, ``Holds.indexed, ``Holds.global_of]
@@ -1446,17 +1461,19 @@ private def closeIfImpossible (g : MVarId) : TacticM Bool := do
     return (← getUnsolvedGoals).isEmpty
   catch _ =>
     saved.restore
-    -- The flags may come from an error number, known only to be one.
+    -- The flags may come from a value known only by a fact about it: an
+    -- error number, or a byte that is not zero.
     let isErr ← g.withContext do
       (← getLCtx).anyM fun d => do
-        return (← instantiateMVars d.type).isAppOf ``SysErr
+        let t ← instantiateMVars d.type
+        return t.isAppOf ``SysErr || t.isAppOf ``Ne
     unless isErr do return false
     try
       setGoals [g]
       Tactic.withoutRecover do
         evalTactic (← `(tactic| (
           refine absurd $(mkIdent `hcond) ?_
-          simp only [SysErr] at *
+          try simp only [SysErr] at *
           simp only [Cond.eval, Flags.ofResult, AluOp.apply, subBorrow, bind, Option.bind, pure,
             Option.map, Option.some.injEq]
           bv_decide)))
@@ -1964,6 +1981,40 @@ elab_rules : tactic
   | `(tactic| ty_mmap_kind $tag) => do
     typeMmap (← `(linux_mmap_kind (tag := $tag) (fields := ?_) (len := ?_) rfl ?_ ?_ ?_ ?_
       ?_ ?_ ?_))
+
+/-- `ty_byte as b`: the instruction here loads the byte of text a register
+points at. Two goals follow: the rest of the block with the byte exactly
+zero, then with the byte exactly some `b` that is not zero, where the
+pointer is known not to be at the end of its text and may be stepped forward
+with `add r, 1`. A test of the byte then decides in each which way it goes. -/
+elab_rules : tactic
+  | `(tactic| ty_byte as $b) => do
+    let goal ← getMainGoal
+    let others := (← getGoals).drop 1
+    setGoals [goal]
+    try
+      evalTactic (← `(tactic| refine BlockOk.strByte rfl ?_ ?_ ?_ rfl ?_ ?_))
+    catch _ =>
+      throwError "ty_byte: the instruction here must be `movzx r, byte ptr [p]` with `p` a \
+        pointer into text"
+    let mut blocks : List MVarId := []
+    for g in ← getGoals do
+      if ← g.isAssigned then continue
+      let t ← instantiateMVars (← g.getType)
+      setGoals [g]
+      if t.isAppOf ``BlockOk then
+        evalTactic (← `(tactic| ty_normalize))
+        blocks := blocks ++ (← getGoals)
+      else if t.isForall then
+        evalTactic (← `(tactic| (intro $b:ident hbyte hsmall; ty_normalize)))
+        blocks := blocks ++ (← getGoals)
+      else
+        try
+          evalTactic (← `(tactic| decide))
+        catch _ =>
+          throwError "ty_byte: the byte must go into a register other than the pointer's, \
+            and neither may be `rsp`"
+    setGoals (blocks ++ others)
 
 /-- `ty_into h` types the instruction here and ends the block with it. Use it
 when the next instruction is at a label and the block should hand over to

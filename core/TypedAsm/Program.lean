@@ -58,6 +58,12 @@ inductive BlockOk (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) :
   | fnPtr {a : BitVec 64} {Γ : Ctx} {r : Reg} {v : BitVec 64} {sig : FnSig} :
     r ≠ .rsp → Γ.regs r = .eq v → sig.At Φ v → BlockOk Φ fetch sys Ψ a (Γ.setReg r sig.ty) →
     BlockOk Φ fetch sys Ψ a Γ
+  /-- An instruction shown, by an argument about states, to continue at the
+  next one in one of a family of contexts, followed by the rest of the block
+  in each of them. -/
+  | sem {ι : Type} {a : BitVec 64} {Γ : Ctx} {Γ' : ι → Ctx} {i : Instr} {len : BitVec 64} :
+    fetch a = some (i, len) → StepsTo fetch sys Ψ (a + len) Γ i Γ' →
+    (∀ x, BlockOk Φ fetch sys Ψ (a + len) (Γ' x)) → BlockOk Φ fetch sys Ψ a Γ
   /-- The last instruction of the block. -/
   | last {a : BitVec 64} {Γ : Ctx} {i : Instr} {len : BitVec 64} :
     fetch a = some (i, len) → HasType Φ fetch sys Ψ (a + len) Γ i → BlockOk Φ fetch sys Ψ a Γ
@@ -87,6 +93,7 @@ theorem HasType.mono (h : ∀ a Γ, Φ a Γ → Φ' a Γ) {next : BitVec 64} {Γ
   | jmpInd hcode hsub => exact .jmpInd hcode hsub
   | callInd hcode hroom hret hsub => exact .callInd hcode hroom (h _ _ hret) hsub
   | unreachable hun => exact .unreachable hun
+  | sem hs hacc => exact .sem hs (fun x => (hacc x).mono h)
   | fnPtr hr hΓ hat _ ih => exact .fnPtr hr hΓ (fun sv rt rs rm hK => h _ _ (hat sv rt rs rm hK)) ih
   | callFn hh hroom hret hargs hsp hback hneed =>
     exact .callFn hh hroom (h _ _ hret) hargs hsp hback hneed
@@ -103,6 +110,7 @@ theorem BlocksOk.programOk (h : BlocksOk Φ fetch sys Ψ) :
   induction hb with
   | step hf hst hrest _ => exact ⟨_, _, hf, .straight hst ⟨_, hrest, CtxSub.refl _⟩⟩
   | sys hf hret hrest _ => exact ⟨_, _, hf, .syscall hret ⟨_, hrest, CtxSub.refl _⟩⟩
+  | sem hf hs hrest _ => exact ⟨_, _, hf, .sem hs (fun x => ⟨_, hrest x, CtxSub.refl _⟩)⟩
   | branch hf hdec hacc hrest _ =>
     exact ⟨_, _, hf, .jcc hdec (fun f hΓ hb => (hacc f hΓ hb).mono h)
       (fun f hΓ hb => ⟨_, hrest f hΓ hb, CtxSub.refl _⟩)⟩
@@ -254,6 +262,75 @@ theorem BlockOk.splitErr {a : BitVec 64} {Γ : Ctx} {r : Reg} {τ : Ty} (hr : r 
       cases x with
       | some e => exact herr e.1 e.2
       | none => exact hvalue)
+
+/-! ## Reading text -/
+
+/-- Reading the byte of text a register points at, into another register:
+the byte is zero, or it is not, and then the text goes on. -/
+theorem strByte_steps {next : BitVec 64} {Γ : Ctx} {d r : Reg} {more : Bool} {w : Width}
+    (hd : d ≠ .rsp) (hr : r ≠ .rsp) (hdr : d ≠ r) (hΓ : Γ.regs r = .str more) :
+    StepsTo fetch sys Ψ next Γ (.movzx w d .w8 (.mem (.sib (some r) none 0)))
+      (fun x : Option { b : BitVec 64 // b ≠ 0 ∧ b < 256 } =>
+        match x with
+        | none => Γ.setReg d (.eq 0)
+        | some b => (Γ.setReg d (.eq b.1)).setReg r (.str true)) := by
+  intro Ψ₁ he hΨ n s h hrip
+  have hp := h.regs r hr
+  rw [hΓ] at hp
+  obtain ⟨a, l, off, hl, hoff, hva⟩ := hasTy_str.mp hp
+  have hoff' : off < l.text := by cases more <;> simp at hoff <;> omega
+  have hea : s.ea (.sib (some r) none 0) = s.getReg r := by simp [State.ea]
+  have hc := h.canRead_text hr hΓ
+  rw [hea] at hc
+  have hex : exec sys (.movzx w d .w8 (.mem (.sib (some r) none 0))) s
+      = .next (s.writeReg w d ((s.load8 (s.getReg r)).setWidth w.bits)) := by
+    simp only [exec, State.readNarrow, State.read8]
+    rw [hea]
+    simp [hc]
+  have hs' : s.writeReg w d ((s.load8 (s.getReg r)).setWidth w.bits)
+      = s.setReg d (((s.load8 (s.getReg r)).setWidth w.bits).setWidth 64) := rfl
+  rw [hs'] at hex
+  by_cases hz : s.load8 (s.getReg r) = 0
+  · have hB : ((s.load8 (s.getReg r)).setWidth w.bits).setWidth 64 = (0 : BitVec 64) := by
+      rw [hz]; cases w <;> rfl
+    rw [hB] at hex
+    exact ⟨_, none, hex, rfl, Ψ₁, .refl _, hΨ, h.setReg hd (hasTy_eq.mpr rfl)⟩
+  · have hB : ((s.load8 (s.getReg r)).setWidth w.bits).setWidth 64 ≠ (0 : BitVec 64) ∧
+        ((s.load8 (s.getReg r)).setWidth w.bits).setWidth 64 < (256 : BitVec 64) := by
+      generalize s.load8 (s.getReg r) = m at hz
+      cases w <;> (constructor <;> (simp only [Width.bits]; bv_decide))
+    -- a byte that is not zero is not the text's last
+    have hmore : off + 1 < l.text := by
+      apply Classical.byContradiction
+      intro hcon
+      have hlast : s.getReg r = a + BitVec.ofNat 64 (l.size - 1) := by
+        rw [hva]
+        congr 2
+        simp only [Layout.size]
+        omega
+      have hzero := h.text a l hl (by omega)
+      rw [← hlast] at hzero
+      exact hz hzero
+    refine ⟨_, some ⟨_, hB⟩, hex, rfl, Ψ₁, .refl _, hΨ, ?_⟩
+    refine (h.setReg hd (hasTy_eq.mpr rfl)).retype hr (hasTy_str.mpr ⟨a, l, off, hl, by
+      simpa using hmore, ?_⟩)
+    rw [State.getReg_setReg_other _ _ _ _ (Ne.symm hdr), hva]
+
+/-- Reading a byte of text is a step with two outcomes. The rest of the
+block is typed once with the byte exactly zero, and once for every byte `b`
+that is not zero, with the byte exactly `b` and the pointer known not to be
+at the text's end, so that it may be stepped forward. -/
+theorem BlockOk.strByte {a : BitVec 64} {Γ : Ctx} {d r : Reg} {more : Bool} {w : Width}
+    {len : BitVec 64} (hf : fetch a = some (.movzx w d .w8 (.mem (.sib (some r) none 0)), len))
+    (hd : d ≠ .rsp) (hr : r ≠ .rsp) (hdr : d ≠ r) (hΓ : Γ.regs r = .str more)
+    (hzero : BlockOk Φ fetch sys Ψ (a + len) (Γ.setReg d (.eq 0)))
+    (hmore : ∀ b : BitVec 64, b ≠ 0 → b < 256 →
+      BlockOk Φ fetch sys Ψ (a + len) ((Γ.setReg d (.eq b)).setReg r (.str true))) :
+    BlockOk Φ fetch sys Ψ a Γ :=
+  .sem hf (strByte_steps hd hr hdr hΓ) (fun x =>
+    match x with
+    | none => hzero
+    | some b => hmore b.1 b.2.1 b.2.2)
 
 /-! ## Contexts attached to labels -/
 
