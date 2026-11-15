@@ -1,6 +1,6 @@
 name = "typed-assembly"
 version = "0.1.0"
-defaultTargets = ["TypedAsm", "Sum", "Swap", "Frame", "Ops", "Index", "Echo", "Table", "Dispatch", "List", "Fact", "Buffer", "Keep", "Alloc", "Cat", "Stat", "Args", "Rejected", "sum", "swap", "frame", "ops", "index", "echo", "table", "dispatch", "list", "fact", "buffer", "keep", "alloc", "cat", "stat", "args"]
+defaultTargets = ["TypedAsm", "Sum", "Swap", "Frame", "Ops", "Index", "Echo", "Table", "Dispatch", "List", "Fact", "Buffer", "Keep", "Alloc", "Cat", "Stat", "Args", "Own", "Rejected", "sum", "swap", "frame", "ops", "index", "echo", "table", "dispatch", "list", "fact", "buffer", "keep", "alloc", "cat", "stat", "args", "own"]
 testDriver = "tests"
 
 # The core library: machine model, instruction set, semantics, type system.
@@ -177,6 +177,16 @@ roots = ["Args", "ArgsProgram"]
 name = "args"
 root = "ArgsProgram"
 srcDir = "examples/Args"
+
+[[lean_lib]]
+name = "Own"
+srcDir = "examples/Own"
+roots = ["Own", "OwnProgram"]
+
+[[lean_exe]]
+name = "own"
+root = "OwnProgram"
+srcDir = "examples/Own"
 
 # Not a program to run: instructions the type system rejects, with the
 # messages it gives, checked at build time.
