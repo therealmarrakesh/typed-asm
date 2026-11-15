@@ -556,6 +556,29 @@ elab "ty_prop_only" : tactic => do
   unless ← isProp (← getMainTarget) do
     throwError "not a proposition"
 
+open Lean Meta Elab Tactic in
+/-- Writes out a shape that the goal asks the size or the typed values of,
+where it is named by a definition: `node.size` becomes the size of what
+`node` is defined as. Fails if there is nothing to write out. -/
+elab "ty_shape_open" : tactic => withMainContext do
+  let goal ← getMainGoal
+  let target ← instantiateMVars (← goal.getType)
+  let fns := [``ShapeOf.size, ``ShapeOf.free, ``ShapeOf.valAt, ``ShapeOf.sole]
+  let changed ← IO.mkRef false
+  let target' ← Meta.transform target (pre := fun e => do
+    let f := e.getAppFn
+    let args := e.getAppArgs
+    if f.isConst && fns.contains f.constName! && args.size ≥ 2 then
+      let S := args[1]!
+      if S.isAppOf ``ShapeOf.mk || S.hasLooseBVars then return .continue
+      let S' ← whnf S
+      if S'.isAppOf ``ShapeOf.mk then
+        changed.set true
+        return .continue (mkAppN f (args.set! 1 S'))
+    return .continue)
+  unless ← changed.get do throwError "no shape to write out"
+  replaceMainGoal [← goal.replaceTargetDefEq target']
+
 macro_rules
   | `(tactic| ty_side) =>
     `(tactic| ty_prop_only; first
@@ -581,6 +604,24 @@ macro_rules
            List.length_replicate, List.length_set, List.length_cons, List.length_nil,
            Scale.shift, NarrowW.bytes, Width.bytes, BitVec.toNat_ofNat, BitVec.reduceToNat, Nat.reducePow,
            Nat.reduceMod,
+           Nat.reduceMul, Nat.reduceAdd, Nat.reduceDiv, Nat.mul_one, Nat.add_zero, Nat.pow_zero]
+         omega)
+      -- the same, against a shape named by a definition
+      | (ty_shape_open
+         simp only [ShapeOf.raw, ShapeOf.clear, ShapeOf.set, ShapeOf.take, ShapeOf.drop,
+           ShapeOf.append, Shape.cells,
+           List.length_replicate, List.length_set, List.length_cons, List.length_nil,
+           Scale.shift, NarrowW.bytes, Width.bytes, BitVec.toNat_ofNat, BitVec.reduceToNat,
+           Nat.reducePow, Nat.reduceMod,
+           Nat.reduceMul, Nat.reduceAdd, Nat.reduceDiv, Nat.mul_one, Nat.add_zero, Nat.pow_zero]
+         omega)
+      -- bytes reached through an index keep clear of each typed value of the
+      -- block, from a bound on the index
+      | ((try ty_shape_open)
+         simp only [ShapeOf.free, ShapeOf.clearOf, List.all_cons, List.all_nil, Bool.and_true,
+           Bool.and_eq_true, Bool.or_eq_true, decide_eq_true_eq,
+           Scale.shift, NarrowW.bytes, Width.bytes, BitVec.toNat_ofNat, BitVec.reduceToNat,
+           Nat.reducePow, Nat.reduceMod,
            Nat.reduceMul, Nat.reduceAdd, Nat.reduceDiv, Nat.mul_one, Nat.add_zero, Nat.pow_zero]
          omega)
       | (refine slotDisp_of _ ?_ ?_ <;> decide)

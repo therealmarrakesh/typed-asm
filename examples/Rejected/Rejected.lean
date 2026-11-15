@@ -873,6 +873,40 @@ example : ∃ Γ', Straight Ψ 10 Γ (.store16 (.sib (some .rdi) none 7) .rax) �
 example : ∃ Γ', Straight Ψ 10 Γ (.store16 (.sib (some .rdx) none 6) .rax) Γ' :=
   ⟨_, by ty_straight⟩
 
+/-! A record with a link and room for 64 bytes after it, filled a byte at a
+time through an index known only by a bound. The bound is what shows each
+byte to be inside the record and clear of the link; with a looser bound, or
+from a displacement that reaches the link, the store is refused. -/
+
+/-- Eighty bytes: a link at byte 0, a count, then 64 plain bytes from byte 16. -/
+def node : Shape := ⟨80, [(0, .nullable (.ref 1 true 0))]⟩
+
+/-- `rbx` points to a node; `rcx` holds exactly `i`. -/
+def filling (i : BitVec 64) : Ctx :=
+  ⟨fun r => if r = .rbx then .ptr node true 0 else if r = .rcx then .eq i else .int, [], 0,
+    Flags.Any, []⟩
+
+example (i : BitVec 64) (hlt : i.toNat < 64) :
+    Straight Ψ 10 (filling i) (.store8 (.sib (some .rbx) (some (.rcx, .s1)) 16) .rax)
+      (filling i) := by
+  ty_straight
+
+/-- error: cannot type `mov byte ptr [rbx+rcx*1+16], al` in the current context
+• store8RM: the bytes are not known to be inside the block: a bound on the index is needed among the hypotheses -/
+#guard_msgs in
+example (i : BitVec 64) (hlt : i.toNat < 65) :
+    Straight Ψ 10 (filling i) (.store8 (.sib (some .rbx) (some (.rcx, .s1)) 16) .rax)
+      (filling i) := by
+  ty_straight
+
+/-- error: cannot type `mov byte ptr [rbx+rcx*1+7], al` in the current context
+• store8RM: the bytes are not known to be clear of the typed values the block holds -/
+#guard_msgs in
+example (i : BitVec 64) (hlt : i.toNat < 64) :
+    Straight Ψ 10 (filling i) (.store8 (.sib (some .rbx) (some (.rcx, .s1)) 7) .rax)
+      (filling i) := by
+  ty_straight
+
 /-! ## Exactly known values
 
 When the registers an instruction reads hold exactly known values, so does
