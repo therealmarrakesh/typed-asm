@@ -1,18 +1,20 @@
 import TypedAsm
 
 /-!
-# Printing a file, proved safe
+# Printing files, proved safe
 
-Opens the file named by its first argument, copies it to standard output 64
-bytes at a time, closes it, and exits with status 0. It exits with status 2
-if it is given no argument, and 1 if the file cannot be opened.
+Copies each file named by its arguments to standard output, 64 bytes at a
+time, and exits with status 0; or stops and exits with status 1 at the first
+file it cannot open.
 
 ```asm
 _start:
-     mov   rax, [rsp]            ; how many arguments, the program's name included
-     cmp   rax, 2
-     jb    usage
-     mov   rsi, [rsp + 16]       ; the first argument: the address of a name
+     mov   r13, [rsp]            ; how many arguments, the program's name included
+     mov   r14d, 1               ; the argument to do next
+file:
+     cmp   r14, r13
+     jae   done                  ; no more arguments
+     mov   rsi, [rsp + r14*8 + 8] ; this argument: the address of a name
      mov   eax, 257              ; `openat`
      mov   edi, -100             ; relative to the current directory
      xor   edx, edx              ; for reading
@@ -28,16 +30,19 @@ next:
      mov   edx, 64
      syscall
      test  rax, rax
-     jle   done                  ; nothing left, or an error
+     jle   eof                   ; nothing left, or an error
      mov   rdx, rax              ; as many bytes as were read
      mov   eax, 1                ; `write`
      mov   edi, 1
      syscall
      jmp   next
-done:
+eof:
      mov   eax, 3                ; `close`
      mov   rdi, r12
      syscall
+     add   r14, 1
+     jmp   file
+done:
      xor   edi, edi
      mov   eax, 231              ; `exit_group`
      syscall
@@ -45,21 +50,22 @@ fail:
      mov   edi, 1
      mov   eax, 231
      syscall
-usage:
-     mov   edi, 2
-     mov   eax, 231
-     syscall
 ```
 
 The arguments are where Linux puts them: the count at `[rsp]`, then the
-address of each argument's text. To the types these are stack slots holding
-numbers, which is all this program needs of them: the name's address goes
-to the kernel as it is, and the kernel refuses an address it cannot read.
-The descriptor is a number too. What is typed is what it always is: the
-buffer the `read` stores into.
+address of each argument's text. How many slots there are depends on the
+count, so the program's contexts do too: there is one for each count `c`,
+with `c` exactly known in `r13` and the slots after it numbering `c + 4`.
+The load of an argument's address is typed because it comes after the
+comparison that found the index below the count.
 
-`lake exe cat -- FILE` runs it in the model on that file of this machine;
-`lake exe cat --elf FILE` writes an executable that Linux can run.
+What the slots hold are numbers to the types, which is all this program
+needs: a name's address goes to the kernel as it is, and the kernel refuses
+an address it cannot read. The descriptor is a number too. The buffer the
+`read` stores into is typed as it always is.
+
+`lake exe cat -- FILE...` runs it in the model on those files of this
+machine; `lake exe cat --elf FILE` writes an executable that Linux can run.
 -/
 
 open TypedAsm
@@ -69,15 +75,17 @@ namespace Cat
 /-! ## The program -/
 
 inductive Label
-  | start | next | done | fail | usage
+  | start | file | next | eof | done | fail
   deriving DecidableEq
 
 def code : List (Asm Label) := [
   .label .start,
-  .ins (.mov .w64 (.r_m .rax (.sib (some .rsp) none 0))),
-  .ins (.alu .cmp .w64 (.rm_i (.reg .rax) 2)),
-  .jcc .b .usage,
-  .ins (.mov .w64 (.r_m .rsi (.sib (some .rsp) none 16))),
+  .ins (.mov .w64 (.r_m .r13 (.sib (some .rsp) none 0))),
+  .ins (.mov .w32 (.rm_i (.reg .r14) 1)),
+  .label .file,
+  .ins (.alu .cmp .w64 (.rm_r (.reg .r14) .r13)),
+  .jcc .ae .done,
+  .ins (.mov .w64 (.r_m .rsi (.sib (some .rsp) (some (.r14, .s8)) 8))),
   .ins (.mov .w32 (.rm_i (.reg .rax) 257)),
   .ins (.mov .w32 (.rm_i (.reg .rdi) (-100))),
   .ins (.alu .xor .w32 (.rm_r (.reg .rdx) .rdx)),
@@ -89,29 +97,28 @@ def code : List (Asm Label) := [
   .label .next,
   .ins (.alu .xor .w32 (.rm_r (.reg .rax) .rax)),
   .ins (.mov .w64 (.rm_r (.reg .rdi) .r12)),
-  .ins (.lea .w64 .rsi (.rip 0xf14)),
+  .ins (.lea .w64 .rsi (.rip 0xf0f)),
   .ins (.mov .w32 (.rm_i (.reg .rdx) 64)),
   .ins .syscall,
   .ins (.test .w64 (.reg .rax) (.reg .rax)),
-  .jcc .le .done,
+  .jcc .le .eof,
   .ins (.mov .w64 (.rm_r (.reg .rdx) .rax)),
   .ins (.mov .w32 (.rm_i (.reg .rax) 1)),
   .ins (.mov .w32 (.rm_i (.reg .rdi) 1)),
   .ins .syscall,
   .jmp .next,
-  .label .done,
+  .label .eof,
   .ins (.mov .w32 (.rm_i (.reg .rax) 3)),
   .ins (.mov .w64 (.rm_r (.reg .rdi) .r12)),
   .ins .syscall,
+  .ins (.alu .add .w64 (.rm_i (.reg .r14) 1)),
+  .jmp .file,
+  .label .done,
   .ins (.alu .xor .w32 (.rm_r (.reg .rdi) .rdi)),
   .ins (.mov .w32 (.rm_i (.reg .rax) 231)),
   .ins .syscall,
   .label .fail,
   .ins (.mov .w32 (.rm_i (.reg .rdi) 1)),
-  .ins (.mov .w32 (.rm_i (.reg .rax) 231)),
-  .ins .syscall,
-  .label .usage,
-  .ins (.mov .w32 (.rm_i (.reg .rdi) 2)),
   .ins (.mov .w32 (.rm_i (.reg .rax) 231)),
   .ins .syscall]
 
@@ -132,7 +139,7 @@ def entry : BitVec 64 := Asm.addr code base .start
 -- Every jump reaches the label it names, and the address computation gives
 -- the address of the buffer.
 #guard Asm.offsetsFit base code
-#guard base + 60 + 0xf14 == dataBase
+#guard base + 65 + 0xf0f == dataBase
 
 /-- The data's bytes: a buffer of 64. -/
 def dataBytes : List Byte := List.replicate 64 0
@@ -154,23 +161,24 @@ def startWith (args : List String) (files : List File) : State :=
 
 /-! ## Running it -/
 
--- Given no argument it exits with status 2, having written nothing.
-#guard wroteAndExited "" 2 (runMemFinal linux 1000 (startWith ["cat"] []))
-#guard wroteAndExited "" 2 (runMemFinal linux 1000 (startWith [] []))
+def someFiles : List File :=
+  [fileOf "a" (bytesOf "one\n"), fileOf "b" (bytesOf "two\n"), fileOf "c" (bytesOf "three\n")]
 
--- With no such file it exits with status 1.
-#guard wroteAndExited "" 1 (runMemFinal linux 1000 (startWith ["cat", "input.txt"] []))
+-- Given no file to print it prints nothing, whether or not it was told its
+-- own name.
+#guard wroteAndExited "" 0 (runMemFinal linux 1000 (startWith ["cat"] someFiles))
+#guard wroteAndExited "" 0 (runMemFinal linux 1000 (startWith [] someFiles))
 
--- The file named comes out as it is; other files are left alone.
-#guard wroteAndExited "one\ntwo\n" 0
-  (runMemFinal linux 1000
-    (startWith ["cat", "input.txt"]
-      [fileOf "other.txt" (bytesOf "no"), fileOf "input.txt" (bytesOf "one\ntwo\n")]))
+-- One file comes out as it is.
+#guard wroteAndExited "two\n" 0 (runMemFinal linux 1000 (startWith ["cat", "b"] someFiles))
 
-#guard wroteAndExited "no" 0
-  (runMemFinal linux 1000
-    (startWith ["cat", "other.txt"]
-      [fileOf "other.txt" (bytesOf "no"), fileOf "input.txt" (bytesOf "one\ntwo\n")]))
+-- Several come out one after another, in the order asked for.
+#guard wroteAndExited "three\none\ntwo\none\n" 0
+  (runMemFinal linux 10000 (startWith ["cat", "c", "a", "b", "a"] someFiles))
+
+-- It stops at the first file it cannot open, having printed those before it.
+#guard wroteAndExited "one\n" 1
+  (runMemFinal linux 10000 (startWith ["cat", "a", "missing", "b"] someFiles))
 
 -- A file longer than the buffer takes several reads.
 def long : List Byte := (List.range 200).map (BitVec.ofNat 8 ·)
@@ -178,9 +186,9 @@ def long : List Byte := (List.range 200).map (BitVec.ofNat 8 ·)
 #guard (runMemFinal linux 10000
   (startWith ["cat", "long"] [fileOf "long" long])).1.world.output == long
 
--- When it has finished, the descriptor it was given is closed again.
+-- When it has finished, every descriptor it was given is closed again.
 #guard (runMemFinal linux 10000
-  (startWith ["cat", "long"] [fileOf "long" long])).1.world.fds.length == 3
+  (startWith ["cat", "c", "a", "b"] someFiles)).1.world.fds.length == 3
 
 -- A file the program may not read is not opened.
 #guard wroteAndExited "" 1
@@ -189,8 +197,8 @@ def long : List Byte := (List.range 200).map (BitVec.ofNat 8 ·)
 
 end Cat
 
-/-- `lake exe cat -- FILE` runs the program on the machine with code in
-memory, given that file of this machine. With `--elf FILE`, writes the
+/-- `lake exe cat -- FILE...` runs the program on the machine with code in
+memory, given those files of this machine. With `--elf FILE`, writes the
 program as a Linux executable. -/
 def main (args : List String) : IO UInt32 :=
   exeMain Cat.entry.toNat Cat.image Cat.dataBytes (Cat.startArgs []) args (writable := true)
