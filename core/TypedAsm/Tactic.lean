@@ -9,6 +9,7 @@ import TypedAsm.RegMap
 import TypedAsm.Entry
 import TypedAsm.EndToEnd
 import TypedAsm.Lookup
+import TypedAsm.FnEx
 
 /-!
 # Tactics for typing programs
@@ -49,6 +50,9 @@ needs an argument, typically a fact about values at a branch.
   is where a call takes the blocks it hands over from. A system call's
   buffer may be in an owned block, and a signature may take and give blocks
   (`FnSig.takes`, `FnSig.gives`).
+* `ty_call sig returning ret` types a call to a function that hands back
+  something it made (`FnSigEx`); inside such a function, `ty_return_as x`
+  says which of the contexts it returns into.
 * `ty_byte as b` types the load of a byte of text and splits on it: zero, or
   some `b` that is not, after which the pointer may be stepped forward.
 * `ctx_sub` and `sub_regs` compare contexts.
@@ -379,10 +383,19 @@ macro "ty_flags" : tactic => do
     | exact fun _ _ => trivial
     | (rintro f $subst:ident; exact Flags.ofResult_defined _ _ _))
 
+open Lean Meta Elab Tactic in
+/-- Proves `CtxSub Γ Δ` when `Δ` is still to be chosen, by choosing `Γ`: a
+label that allows every context allows this one. -/
+elab "ctx_same" : tactic => withMainContext do
+  let t := (← instantiateMVars (← (← getMainGoal).getType)).consumeMData
+  unless t.isAppOfArity ``CtxSub 2 && t.appArg!.isMVar do
+    throwError "the context to compare with is known"
+  evalTactic (← `(tactic| exact CtxSub.refl _))
+
 /-- Proves `CtxSub Γ Δ`. The stack, room and flags must be settled
 automatically; register comparisons it cannot settle are left as goals. -/
 macro "ctx_sub" : tactic =>
-  `(tactic| (
+  `(tactic| first | ctx_same | (
     refine CtxSub.mk ?regs ?stack ?room ?flags ?sp ?owned
     case owned => rfl
     case stack => ty_stack
@@ -406,7 +419,11 @@ macro "ty_field" : tactic =>
   `(tactic| first
     | rfl
     | (refine getElem?_replicate_of_lt ?_
-       first | assumption | omega | (simp; first | assumption | omega))
+       first
+         | assumption
+         | omega
+         | (simp; first | assumption | omega)
+         | (simp [Scale.shift]; first | assumption | omega))
     -- a slot after the first of a list that goes on as a run of one type
     | (show (_ :: _)[_ + 1]? = _
        rw [List.getElem?_cons_succ]
@@ -474,6 +491,7 @@ macro "ty_operand" : tactic =>
   `(tactic| first
     | ty_rule_ordered ReadOk.reg | ty_rule_ordered ReadOk.slot | ty_rule_ordered ReadOk.field
     | ty_rule_ordered ReadOk.owned | ty_rule_ordered WriteIntOk.owned
+    | ty_rule_ordered ReadOk.ownedAt | ty_rule_ordered WriteIntOk.ownedAt
     | ty_rule_ordered ReadOk.indexed | ty_rule_ordered ReadOk.global_of
     | ty_rule_ordered WriteIntOk.reg | ty_rule_ordered WriteIntOk.slot
     | ty_rule_ordered WriteIntOk.field | ty_rule_ordered WriteIntOk.indexed
@@ -493,52 +511,7 @@ macro "ty_inside" : tactic =>
 looked for among the first few the context lists, and is the one the address
 falls inside. The address may be written from the block's own start or from
 that of a block next to it, as it is or with a known amount added. -/
-macro "ty_owned_at" : tactic =>
-  `(tactic| first
-    | (refine' OwnedAt.of_inside (k := 0) ?entry ?addr ?inside
-       case entry => rfl
-       case addr =>
-         -- matched as written: comparing two addresses by working them out
-         -- is slow, and settles nothing when one is not known
-         with_reducible first
-         | rfl
-         | exact BitVec.add_assoc _ _ _
-         | exact OwnedAt.addr_sub _ _ _
-         | exact OwnedAt.addr_sub' _ _ _ _
-       case inside => ty_inside)
-    | (refine' OwnedAt.of_inside (k := 1) ?entry ?addr ?inside
-       case entry => rfl
-       case addr =>
-         -- matched as written: comparing two addresses by working them out
-         -- is slow, and settles nothing when one is not known
-         with_reducible first
-         | rfl
-         | exact BitVec.add_assoc _ _ _
-         | exact OwnedAt.addr_sub _ _ _
-         | exact OwnedAt.addr_sub' _ _ _ _
-       case inside => ty_inside)
-    | (refine' OwnedAt.of_inside (k := 2) ?entry ?addr ?inside
-       case entry => rfl
-       case addr =>
-         -- matched as written: comparing two addresses by working them out
-         -- is slow, and settles nothing when one is not known
-         with_reducible first
-         | rfl
-         | exact BitVec.add_assoc _ _ _
-         | exact OwnedAt.addr_sub _ _ _
-         | exact OwnedAt.addr_sub' _ _ _ _
-       case inside => ty_inside)
-    | (refine' OwnedAt.of_inside (k := 3) ?entry ?addr ?inside
-       case entry => rfl
-       case addr =>
-         -- matched as written: comparing two addresses by working them out
-         -- is slow, and settles nothing when one is not known
-         with_reducible first
-         | rfl
-         | exact BitVec.add_assoc _ _ _
-         | exact OwnedAt.addr_sub _ _ _
-         | exact OwnedAt.addr_sub' _ _ _ _
-       case inside => ty_inside))
+syntax "ty_owned_at" : tactic
 
 /-- The address of a field reached through an index scaled by eight. -/
 theorem owned_addr8 (a c : BitVec 64) (disp : BitVec 32) (h8 : disp.toNat % 8 = 0)
@@ -561,40 +534,25 @@ theorem owned_addrOff (a d : BitVec 64) (h : d.toNat % 8 = 0) :
 
 /-- Proves which field of an owned block an address reached through an index
 is that of: the block is the one the base register holds the address of. -/
-macro "ty_owned_idx" : tactic =>
-  `(tactic| first
-    | (refine' OwnedIdx.mk (k := 0) ?entry ?addr ?fit
-       case entry => rfl
-       case addr =>
-         first
-         | exact owned_addr8 _ _ _ (by decide) (by decide)
-         | exact owned_addr0 _
-         | exact owned_addrOff _ _ (by decide)
-       case fit => ty_inside)
-    | (refine' OwnedIdx.mk (k := 1) ?entry ?addr ?fit
-       case entry => rfl
-       case addr =>
-         first
-         | exact owned_addr8 _ _ _ (by decide) (by decide)
-         | exact owned_addr0 _
-         | exact owned_addrOff _ _ (by decide)
-       case fit => ty_inside)
-    | (refine' OwnedIdx.mk (k := 2) ?entry ?addr ?fit
-       case entry => rfl
-       case addr =>
-         first
-         | exact owned_addr8 _ _ _ (by decide) (by decide)
-         | exact owned_addr0 _
-         | exact owned_addrOff _ _ (by decide)
-       case fit => ty_inside)
-    | (refine' OwnedIdx.mk (k := 3) ?entry ?addr ?fit
-       case entry => rfl
-       case addr =>
-         first
-         | exact owned_addr8 _ _ _ (by decide) (by decide)
-         | exact owned_addr0 _
-         | exact owned_addrOff _ _ (by decide)
-       case fit => ty_inside))
+syntax "ty_owned_idx" : tactic
+
+/-- The address reached through an index with any scale, as a number of
+bytes from the base. -/
+theorem owned_addrScaled (a c : BitVec 64) (sc : Scale) (disp : BitVec 32)
+    (hd : disp.toNat < 2 ^ 31) :
+    a + (c <<< sc.shift) + disp.signExtend 64
+      = a + BitVec.ofNat 64 (c.toNat * 2 ^ sc.shift + disp.toNat) := by
+  rw [BitVec.add_assoc]
+  congr 1
+  apply BitVec.eq_of_toNat_eq
+  rw [sext_toNat hd]
+  simp only [BitVec.toNat_add, BitVec.toNat_shiftLeft, BitVec.toNat_ofNat, Nat.shiftLeft_eq]
+  generalize c.toNat * 2 ^ sc.shift = m
+  omega
+
+/-- Proves which byte of an owned block an address reached through an index
+is that of. -/
+syntax "ty_owned_byte" : tactic
 
 open Lean Meta Elab Tactic in
 /-- Fails unless the goal is a proposition. A rule's unknowns are goals too,
@@ -615,9 +573,16 @@ macro_rules
       | exact EaIs.indexed (by decide) rfl rfl
       | ty_owned_at
       | ty_owned_idx
+      | ty_owned_byte
       -- a bound against the length of a long list, without counting it out
       | (simp only [List.length_replicate, List.length_set, List.length_cons, List.length_nil]
          first | decide | omega)
+      -- a bound on a byte reached through an index, from a bound on the index
+      | (simp only [List.length_replicate, List.length_set, List.length_cons, List.length_nil,
+           Scale.shift, NarrowW.bytes, BitVec.toNat_ofNat, BitVec.reduceToNat, Nat.reducePow,
+           Nat.reduceMod,
+           Nat.reduceMul, Nat.reduceAdd, Nat.reduceDiv, Nat.mul_one, Nat.add_zero, Nat.pow_zero]
+         omega)
       | (refine slotDisp_of _ ?_ ?_ <;> decide)
       | (refine innerDisp_of _ ?_ <;> decide)
       | ty_field
@@ -1575,10 +1540,10 @@ private def typeBufferOwned (goal : MVarId) (rule : Name) (sized : Bool) : Tacti
   let r := mkIdent rule
   let tac ← if sized then
       `(tactic| refine BlockOk.sys (by ty_fetch)
-          ($r (k := ?_) (lo := ?_) (a := ?_) (v := ?_) (F := ?_) (len := ?_) ?_ ?_ ?_ ?_ ?_ ?_) ?_)
+          ($r (k := ?_) (lo := ?_) (a := ?_) (v := ?_) (F := ?_) (len := ?_) ?_ ?_ ?_ ?_ ?_) ?_)
     else
       `(tactic| refine BlockOk.sys (by ty_fetch)
-          ($r (k := ?_) (lo := ?_) (a := ?_) (v := ?_) (F := ?_) ?_ ?_ ?_ ?_ ?_) ?_)
+          ($r (k := ?_) (lo := ?_) (a := ?_) (v := ?_) (F := ?_) ?_ ?_ ?_ ?_) ?_)
   let gs ← runOn goal (do evalTactic tac)
   -- what the registers hold, then which block and field the buffer starts at
   for g in gs do
@@ -1640,6 +1605,12 @@ private def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
     let rest ← typeBufferOwned goal (Name.mkStr rule.getPrefix (rule.getString! ++ "_owned")) sized
     setGoals [rest]
     evalTactic (← `(tactic| ty_normalize))
+    -- the fields the call covered are integers now, whatever they were
+    evalTactic (← `(tactic| try simp only [Linux.intRun_replicate_int]))
+    evalTactic (← `(tactic| try simp only [Linux.intRun_all, List.length_set,
+      List.length_replicate, List.length_cons, List.length_nil, Nat.reduceAdd, Nat.le_refl,
+      Nat.reduceLeDiff]))
+    evalTactic (← `(tactic| try simp only [Linux.intRun]))
     return
   catch _ => saved.restore
   let gs ← applySysRule goal rule (.block sized)
@@ -2085,6 +2056,17 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
           refine BlockOk.last (by ty_fetch)
             (FnSig.ret_of (sig := ?_) (saved := ?_) ?caller ?regs ?sp rfl rfl ?own))))
       catch _ =>
+        let family ← goal.withContext do
+          try
+            let t := (← instantiateMVars (← goal.getType)).consumeMData
+            let stack ← whnf (← mkAppM ``CtxOf.stack #[t.appArg!])
+            pure (stack.isAppOfArity ``List.cons 3 &&
+              (← whnf stack.appFn!.appArg!).isAppOf ``Ty.codeAll)
+          catch _ => pure false
+        if family then
+          throwError "`ret`: the return address here is ready for a family of contexts, one \
+            for each value the function may hand back; say which the function returns into \
+            with `ty_return_as`"
         throwError "`ret` needs a return address on top of the stack, but the context does \
           not have one there"
     let mut left := []
@@ -2093,7 +2075,9 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
       let t ← instantiateMVars (← g.getType)
       if t.isAppOf ``FnSig.CallerOk then
         try
-          discard <| runOn g (do evalTactic (← `(tactic| assumption)))
+          discard <| runOn g (do evalTactic (← `(tactic| first
+            | assumption
+            | exact FnSigEx.CallerOk.each (by assumption) _)))
         catch _ =>
           throwError "`ret` needs the caller's requirement (`sig.CallerOk …`) among the hypotheses"
       else if t.isAppOf ``Sub then
@@ -2102,7 +2086,8 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
         try
           discard <| deep <| runOn g (do evalTactic (← `(tactic| first
             | rfl
-            | exact FnSig.CallerOk.owned_back (by assumption) rfl)))
+            | exact FnSig.CallerOk.owned_back (by assumption) rfl
+            | exact FnSigEx.CallerOk.owned_back (by assumption) _ rfl)))
         catch _ =>
           throwError "`ret`: the blocks owned here are not the ones the function gives back, \
             followed by the caller's own; a function must hand back what its signature says \
@@ -2141,7 +2126,9 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
     let leftTaken ← if ← closeIfImpossible takenAcc then pure [] else proveAccepts takenAcc
     let [rest'] ← runOn rest introBranch | throwError "unexpected goals"
     if ← closeIfImpossible rest' then return .done leftTaken
-    return .continues rest' leftTaken
+    let [rest''] ← runOn rest' (do evalTactic (← `(tactic| ty_normalize)))
+      | throwError "unexpected goals"
+    return .continues rest'' leftTaken
   | .jmp (.ind _) =>
     let before ← saveState
     -- a tail call through a function pointer, on behalf of this function's caller
@@ -2366,6 +2353,64 @@ elab "ty_call " sig:term : tactic => do
           | none => throw e
       left := left ++ after
   setGoals (left ++ others)
+
+/-- `ty_call sig returning ret` types a direct `call` that ends a block, to
+a function whose signature `sig : FnSigEx` has results that depend on a
+value the function chooses as it returns: typically the address of a block
+it made. `ret` gives the context at the instruction after the call for each
+such value, and the label there must allow all of them. -/
+elab "ty_call " sig:term " returning " ret:term : tactic => do
+  let goal ← getMainGoal
+  let others := (← getGoals).drop 1
+  let gs ← try
+      runOn goal (do evalTactic (← `(tactic|
+        refine BlockOk.last (by ty_fetch)
+          (FnSigEx.call_ok (sig := $sig) (ret := $ret) (frame := ?_) ?callee rfl ?retpoint ?args
+            ?sp ?back ?need ?own ?gives ?frame))))
+    catch _ =>
+      throwError "ty_call: the instruction here must be a direct call, with room on the stack \
+        for the return address"
+  let mut left : List MVarId := []
+  let [entry] ← runOn (← goalNamed gs `callee) (do evalTactic (← `(tactic| intro _ _ _ _ _ hK)))
+    | throwError "ty_call: unexpected goals"
+  left := left ++ (← proveAtLabel entry (pure []))
+  let [back] ← runOn (← goalNamed gs `retpoint) (do evalTactic (← `(tactic| intro x)))
+    | throwError "ty_call: unexpected goals"
+  left := left ++ (← proveAtLabel back (pure []))
+  left := left ++ (← runOn (← goalNamed gs `args) (do evalTactic (← `(tactic| sub_regs))))
+  left := left ++ (← runOn (← goalNamed gs `sp) (do evalTactic (← `(tactic| ty_sub))))
+  try
+    discard <| deep <| runOn (← goalNamed gs `own) (do evalTactic (← `(tactic| rfl)))
+    discard <| deep <| runOn (← goalNamed gs `gives) (do evalTactic (← `(tactic| (intro x; rfl))))
+    discard <| deep <| runOn (← goalNamed gs `frame) (do evalTactic (← `(tactic| (intro x; rfl))))
+  catch _ =>
+    throwError "ty_call: the blocks owned do not match. Those owned here must be the ones \
+      the function takes, in its order, then any others; and whatever value the function \
+      chooses, the return point must own the ones the function gives, then those others"
+  left := left ++ (← runOn (← goalNamed gs `back) (do evalTactic (← `(tactic| (intro x; ctx_sub)))))
+  left := left ++ (← runOn (← goalNamed gs `need) (do evalTactic (← `(tactic| first | decide | omega))))
+  setGoals (left ++ others)
+
+/-- `ty_return_as x`: the function's return address is ready for a family of
+contexts, and the function has decided it returns into the one for `x`. From
+here on the return address is typed as code for that context alone, which is
+what `ret` needs. -/
+elab "ty_return_as " x:term : tactic => do
+  let goal ← getMainGoal
+  let others := (← getGoals).drop 1
+  for i in [0:16] do
+    let saved ← saveState
+    try
+      setGoals [goal]
+      let iq := Syntax.mkNumLit (toString i)
+      Tactic.withoutRecover do
+        evalTactic (← `(tactic| refine BlockOk.chooseRet (i := $iq) $x rfl ?_))
+      evalTactic (← `(tactic| ty_normalize))
+      setGoals ((← getGoals) ++ others)
+      return
+    catch _ => saved.restore
+  throwError "ty_return_as: there is no return address ready for a family of contexts on the \
+    stack here"
 
 /-- `ty_code_ptr r to Δ`: register `r` holds exactly the address of a label
 that allows context `Δ`; from here on it is a pointer to code expecting `Δ`,
@@ -2613,11 +2658,88 @@ private def closeLookups (gs : List MVarId) : TacticM Unit := do
         setGoals [g]
         Tactic.withoutRecover do evalTactic (← `(tactic| rfl))
 
-/-- Applies a rule about the owned block at one of the first few places in
-the context's list, whichever fits, and returns the goals it leaves. -/
-private def withOwnedPlace (mk : Nat → TacticM (TSyntax `tactic)) (failure : MessageData)
-    (places : List Nat := [0, 1, 2, 3]) : TacticM (List MVarId) := deep do
+/-- How many blocks a list of owned blocks has, as far as it is written out. -/
+private def ownedCount (owned : Expr) : MetaM Nat := do
+  let mut e ← whnf owned
+  let mut n := 0
+  while e.isAppOfArity ``List.cons 3 do
+    n := n + 1
+    e ← whnf e.appArg!
+  return n
+
+/-- How many blocks the context of the block goal owns. -/
+private def ownedCountHere : TacticM Nat := withMainContext do
+  let t := (← instantiateMVars (← (← getMainGoal).getType)).consumeMData
+  unless t.isAppOfArity ``BlockOk 6 do return 0
+  ownedCount (← mkAppM ``CtxOf.owned #[t.appArg!])
+
+/-- Closes the goal with the tactic made for one of the places `0` to
+`count - 1`, the first that works. -/
+private def tryPlaces (count : Nat) (mk : Nat → TacticM (TSyntax `tactic)) : TacticM Unit :=
+  deep do
   let goal ← getMainGoal
+  for k in [0:count] do
+    let saved ← saveState
+    try
+      setGoals [goal]
+      Tactic.withoutRecover do evalTactic (← mk k)
+      if (← getGoals).isEmpty then return
+      saved.restore
+    catch _ => saved.restore
+  throwError "no owned block fits"
+
+/-- The list of owned blocks a goal about one of them is stated for: its
+first explicit argument. -/
+private def ownedOfGoal : TacticM Expr := withMainContext do
+  let t ← whnfR (← instantiateMVars (← (← getMainGoal).getType))
+  let some owned := t.getAppArgs[0]? | throwError "not a goal about an owned block"
+  return owned
+
+elab_rules : tactic
+  | `(tactic| ty_owned_at) => do
+    tryPlaces (← ownedCount (← ownedOfGoal)) fun k => do
+      let kq := Syntax.mkNumLit (toString k)
+      `(tactic| (
+          refine' OwnedAt.of_inside (k := $kq) ?entry ?addr ?inside
+          case entry => rfl
+          case addr =>
+            -- matched as written: comparing two addresses by working them out
+            -- is slow, and settles nothing when one is not known
+            with_reducible first
+            | rfl
+            | exact BitVec.add_assoc _ _ _
+            | exact OwnedAt.addr_sub _ _ _
+            | exact OwnedAt.addr_sub' _ _ _ _
+          case inside => ty_inside))
+  | `(tactic| ty_owned_idx) => do
+    tryPlaces (← ownedCount (← ownedOfGoal)) fun k => do
+      let kq := Syntax.mkNumLit (toString k)
+      `(tactic| (
+          refine' OwnedIdx.mk (k := $kq) ?entry ?addr ?fit
+          case entry => rfl
+          case addr =>
+            first
+            | exact owned_addr8 _ _ _ (by decide) (by decide)
+            | exact owned_addr0 _
+            | exact owned_addrOff _ _ (by decide)
+          case fit => ty_inside))
+  | `(tactic| ty_owned_byte) => do
+    tryPlaces (← ownedCount (← ownedOfGoal)) fun k => do
+      let kq := Syntax.mkNumLit (toString k)
+      `(tactic| (
+          refine' OwnedByte.mk (k := $kq) ?entry ?addr ?fit
+          case entry => rfl
+          case addr => exact owned_addrScaled _ _ _ _ (by decide)
+          case fit => ty_inside))
+
+/-- Applies a rule about the owned block at one of the places in the
+context's list, whichever fits, and returns the goals it leaves. -/
+private def withOwnedPlace (mk : Nat → TacticM (TSyntax `tactic)) (failure : MessageData)
+    (places? : Option (List Nat) := none) : TacticM (List MVarId) := deep do
+  let goal ← getMainGoal
+  let places ← match places? with
+    | some ps => pure ps
+    | none => pure (List.range (← ownedCountHere))
   for k in places do
     let saved ← saveState
     try
@@ -2665,7 +2787,7 @@ elab_rules : tactic
 
 /-- Freezes the owned block whose address is in a register, with the rule given. -/
 private def freezeWith (mk : Nat → TacticM (TSyntax `tactic)) (name : String := "ty_freeze")
-    (after : TacticM Unit := pure ()) (places : List Nat := [0, 1, 2, 3])
+    (after : TacticM Unit := pure ()) (places : Option (List Nat) := none)
     (failure : MessageData :=
       m!"{name}: the register must hold exactly the address of a block the context owns") :
     TacticM Unit := do
@@ -2737,13 +2859,14 @@ ends. From here on it owns one block in their place, with the fields of the
 first followed by those of the second. -/
 elab_rules : tactic
   | `(tactic| ty_join $r) => do
+    let n ← ownedCountHere
     freezeWith (name := "ty_join")
-      (places := (List.range 16).filter fun c => c / 4 ≠ c % 4)
+      (places := some ((List.range (n * n)).filter fun c => c / n ≠ c % n))
       (failure := m!"ty_join: the register must hold exactly the address of a block the \
         context owns, and the context must own the block that starts where that one ends")
       (fun c => do
-        let k₁ := Syntax.mkNumLit (toString (c / 4))
-        let k₂ := Syntax.mkNumLit (toString (c % 4))
+        let k₁ := Syntax.mkNumLit (toString (c / n))
+        let k₂ := Syntax.mkNumLit (toString (c % n))
         `(tactic| refine BlockOk.joinOwned (r := $r) (k₁ := $k₁) (k₂ := $k₂) (base := ?_)
             (F₁ := ?_) (F₂ := ?_) ?_ ?_ ?_ ?_ ?_ ?_))
       (do evalTactic (← `(tactic| try simp only [List.replicate_append_replicate,

@@ -57,6 +57,9 @@ theorem Sub.trans {τ υ φ : Ty} (h₁ : Sub τ υ) (h₂ : Sub υ φ) : Sub τ
     cases h₁ with
     | refl => exact .strLess more
     | strLess => exact .strLess more
+  | codeAll pre x =>
+    cases h₁ with
+    | refl => exact .codeAll pre x
   | orErr _ ih => exact .orErr (ih h₁)
   | orErrMono h ih =>
     cases h₁ with
@@ -864,6 +867,14 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
     Accepts Φ (next + d.signExtend 64)
       { Γ.moveSp (-8) with stack := .code ret :: Γ.stack, room := n } →
     HasType Φ fetch sys Ψ next Γ (.call (.rel d))
+  /-- A call whose return address is typed as code ready for any of a family
+  of contexts: the instruction after the call must be typed for each. The
+  callee chooses which one it returns into, once it knows. -/
+  | callAll {Γ : Ctx} {ret : BitVec 64 → Ctx} {d : BitVec 32} {n : Nat} : Γ.room = n + 1 →
+    (∀ x, Φ next (ret x)) →
+    Accepts Φ (next + d.signExtend 64)
+      { Γ.moveSp (-8) with stack := .codeAll ret :: Γ.stack, room := n } →
+    HasType Φ fetch sys Ψ next Γ (.call (.rel d))
   /-- A return needs a code pointer on top of the stack, and the state with it
   popped must match what that code requires. -/
   | ret {Γ Δ : Ctx} {σ : List Ty} : Γ.stack = .code Δ :: σ →
@@ -995,5 +1006,36 @@ theorem Straight.storeOwnedKeepAt {Ψ : MemTy} {next : BitVec 64} {Γ : Ctx} {s 
   have e := hat.toNat (List.getElem?_eq_some_iff.mp hi).1
   exact .storeOwnedKeep hs he ⟨hat.entry, hat.addr⟩ (by rw [e]; omega)
     (by rw [e, Nat.mul_div_cancel_left _ (by decide)]; exact hi) hsub
+
+/-- Where an address falls in an owned block, by the number of the byte: the
+block at place `k` is at `a` with fields `F`, and the address is `j` bytes
+into it. For an index that counts bytes and is not known exactly. -/
+structure OwnedByte (owned : List (BitVec 64 × List Ty)) (k : Nat) (a : BitVec 64) (F : List Ty)
+    (p : BitVec 64) (j : Nat) : Prop where
+  entry : owned[k]? = some (a, F)
+  addr : p = a + BitVec.ofNat 64 j
+  fit : 8 * F.length ≤ 2 ^ 64
+
+theorem OwnedByte.toNat {owned : List (BitVec 64 × List Ty)} {k : Nat} {a p : BitVec 64}
+    {F : List Ty} {j : Nat} (h : OwnedByte owned k a F p j) (hj : j < 8 * F.length) :
+    (BitVec.ofNat 64 j).toNat = j := by
+  have := h.fit
+  rw [BitVec.toNat_ofNat, Nat.mod_eq_of_lt (by omega)]
+
+/-- Reading bytes of an owned block, the first given by its number. -/
+theorem ReadOk.ownedAt {Ψ : MemTy} {next : BitVec 64} {Γ : Ctx} {n : Nat} {m : Mem} {k j : Nat}
+    {a p : BitVec 64} {F : List Ty} (he : EaIs Γ m p) (hat : OwnedByte Γ.owned k a F p j)
+    (hn : 0 < n) (hin : j + n ≤ 8 * F.length) : ReadOk Ψ next Γ n (.mem m) :=
+  .owned he ⟨hat.entry, hat.addr⟩ (by rw [hat.toNat (by omega)]; exact hin)
+
+/-- Overwriting bytes within one integer field of an owned block, the first
+byte given by its number. -/
+theorem WriteIntOk.ownedAt {Ψ : MemTy} {next : BitVec 64} {Γ : Ctx} {n : Nat} {m : Mem}
+    {k j : Nat} {a p : BitVec 64} {F : List Ty} (he : EaIs Γ m p)
+    (hat : OwnedByte Γ.owned k a F p j) (hi : F[j / 8]? = some .int) (hk : j % 8 + n ≤ 8) :
+    WriteIntOk Ψ next Γ n (.mem m) Γ := by
+  have hlt := (List.getElem?_eq_some_iff.mp hi).1
+  have e := hat.toNat (j := j) (by omega)
+  exact .owned he ⟨hat.entry, hat.addr⟩ (by rw [e]; exact hi) (by rw [e]; exact hk)
 
 end TypedAsm

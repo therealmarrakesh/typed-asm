@@ -724,6 +724,88 @@ theorem storeBytes_ok_stack {sys : Syscall} {r : Reg} {v d : BitVec 64} {cnt : N
     have h1 := hd.1 (by decide)
     bv_omega
 
+/-- A list of field types with the `k` fields from number `lo` on made
+integers: what a block's fields are once a call has stored bytes there. -/
+def intRun : List Ty → Nat → Nat → List Ty
+  | [], _, _ => []
+  | τ :: rest, 0, 0 => τ :: rest
+  | _ :: rest, 0, k + 1 => .int :: intRun rest 0 k
+  | τ :: rest, lo + 1, k => τ :: intRun rest lo k
+
+theorem length_intRun (F : List Ty) (lo k : Nat) : (intRun F lo k).length = F.length := by
+  induction F generalizing lo k with
+  | nil => rfl
+  | cons τ rest ih =>
+    cases lo with
+    | zero => cases k <;> simp [intRun, ih]
+    | succ lo => simp [intRun, ih]
+
+theorem intRun_outside (F : List Ty) (lo k j : Nat) (h : j < lo ∨ lo + k ≤ j) :
+    (intRun F lo k)[j]? = F[j]? := by
+  induction F generalizing lo k j with
+  | nil => rfl
+  | cons τ rest ih =>
+    cases lo with
+    | zero =>
+      cases k with
+      | zero => rfl
+      | succ k =>
+        cases j with
+        | zero => omega
+        | succ j => simp only [intRun, List.getElem?_cons_succ]; exact ih 0 k j (by omega)
+    | succ lo =>
+      cases j with
+      | zero => rfl
+      | succ j => simp only [intRun, List.getElem?_cons_succ]; exact ih lo k j (by omega)
+
+theorem intRun_inside (F : List Ty) (lo k j : Nat) (h₁ : lo ≤ j) (h₂ : j < lo + k)
+    (hlen : j < F.length) : (intRun F lo k)[j]? = some .int := by
+  induction F generalizing lo k j with
+  | nil => simp at hlen
+  | cons τ rest ih =>
+    cases lo with
+    | zero =>
+      cases k with
+      | zero => omega
+      | succ k =>
+        cases j with
+        | zero => rfl
+        | succ j =>
+          simp only [intRun, List.getElem?_cons_succ]
+          exact ih 0 k j (by omega) (by omega) (by simpa using hlen)
+    | succ lo =>
+      cases j with
+      | zero => omega
+      | succ j =>
+        simp only [intRun, List.getElem?_cons_succ]
+        exact ih lo k j (by omega) (by omega) (by simpa using hlen)
+
+/-- A whole list made integers is that many integers. -/
+theorem intRun_all (F : List Ty) (k : Nat) (h : F.length ≤ k) :
+    intRun F 0 k = List.replicate F.length .int := by
+  induction F generalizing k with
+  | nil => rfl
+  | cons τ rest ih =>
+    cases k with
+    | zero => simp at h
+    | succ k =>
+      simp only [intRun, List.length_cons, List.replicate_succ]
+      rw [ih k (by simpa using h)]
+
+/-- A run of integers made integers is as it was. -/
+theorem intRun_replicate_int (n lo k : Nat) :
+    intRun (List.replicate n .int) lo k = List.replicate n .int := by
+  induction n generalizing lo k with
+  | zero => rfl
+  | succ n ih =>
+    rw [List.replicate_succ]
+    cases lo with
+    | zero =>
+      cases k with
+      | zero => rfl
+      | succ k => simp only [intRun, ih]
+    | succ lo => simp only [intRun, ih]
+
 /-- Bytes stored in a run of fields of an owned block leave the state well
 typed, whatever they are, with those fields integers from then on and the
 others as they were. -/
@@ -811,6 +893,19 @@ theorem ok_owned {sys : Syscall} {k lo cnt : Nat} {a v : BitVec 64} {F F' : List
       ((storeBytes_ok_owned (data := data) h hΨ hr hbuf hat hle hlen' hsame hints
         (by omega)).congr
         (t := { s.storeBytes (s.getReg r) data with world := w }) rfl rfl rfl rfl) v'
+
+/-- A call that fills a buffer lying in a run of fields of an owned block
+keeps the state well typed, whatever those fields held: they are integers
+afterwards. -/
+theorem ok_owned_run {sys : Syscall} {k lo cnt : Nat} {a v : BitVec 64} {F : List Ty}
+    (hf : Fills s (s.getReg r) room t) (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF)
+    (hr : r ≠ .rsp) (hbuf : Γ.regs r = .eq v) (hat : OwnedIdx Γ.owned k a F v lo)
+    (hle : lo + cnt ≤ F.length) (hroom : room ≤ 8 * cnt) :
+    WellTyped fetch sys Ψ n
+      ({ Γ with owned := Γ.owned.set k (a, intRun F lo cnt) } : Ctx).afterSyscall t :=
+  ok_owned hf h hΨ hr hbuf hat hle (length_intRun F lo cnt)
+    (fun j hj => intRun_outside F lo cnt j hj)
+    (fun j h₁ h₂ => intRun_inside F lo cnt j h₁ h₂ (by omega)) hroom
 
 /-- The same when the fields are integers already: the context stays as it is. -/
 theorem ok_owned_int {sys : Syscall} {k lo cnt : Nat} {a v : BitVec 64} {F : List Ty}
@@ -1373,64 +1468,68 @@ theorem linux_getrandom_stack {v d len : BitVec 64} (hΓ : Γ.regs .rax = .eq 31
     hf.ok_stack h hΨ (by decide) hsp hbuf h8 hints (by omega)⟩
 
 /-- `read` into memory the program owns: the buffer starts at a field of an
-owned block and lies in integer fields of it. -/
+owned block and lies within it. Whatever the fields it covers held, they are
+integers afterwards. -/
 theorem linux_read_owned {k lo : Nat} {a v : BitVec 64} {F : List Ty} {len : BitVec 64}
     (hΓ : Γ.regs .rax = .eq 0) (hbuf : Γ.regs .rsi = .eq v)
     (hat : OwnedIdx Γ.owned k a F v lo)
     (hlen : Γ.regs .rdx = .eq len)
-    (hle : lo + (len.toNat + 7) / 8 ≤ F.length)
-    (hints : ∀ j, j < (len.toNat + 7) / 8 → F[lo + j]? = some .int) :
-    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+    (hle : lo + ((len.toNat + 7) / 8) ≤ F.length) :
+    SysReturns fetch linux Ψ Γ
+      ({ Γ with owned := Γ.owned.set k (a, Linux.intRun F lo ((len.toNat + 7) / 8)) } : Ctx).afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.read_fills s
   rw [h.eqReg (by decide) hlen] at hf
   exact ⟨Linux.read s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
-    hf.ok_owned_int h hΨ (by decide) hbuf hat hle hints (by omega)⟩
+    hf.ok_owned_run h hΨ (by decide) hbuf hat hle (by omega)⟩
 
 /-- `fstat` into memory the program owns: the buffer starts at a field of an
-owned block and lies in integer fields of it. -/
+owned block and lies within it. Whatever the fields it covers held, they are
+integers afterwards. -/
 theorem linux_fstat_owned {k lo : Nat} {a v : BitVec 64} {F : List Ty}
     (hΓ : Γ.regs .rax = .eq 5) (hbuf : Γ.regs .rsi = .eq v)
     (hat : OwnedIdx Γ.owned k a F v lo)
-    (hle : lo + 18 ≤ F.length)
-    (hints : ∀ j, j < 18 → F[lo + j]? = some .int) :
-    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+    (hle : lo + 18 ≤ F.length) :
+    SysReturns fetch linux Ψ Γ
+      ({ Γ with owned := Γ.owned.set k (a, Linux.intRun F lo 18) } : Ctx).afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.fstat_fills s
   exact ⟨Linux.fstat s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
-    hf.ok_owned_int h hΨ (by decide) hbuf hat hle hints (by omega)⟩
+    hf.ok_owned_run h hΨ (by decide) hbuf hat hle (by omega)⟩
 
 /-- `clock_gettime` into memory the program owns: the buffer starts at a field of an
-owned block and lies in integer fields of it. -/
+owned block and lies within it. Whatever the fields it covers held, they are
+integers afterwards. -/
 theorem linux_clock_gettime_owned {k lo : Nat} {a v : BitVec 64} {F : List Ty}
     (hΓ : Γ.regs .rax = .eq 228) (hbuf : Γ.regs .rsi = .eq v)
     (hat : OwnedIdx Γ.owned k a F v lo)
-    (hle : lo + 2 ≤ F.length)
-    (hints : ∀ j, j < 2 → F[lo + j]? = some .int) :
-    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+    (hle : lo + 2 ≤ F.length) :
+    SysReturns fetch linux Ψ Γ
+      ({ Γ with owned := Γ.owned.set k (a, Linux.intRun F lo 2) } : Ctx).afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.clockGettime_fills s
   exact ⟨Linux.clockGettime s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
-    hf.ok_owned_int h hΨ (by decide) hbuf hat hle hints (by omega)⟩
+    hf.ok_owned_run h hΨ (by decide) hbuf hat hle (by omega)⟩
 
 /-- `getrandom` into memory the program owns: the buffer starts at a field of an
-owned block and lies in integer fields of it. -/
+owned block and lies within it. Whatever the fields it covers held, they are
+integers afterwards. -/
 theorem linux_getrandom_owned {k lo : Nat} {a v : BitVec 64} {F : List Ty} {len : BitVec 64}
     (hΓ : Γ.regs .rax = .eq 318) (hbuf : Γ.regs .rdi = .eq v)
     (hat : OwnedIdx Γ.owned k a F v lo)
     (hlen : Γ.regs .rsi = .eq len)
-    (hle : lo + (len.toNat + 7) / 8 ≤ F.length)
-    (hints : ∀ j, j < (len.toNat + 7) / 8 → F[lo + j]? = some .int) :
-    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+    (hle : lo + ((len.toNat + 7) / 8) ≤ F.length) :
+    SysReturns fetch linux Ψ Γ
+      ({ Γ with owned := Γ.owned.set k (a, Linux.intRun F lo ((len.toNat + 7) / 8)) } : Ctx).afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.getrandom_fills s
   rw [h.eqReg (by decide) hlen] at hf
   exact ⟨Linux.getrandom s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
-    hf.ok_owned_int h hΨ (by decide) hbuf hat hle hints (by omega)⟩
+    hf.ok_owned_run h hΨ (by decide) hbuf hat hle (by omega)⟩
 
 /-- `mmap` for a block of plain fields: with 9 in `rax`, the length in `rsi`,
 3 in `rdx` and 0x22 in `r10`, the call returns an error number or a writable

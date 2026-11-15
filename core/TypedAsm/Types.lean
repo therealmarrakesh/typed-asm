@@ -46,6 +46,11 @@ inductive Ty
   | ptr (fields : List Ty) (writable : Bool) (index : Nat)
   /-- The address of code that is safe to enter when the machine matches `pre`. -/
   | code (pre : CtxOf Ty)
+  /-- The address of code that is safe to enter when the machine matches
+  `pre x`, whichever `x` that is. A function that hands back something it
+  made, at an address not known until it runs, returns through one of
+  these: the place it returns to is ready for any address. -/
+  | codeAll (pre : BitVec 64 → CtxOf Ty)
   /-- The address of a function with this signature (see `FnSig`): it may be
   called by any caller that meets the signature, whatever that caller's own
   stack and whatever it keeps in the preserved registers. -/
@@ -168,6 +173,8 @@ inductive Sub : Ty → Ty → Prop
   | orErrMono {τ υ : Ty} : Sub τ υ → Sub (.orErr τ) (.orErr υ)
   /-- An address known not to be a text's last may be used as any address in it. -/
   | strLess (more : Bool) : Sub (.str true) (.str more)
+  /-- Code ready for every one of a family of contexts is ready for each. -/
+  | codeAll (pre : BitVec 64 → CtxOf Ty) (x : BitVec 64) : Sub (.codeAll pre) (.code (pre x))
 
 /-- Subtyping slot by slot, for two stacks of the same length. -/
 inductive SubList : List Ty → List Ty → Prop
@@ -371,6 +378,10 @@ def HasTy (fetch : Fetch) (sys : Syscall) : MemTy → Nat → Ty → BitVec 64 �
   | Ψ, n, .code pre, v =>
     ∀ k, (hk : k < n) → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, s.rip = v →
       Matches (fun τ w => HasTy fetch sys Ψ' k τ w) Ψ' pre s → SafeN fetch sys k s
+  | Ψ, n, .codeAll pre, v =>
+    ∀ x : BitVec 64, ∀ k, (hk : k < n) → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State,
+      s.rip = v → Matches (fun τ w => HasTy fetch sys Ψ' k τ w) Ψ' (pre x) s →
+      SafeN fetch sys k s
   | Ψ, _, .ref tag writable index, v =>
     ∃ a l, Ψ a = some l ∧ l.tag = some tag ∧ (writable = true → l.writable = true) ∧
       v = a + BitVec.ofNat 64 (8 * index)
@@ -415,6 +426,12 @@ theorem hasTy_code {pre : Ctx} {v : BitVec 64} :
     HasTy fetch sys Ψ n (.code pre) v ↔
       ∀ k, k < n → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, s.rip = v →
         WellTyped fetch sys Ψ' k pre s → SafeN fetch sys k s := by
+  rw [HasTy]
+
+/-- Code ready for a family of contexts is code ready for each of them. -/
+theorem hasTy_codeAll {pre : BitVec 64 → Ctx} {v : BitVec 64} :
+    HasTy fetch sys Ψ n (.codeAll pre) v ↔ ∀ x, HasTy fetch sys Ψ n (.code (pre x)) v := by
+  simp only [hasTy_code]
   rw [HasTy]
 
 theorem hasTy_ref {tag : Nat} {writable : Bool} {index : Nat} {v : BitVec 64} :
@@ -465,6 +482,9 @@ theorem HasTy.mono {m : Nat} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys Ψ n
   | code pre =>
     rw [hasTy_code] at h ⊢
     exact fun k hk => h k (by omega)
+  | codeAll pre =>
+    simp only [hasTy_codeAll, hasTy_code] at h ⊢
+    exact fun x k hk => h x k (by omega)
   | fn args results preserved need takes gives =>
     have e : Ty.fn args results preserved need takes gives = FnSig.ty ⟨args, results, preserved, need, takes, gives⟩ := rfl
     rw [e, hasTy_fn] at h ⊢
@@ -495,6 +515,9 @@ theorem HasTy.ext {Ψ' : MemTy} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys �
   | code pre =>
     rw [hasTy_code] at h ⊢
     exact fun k hk Ψ'' he' => h k hk Ψ'' (he.trans he')
+  | codeAll pre =>
+    simp only [hasTy_codeAll, hasTy_code] at h ⊢
+    exact fun x k hk Ψ'' he' => h x k hk Ψ'' (he.trans he')
   | fn args results preserved need takes gives =>
     have e : Ty.fn args results preserved need takes gives = FnSig.ty ⟨args, results, preserved, need, takes, gives⟩ := rfl
     rw [e, hasTy_fn] at h ⊢

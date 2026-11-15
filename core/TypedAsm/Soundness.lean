@@ -31,6 +31,7 @@ theorem HasTy.sub {τ υ : Ty} {v : BitVec 64} (h : Sub τ υ) (hv : HasTy fetch
     exact hasTy_str.mpr ⟨a, l, off, hl, by
       simp only [↓reduceIte] at hoff
       cases more <;> simp only [Bool.false_eq_true, ↓reduceIte] <;> omega, hva⟩
+  | codeAll pre x => exact hasTy_codeAll.mp hv x
   | orErr _ ih => exact hasTy_orErr.mpr (.inr (ih hv))
   | orErrMono _ ih => exact hasTy_orErr.mpr ((hasTy_orErr.mp hv).imp id ih)
 
@@ -2696,6 +2697,32 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
       rw [hasTy_code]
       intro k hk Ψ'' he' hΨ'' t ht hwt
       exact ih k (by omega) Ψ'' (he.trans he') hΨ'' next ret hret t (ht.trans hrip) hwt
+    have hex : exec sys (.call (.rel d)) s
+        = .next { (s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip with
+            rip := s.rip + d.signExtend 64 } := by
+      have hpush : s.push64 s.rip
+          = .next ((s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip) := by
+        simp only [State.push64, State.write64, hw, ite_true]
+      simp [exec, hpush]
+    have hw' := h.push hΨ hroom hv
+    generalize (s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip = s₁
+      at hex hw'
+    rw [hex]
+    refine ⟨rfl, fun s' heq => ?_⟩
+    cases heq
+    exact ih.accepts he hΨ hacc (by rw [← hrip]) (hw'.congr rfl rfl rfl rfl)
+  | @callAll Γ ret d m hroom hret hacc =>
+    have hw : (s.setReg .rsp (s.getReg .rsp - 8)).canWrite (s.getReg .rsp - 8) 8 = true :=
+      h.canWrite_push hroom
+    -- The return address is code ready for each of the contexts: by the
+    -- induction hypothesis, since the instruction after the call is typed
+    -- for each.
+    have hv : HasTy fetch sys Ψ' (n + 1) (.codeAll ret) s.rip := by
+      rw [hasTy_codeAll]
+      intro x
+      rw [hasTy_code]
+      intro k hk Ψ'' he' hΨ'' t ht hwt
+      exact ih k (by omega) Ψ'' (he.trans he') hΨ'' next (ret x) (hret x) t (ht.trans hrip) hwt
     have hex : exec sys (.call (.rel d)) s
         = .next { (s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip with
             rip := s.rip + d.signExtend 64 } := by

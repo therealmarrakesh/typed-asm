@@ -27,6 +27,7 @@ import TypedAsm.Owned
 import TypedAsm.RegMap
 import TypedAsm.EndToEnd
 import TypedAsm.Lookup
+import TypedAsm.FnEx
 
 /-!
 # TypedAsm
