@@ -92,7 +92,7 @@ structure Entry (entry base : BitVec 64) (image : List Byte) (dataBase : BitVec 
 `room` free slots, and the given types for the slots at and above `rsp`;
 none, unless the program looks at its arguments. -/
 def entryCtx (room : Nat) (stack : List Ty := []) : Ctx :=
-  ⟨fun _ => .int, stack, room, Flags.Any⟩
+  ⟨fun _ => .int, stack, room, Flags.Any, []⟩
 
 /-- The context a program that looks at its arguments is entered in: `above`
 slots at and above `rsp`, each holding some number. The first is the number
@@ -129,6 +129,7 @@ theorem Entry.matchesStack {H : Ty → BitVec 64 → Prop} {s : State} {σ : Lis
     simpa only [stackBase, stackSize, entryCtx, hσ] using this
   sp := hint _
   text := fun a l hl => h.text (a, l) (MemTy.mem_of_ofList hl)
+  owned := OwnedOk.nil rfl
 
 /-- A state meeting the entry contract matches the entry context, provided
 each field of each block holds a value of its type to begin with. For a

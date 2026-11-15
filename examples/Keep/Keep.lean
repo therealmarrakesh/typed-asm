@@ -26,10 +26,10 @@ def pauseSig : FnSig where
 and `rbx` holds the address of the buffer, which is where `rsp` points. -/
 def kept (sp : BitVec 64) : Ctx :=
   ⟨fun r => if r = .rsp then .eq sp else if r = .rbx then .eq (sp + (0 : BitVec 32).signExtend 64)
-    else .int, [.int, .int], 1, Flags.Any⟩
+    else .int, [.int, .int], 1, Flags.Any, []⟩
 
 /-- Nothing is known about any register; the buffer is still allocated. -/
-def ending : Ctx := ⟨fun _ => .int, [.int, .int], 1, Flags.Any⟩
+def ending : Ctx := ⟨fun _ => .int, [.int, .int], 1, Flags.Any, []⟩
 
 /-- The contexts allowed at each label. -/
 inductive At : Label → Ctx → Prop

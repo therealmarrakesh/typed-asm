@@ -106,7 +106,8 @@ theorem Matches.ofCheck {H : Ty → BitVec 64 → Prop} {bs : List (BitVec 64 ×
     (hheap : ∀ x ∈ bs, ∀ i τ, x.2.fields[i]? = some τ →
       H τ (s.load64 (x.1 + BitVec.ofNat 64 (8 * i))))
     (hrsp : H (Γ.regs .rsp) (s.getReg .rsp))
-    (htext : ∀ x ∈ bs, x.2.text ≠ 0 → s.mem (x.1 + BitVec.ofNat 64 (x.2.size - 1)) = 0) :
+    (htext : ∀ x ∈ bs, x.2.text ≠ 0 → s.mem (x.1 + BitVec.ofNat 64 (x.2.size - 1)) = 0)
+    (howned : Γ.owned = []) :
     Matches H (MemTy.ofList bs kinds) Γ s := by
   simp only [stateCheck, Bool.and_eq_true, List.all_eq_true, decide_eq_true_eq,
     Bool.or_eq_true, Bool.not_eq_true'] at hc
@@ -126,6 +127,13 @@ theorem Matches.ofCheck {H : Ty → BitVec 64 → Prop} {bs : List (BitVec 64 ×
     heap := fun a l hl => hheap _ (MemTy.mem_of_ofList hl)
     stackHeap := fun a l hl => (hb _ (MemTy.mem_of_ofList hl)).2
     sp := hrsp
-    text := fun a l hl => htext _ (MemTy.mem_of_ofList hl) }
+    text := fun a l hl => htext _ (MemTy.mem_of_ofList hl)
+    owned :=
+      { perm := fun b hb => by rw [howned] at hb; cases hb
+        size_lt := fun b hb => by rw [howned] at hb; cases hb
+        vals := fun b hb => by rw [howned] at hb; cases hb
+        stack := fun b hb => by rw [howned] at hb; cases hb
+        heap := fun b hb => by rw [howned] at hb; cases hb
+        apart := by rw [howned]; exact .nil } }
 
 end TypedAsm

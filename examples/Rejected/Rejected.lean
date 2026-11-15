@@ -166,7 +166,7 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i19) Γ := by ty_step
 
 /-- `rdi` holds a pointer to three integers, or null. -/
 def maybe : Ctx :=
-  ⟨fun r => if r = .rdi then .nullable (.ptr [.int, .int, .int] false 0) else .int, [], 0, Flags.Any⟩
+  ⟨fun r => if r = .rdi then .nullable (.ptr [.int, .int, .int] false 0) else .int, [], 0, Flags.Any, []⟩
 
 /-- error: at address 3: cannot type `mov rax, qword ptr [rdi+16]` in the current context
 • loadField: `rdi` must hold a pointer, but its type is `read-only pointer to [int, int, int] or null`: it must be tested for null first, and `ty_null` then gives the two cases -/
@@ -196,17 +196,17 @@ def jumps : List (Asm Target) := [
 def jumpFetch : Fetch := Asm.fetch 0 jumps
 
 /-- Nothing is known, and the stack is empty. -/
-def bare : Ctx := ⟨fun _ => .int, [], 0, Flags.Any⟩
+def bare : Ctx := ⟨fun _ => .int, [], 0, Flags.Any, []⟩
 
 /-- One integer on the stack. -/
-def oneSlot : Ctx := ⟨fun _ => .int, [.int], 0, Flags.Any⟩
+def oneSlot : Ctx := ⟨fun _ => .int, [.int], 0, Flags.Any, []⟩
 
 inductive AtTarget : Target → Ctx → Prop
   | start : AtTarget .start bare
   | far : AtTarget .far bare
   | needsSlot : AtTarget .needsSlot oneSlot
   | needsPtr :
-    AtTarget .needsPtr ⟨fun r => if r = .rdi then .ptr [.int] true 0 else .int, [], 0, Flags.Any⟩
+    AtTarget .needsPtr ⟨fun r => if r = .rdi then .ptr [.int] true 0 else .int, [], 0, Flags.Any, []⟩
 
 def Φj : CodeTy := .ofLabels jumps 0 AtTarget
 
@@ -245,7 +245,7 @@ def plain : FnSig where
   need := 0
 
 /-- Nothing is known, and there is room for one more slot. -/
-def roomy : Ctx := ⟨fun _ => .int, [], 1, Flags.Any⟩
+def roomy : Ctx := ⟨fun _ => .int, [], 1, Flags.Any, []⟩
 
 inductive AtCallee : Callee → Ctx → Prop
   | direct : AtCallee .direct bare
@@ -321,7 +321,7 @@ def Φy : CodeTy := fun _ _ => False
 
 /-- `rsi` points to a writable block whose fields have the given types. -/
 def buffer (fields : List Ty) : Ctx :=
-  ⟨fun r => if r = .rsi then .ptr fields true 0 else .int, [], 0, Flags.Any⟩
+  ⟨fun r => if r = .rsi then .ptr fields true 0 else .int, [], 0, Flags.Any, []⟩
 
 /-- error: `syscall`: the call number in `rax` must be exactly known, but its type is `int` -/
 #guard_msgs in
@@ -394,7 +394,7 @@ def texts : List (Asm Txt) := [
 def textFetch : Fetch := Asm.fetch 0 texts
 
 /-- `rdi` points into text. -/
-def atText : Ctx := ⟨fun r => if r = .rdi then .str false else .int, [], 0, Flags.Any⟩
+def atText : Ctx := ⟨fun r => if r = .rdi then .str false else .int, [], 0, Flags.Any, []⟩
 
 /--
 error: at address 4: cannot type `movzx eax, byte ptr [rdi]` in the current context
@@ -431,7 +431,7 @@ def fillFetch : Fetch := Asm.fetch 0 fills
 
 /-- Register `r` points to a writable block of two integers. -/
 def twoAt (r : Reg) : Ctx :=
-  ⟨fun r' => if r' = r then .ptr [.int, .int] true 0 else .int, [], 0, Flags.Any⟩
+  ⟨fun r' => if r' = r then .ptr [.int, .int] true 0 else .int, [], 0, Flags.Any, []⟩
 
 /-- error: `fstat` could overwrite something that is not an integer: the buffer in `rsi` does not have room in integer fields for the 144 bytes the kernel stores -/
 #guard_msgs in
@@ -597,14 +597,14 @@ any way at all, and the stack holds one integer above anything at all. -/
 example (more rest : List Ty) :
     ∃ Γ', Straight Ψ 10
       ⟨fun r => if r = .rdi then .ptr ([.int, .int] ++ more) true 0 else .int, .int :: rest, 0,
-        Flags.Any⟩
+        Flags.Any, []⟩
       (.mov .w64 (.r_m .rax (.sib (some .rdi) none 8))) Γ' :=
   ⟨_, by ty_straight⟩
 
 example (more rest : List Ty) :
     ∃ Γ', Straight Ψ 10
       ⟨fun r => if r = .rdi then .ptr ([.int, .int] ++ more) true 0 else .int, .int :: rest, 0,
-        Flags.Any⟩
+        Flags.Any, []⟩
       (.mov .w64 (.rm_r (.mem (.sib (some .rsp) none 0)) .rdi)) Γ' :=
   ⟨_, by ty_straight⟩
 
@@ -636,7 +636,7 @@ def exactFetch : Fetch := Asm.fetch 0 exact
 
 /-- At `out`, `rsi` is exactly `8 + 3 * 8 + 1`. -/
 def Φe : CodeTy := .ofLabels exact 0
-  (fun _ Δ => Δ = ⟨fun r => if r = .rsi then .eq 33 else .int, [], 0, Flags.Any⟩)
+  (fun _ Δ => Δ = ⟨fun r => if r = .rsi then .eq 33 else .int, [], 0, Flags.Any, []⟩)
 
 example : BlockOk Φe exactFetch linux Ψ (Asm.addr exact 0 .start) bare := by
   ty_block
@@ -665,10 +665,10 @@ def divideFetch : Fetch := Asm.fetch 0 divide
 
 inductive AtDivide : Divide → Ctx → Prop
   | check : AtDivide .check
-      ⟨fun r => if r = .rdi then .ptr [.int] false 0 else .int, [], 0, Flags.Any⟩
+      ⟨fun r => if r = .rdi then .ptr [.int] false 0 else .int, [], 0, Flags.Any, []⟩
   | start (a v : BitVec 64) : v ≠ 0 →
     AtDivide .start ⟨fun r => if r = .rax then .eq a else if r = .rcx then .eq v else .int,
-      [], 0, Flags.Any⟩
+      [], 0, Flags.Any, []⟩
   | out : AtDivide .out bare
 
 def Φd : CodeTy := .ofLabels divide 0 AtDivide
@@ -707,7 +707,7 @@ def signedFetch : Fetch := Asm.fetch 0 signed
 inductive AtSigned : Signed → Ctx → Prop
   | start (a v : BitVec 64) : v ≠ 0 → v ≠ -1 →
     AtSigned .start ⟨fun r => if r = .rax then .eq a else if r = .rcx then .eq v else .int,
-      [], 0, Flags.Any⟩
+      [], 0, Flags.Any, []⟩
   | out : AtSigned .out bare
 
 def Φs : CodeTy := .ofLabels signed 0 AtSigned

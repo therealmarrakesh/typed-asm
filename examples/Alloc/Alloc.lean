@@ -22,7 +22,7 @@ room for 64 of them. Every field admits zero, so fresh memory is a node. -/
 def nodeFields : List Ty := [link, .int, .int, .int, .int, .int, .int, .int, .int, .int]
 
 /-- The list so far is in `rbx`; nothing is known about the other registers. -/
-def listCtx : Ctx := ⟨fun r => if r = .rbx then link else .int, [], 0, Flags.Any⟩
+def listCtx : Ctx := ⟨fun r => if r = .rbx then link else .int, [], 0, Flags.Any, []⟩
 
 /-- The contexts allowed at each label. -/
 inductive At : Label → Ctx → Prop

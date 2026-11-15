@@ -535,6 +535,24 @@ theorem mmap_ok {sys : Syscall} {len : BitVec 64} {fields : List Ty} {tag : Opti
                   (State.canRead_of_canWrite h.stackPerm)).symm
               · exact h.stackHeap x l hl'
             sp := by rw [hg]; exact h.sp.ext hext
+            owned :=
+              { perm := fun b hb' => hwr _ _ (h.owned.perm b hb')
+                size_lt := h.owned.size_lt
+                vals := fun b hb' i υ hi => by
+                  have hlt := (List.getElem?_eq_some_iff.mp hi).1
+                  have hr := State.canRead_of_canWrite (State.canWrite_sub (h.owned.perm b hb')
+                    (o := 8 * i) (m := 8) (by omega))
+                  rw [State.load64_mapZero_out s hal hsz4 hfit64 (hout _ hr)]
+                  exact (h.owned.vals b hb' i υ hi).ext hext
+                stack := fun b hb' => by rw [hb]; exact h.owned.stack b hb'
+                heap := fun b hb' x l hl => by
+                  rcases hcases x l hl with ⟨hx, hlL⟩ | ⟨-, hl'⟩
+                  · rw [hx, hlL]
+                    show Disjoint _ _ _ (8 * fields.length + 0)
+                    exact (hR b.1 (8 * b.2.length) (h.owned.size_lt b hb')
+                      (State.canRead_of_canWrite (h.owned.perm b hb'))).symm
+                  · exact h.owned.heap b hb' x l hl'
+                apart := h.owned.apart }
             text := fun x l hl ht => by
               rcases hcases x l hl with ⟨-, hlL⟩ | ⟨-, hl'⟩
               · rw [hlL] at ht

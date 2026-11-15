@@ -69,7 +69,7 @@ theorem SubList.refl : ∀ σ : List Ty, SubList σ σ
   | τ :: σ => .cons (.refl τ) (SubList.refl σ)
 
 theorem CtxSub.refl (Γ : Ctx) : CtxSub Γ Γ :=
-  ⟨fun _ _ => .refl _, .refl _, rfl, fun _ h => h, .refl _⟩
+  ⟨fun _ _ => .refl _, .refl _, rfl, fun _ h => h, .refl _, rfl⟩
 
 /-- The code at `a` may be entered from a state matching `Γ`: one of the
 contexts allowed there is `Γ` or weaker. -/
@@ -102,7 +102,7 @@ theorem Sub.shift_congr {τ : Ty} {a b : BitVec 64} (h : a = b) : Sub (τ.shift 
 theorem CtxSub.ofMoved {Γ Δ : Ctx} {d : BitVec 64} {stack : List Ty} {room : Nat}
     (hregs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (Δ.regs r)) (hstack : SubList stack Δ.stack)
     (hroom : room = Δ.room) (hflags : ∀ f, Γ.flags f → Δ.flags f)
-    (hsp : Sub ((Γ.regs .rsp).shift d) (Δ.regs .rsp)) :
+    (hsp : Sub ((Γ.regs .rsp).shift d) (Δ.regs .rsp)) (howned : Γ.owned = Δ.owned) :
     CtxSub { Γ.moveSp d with stack := stack, room := room } Δ :=
   ⟨fun r hr => by
       show Sub ((Γ.moveSp d).regs r) _
@@ -111,7 +111,7 @@ theorem CtxSub.ofMoved {Γ Δ : Ctx} {d : BitVec 64} {stack : List Ty} {room : N
     hstack, hroom, hflags, by
       show Sub ((Γ.moveSp d).regs .rsp) _
       rw [CtxOf.moveSp_sp]
-      exact hsp⟩
+      exact hsp, howned⟩
 
 /-- Whether the operation reads the carry flag. -/
 def AluOp.readsCarry : AluOp → Bool
@@ -830,7 +830,8 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
     Holds Ψ next Γ rm sig.ty → Γ.room = m + 1 → Φ next ret →
     (∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn (Γ.moveSp (-8)).regs r)) →
     Sub ((Γ.regs .rsp).shift (-8)) (sig.regsIn (Γ.moveSp (-8)).regs .rsp) →
-    CtxSub (sig.returned (Γ.moveSp (-8)).regs Γ.stack m) ret → sig.need ≤ m →
+    CtxSub (sig.returned (Γ.moveSp (-8)).regs Γ.stack m ret.owned) ret → sig.need ≤ m →
+    Γ.owned = ret.owned →
     HasType Φ fetch sys Ψ next Γ (.call (.ind rm))
   /-- Jump to a function through a pointer to it: a tail call, made on
   behalf of the caller the current function would have returned to. -/

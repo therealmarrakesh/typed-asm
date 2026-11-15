@@ -22,14 +22,14 @@ def slots (c : BitVec 64) : List Ty :=
 /-- Between arguments: `r13` holds exactly the count `c` and `r14` exactly
 the number `v` of the argument to do next. -/
 def loopCtx (c v : BitVec 64) : Ctx :=
-  ⟨fun r => if r = .r13 then .eq c else if r = .r14 then .eq v else .int, slots c, 0, Flags.Any⟩
+  ⟨fun r => if r = .r13 then .eq c else if r = .r14 then .eq v else .int, slots c, 0, Flags.Any, []⟩
 
 /-- Within an argument: also `rsi` points at the start of its text and `rdi`
 at the place reached in it. -/
 def scanCtx (c v : BitVec 64) : Ctx :=
   ⟨fun r => if r = .r13 then .eq c else if r = .r14 then .eq v
       else if r = .rsi then .str false else if r = .rdi then .str false else .int,
-    slots c, 0, Flags.Any⟩
+    slots c, 0, Flags.Any, []⟩
 
 /-- The contexts allowed at each label, one for every number of arguments
 and every argument reached. -/

@@ -27,7 +27,7 @@ def getSig (n : Nat) : FnSig where
   need := 0
 
 /-- Nothing is known about any register. -/
-def fin : Ctx := ⟨fun _ => .int, [], 1, Flags.Any⟩
+def fin : Ctx := ⟨fun _ => .int, [], 1, Flags.Any, []⟩
 
 /-- The contexts allowed at each label. -/
 inductive At : Label → Ctx → Prop
@@ -42,7 +42,7 @@ inductive At : Label → Ctx → Prop
     (getSig n).CallerOk saved ret rest room → v.toNat < n →
     At .inbounds ⟨fun r => if calleeSaved r then saved r
         else if r = .rdi then arr n else if r = .rdx then .eq v else .int,
-      .code ret :: rest, room, Flags.Any⟩
+      .code ret :: rest, room, Flags.Any, ret.owned⟩
 
 /-- The code typing: those contexts, at the addresses of their labels. -/
 def Φ : CodeTy := .ofLabels code base At

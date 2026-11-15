@@ -360,7 +360,8 @@ macro "ty_flags" : tactic => do
 automatically; register comparisons it cannot settle are left as goals. -/
 macro "ctx_sub" : tactic =>
   `(tactic| (
-    refine CtxSub.mk ?regs ?stack ?room ?flags ?sp
+    refine CtxSub.mk ?regs ?stack ?room ?flags ?sp ?owned
+    case owned => rfl
     case stack => ty_stack
     case room => first | rfl | omega
     case flags => ty_flags
@@ -1574,7 +1575,7 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
     let gs ← try
         runOn goal (do evalTactic (← `(tactic|
           refine BlockOk.last rfl
-            (FnSig.ret_of (sig := ?_) (saved := ?_) ?caller ?regs ?sp rfl rfl))))
+            (FnSig.ret_of (sig := ?_) (saved := ?_) ?caller ?regs ?sp rfl rfl ?own))))
       catch _ =>
         throwError "`ret` needs a return address on top of the stack, but the context does \
           not have one there"
@@ -1589,6 +1590,12 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
           throwError "`ret` needs the caller's requirement (`sig.CallerOk …`) among the hypotheses"
       else if t.isAppOf ``Sub then
         left := left ++ (← runOn g (do evalTactic (← `(tactic| ty_sub))))
+      else if t.isAppOf ``Eq then
+        try
+          discard <| runOn g (do evalTactic (← `(tactic| rfl)))
+        catch _ =>
+          throwError "`ret`: the blocks owned here are not the ones the caller owns; a \
+            function must give back or hand over every block it took"
       else if ← isProp t then
         left := left ++ (← runOn g (do evalTactic (← `(tactic| sub_regs))))
     return .done left
@@ -1747,7 +1754,7 @@ elab "ty_call " sig:term : tactic => do
       try
         let gs ← runOn typed (do evalTactic (← `(tactic|
           refine HasType.callFn (sig := $sig) (ret := ?_) ?callee rfl ?retpoint ?args ?sp ?back
-            ?need)))
+            ?need ?own)))
         discard <| runOn (← goalNamed gs `callee) (do evalTactic (← `(tactic| ty_operand)))
         pure (some gs)
       catch _ =>
@@ -1763,7 +1770,7 @@ elab "ty_call " sig:term : tactic => do
       let gs ← try
           runOn typed (do evalTactic (← `(tactic|
             refine FnSig.callInd_ok (sig := $sig) (saved := ?_) (ret := ?_) (rest := ?_)
-              ?callee rfl ?retpoint ?args ?sp ?stack)))
+              ?callee rfl ?retpoint ?args ?sp ?stack ?own)))
         catch _ => throwError (← noRoom instr)
       let callee ← goalNamed gs `callee
       try
@@ -1783,6 +1790,10 @@ elab "ty_call " sig:term : tactic => do
       unless stackLeft.isEmpty do
         throwError "`{instr.toAsm}`: the stack here does not match the one the function pointer \
           expects"
+      try
+        discard <| runOn (← goalNamed gs `own) (do evalTactic (← `(tactic| rfl)))
+      catch _ =>
+        throwError "ty_call: the blocks owned here are not the ones owned at the return point"
       setGoals (left ++ others)
       return
   | some instr => throwError "ty_call: the instruction here is `{instr.toAsm}`, not a call"
@@ -1793,7 +1804,7 @@ elab "ty_call " sig:term : tactic => do
       try
         runOn typed (do evalTactic (← `(tactic|
           refine FnSig.call_ok (sig := $sig) (ret := ?_) ?callee rfl ?retpoint ?args ?sp ?back
-            ?need)))
+            ?need ?own)))
       catch _ => throwError (← noRoom (instr?.getD .nop))
   let mut left : List MVarId := []
   -- the callee first: it involves no unknowns
@@ -1810,13 +1821,18 @@ elab "ty_call " sig:term : tactic => do
     let t ← instantiateMVars (← g.getType)
     if !(← isProp t) then continue
     if t.isAppOf ``FnSig.At || t.isAppOf ``CtxSub || t.isForall || t.isAppOf ``LE.le ||
-        t.isAppOf ``Sub then continue
+        t.isAppOf ``Sub || t.isAppOf ``Eq then continue
     left := left ++ (← proveAtLabel g (pure []))
   for g in gs do
     if ← g.isAssigned then continue
     let t ← instantiateMVars (← g.getType)
     if t.isAppOf ``CtxSub then
       left := left ++ (← runOn g (do evalTactic (← `(tactic| ctx_sub))))
+    else if t.isAppOf ``Eq then
+      try
+        discard <| runOn g (do evalTactic (← `(tactic| rfl)))
+      catch _ =>
+        throwError "ty_call: the blocks owned here are not the ones owned at the return point"
     else if t.isForall then
       left := left ++ (← runOn g (do evalTactic (← `(tactic| sub_regs))))
     else if t.isAppOf ``Sub then

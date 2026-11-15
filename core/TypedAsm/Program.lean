@@ -95,8 +95,8 @@ theorem HasType.mono (h : ∀ a Γ, Φ a Γ → Φ' a Γ) {next : BitVec 64} {Γ
   | unreachable hun => exact .unreachable hun
   | sem hs hacc => exact .sem hs (fun x => (hacc x).mono h)
   | fnPtr hr hΓ hat _ ih => exact .fnPtr hr hΓ (fun sv rt rs rm hK => h _ _ (hat sv rt rs rm hK)) ih
-  | callFn hh hroom hret hargs hsp hback hneed =>
-    exact .callFn hh hroom (h _ _ hret) hargs hsp hback hneed
+  | callFn hh hroom hret hargs hsp hback hneed hown =>
+    exact .callFn hh hroom (h _ _ hret) hargs hsp hback hneed hown
   | jmpFn hh hK hsub => exact .jmpFn hh hK hsub
   | cover hsem _ ih => exact .cover hsem ih
   | codePtr hr hΓ hΦ _ ih => exact .codePtr hr hΓ (h _ _ hΦ) ih
@@ -195,7 +195,9 @@ theorem BlockOk.nameSlot {a : BitVec 64} {Γ : Ctx} {i : Nat} (hi : i < Γ.stack
           have := h.stackHeap b l hl
           simpa only [stackBase, stackSize, List.length_set] using this
         sp := h.sp
-        text := h.text }⟩) hrest
+        text := h.text
+        owned := h.owned.frame rfl rfl rfl (by simp only [stackSize, List.length_set])
+          (fun _ _ _ _ => rfl) }⟩) hrest
 
 /-! ## Blocks of a kind, and values that may be null -/
 

@@ -24,6 +24,12 @@ structure CtxOf (τ : Type) where
   room : Nat
   /-- What is known about the flags. -/
   flags : Flags → Prop
+  /-- The blocks of memory this code owns outright: where each is, and the
+  types of its fields. Nothing else points into an owned block that the
+  types know of, so its fields may change type as they are stored to, and
+  the block may be given back. A pointer to one is just its address, exactly
+  known; what makes it usable is the entry here. -/
+  owned : List (BitVec 64 × List τ) := []
 
 /-- The type of a 64-bit value. -/
 inductive Ty
@@ -176,6 +182,8 @@ structure CtxSub (Γ Δ : Ctx) : Prop where
   flags : ∀ f, Γ.flags f → Δ.flags f
   /-- What is known of the stack pointer's value may also be weakened. -/
   sp : Sub (Γ.regs .rsp) (Δ.regs .rsp)
+  /-- The owned blocks agree exactly. -/
+  owned : Γ.owned = Δ.owned
 
 /-! ## Function signatures -/
 
@@ -202,35 +210,40 @@ def regsOut (sig : FnSig) (saved : Reg → Ty) : Reg → Ty :=
   fun r => if sig.preserved r then saved r else sig.results r
 
 /-- The context at the function's first instruction, for a caller that
-expects `ret` on return and has `rest` on its stack. -/
+expects `ret` on return and has `rest` on its stack. The blocks the caller
+owns are still owned while the function runs, and are those the return
+point expects: a function leaves them alone, whatever they are. -/
 def entry (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) : Ctx :=
-  ⟨sig.regsIn saved, .code ret :: rest, room, Flags.Any⟩
+  ⟨sig.regsIn saved, .code ret :: rest, room, Flags.Any, ret.owned⟩
 
 /-- The context at the function's `ret` instruction. -/
 def exit (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) : Ctx :=
-  ⟨sig.regsOut saved, .code ret :: rest, room, Flags.Any⟩
+  ⟨sig.regsOut saved, .code ret :: rest, room, Flags.Any, ret.owned⟩
 
 /-- The context the caller is in once the function has returned. The stack
 pointer is 8 above where it was at the function's `ret`, having popped the
 return address; so a function that leaves the stack pointer's type as it
 found it has, for its caller, put the stack pointer back. -/
-def returned (sig : FnSig) (saved : Reg → Ty) (rest : List Ty) (room : Nat) : Ctx :=
+def returned (sig : FnSig) (saved : Reg → Ty) (rest : List Ty) (room : Nat)
+    (owned : List (BitVec 64 × List Ty)) : Ctx :=
   ⟨fun r => if r = .rsp then (sig.regsOut saved .rsp).shift 8 else sig.regsOut saved r, rest,
-    room + 1, Flags.Any⟩
+    room + 1, Flags.Any, owned⟩
 
-theorem returned_regs {sig : FnSig} {saved : Reg → Ty} {rest : List Ty} {room : Nat} {r : Reg}
-    (hr : r ≠ .rsp) : (sig.returned saved rest room).regs r = sig.regsOut saved r := by
+theorem returned_regs {sig : FnSig} {saved : Reg → Ty} {rest : List Ty} {room : Nat}
+    {owned : List (BitVec 64 × List Ty)} {r : Reg}
+    (hr : r ≠ .rsp) : (sig.returned saved rest room owned).regs r = sig.regsOut saved r := by
   simp only [returned, hr, ↓reduceIte]
 
-theorem returned_sp (sig : FnSig) (saved : Reg → Ty) (rest : List Ty) (room : Nat) :
-    (sig.returned saved rest room).regs .rsp = (sig.regsOut saved .rsp).shift 8 := by
+theorem returned_sp (sig : FnSig) (saved : Reg → Ty) (rest : List Ty) (room : Nat)
+    (owned : List (BitVec 64 × List Ty)) :
+    (sig.returned saved rest room owned).regs .rsp = (sig.regsOut saved .rsp).shift 8 := by
   simp only [returned, ↓reduceIte]
 
 /-- What a function needs of its caller: the state it returns must be
 acceptable where it returns to, and there must be enough stack. -/
 structure CallerOk (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
     Prop where
-  ret : CtxSub (sig.returned saved rest room) ret
+  ret : CtxSub (sig.returned saved rest room ret.owned) ret
   room : sig.need ≤ room
 
 /-- `sig.At Φ a`: the code typing lets address `a` be entered as a function
@@ -286,6 +299,18 @@ def stackBase (Γ : Ctx) (s : State) : BitVec 64 :=
 def stackSize (Γ : Ctx) : Nat :=
   8 * (Γ.room + Γ.stack.length)
 
+/-- What a context's owned blocks ask of a state: each is writable, each
+field holds a value of its type, and the blocks overlap neither the stack
+region, nor any block of the memory typing, nor one another. -/
+structure OwnedOk (H : Ty → BitVec 64 → Prop) (Ψ : MemTy) (Γ : Ctx) (s : State) : Prop where
+  perm : ∀ b ∈ Γ.owned, s.canWrite b.1 (8 * b.2.length) = true
+  size_lt : ∀ b ∈ Γ.owned, 8 * b.2.length < 2 ^ 64
+  vals : ∀ b ∈ Γ.owned, ∀ i τ, b.2[i]? = some τ →
+    H τ (s.load64 (b.1 + BitVec.ofNat 64 (8 * i)))
+  stack : ∀ b ∈ Γ.owned, Disjoint (stackBase Γ s) (stackSize Γ) b.1 (8 * b.2.length)
+  heap : ∀ b ∈ Γ.owned, ∀ a l, Ψ a = some l → Disjoint b.1 (8 * b.2.length) a l.size
+  apart : Γ.owned.Pairwise fun b c => Disjoint b.1 (8 * b.2.length) c.1 (8 * c.2.length)
+
 /-- `Matches H Ψ Γ s`: the state `s` matches the context `Γ`, where `H τ v`
 says what it means for the value `v` to have type `τ`. -/
 structure Matches (H : Ty → BitVec 64 → Prop) (Ψ : MemTy) (Γ : Ctx) (s : State) : Prop where
@@ -311,6 +336,8 @@ structure Matches (H : Ty → BitVec 64 → Prop) (Ψ : MemTy) (Γ : Ctx) (s : S
   sp : H (Γ.regs .rsp) (s.getReg .rsp)
   /-- The text of each block that has some ends in a zero byte. -/
   text : ∀ a l, Ψ a = some l → l.text ≠ 0 → s.mem (a + BitVec.ofNat 64 (l.size - 1)) = 0
+  /-- The owned blocks are there and hold what the context says. -/
+  owned : OwnedOk H Ψ Γ s
 
 /-- `HasTy fetch sys Ψ n τ v`: the value `v` has type `τ`, at step count `n`.
 This does not depend on the machine state. -/
@@ -465,7 +492,8 @@ theorem Matches.imp {H H' : Ty → BitVec 64 → Prop} {Γ : Ctx} {s : State}
     heap := fun a l hl i τ hi => himp _ _ (h.heap a l hl i τ hi)
     stackHeap := h.stackHeap
     sp := himp _ _ h.sp
-    text := h.text }
+    text := h.text
+    owned := { h.owned with vals := fun b hb i τ hi => himp _ _ (h.owned.vals b hb i τ hi) } }
 
 /-- A state well typed at a step count is well typed at every smaller one. -/
 theorem WellTyped.mono {m : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch sys Ψ n Γ s)

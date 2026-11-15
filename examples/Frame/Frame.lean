@@ -26,7 +26,7 @@ def pickSig : FnSig where
   need := 2
 
 /-- Nothing is known about any register. -/
-def fin : Ctx := ⟨fun _ => .int, [], 3, Flags.Any⟩
+def fin : Ctx := ⟨fun _ => .int, [], 3, Flags.Any, []⟩
 
 /-- The contexts allowed at each label. -/
 inductive At : Label → Ctx → Prop
@@ -39,7 +39,7 @@ inductive At : Label → Ctx → Prop
   | skip (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (m : Nat) :
     pickSig.CallerOk saved ret rest (m + 2) →
     At .skip ⟨fun r => if calleeSaved r then saved r else .int,
-      pair :: .int :: .code ret :: rest, m, Flags.Any⟩
+      pair :: .int :: .code ret :: rest, m, Flags.Any, ret.owned⟩
 
 /-- The code typing: those contexts, at the addresses of their labels. -/
 def Φ : CodeTy := .ofLabels code base At
