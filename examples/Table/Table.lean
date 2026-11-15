@@ -48,29 +48,30 @@ theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 executable memory, its data in memory, readable, and the record writable. -/
 abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase dataBytes blocks 0 0
 
-/-- Any state meeting the entry contract is well typed. The table's entry
-is a pointer to the record because the data says so. -/
-theorem Entry.stateOk {s : State} (h : Entry s) : StateOk Φ fetch linux Ψ s :=
-  ⟨entryCtx 0, by rw [h.rip]; exact .intro At.start, fun _ => h.matches HasTy.int (by
-    intro x hx i τ hi
-    simp only [blocks, List.mem_cons, List.not_mem_nil, or_false] at hx
-    rcases hx with rfl | rfl
-    · -- the table: its one field holds the address of the record
-      match i, hi with
-      | 0, hi =>
-        cases hi
-        have hv : s.load64 (dataBase + BitVec.ofNat 64 (8 * 0)) = recordAddr := by
-          rw [h.data.load64 (i := 8 * 0) (by decide)]
-          decide
-        rw [hv]
-        exact hasTy_ptr.mpr ⟨recordAddr, recordLayout, rfl, rfl, fun _ => rfl, by decide⟩
-      | i + 1, hi => simp [tableLayout] at hi
-    · -- the record: both fields are integers
-      have hτ : τ = .int := by
-        have := List.mem_of_getElem? hi
-        simpa [recordLayout] using this
-      rw [hτ]
-      exact HasTy.int _)⟩
+/-- The data has the types the blocks claim. The table's entry is a pointer
+to the record because the data says so. -/
+theorem Entry.fieldsOk {s : State} (h : Entry s) (n : Nat) :
+    ∀ x ∈ blocks, ∀ i τ, x.2.fields[i]? = some τ →
+      HasTy fetch linux Ψ n τ (s.load64 (x.1 + BitVec.ofNat 64 (8 * i))) := by
+  intro x hx i τ hi
+  simp only [blocks, List.mem_cons, List.not_mem_nil, or_false] at hx
+  rcases hx with rfl | rfl
+  · -- the table: its one field holds the address of the record
+    match i, hi with
+    | 0, hi =>
+      cases hi
+      have hv : s.load64 (dataBase + BitVec.ofNat 64 (8 * 0)) = recordAddr := by
+        rw [h.data.load64 (i := 8 * 0) (by decide)]
+        decide
+      rw [hv]
+      exact hasTy_ptr.mpr ⟨recordAddr, recordLayout, rfl, rfl, fun _ => rfl, by decide⟩
+    | i + 1, hi => simp [tableLayout] at hi
+  · -- the record: both fields are integers
+    have hτ : τ = .int := by
+      have := List.mem_of_getElem? hi
+      simpa [recordLayout] using this
+    rw [hτ]
+    exact HasTy.int _
 
 /-! ## Safety -/
 
@@ -78,17 +79,10 @@ theorem Entry.stateOk {s : State} (h : Entry s) : StateOk Φ fetch linux Ψ s :=
 machine that fetches instructions by decoding memory.** It never gets stuck
 and never faults. -/
 theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  .of_safe linux_frame (Asm.loaded h.code)
-    (soundness_blocks blocksOk memOk h.stateOk)
-
-theorem image_length : image.length = 20 := by decide
+  h.safeMem blocksOk memOk At.start h.fieldsOk
 
 /-- The starting state used by the simulator meets the entry contract. -/
-theorem start_entry : Entry start :=
-  Entry.ofLoad (by rw [image_length]; decide) (by decide)
-    ((State.hasData_loadData _ _ _ _ (by decide)).congr rfl) (by rw [image_length]; decide)
-    (by decide) (by decide) (by decide)
-    (by simp only [image_length]; decide) (by rw [image_length]; decide)
+theorem start_entry : Entry start := by ty_loaded
 
 /-- The simulator's run is safe, with instructions decoded from memory. -/
 theorem safeMem : SafeMem linux start :=

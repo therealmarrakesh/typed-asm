@@ -60,29 +60,16 @@ executable memory, and its data readable and writable. Nothing is asked of
 the files there are, of the time, or of what the random bytes are. -/
 abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase dataBytes blocks 0 0
 
-/-- Any state meeting the entry contract is well typed. -/
-theorem Entry.stateOk {s : State} (h : Entry s) : StateOk Φ fetch linux Ψ s :=
-  ⟨entryCtx 0, by rw [h.rip]; exact .intro At.start,
-    fun _ => h.matchesInt HasTy.int (by simp [blocks, bufferLayout])⟩
-
 /-! ## Safety -/
 
 /-- **From any state meeting the entry contract, whatever the outside world
 is like, the program is safe on the machine that fetches instructions by
 decoding memory.** It never gets stuck and never faults. -/
 theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  .of_safe linux_frame (Asm.loaded h.code)
-    (soundness_blocks blocksOk memOk h.stateOk)
-
-theorem image_length : image.length = 178 := by decide +kernel
+  h.safeMem blocksOk memOk At.start (Entry.fieldsInt (by simp [blocks, bufferLayout]))
 
 /-- The starting state used by the simulator meets the entry contract. -/
-theorem start_entry : Entry start :=
-  Entry.ofLoad (by rw [image_length]; decide) (by decide)
-    ((State.hasData_loadData _ _ _ _ (by decide +kernel)).congr rfl)
-    (by rw [image_length]; decide +kernel)
-    (by decide +kernel) (by decide) (by decide)
-    (by simp only [image_length]; decide) (by rw [image_length]; decide)
+theorem start_entry : Entry start := by ty_loaded
 
 /-- The simulator's run is safe whatever files it is given. -/
 theorem safeMem (files : List File) : SafeMem linux (startWith files) :=

@@ -80,11 +80,6 @@ executable memory. Nothing is asked of the input, or of how requests for
 memory are answered. -/
 abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase [] blocks 0 0
 
-/-- Any state meeting the entry contract is well typed. -/
-theorem Entry.stateOk {s : State} (h : Entry s) : StateOk Φ fetch linux Ψ s :=
-  ⟨entryCtx 0, by rw [h.rip]; exact .intro At.start,
-    fun _ => h.matchesInt HasTy.int (by simp [blocks])⟩
-
 /-! ## Safety -/
 
 /-- **From any state meeting the entry contract, whatever it is given to
@@ -92,17 +87,10 @@ read and wherever the kernel puts the memory it asks for, the program is
 safe on the machine that fetches instructions by decoding memory.** It never
 gets stuck and never faults. -/
 theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  .of_safe linux_frame (Asm.loaded h.code)
-    (soundness_blocks blocksOk memOk h.stateOk)
-
-theorem image_length : image.length = 142 := by decide +kernel
+  h.safeMem blocksOk memOk At.start (Entry.fieldsInt (by simp [blocks]))
 
 /-- The starting state used by the simulator meets the entry contract. -/
-theorem start_entry : Entry start :=
-  Entry.ofLoad (by rw [image_length]; decide) (by decide)
-    ((State.hasData_loadData _ _ _ _ (by decide)).congr rfl) (by rw [image_length]; decide)
-    (by decide) (by decide) (by decide)
-    (by simp only [image_length]; decide) (by rw [image_length]; decide)
+theorem start_entry : Entry start := by ty_loaded
 
 /-- The simulator's run is safe whatever input it is given and however its
 requests for memory are answered. -/

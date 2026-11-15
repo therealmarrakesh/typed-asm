@@ -96,20 +96,12 @@ abbrev Entry : State → Prop := TypedAsm.EntryTexts entry base image dataBase d
 was given and whatever they say, the program is safe on the machine that
 fetches instructions by decoding memory.** It never gets stuck and never
 faults. -/
-theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s := by
-  obtain ⟨c, Ψ', he, hΨ', hrip, hcode, hw⟩ :=
-    h.wellTyped (kinds := []) (fetch := fetch) (sys := linux) rfl (by simp [blocks])
-  exact .of_safe linux_frame (Asm.loaded hcode)
-    (soundness_blocks_ext blocksOk he hΨ' ⟨textsCtx 0 c, by rw [hrip]; exact .intro (At.start c), hw⟩)
-
-theorem image_length : image.length = 108 := by decide +kernel
+theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
+  h.safeMem blocksOk rfl At.start (by simp [blocks])
 
 /-- The starting state used by the simulator meets the entry contract,
 whatever the arguments. -/
-theorem start_entry (args : List (List Byte)) : Entry (startArgs args) :=
-  EntryTexts.ofLoad args (by decide) (by rw [image_length]; decide)
-    (State.hasData_loadData _ _ _ _ (by decide)) (by rw [image_length]; decide)
-    (by decide) (by decide) (by rw [image_length]; decide) (by decide)
+theorem start_entry (args : List (List Byte)) : Entry (startArgs args) := by ty_loaded
 
 /-- The simulator's run is safe whatever arguments it is given. -/
 theorem safeMem (args : List String) : SafeMem linux (startWith args) :=

@@ -89,13 +89,6 @@ for each after it. Nothing is asked of what the arguments are or of the
 files there are. -/
 abbrev Entry : State → Prop := TypedAsm.EntryArgs entry base image dataBase dataBytes blocks 0
 
-/-- Any state meeting the entry contract is well typed. -/
-theorem Entry.stateOk {s : State} (h : Entry s) : StateOk Φ fetch linux Ψ s :=
-  let ⟨c, hE, hc⟩ := h
-  ⟨argsCtx 0 c, by rw [hE.rip]; exact .intro (At.start c),
-    fun _ => hE.matchesCount hc HasTy.int (fun _ => hasTy_eq.mpr rfl)
-      (by simp [blocks, bufferLayout])⟩
-
 /-! ## Safety -/
 
 /-- **From any state meeting the entry contract, however many arguments it
@@ -103,18 +96,11 @@ was given and whatever they are, whatever files there are and whatever they
 hold, the program is safe on the machine that fetches instructions by
 decoding memory.** It never gets stuck and never faults. -/
 theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  let ⟨_, hE, _⟩ := h
-  .of_safe linux_frame (Asm.loaded hE.code)
-    (soundness_blocks blocksOk memOk h.stateOk)
-
-theorem image_length : image.length = 141 := by decide +kernel
+  h.safeMem blocksOk memOk At.start (by simp [blocks, bufferLayout])
 
 /-- The starting state used by the simulator meets the entry contract,
 whatever the arguments. -/
-theorem start_entry (args : List (List Byte)) : Entry (startArgs args) :=
-  EntryArgs.ofLoad args (by decide) (by rw [image_length]; decide)
-    (State.hasData_loadData _ _ _ _ (by decide)) (by rw [image_length]; decide)
-    (by decide) (by rw [image_length]; decide) (by rw [image_length]; decide)
+theorem start_entry (args : List (List Byte)) : Entry (startArgs args) := by ty_loaded
 
 /-- The simulator's run is safe whatever arguments and files it is given. -/
 theorem safeMem (args : List String) (files : List File) : SafeMem linux (startWith args files) :=

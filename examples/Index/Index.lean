@@ -88,11 +88,6 @@ does not overlap it. This is the contract with whatever loads the program;
 for the ELF file, with the Linux kernel. -/
 abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase arrayBytes blocks 1 0
 
-/-- Any state meeting the entry contract is well typed. -/
-theorem Entry.stateOk {s : State} (h : Entry s) : StateOk Φ fetch linux Ψ s :=
-  ⟨entryCtx 1, by rw [h.rip]; exact .intro At.start,
-    fun _ => h.matchesInt HasTy.int (by simp [blocks, arrayLayout])⟩
-
 /-! ## Safety -/
 
 /-- **From any state meeting the entry contract, the program is safe on the
@@ -100,17 +95,10 @@ machine that fetches instructions by decoding memory.** It never gets stuck,
 never faults: no page fault, no invalid opcode and no divide error. In particular the
 indexed load never reads outside the array, whatever index `get` is given. -/
 theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  .of_safe linux_frame (Asm.loaded h.code)
-    (soundness_blocks blocksOk memOk h.stateOk)
-
-theorem image_length : image.length = 48 := by decide
+  h.safeMem blocksOk memOk At.start (Entry.fieldsInt (by simp [blocks, arrayLayout]))
 
 /-- The starting state used by the simulator meets the entry contract. -/
-theorem start_entry : Entry start :=
-  Entry.ofLoad (by rw [image_length]; decide) (by decide)
-    ((State.hasData_loadData _ _ _ _ (by decide)).congr rfl) (by rw [image_length]; decide)
-    (by decide) (by decide) (by decide)
-    (by simp only [image_length]; decide) (by rw [image_length]; decide)
+theorem start_entry : Entry start := by ty_loaded
 
 /-- The simulator's run is safe, with instructions decoded from memory. -/
 theorem safeMem : SafeMem linux start :=
@@ -118,6 +106,6 @@ theorem safeMem : SafeMem linux start :=
 
 /-- It is also safe on the table machine, which is what the type system reasons about. -/
 theorem safe : Safe fetch linux start :=
-  soundness_blocks blocksOk memOk start_entry.stateOk
+  start_entry.safe blocksOk memOk At.start (Entry.fieldsInt (by simp [blocks, arrayLayout]))
 
 end Index

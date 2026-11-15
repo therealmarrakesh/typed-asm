@@ -90,26 +90,27 @@ theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 executable memory, the table in readable memory, and one writable stack slot. -/
 abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase tableBytes blocks 1 0
 
-/-- Any state meeting the entry contract is well typed. The table's entries
-are function pointers because the data holds the addresses of two
-functions, and those functions are well typed. -/
-theorem Entry.stateOk {s : State} (h : Entry s) : StateOk Φ fetch linux Ψ s :=
-  ⟨entryCtx 1, by rw [h.rip]; exact .intro At.start, fun n => h.matches HasTy.int (by
-    intro x hx i τ hi
-    simp only [blocks, List.mem_cons, List.not_mem_nil, or_false] at hx
-    subst hx
-    match i, hi with
-    | 0, hi =>
-      cases hi
-      have e : word64 tableBytes (8 * 0) = Asm.addr code base .double := by decide +kernel
-      rw [h.data.load64 (i := 8 * 0) (by decide), e]
-      exact blocksOk.hasTy_fn (FnSig.at_label At.double) n
-    | 1, hi =>
-      cases hi
-      have e : word64 tableBytes (8 * 1) = Asm.addr code base .square := by decide +kernel
-      rw [h.data.load64 (i := 8 * 1) (by decide), e]
-      exact blocksOk.hasTy_fn (FnSig.at_label At.square) n
-    | i + 2, hi => simp [tableLayout] at hi)⟩
+/-- The data has the types the blocks claim. The table's entries are
+function pointers because the data holds the addresses of two functions,
+and those functions are well typed. -/
+theorem Entry.fieldsOk {s : State} (h : Entry s) (n : Nat) :
+    ∀ x ∈ blocks, ∀ i τ, x.2.fields[i]? = some τ →
+      HasTy fetch linux Ψ n τ (s.load64 (x.1 + BitVec.ofNat 64 (8 * i))) := by
+  intro x hx i τ hi
+  simp only [blocks, List.mem_cons, List.not_mem_nil, or_false] at hx
+  subst hx
+  match i, hi with
+  | 0, hi =>
+    cases hi
+    have e : word64 tableBytes (8 * 0) = Asm.addr code base .double := by decide +kernel
+    rw [h.data.load64 (i := 8 * 0) (by decide), e]
+    exact blocksOk.hasTy_fn (FnSig.at_label At.double) n
+  | 1, hi =>
+    cases hi
+    have e : word64 tableBytes (8 * 1) = Asm.addr code base .square := by decide +kernel
+    rw [h.data.load64 (i := 8 * 1) (by decide), e]
+    exact blocksOk.hasTy_fn (FnSig.at_label At.square) n
+  | i + 2, hi => simp [tableLayout] at hi
 
 /-! ## Safety -/
 
@@ -117,17 +118,10 @@ theorem Entry.stateOk {s : State} (h : Entry s) : StateOk Φ fetch linux Ψ s :=
 machine that fetches instructions by decoding memory.** It never gets stuck
 and never faults. -/
 theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  .of_safe linux_frame (Asm.loaded h.code)
-    (soundness_blocks blocksOk memOk h.stateOk)
-
-theorem image_length : image.length = 77 := by decide +kernel
+  h.safeMem blocksOk memOk At.start h.fieldsOk
 
 /-- The starting state used by the simulator meets the entry contract. -/
-theorem start_entry : Entry start :=
-  Entry.ofLoad (by rw [image_length]; decide) (by decide)
-    ((State.hasData_loadData _ _ _ _ (by decide)).congr rfl) (by rw [image_length]; decide)
-    (by decide) (by decide) (by decide)
-    (by simp only [image_length]; decide) (by rw [image_length]; decide)
+theorem start_entry : Entry start := by ty_loaded
 
 /-- The simulator's run is safe, with instructions decoded from memory. -/
 theorem safeMem : SafeMem linux start :=
