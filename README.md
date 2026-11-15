@@ -50,11 +50,14 @@ What exists and is checked today:
   adds a piece of as many bytes as are asked for, which can be cut into the
   locals it holds. An array of any shape can be reached through an index
   known only by a bound.
-- An assembler core with labels for code and for data. A program is its
-  instructions followed by data segments, each read-only or writable; an
-  instruction that reaches data names it by label, and the distance is worked
-  out from where the two end up. The executable file has one loadable segment
-  for the instructions and one for each data segment.
+- An assembler core with labels for code and for data. A program is a list
+  of lines in segments: any number, in any order, each executable, read-only
+  or writable, holding instructions, data or both, with alignment where it is
+  asked for. An instruction that reaches data names it by label, and the
+  distance is worked out from where the two end up. The executable file and
+  the state a program starts in are both made from the program alone, one
+  loadable segment for each of its segments; what a program needs of the
+  state it starts in is stated line by line.
 - A model of the Linux calls a program needs (`read`, `write`, `openat`,
   `close`, `fstat`, `lseek`, `mmap`, `munmap`, `exit`, `exit_group`,
   `clock_gettime`, `getrandom`).

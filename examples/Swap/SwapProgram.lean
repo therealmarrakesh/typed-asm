@@ -10,7 +10,7 @@ called from two places whose stacks differ. The caller keeps its pointer in
 
 ```asm
 _start:
-   0  lea   rdi, [rip + record]  ; the record is one page after the load address
+   0  lea   rdi, [rip + record]  ; the record is in the segment before the code
    7  mov   rbx, rdi             ; keep the pointer in a callee-saved register
   10  call  swap                 ; called with an empty stack
   15  push  rbx
@@ -54,6 +54,11 @@ def record : List (BitVec 64) := [3, 5]
 def recordBytes : List Byte := record.flatMap le64
 
 def code : List (Asm Label) := [
+  -- the record comes first, in a segment of its own that can be written;
+  -- the instructions follow in another, a page on
+  .segment .rw,
+  .label .record, .bytes recordBytes,
+  .segment .rx,
   .label .start,
   .ref (.lea .w64 .rdi (.rip 0)) .record,
   .ins (.mov .w64 (.rm_r (.reg .rbx) .rdi)),
@@ -72,9 +77,7 @@ def code : List (Asm Label) := [
   .ins (.mov .w64 (.r_m .rcx (field 8))),
   .ins (.mov .w64 (.rm_r (.mem (field 0)) .rcx)),
   .ins (.mov .w64 (.rm_r (.mem (field 8)) .rax)),
-  .ins .ret,
-  .segment .rw,
-  .label .record, .bytes recordBytes]
+  .ins .ret]
 
 /-- Where the code is loaded. -/
 def base : BitVec 64 := Asm.base code

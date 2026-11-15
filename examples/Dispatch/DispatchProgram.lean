@@ -36,7 +36,7 @@ square:
      imul  rax, rdi
      ret
 
-table:  dq double, square         ; one page after the load address
+table:  dq double, square         ; in a read-only segment between the two of code
 ```
 
 That the table's entries are function pointers is a fact about the data, as
@@ -81,15 +81,18 @@ def code : List (Asm Label) := [
   .ins (.mov .w32 (.rm_i (.reg .rdi) 1)),
   .ins (.mov .w32 (.rm_i (.reg .rax) 60)),
   .ins .syscall,
+  -- the table, in a segment that can only be read
+  .segment .ro,
+  .label .table, .quad .double, .quad .square,
+  -- the two functions, in an executable segment of their own
+  .segment .rx,
   .label .double,
   .ins (.lea .w64 .rax (.sib (some .rdi) (some (.rdi, .s1)) 0)),
   .ins .ret,
   .label .square,
   .ins (.mov .w64 (.rm_r (.reg .rax) .rdi)),
   .ins (.imul2 .w64 .rax (.reg .rdi)),
-  .ins .ret,
-  .segment .ro,
-  .label .table, .quad .double, .quad .square]
+  .ins .ret]
 
 /-- Where the code is loaded. -/
 def base : BitVec 64 := Asm.base code

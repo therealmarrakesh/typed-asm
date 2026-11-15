@@ -10,7 +10,7 @@ contexts inside the loop are indexed by how many elements have been consumed.
 
 ```asm
 _start:
-   0  lea   rdi, [rip + array]   ; the array is one page after the load address
+   0  lea   rdi, [rip + array]   ; the array follows the code, in its segment
    7  mov   esi, 5
   12  call  sum
   17  mov   edi, eax
@@ -71,7 +71,9 @@ def code : List (Asm Label) := [
   .jcc .ne .loop,
   .label .done,
   .ins .ret,
-  .segment .ro,
+  -- the array stands in the same segment as the instructions, after them,
+  -- at the next address that is a multiple of eight
+  .align 8,
   .label .array, .bytes arrayBytes]
 
 /-- Where the code is loaded. -/

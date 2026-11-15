@@ -58,9 +58,6 @@ def Ψ : MemTy := .ofList blocks []
 
 /-! ## The program is well typed -/
 
--- Finding the record's address means walking the program to its label: more
--- nested steps than Lean allows by default.
-set_option maxRecDepth 8192 in
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   refine BlocksOk.of_labels ?_
   intro l Γ h
@@ -70,7 +67,7 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_step
     -- `rdi` holds exactly the record's address, so it is a pointer to it
     refine BlockOk.castPtr (r := .rdi) (base := dataBase) (i := 0) (w := true) (by decide) rfl rfl
-      (by decide +kernel) (fun _ => rfl) ?_
+      (by decide) (fun _ => rfl) ?_
     -- lea rax, [rip + compute]
     ty_step
     -- `rax` holds exactly the address of `compute`, so it is a pointer to that function
@@ -94,7 +91,7 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
 
 -- The record's address is found by walking the program to its label, which is
 -- more steps than Lean takes outside its kernel.
-theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide +kernel)
+theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 
 /-- What the program needs of the state it starts in: its bytes in
 executable memory, the record readable and writable, and four writable stack slots below `rsp` that
