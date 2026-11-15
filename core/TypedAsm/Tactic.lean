@@ -62,22 +62,6 @@ namespace TypedAsm
 
 /-! ## Lemmas the tactics apply -/
 
-/-- The slot a displacement addresses, computed from the displacement. -/
-theorem slotDisp_of (disp : BitVec 32) (h8 : disp.toNat % 8 = 0) (hlt : disp.toNat < 2 ^ 31) :
-    slotDisp (disp.toNat / 8) disp := by
-  refine ⟨?_, by omega⟩
-  apply BitVec.eq_of_toNat_eq
-  simp only [BitVec.toNat_ofNat]
-  omega
-
-/-- The slot and byte a displacement addresses, computed from the displacement. -/
-theorem innerDisp_of (disp : BitVec 32) (hlt : disp.toNat < 2 ^ 31) :
-    innerDisp (disp.toNat / 8) (disp.toNat % 8) disp := by
-  refine ⟨?_, by omega⟩
-  apply BitVec.eq_of_toNat_eq
-  simp only [BitVec.toNat_ofNat]
-  omega
-
 /-- The byte a displacement reaches, computed from the displacement. -/
 theorem byteDisp_of (disp : BitVec 32) (hlt : disp.toNat < 2 ^ 31) :
     byteDisp disp.toNat disp := by
@@ -86,13 +70,60 @@ theorem byteDisp_of (disp : BitVec 32) (hlt : disp.toNat < 2 ^ 31) :
   simp only [BitVec.toNat_ofNat]
   omega
 
-/-- Releasing the top `k` stack slots, with the remaining stack computed. -/
+/-- Releasing the pieces at the top of the stack that come to `k` bytes, with
+what is left of the stack computed. -/
 theorem Straight.freeFrame' {Ψ : MemTy} {next : BitVec 64} {Γ : Ctx} {k : Nat} {imm : BitVec 32}
-    (hk : slotDisp k imm) (hlen : (Γ.stack.take k).length = k) :
+    {rest : List Shape} (hk : byteDisp k imm) (hd : stackDrop Γ.stack k = some rest) :
     Straight Ψ next Γ (.alu .add .w64 (.rm_i (.reg .rsp) imm))
-      { Γ.moveSp (BitVec.ofNat 64 (8 * k)) with
-        stack := Γ.stack.drop k, room := Γ.room + k, flags := Flags.Known } :=
-  .freeFrame hk (List.take_append_drop k _).symm hlen
+      { Γ.moveSp (BitVec.ofNat 64 k) with
+        stack := rest, room := Γ.room + k, flags := Flags.Known } := by
+  obtain ⟨top, hst, hlen⟩ := stackDrop_eq hd
+  exact .freeFrame hk hst hlen
+
+/-! Which piece of the stack a byte above the stack pointer is in: at a fixed
+distance, through an index scaled by eight, and through any index. -/
+
+theorem stackAt_lit {d o : Nat} (h : o ≤ d) : d = o + (d - o) := by omega
+
+theorem stackAt_idx8 {x j o : Nat} (ho : o % 8 = 0) (hm : o / 8 ≤ j) :
+    8 * (x + j) = o + (0 + 8 * (x + (j - o / 8))) := by omega
+
+theorem stackAt_bytes {x dd o : Nat} (h : o ≤ dd) : x + dd = o + (x + (dd - o)) := by omega
+
+/-- A piece of the stack may be regarded as two, cut a fixed distance above
+the stack pointer. -/
+theorem BlockOk.splitStackAt {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
+    {a : BitVec 64} {Γ : Ctx} {k d : Nat} {S : Shape}
+    (hk : Γ.stack[k]? = some S) (_hlo : stackOff Γ.stack k < d)
+    (hm : d - stackOff Γ.stack k ≤ S.size)
+    (hrest : BlockOk Φ fetch sys Ψ a
+      { Γ with stack := Γ.stack.take k ++
+          [S.take (d - stackOff Γ.stack k), S.drop (d - stackOff Γ.stack k)] ++
+          Γ.stack.drop (k + 1) }) :
+    BlockOk Φ fetch sys Ψ a Γ :=
+  .splitStack hk hm hrest
+
+/-- The two pieces of the stack that meet a fixed distance above the stack
+pointer may be regarded as one. -/
+theorem BlockOk.joinStackAt {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
+    {a : BitVec 64} {Γ : Ctx} {k d : Nat} {S₁ S₂ : Shape}
+    (hk : Γ.stack[k]? = some S₁) (hk' : Γ.stack[k + 1]? = some S₂)
+    (_hd : stackOff Γ.stack (k + 1) = d)
+    (hrest : BlockOk Φ fetch sys Ψ a
+      { Γ with stack := Γ.stack.take k ++ [S₁.append S₂] ++ Γ.stack.drop (k + 2) }) :
+    BlockOk Φ fetch sys Ψ a Γ :=
+  .joinStack hk hk' hrest
+
+/-- Eight bytes of the stack, a fixed distance above the stack pointer, may
+be given a name for the value they hold. -/
+theorem BlockOk.nameSlotAt {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
+    {a : BitVec 64} {Γ : Ctx} {k d : Nat} {S : Shape}
+    (hk : Γ.stack[k]? = some S) (_hlo : stackOff Γ.stack k ≤ d)
+    (hi : d - stackOff Γ.stack k + 8 ≤ S.size)
+    (hrest : ∀ v, BlockOk Φ fetch sys Ψ a
+      { Γ with stack := Γ.stack.set k (S.set (d - stackOff Γ.stack k) (.eq v)) }) :
+    BlockOk Φ fetch sys Ψ a Γ :=
+  .nameSlot hk hi hrest
 
 /-! Operands at a fixed address. Which block the address falls in, and where,
 is found by computation: the first premise of each lemma below is there only
@@ -364,11 +395,34 @@ settle are left as goals. -/
 macro "sub_regs" : tactic =>
   `(tactic| (intro r hr; cases r <;> first | exact absurd rfl hr | (try ty_sub)))
 
-/-- Compares two stacks slot by slot. -/
+/-- Compares two pieces of the stack: the same, a typed value at a weaker
+type, or what one holds forgotten. -/
+macro "ty_subshape" : tactic =>
+  `(tactic| focus first
+    | exact SubShape.refl _
+    | (refine SubShape.slot ?_; ty_sub)
+    | exact SubShape.raw _
+    -- each typed value wanted is found among those there, at a weaker type
+    | (refine SubShape.mk rfl ?_
+       repeat (first
+         | (refine List.forall_mem_cons.mpr ⟨?_, ?_⟩
+            first
+            | (refine ⟨_, List.mem_cons_self .., rfl, ?_⟩; ty_sub)
+            | (refine ⟨_, List.mem_cons_of_mem _ (List.mem_cons_self ..), rfl, ?_⟩; ty_sub)
+            | (refine ⟨_, List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_self ..)),
+                rfl, ?_⟩; ty_sub)
+            | (refine ⟨_, List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+                (List.mem_cons_of_mem _ (List.mem_cons_self ..))), rfl, ?_⟩; ty_sub))
+         | (intro _ h; cases h))
+       done))
+
+/-- Compares two stacks piece by piece. -/
 macro "ty_stack" : tactic =>
   `(tactic| first
     | exact SubList.refl _
-    | ((repeat (first | exact SubList.nil | (refine SubList.cons ?_ ?_; ty_sub))); done))
+    | ((repeat (first
+        | exact SubList.refl _
+        | (refine SubList.cons ?_ ?_; ty_subshape))); done))
 
 /-- Shows one flags predicate implies another, in the common cases. -/
 macro "ty_flags" : tactic => do
@@ -549,21 +603,31 @@ macro "ty_elem" : tactic =>
     | omega
     | ((try ty_shape_open)
        simp only [ShapeOf.raw, Nat.reduceDiv, Nat.reduceMod, Nat.reduceAdd, Nat.reduceMul,
-         Nat.zero_add, Nat.add_zero, BitVec.reduceToNat, BitVec.toNat_ofNat, Nat.reducePow]
+         Nat.reduceSub, Nat.zero_add, Nat.add_zero, BitVec.reduceToNat, BitVec.toNat_ofNat,
+         Nat.reducePow, List.cons_append, List.nil_append, stackOff_zero, stackOff_cons_succ,
+         ShapeOf.slot_size, ShapeOf.raw_size]
        first | assumption | omega))
+
+open Lean Meta Elab Tactic in
+/-- Proves a premise about an element of an array if it is a proposition,
+and passes over it if it is a value still to be found: another premise
+settles that. -/
+elab "ty_elem_goal" : tactic => do
+  if ← isProp (← getMainTarget) then
+    evalTactic (← `(tactic| ty_elem))
 
 /-- Proves which typed value an array has at a place in one of its elements,
 that it is the only one there, or that bytes of an element are plain. -/
 macro "ty_val" : tactic =>
   `(tactic| first
-    | (refine ShapeOf.valAt_rep_elem ?_ ?_ ?_ ?_ <;> ty_elem)
-    | (refine ShapeOf.sole_rep_elem ?_ ?_ ?_ ?_ ?_ <;> ty_elem)
-    | (refine ShapeOf.free_rep_elem ?_ ?_ ?_ ?_ ?_ <;> ty_elem)
-    | (refine ShapeOf.valAt_rep_idx ?_ ?_ ?_ ?_ ?_ <;> ty_elem)
-    | (refine ShapeOf.sole_rep_idx ?_ ?_ ?_ ?_ ?_ <;> ty_elem)
-    | (refine ShapeOf.valAt_rep_at ?_ ?_ ?_ <;> ty_elem)
-    | (refine ShapeOf.sole_rep_at ?_ ?_ ?_ ?_ <;> ty_elem)
-    | (refine ShapeOf.free_rep_at ?_ ?_ ?_ ?_ <;> ty_elem))
+    | (refine' ShapeOf.valAt_rep_elem ?_ ?_ ?_ ?_ <;> ty_elem_goal)
+    | (refine' ShapeOf.sole_rep_elem ?_ ?_ ?_ ?_ ?_ <;> ty_elem_goal)
+    | (refine' ShapeOf.free_rep_elem ?_ ?_ ?_ ?_ ?_ <;> ty_elem_goal)
+    | (refine' ShapeOf.valAt_rep_idx ?_ ?_ ?_ ?_ ?_ <;> ty_elem_goal)
+    | (refine' ShapeOf.sole_rep_idx ?_ ?_ ?_ ?_ ?_ <;> ty_elem_goal)
+    | (refine' ShapeOf.valAt_rep_at ?_ ?_ ?_ <;> ty_elem_goal)
+    | (refine' ShapeOf.sole_rep_at ?_ ?_ ?_ ?_ <;> ty_elem_goal)
+    | (refine' ShapeOf.free_rep_at ?_ ?_ ?_ ?_ <;> ty_elem_goal))
 
 /-- Proves a fact with no unknowns in it from the hypotheses: the fact
 itself, or one side of an "or". A goal with unknowns is refused, since a
@@ -589,12 +653,14 @@ a given type: it is a register, a stack slot, a field of a pointer, or a field
 of a block at a fixed address. -/
 macro "ty_operand" : tactic =>
   `(tactic| first
-    | ty_rule_ordered ReadOk.reg | ty_rule_ordered ReadOk.slot | ty_rule_ordered ReadOk.field
+    | ty_rule_ordered ReadOk.reg | ty_rule_ordered ReadOk.slot | ty_rule_ordered ReadOk.slotIndexed
+    | ty_rule_ordered ReadOk.field
     | ty_rule_ordered ReadOk.owned | ty_rule_ordered WriteIntOk.owned
     | ty_rule_ordered ReadOk.ownedAt | ty_rule_ordered WriteIntOk.ownedAt
     | ty_rule_ordered WriteIntOk.ownedClear
     | ty_rule_ordered ReadOk.indexed | ty_rule_ordered ReadOk.global_of
     | ty_rule_ordered WriteIntOk.reg | ty_rule_ordered WriteIntOk.slot
+    | ty_rule_ordered WriteIntOk.slotIndexed
     | ty_rule_ordered WriteIntOk.field | ty_rule_ordered WriteIntOk.indexed
     | ty_rule_ordered WriteIntOk.global_of
     | ty_rule_ordered Holds.reg | ty_rule_ordered Holds.slot | ty_rule_ordered Holds.field
@@ -640,6 +706,30 @@ theorem owned_addrScaled (a c : BitVec 64) (sc : Scale) (disp : BitVec 32)
 is that of. -/
 syntax "ty_owned_byte" : tactic
 
+/-- Proves which piece of the stack a byte above the stack pointer is in, and
+which byte of the piece: the pieces the context lists are tried from the top. -/
+syntax "ty_stack_at" : tactic
+
+/-- Shows a fact about where a piece of the stack starts and how long it
+is: that a byte or a run of bytes is inside it, say. -/
+macro "ty_stack_in" : tactic =>
+  `(tactic| first
+    | decide
+    | omega
+    | (simp only [List.cons_append, List.nil_append, ShapeOf.rep_size, ShapeOf.slot_size,
+         ShapeOf.raw_size, stackOff_zero,
+         stackOff_cons_succ, Scale.shift, NarrowW.bytes, Width.bytes, BitVec.toNat_ofNat,
+         BitVec.reduceToNat, Nat.reducePow, Nat.reduceMod, Nat.reduceMul, Nat.reduceAdd,
+         Nat.reduceSub, Nat.reduceDiv, Nat.mul_one, Nat.add_zero, Nat.zero_add, Nat.pow_zero]
+       first | omega | decide)
+    | (simp only [List.cons_append, List.nil_append, ShapeOf.rep_size, ShapeOf.slot_size,
+         ShapeOf.raw_size, stackOff_zero,
+         stackOff_cons_succ, Scale.shift, NarrowW.bytes, Width.bytes, BitVec.toNat_ofNat,
+         BitVec.reduceToNat, Nat.reducePow, Nat.reduceMod, Nat.reduceMul, Nat.reduceAdd,
+         Nat.reduceSub, Nat.reduceDiv, Nat.mul_one, Nat.add_zero, Nat.zero_add, Nat.pow_zero,
+         Nat.le_refl]
+       done))
+
 open Lean Meta Elab Tactic in
 /-- Fails unless the goal is a proposition. A rule's unknowns are goals too,
 and a side-condition tactic let loose on one of them would fill it with
@@ -662,6 +752,7 @@ macro_rules
       | exact EaIs.indexed (by decide) rfl rfl
       | ty_owned_at
       | ty_owned_byte
+      | ty_stack_at
       -- a bound against the length of a long list, without counting it out
       | (simp only [ShapeOf.raw, ShapeOf.clear, ShapeOf.set, ShapeOf.take, ShapeOf.drop,
            ShapeOf.append, ShapeOf.rep_size,
@@ -693,9 +784,8 @@ macro_rules
            Nat.reducePow, Nat.reduceMod,
            Nat.reduceMul, Nat.reduceAdd, Nat.reduceDiv, Nat.mul_one, Nat.add_zero, Nat.pow_zero]
          omega)
-      | (refine slotDisp_of _ ?_ ?_ <;> decide)
-      | (refine innerDisp_of _ ?_ <;> decide)
       | (refine byteDisp_of _ ?_; decide)
+      | ty_stack_in
       | ty_val
       | ty_field
       | ty_sub
@@ -736,6 +826,8 @@ macro "ty_dsimp_ctx" : tactic =>
       ShiftOp.flagsAfter, Width.bits, Nat.reduceEqDiff, Nat.reduceBEq, ↓reduceIte,
       AluOp.writesDst, List.set_cons_zero, List.set_cons_succ, List.eraseIdx_cons_zero,
       List.eraseIdx_cons_succ, List.cons_append, List.nil_append, List.length_cons,
+      List.take_succ_cons, List.take_zero, List.drop_succ_cons,
+      stackOff_zero, stackOff_cons_succ, ShapeOf.slot_size, ShapeOf.raw_size,
       List.length_nil, List.drop_zero,
       Bool.cond_true, Bool.cond_false, Nat.add_zero, Nat.zero_add, BitVec.reduceToNat, Nat.reduceDiv,
       elem_succ,
@@ -756,6 +848,8 @@ computing with it, so that what is learnt about the value can be used. -/
 syntax "ty_name " term " as " ident : tactic
 
 syntax "ty_name_slot " term " as " ident : tactic
+syntax "ty_stack_split " "at " term : tactic
+syntax "ty_stack_join " "at " term : tactic
 syntax "ty_open " term : tactic
 syntax "ty_null " term : tactic
 syntax "ty_err " term " as " ident : tactic
@@ -852,28 +946,6 @@ def refineBlocks (tac : TSyntax `tactic) : TacticM Unit := do
       evalTactic (← `(tactic| decide))
   setGoals (blocks ++ others)
 
-/-- `ty_name_slot i as v`: from here on, the value in stack slot `i` is
-called `v` and the slot is typed as exactly `v`. -/
-elab_rules : tactic
-  | `(tactic| ty_name_slot $i as $v) => do
-    let goal ← getMainGoal
-    let others := (← getGoals).drop 1
-    setGoals [goal]
-    evalTactic (← `(tactic| refine BlockOk.nameSlot (i := $i) ?_ ?_))
-    let mut rest? : Option MVarId := none
-    for g in ← getGoals do
-      let t ← instantiateMVars (← g.getType)
-      if t.isForall then rest? := some g
-      else
-        setGoals [g]
-        try
-          evalTactic (← `(tactic| first | decide | (simp; done) | omega))
-        catch _ => throwError "ty_name_slot: there is no such stack slot here"
-    let some rest := rest? | throwError "ty_name_slot: unexpected goals"
-    setGoals [rest]
-    evalTactic (← `(tactic| (intro $v:ident; ty_normalize)))
-    setGoals ((← getGoals) ++ others)
-
 /-- `ty_open r`: register `r` holds a pointer to a block of some kind. From
 here on `r` is an ordinary pointer to a block of the shape the memory typing
 lists for that kind, which can be loaded from and stored to. -/
@@ -916,10 +988,10 @@ elab_rules : tactic
 /-- The rules whose premises are proved in order, stopping at the first that
 fails: those for operands, whose premises each depend on the ones before. -/
 def orderedRules : List Name := [``Straight.loadGlobal_of, ``Straight.storeGlobal_of,
-  ``ReadOk.reg, ``ReadOk.slot, ``ReadOk.field, ``ReadOk.indexed, ``ReadOk.global_of, ``ReadOk.text,
-  ``ReadOk.owned, ``WriteIntOk.owned,
-  ``WriteIntOk.reg, ``WriteIntOk.slot, ``WriteIntOk.field, ``WriteIntOk.indexed,
-  ``WriteIntOk.global_of, ``Holds.reg, ``Holds.slot, ``Holds.field, ``Holds.indexed,
+  ``ReadOk.reg, ``ReadOk.slot, ``ReadOk.slotIndexed, ``ReadOk.field, ``ReadOk.indexed,
+  ``ReadOk.global_of, ``ReadOk.text, ``ReadOk.owned, ``WriteIntOk.owned,
+  ``WriteIntOk.reg, ``WriteIntOk.slot, ``WriteIntOk.slotIndexed, ``WriteIntOk.field,
+  ``WriteIntOk.indexed, ``WriteIntOk.global_of, ``Holds.reg, ``Holds.slot, ``Holds.field, ``Holds.indexed,
   ``Holds.global_of]
 
 /-- The straight-line rules that can type an instruction of this shape, most
@@ -937,11 +1009,12 @@ def Instr.rules : Instr → List Name
   | .lea .w64 _ (.sib (some _) (some _) _) => [``Straight.leaExactBI, ``Straight.lea]
   | .lea _ _ _ => [``Straight.lea]
   -- loads: a whole slot or field keeps its type, anything else is an integer
-  | .mov .w64 (.r_m _ (.sib (some .rsp) none _)) => [``Straight.loadStack]
+  | .mov .w64 (.r_m _ (.sib (some .rsp) none _)) => [``Straight.loadStack, ``Straight.loadInt]
   | .mov .w64 (.r_m _ (.sib (some _) none _)) =>
     [``Straight.loadField, ``Straight.loadOwned, ``Straight.loadInt]
   | .mov .w64 (.r_m _ (.rip _)) => [``Straight.loadGlobal_of, ``Straight.loadInt]
-  | .mov .w64 (.r_m _ (.sib (some .rsp) (some _) _)) => [``Straight.loadStackIndexed]
+  | .mov .w64 (.r_m _ (.sib (some .rsp) (some _) _)) =>
+    [``Straight.loadStackIndexed, ``Straight.loadInt]
   | .mov .w64 (.r_m _ (.sib (some _) (some _) _)) =>
     [``Straight.loadIndexed, ``Straight.loadOwned, ``Straight.loadInt]
   | .mov _ (.r_m _ _) => [``Straight.loadInt]
@@ -965,7 +1038,7 @@ def Instr.rules : Instr → List Name
   | .store8 _ _ => [``Straight.store8RM]
   | .store16 _ _ => [``Straight.store16RM]
   | .push _ => [``Straight.push]
-  | .pop _ => [``Straight.pop]
+  | .pop _ => [``Straight.pop, ``Straight.popPlain]
   -- arithmetic
   | .alu .sub .w64 (.rm_i (.reg .rsp) _) => [``Straight.allocFrame]
   | .alu .add .w64 (.rm_i (.reg .rsp) _) => [``Straight.freeFrame']
@@ -1207,7 +1280,7 @@ private partial def normList (e : Expr) : MetaM Expr := do
 /-- A number written out, if the term is one that can be worked out. -/
 private def natOf (e : Expr) : MetaM (Option Nat) := do
   if let some n := e.nat? then return some n
-  if e.hasFVar || e.hasMVar then return none
+  if e.hasMVar then return none
   let v ← whnf e
   match v with
   | .lit (.natVal n) => return some n
@@ -1257,6 +1330,31 @@ private partial def normOwned (e : Expr) : MetaM Expr := do
     return mkApp3 e.appFn!.appFn!.appFn! e.appFn!.appFn!.appArg! hd'' (← normOwned e.appArg!)
   normList e
 
+/-- The stack with each piece that an instruction has just changed worked
+out, as far as its spine is written out: eight bytes holding one typed value
+are written as a slot, bytes holding none as plain bytes. -/
+private partial def normStack (e : Expr) : MetaM Expr := do
+  let e' ← whnf e
+  unless e'.isAppOfArity ``List.cons 3 do return e
+  let hd := e'.appFn!.appArg!
+  let keep := hd.isAppOf ``ShapeOf.slot || hd.isAppOf ``ShapeOf.raw || hd.isAppOf ``ShapeOf.rep
+    || hd.isFVar
+  let hd' ← if keep then pure hd else do
+    let S ← normShape hd
+    if S.isAppOfArity ``ShapeOf.mk 3 then
+      let τ := S.appFn!.appFn!.appArg!
+      let size := S.appFn!.appArg!
+      let (elems, whole) ← consElems S.appArg!
+      if whole && elems.size == 0 then pure (mkApp2 (mkConst ``ShapeOf.raw) τ size)
+      else if whole && elems.size == 1 then
+        let p := elems[0]!
+        if p.isAppOfArity ``Prod.mk 4 && size.nat? == some 8 && p.appFn!.appArg!.nat? == some 0
+        then pure (mkApp2 (mkConst ``ShapeOf.slot) τ p.appArg!)
+        else pure S
+      else pure S
+    else pure S
+  return mkApp3 e'.appFn!.appFn!.appFn! e'.appFn!.appFn!.appArg! hd' (← normStack e'.appArg!)
+
 /-- A context written as its five parts, with each register's type and the
 list of owned blocks worked out where a definition stood in for them: a
 signature's field, say. Returns nothing if there was nothing to do. -/
@@ -1278,8 +1376,10 @@ private def workOutCtx (ctx : Expr) : MetaM (Option Expr) := do
     regs := mkApp regs.appFn! (mkAppN regs.appArg!.getAppFn out)
   let owned ← normOwned args[5]!
   unless owned == args[5]! do changed := true
+  let stack ← normStack args[2]!
+  unless stack == args[2]! do changed := true
   unless changed do return none
-  return some (mkAppN ctx.getAppFn ((args.set! 1 regs).set! 5 owned))
+  return some (mkAppN ctx.getAppFn (((args.set! 1 regs).set! 2 stack).set! 5 owned))
 
 elab_rules : tactic
   | `(tactic| ty_normalize) => do
@@ -1466,6 +1566,8 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
       return m!"the address is not inside any memory block"
     if lhs.isAppOf ``AluOp.readsCarry then
       return m!"this rule does not cover operations that read the carry flag"
+    if lhs.isAppOf ``stackDrop then
+      return m!"the pieces at the top of the stack do not come to exactly that many bytes"
     if lhs.isAppOfArity ``CtxOf.room 2 then
       return m!"there is not enough free stack: the context has room for {← ppClean (← reduce lhs)}"
     if lhs.isAppOf ``ShapeOf.free then
@@ -1491,9 +1593,9 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
       return m!"the field is not known to be inside the block: a bound on the index is needed \
         among the hypotheses"
     return m!"needs `{← ppClean ty}`, but the left side is `{← ppClean actual}`"
-  if ty.isAppOf ``slotDisp then
-    return m!"the displacement must be a non-negative multiple of 8"
-  if ty.isAppOf ``innerDisp || ty.isAppOf ``byteDisp then
+  if ty.isAppOf ``StackAt then
+    return m!"those bytes are not known to be inside one piece of the stack"
+  if ty.isAppOf ``byteDisp then
     return m!"the displacement must be non-negative"
   if ty.isAppOfArity ``Sub 2 then
     return m!"a value of type `{← ppTy (← reduce ty.appFn!.appArg!)}` cannot be stored \
@@ -1514,7 +1616,7 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
         needed among the hypotheses"
     return m!"the access would reach past the end of the block"
   if ty.isAppOf ``LE.le then
-    return m!"the access would cross the end of an 8-byte stack slot"
+    return m!"the access would reach past the end of its piece of the stack"
   if ty.isForall && ty.getForallBody.isAppOf ``Exists then
     return m!"the flags are not known here, so they do not decide the condition"
   if ty.isForall then
@@ -1529,9 +1631,11 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
 /-- The rules for an operand judgment, in the order to try them. -/
 private def operandRules (ty : Expr) : List Name :=
   if ty.isAppOf ``ReadOk then
-    [``ReadOk.reg, ``ReadOk.slot, ``ReadOk.field, ``ReadOk.indexed, ``ReadOk.global_of, ``ReadOk.text,
+    [``ReadOk.reg, ``ReadOk.slot, ``ReadOk.slotIndexed, ``ReadOk.field, ``ReadOk.indexed,
+      ``ReadOk.global_of, ``ReadOk.text,
       ``ReadOk.owned]
-  else if ty.isAppOf ``WriteIntOk then [``WriteIntOk.reg, ``WriteIntOk.slot, ``WriteIntOk.field, ``WriteIntOk.indexed,
+  else if ty.isAppOf ``WriteIntOk then [``WriteIntOk.reg, ``WriteIntOk.slot,
+    ``WriteIntOk.slotIndexed, ``WriteIntOk.field, ``WriteIntOk.indexed,
     ``WriteIntOk.global_of]
   else if ty.isAppOf ``Holds then [``Holds.reg, ``Holds.slot, ``Holds.field, ``Holds.indexed, ``Holds.global_of]
   else []
@@ -1541,6 +1645,24 @@ private def ownedOperandRule (ty : Expr) : Option Name :=
   if ty.isAppOf ``ReadOk then some ``ReadOk.ownedAt
   else if ty.isAppOf ``WriteIntOk then some ``WriteIntOk.ownedAt
   else none
+
+/-- The rules about the stack, whose premises speak of a piece of the stack
+where the rules about blocks speak of a block. -/
+private def stackRules : List Name :=
+  [``ReadOk.slot, ``ReadOk.slotIndexed, ``WriteIntOk.slot, ``WriteIntOk.slotIndexed,
+    ``Holds.slot, ``Straight.loadStack, ``Straight.loadStackIndexed, ``Straight.storeStack]
+
+/-- A premise's description, in the words for the stack where the rule is
+one about the stack. -/
+private def describeFor (rule : Name) (ty : Expr) : MetaM MessageData := do
+  let msg ← describePremise ty
+  unless stackRules.contains rule do return msg
+  let text ← msg.toString
+  let text := text.replace "the block is not known to hold" "that piece of the stack is not known to hold"
+  let text := text.replace "inside the block" "inside one piece of the stack"
+  let text := text.replace "the end of the block" "the end of the piece of the stack it starts in"
+  let text := text.replace " of the block" " of that piece of the stack"
+  return m!"{text}"
 
 /-- Applies a rule to the main goal and describes the first premise that
 cannot be proved. `none` if the rule is for a goal of a different form. A
@@ -1580,12 +1702,12 @@ private partial def explainPremises (rule : Name) : TacticM (Option MessageData)
   -- A premise about the displacement is reported first: the others cannot
   -- be judged until it holds. After that, prefer a premise with no unknowns.
   let isDisp (e : MVarId × Expr) : Bool :=
-    e.2.isAppOf ``slotDisp || e.2.isAppOf ``innerDisp || e.2.isAppOf ``byteDisp
+    e.2.isAppOf ``byteDisp
   let chosen := (failed.find? isDisp <|> failed.find? (!·.2.hasExprMVar) <|> failed[0]?)
   match chosen with
   | some (g, ty) =>
     let inner := operandRules ty
-    if inner.isEmpty then return some (← describePremise ty)
+    if inner.isEmpty then return some (← describeFor rule ty)
     -- Where the address is exactly known the operand is in an owned block or
     -- nowhere, and the rule for owned blocks is the one to explain.
     if let some r := ownedOperandRule ty then
@@ -1743,9 +1865,11 @@ private def applySysRule (goal : MVarId) (rule : Name) (shape : SysShape) :
       `(tactic| refine BlockOk.sys (by ty_fetch) ($r (S := ?_) (off := ?_) ?_ ?_ ?_ ?_) ?_)
     | .stack true =>
       `(tactic| refine BlockOk.sys (by ty_fetch)
-          ($r (v := ?_) (d := ?_) (len := ?_) ?_ ?_ ?_ ?_ ?_ ?_) ?_)
+          ($r (v := ?_) (d := ?_) (k := ?_) (i := ?_) (S := ?_) (len := ?_)
+            ?_ ?_ ?_ ?_ ?_ ?_) ?_)
     | .stack false =>
-      `(tactic| refine BlockOk.sys (by ty_fetch) ($r (v := ?_) (d := ?_) ?_ ?_ ?_ ?_ ?_) ?_)
+      `(tactic| refine BlockOk.sys (by ty_fetch)
+          ($r (v := ?_) (d := ?_) (k := ?_) (i := ?_) (S := ?_) ?_ ?_ ?_ ?_ ?_) ?_)
   try
     runOn goal (do evalTactic tac)
   catch _ => throwError "`syscall`: the operating system here is not the Linux model"
@@ -1769,11 +1893,14 @@ private def typeBufferStack (goal : MVarId) (rule : Name) (sized : Bool) : Tacti
   for g in gs do
     if ← g.isAssigned then continue
     let t ← instantiateMVars (← g.getType)
+    if t.isAppOf ``StackAt then
+      discard <| runOn g (do evalTactic (← `(tactic| ty_stack_at)))
+  for g in gs do
+    if ← g.isAssigned then continue
+    let t ← instantiateMVars (← g.getType)
     if t.isAppOf ``BlockOk then rest? := some g
-    else if t.isForall then
-      discard <| runOn g (do evalTactic (← `(tactic| (refine ints_of_check ?_; first | ((try dsimp only); decide) | rfl))))
     else if (← isProp t) then
-      discard <| runOn g (do evalTactic (← `(tactic| decide)))
+      discard <| runOn g (do evalTactic (← `(tactic| ty_stack_in)))
   let some rest := rest? | throwError "unexpected goals"
   return rest
 
@@ -2294,7 +2421,8 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
             let t := (← instantiateMVars (← goal.getType)).consumeMData
             let stack ← whnf (← mkAppM ``CtxOf.stack #[t.appArg!])
             if stack.isAppOfArity ``List.cons 3 then
-              pure ((← whnf stack.appFn!.appArg!).isAppOf ``Ty.codeAll)
+              pure ((← instantiateMVars stack.appFn!.appArg!).find?
+                (·.isConstOf ``Ty.codeAll)).isSome
             else pure false
           catch _ => pure false
         if family then
@@ -2983,6 +3111,112 @@ elab_rules : tactic
             | exact owned_addr0 _
             | exact owned_addrOff _ _
           case fit => ty_inside))
+
+/-- A list with its spine written out as far as it can be worked out. -/
+private partial def spineOf (e : Expr) : MetaM Expr := do
+  let e' ← whnf e
+  if e'.isAppOfArity ``List.cons 3 then
+    return mkApp3 e'.appFn!.appFn!.appFn! e'.appFn!.appFn!.appArg! e'.appFn!.appArg!
+      (← spineOf e'.appArg!)
+  if e'.isAppOfArity ``List.nil 1 then return e'
+  return e
+
+/-- How many pieces of a stack are written out. -/
+private def stackCount (σ : Expr) : MetaM Nat := do
+  return (← consElems σ).1.size
+
+elab_rules : tactic
+  | `(tactic| ty_stack_at) => withMainContext do
+    let t := (← instantiateMVars (← (← getMainGoal).getType)).consumeMData
+    unless t.isAppOfArity ``StackAt 5 do throwError "not a goal about the stack"
+    -- the stack written out piece by piece, where a definition stood in for it
+    let σ ← spineOf t.getAppArgs[0]!
+    replaceMainGoal [← (← getMainGoal).replaceTargetDefEq (mkAppN t.getAppFn (t.getAppArgs.set! 0 σ))]
+    tryPlaces (← stackCount σ) fun k => do
+      let kq := Syntax.mkNumLit (toString k)
+      `(tactic| (
+          refine' StackAt.of_inside (k := $kq) ?entry ?off ?inside
+          case entry => exact rfl
+          case off =>
+            first
+            | (refine stackAt_idx8 ?_ ?_ <;> ty_stack_in)
+            | (refine stackAt_bytes ?_; ty_stack_in)
+            | (refine stackAt_lit ?_; ty_stack_in)
+          case inside => ty_stack_in))
+
+/-- `ty_name_slot d as v`: from here on, the eight bytes `d` bytes above the
+stack pointer are typed as exactly the value they hold, which is called `v`. -/
+elab_rules : tactic
+  | `(tactic| ty_name_slot $d as $v) => withMainContext do
+    let others := (← getGoals).drop 1
+    setGoals [← getMainGoal]
+    evalTactic (← `(tactic| ty_normalize))
+    let goal ← getMainGoal
+    let t := (← instantiateMVars (← goal.getType)).consumeMData
+    unless t.isAppOfArity ``BlockOk 6 do throwError "ty_name_slot: the goal is not a block"
+    let n ← stackCount (← mkAppM ``CtxOf.stack #[t.appArg!])
+    for k in [0:n] do
+      let saved ← saveState
+      try
+        setGoals [goal]
+        let kq := Syntax.mkNumLit (toString k)
+        Tactic.withoutRecover do
+          evalTactic (← `(tactic| (
+            refine BlockOk.nameSlotAt (k := $kq) (d := $d) rfl ?lo ?le ?rest
+            case lo => ty_stack_in
+            case le => ty_stack_in)))
+        evalTactic (← `(tactic| (intro $v:ident; ty_normalize)))
+        setGoals ((← getGoals) ++ others)
+        return
+      catch _ => saved.restore
+    throwError "ty_name_slot: there are not eight bytes of one piece of the stack there"
+
+/-- Applies to the block goal the first of the tactics made for the pieces
+of its stack that works, leaving the rest of the block. -/
+private def atStackPiece (name : String) (mk : Nat → TacticM (TSyntax `tactic))
+    (failure : MessageData) : TacticM Unit := withMainContext do
+  let others := (← getGoals).drop 1
+  setGoals [← getMainGoal]
+  evalTactic (← `(tactic| ty_normalize))
+  let goal ← getMainGoal
+  let t := (← instantiateMVars (← goal.getType)).consumeMData
+  unless t.isAppOfArity ``BlockOk 6 do throwError "{name}: the goal is not a block"
+  let n ← stackCount (← mkAppM ``CtxOf.stack #[t.appArg!])
+  for k in [0:n] do
+    let saved ← saveState
+    try
+      setGoals [goal]
+      Tactic.withoutRecover do evalTactic (← mk k)
+      evalTactic (← `(tactic| ty_normalize))
+      setGoals ((← getGoals) ++ others)
+      return
+    catch _ => saved.restore
+  throwError failure
+
+/-- `ty_stack_split at d`: the piece of the stack that the byte `d` bytes
+above the stack pointer is in is from here on two pieces, meeting there. An
+access has to keep to one piece, so this is how part of a frame is kept to
+exactly the bytes meant for it. -/
+elab_rules : tactic
+  | `(tactic| ty_stack_split at $d) =>
+    atStackPiece "ty_stack_split" (fun k => do
+      let kq := Syntax.mkNumLit (toString k)
+      `(tactic| (
+          refine BlockOk.splitStackAt (k := $kq) (d := $d) rfl ?lo ?le ?rest
+          case lo => ty_stack_in
+          case le => ty_stack_in)))
+      m!"ty_stack_split: no piece of the stack has that byte inside it"
+
+/-- `ty_stack_join at d`: the two pieces of the stack that meet `d` bytes
+above the stack pointer are from here on one piece. -/
+elab_rules : tactic
+  | `(tactic| ty_stack_join at $d) =>
+    atStackPiece "ty_stack_join" (fun k => do
+      let kq := Syntax.mkNumLit (toString k)
+      `(tactic| (
+          refine BlockOk.joinStackAt (k := $kq) (d := $d) rfl rfl ?meet ?rest
+          case meet => ty_stack_in)))
+      m!"ty_stack_join: no two pieces of the stack meet there"
 
 /-- Applies a rule about the owned block at one of the places in the
 context's list, whichever fits, and returns the goals it leaves. -/

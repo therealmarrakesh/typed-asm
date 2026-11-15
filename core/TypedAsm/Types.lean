@@ -6,7 +6,7 @@ import TypedAsm.Safety
 What the type system can say about a 64-bit value, about the machine as a
 whole, and what those statements mean.
 
-Every stack slot is 8 bytes. A block of memory is described byte for byte.
+The stack and every block of memory are described byte for byte.
 -/
 
 namespace TypedAsm
@@ -148,6 +148,18 @@ theorem lt_of_mem_repFrom {S : ShapeOf τ} (hf : S.fits = true) {o n : Nat} {q :
       simp only
       omega
     · have := ih h; omega
+
+/-- Each typed value of the copies is one of the block's, in one of them. -/
+theorem mem_repFrom {S : ShapeOf τ} {o n : Nat} {q : Nat × τ} (h : q ∈ repFrom S o n) :
+    ∃ i, i < n ∧ ∃ p ∈ S.vals, q = (o + i * S.size + p.1, p.2) := by
+  induction n generalizing o with
+  | zero => cases h
+  | succ n ih =>
+    simp only [repFrom, List.mem_append, List.mem_map] at h
+    rcases h with ⟨p, hp, rfl⟩ | h
+    · exact ⟨0, by omega, p, hp, by simp⟩
+    · obtain ⟨i, hi, p, hp, rfl⟩ := ih h
+      exact ⟨i + 1, by omega, p, hp, by rw [Nat.succ_mul]; congr 1; omega⟩
 
 theorem fits_rep {S : ShapeOf τ} (hf : S.fits = true) (n : Nat) : (S.rep n).fits = true := by
   refine List.all_eq_true.mpr fun q hq => decide_eq_true ?_
@@ -293,7 +305,168 @@ theorem sole_rep {S : ShapeOf τ} (hf : S.fits = true) {n i f : Nat} (hi : i < n
   have := sole_repFrom hf (o := 0) hi hin hs
   simpa [sole, rep] using this
 
+/-- Eight bytes holding one typed value: what a `push` puts on the stack. -/
+def slot (t : τ) : ShapeOf τ := ⟨8, [(0, t)]⟩
+
+@[simp] theorem slot_size (t : τ) : (slot t).size = 8 := rfl
+
+@[simp] theorem valAt_slot (t : τ) : (slot t).valAt 0 = some t := rfl
+
 end ShapeOf
+
+/-- The number of bytes a run of pieces of the stack comes to. -/
+def stackLen {τ : Type} : List (ShapeOf τ) → Nat
+  | [] => 0
+  | S :: σ => S.size + stackLen σ
+
+/-- How many bytes above the stack pointer piece `k` of the stack starts. -/
+def stackOff {τ : Type} (σ : List (ShapeOf τ)) (k : Nat) : Nat :=
+  match k, σ with
+  | 0, _ => 0
+  | _ + 1, [] => 0
+  | k + 1, S :: σ => S.size + stackOff σ k
+termination_by structural k
+
+@[simp] theorem stackOff_zero {τ : Type} (σ : List (ShapeOf τ)) : stackOff σ 0 = 0 := rfl
+
+@[simp] theorem stackOff_nil {τ : Type} (k : Nat) : stackOff ([] : List (ShapeOf τ)) k = 0 := by
+  cases k <;> rfl
+
+@[simp] theorem stackOff_cons_succ {τ : Type} (S : ShapeOf τ) (σ : List (ShapeOf τ)) (k : Nat) :
+    stackOff (S :: σ) (k + 1) = S.size + stackOff σ k := rfl
+
+@[simp] theorem stackLen_nil {τ : Type} : stackLen ([] : List (ShapeOf τ)) = 0 := rfl
+
+@[simp] theorem stackLen_cons {τ : Type} (S : ShapeOf τ) (σ : List (ShapeOf τ)) :
+    stackLen (S :: σ) = S.size + stackLen σ := rfl
+
+/-- What is left of the stack once the pieces at its top that come to exactly
+`k` bytes are gone, if pieces do end there. -/
+def stackDrop {τ : Type} : List (ShapeOf τ) → Nat → Option (List (ShapeOf τ))
+  | σ, 0 => some σ
+  | [], _ + 1 => none
+  | S :: σ, k + 1 => if S.size ≤ k + 1 then stackDrop σ (k + 1 - S.size) else none
+
+theorem stackDrop_eq {τ : Type} {σ rest : List (ShapeOf τ)} {k : Nat}
+    (h : stackDrop σ k = some rest) : ∃ top, σ = top ++ rest ∧ stackLen top = k := by
+  induction σ generalizing k with
+  | nil =>
+    cases k with
+    | zero => exact ⟨[], by simpa [stackDrop] using h, rfl⟩
+    | succ k => simp [stackDrop] at h
+  | cons S σ ih =>
+    cases k with
+    | zero =>
+      simp only [stackDrop, Option.some.injEq] at h
+      exact ⟨[], by simpa using h, rfl⟩
+    | succ k =>
+      simp only [stackDrop] at h
+      split at h
+      · next hle =>
+        obtain ⟨top, rfl, hlen⟩ := ih h
+        exact ⟨S :: top, rfl, by simp only [stackLen_cons, hlen]; omega⟩
+      · cases h
+
+/-- A piece of the stack ends where the stack does or before. -/
+theorem stackOff_add_le {τ : Type} {σ : List (ShapeOf τ)} {k : Nat} {S : ShapeOf τ}
+    (h : σ[k]? = some S) : stackOff σ k + S.size ≤ stackLen σ := by
+  induction σ generalizing k with
+  | nil => simp at h
+  | cons T σ ih =>
+    cases k with
+    | zero =>
+      simp only [List.getElem?_cons_zero, Option.some.injEq] at h
+      subst h
+      simp only [stackOff_zero, stackLen_cons]
+      omega
+    | succ k =>
+      simp only [List.getElem?_cons_succ] at h
+      have := ih h
+      simp only [stackOff_cons_succ, stackLen_cons]
+      omega
+
+/-- An earlier piece of the stack ends where a later one starts or before. -/
+theorem stackOff_le {τ : Type} {σ : List (ShapeOf τ)} {j k : Nat} {T : ShapeOf τ}
+    (hjk : j < k) (h : σ[j]? = some T) : stackOff σ j + T.size ≤ stackOff σ k := by
+  induction σ generalizing j k with
+  | nil => simp at h
+  | cons U σ ih =>
+    cases k with
+    | zero => omega
+    | succ k =>
+      cases j with
+      | zero =>
+        simp only [List.getElem?_cons_zero, Option.some.injEq] at h
+        subst h
+        simp only [stackOff_zero, stackOff_cons_succ]
+        omega
+      | succ j =>
+        simp only [List.getElem?_cons_succ] at h
+        have := ih (by omega : j < k) h
+        simp only [stackOff_cons_succ]
+        omega
+
+theorem stackLen_append {τ : Type} (top rest : List (ShapeOf τ)) :
+    stackLen (top ++ rest) = stackLen top + stackLen rest := by
+  induction top with
+  | nil => simp [stackLen]
+  | cons S top ih => simp only [List.cons_append, stackLen, ih]; omega
+
+theorem stackOff_append {τ : Type} (top rest : List (ShapeOf τ)) (j : Nat) :
+    stackOff (top ++ rest) (top.length + j) = stackLen top + stackOff rest j := by
+  induction top with
+  | nil => simp [stackLen]
+  | cons S top ih =>
+    rw [List.cons_append, List.length_cons, show top.length + 1 + j = (top.length + j) + 1 by omega]
+    simp only [stackOff, stackLen, ih]
+    omega
+
+theorem stackOff_append_le {τ : Type} (A B : List (ShapeOf τ)) {k : Nat} (h : k ≤ A.length) :
+    stackOff (A ++ B) k = stackOff A k := by
+  induction A generalizing k with
+  | nil =>
+    have : k = 0 := by simpa using h
+    subst this
+    simp
+  | cons S A ih =>
+    cases k with
+    | zero => simp
+    | succ k =>
+      simp only [List.cons_append, stackOff_cons_succ]
+      rw [ih (by simpa using h)]
+
+/-- Replacing a piece by one of the same size moves no piece. -/
+theorem stackOff_set {τ : Type} {σ : List (ShapeOf τ)} {k : Nat} {S S' : ShapeOf τ}
+    (hk : σ[k]? = some S) (hs : S'.size = S.size) (j : Nat) :
+    stackOff (σ.set k S') j = stackOff σ j := by
+  induction σ generalizing k j with
+  | nil => simp
+  | cons T σ ih =>
+    cases j with
+    | zero => cases k <;> simp [stackOff]
+    | succ j =>
+      cases k with
+      | zero =>
+        simp only [List.getElem?_cons_zero, Option.some.injEq] at hk
+        subst hk
+        simp only [List.set_cons_zero, stackOff, hs]
+      | succ k =>
+        simp only [List.getElem?_cons_succ] at hk
+        simp only [List.set_cons_succ, stackOff, ih hk]
+
+theorem stackLen_set {τ : Type} {σ : List (ShapeOf τ)} {k : Nat} {S S' : ShapeOf τ}
+    (hk : σ[k]? = some S) (hs : S'.size = S.size) : stackLen (σ.set k S') = stackLen σ := by
+  induction σ generalizing k with
+  | nil => simp
+  | cons T σ ih =>
+    cases k with
+    | zero =>
+      simp only [List.getElem?_cons_zero, Option.some.injEq] at hk
+      subst hk
+      simp only [List.set_cons_zero, stackLen, hs]
+    | succ k =>
+      simp only [List.getElem?_cons_succ] at hk
+      simp only [List.set_cons_succ, stackLen, ih hk]
 
 /-- A description of the machine at one program point, over some notion `τ` of type.
 `Ctx` below is this with `τ` filled in. -/
@@ -302,9 +475,12 @@ structure CtxOf (τ : Type) where
   described by `stack` and `room`; its entry here says what is known of its
   value, which is usually nothing (`int`) and otherwise exactly what it is. -/
   regs : Reg → τ
-  /-- The types of the stack slots, from `[rsp]` upward. -/
-  stack : List τ
-  /-- How many more slots may be pushed. -/
+  /-- The stack from `[rsp]` upward, as pieces laid end to end: each is so
+  many bytes, with typed values at some of them. A `push` adds a piece of
+  eight bytes; making room for locals adds a piece of as many as are asked
+  for. -/
+  stack : List (ShapeOf τ)
+  /-- How many more bytes the stack may grow by. -/
   room : Nat
   /-- What is known about the flags. -/
   flags : Flags → Prop
@@ -482,13 +658,22 @@ inductive Sub : Ty → Ty → Prop
   | codeAllMap (pre : (Nat → BitVec 64) → CtxOf Ty) (f : (Nat → BitVec 64) → Nat → BitVec 64) :
     Sub (.codeAll pre) (.codeAll fun s => pre (f s))
 
-/-- Subtyping slot by slot, for two stacks of the same length. -/
-inductive SubList : List Ty → List Ty → Prop
-  | nil : SubList [] []
-  | cons {τ υ : Ty} {σ ρ : List Ty} : Sub τ υ → SubList σ ρ → SubList (τ :: σ) (υ :: ρ)
+/-- `SubShape S T`: bytes described by `S` are also described by `T`. The two
+are the same size, and each typed value of `T` is one of `S` at a weaker
+type; typed values of `S` may be forgotten. -/
+structure SubShape (S T : ShapeOf Ty) : Prop where
+  size : S.size = T.size
+  vals : ∀ q ∈ T.vals, ∃ p ∈ S.vals, p.1 = q.1 ∧ Sub p.2 q.2
 
-/-- `CtxSub Γ Δ`: every state matching `Γ` also matches `Δ`. The stack shape
-and room must agree exactly; only the types of registers and slots may be weakened. -/
+/-- Subtyping piece by piece, for two stacks cut into pieces the same way. -/
+inductive SubList : List (ShapeOf Ty) → List (ShapeOf Ty) → Prop
+  | nil : SubList [] []
+  | cons {S T : ShapeOf Ty} {σ ρ : List (ShapeOf Ty)} :
+    SubShape S T → SubList σ ρ → SubList (S :: σ) (T :: ρ)
+
+/-- `CtxSub Γ Δ`: every state matching `Γ` also matches `Δ`. The stack's
+pieces and room must agree exactly; only the types of registers and of the
+stack's typed values may be weakened. -/
 structure CtxSub (Γ Δ : Ctx) : Prop where
   regs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (Δ.regs r)
   stack : SubList Γ.stack Δ.stack
@@ -510,7 +695,7 @@ structure FnSig where
   /-- The registers whose types are the same on return as on entry, whatever
   they were. `args` and `results` are ignored for these. -/
   preserved : Reg → Bool
-  /-- The number of stack slots the function uses below its return address. -/
+  /-- The number of bytes of stack the function uses below its return address. -/
   need : Nat
   /-- The blocks the function is handed to own: the caller owns them before
   the call and not while the function runs. A signature that takes a block
@@ -535,29 +720,29 @@ expects `ret` on return and has `rest` on its stack. The function owns the
 blocks it takes, and after them whatever else the caller owns: those are the
 blocks the return point expects after the ones the function gives back, and
 the function leaves them alone, whatever they are. -/
-def entry (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) : Ctx :=
-  ⟨sig.regsIn saved, .code ret :: rest, room, Flags.Any,
+def entry (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) : Ctx :=
+  ⟨sig.regsIn saved, .slot (.code ret) :: rest, room, Flags.Any,
     sig.takes ++ ret.owned.drop sig.gives.length⟩
 
 /-- The context at the function's `ret` instruction. -/
-def exit (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) : Ctx :=
-  ⟨sig.regsOut saved, .code ret :: rest, room, Flags.Any, ret.owned⟩
+def exit (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) : Ctx :=
+  ⟨sig.regsOut saved, .slot (.code ret) :: rest, room, Flags.Any, ret.owned⟩
 
 /-- The context the caller is in once the function has returned. The stack
 pointer is 8 above where it was at the function's `ret`, having popped the
 return address; so a function that leaves the stack pointer's type as it
 found it has, for its caller, put the stack pointer back. -/
-def returned (sig : FnSig) (saved : Reg → Ty) (rest : List Ty) (room : Nat)
+def returned (sig : FnSig) (saved : Reg → Ty) (rest : List Shape) (room : Nat)
     (owned : List (BitVec 64 × Shape)) : Ctx :=
   ⟨fun r => if r = .rsp then (sig.regsOut saved .rsp).shift 8 else sig.regsOut saved r, rest,
-    room + 1, Flags.Any, owned⟩
+    room + 8, Flags.Any, owned⟩
 
-theorem returned_regs {sig : FnSig} {saved : Reg → Ty} {rest : List Ty} {room : Nat}
+theorem returned_regs {sig : FnSig} {saved : Reg → Ty} {rest : List Shape} {room : Nat}
     {owned : List (BitVec 64 × Shape)} {r : Reg}
     (hr : r ≠ .rsp) : (sig.returned saved rest room owned).regs r = sig.regsOut saved r := by
   simp only [returned, hr, ↓reduceIte]
 
-theorem returned_sp (sig : FnSig) (saved : Reg → Ty) (rest : List Ty) (room : Nat)
+theorem returned_sp (sig : FnSig) (saved : Reg → Ty) (rest : List Shape) (room : Nat)
     (owned : List (BitVec 64 × Shape)) :
     (sig.returned saved rest room owned).regs .rsp = (sig.regsOut saved .rsp).shift 8 := by
   simp only [returned, ↓reduceIte]
@@ -565,7 +750,7 @@ theorem returned_sp (sig : FnSig) (saved : Reg → Ty) (rest : List Ty) (room : 
 /-- What a function needs of its caller: the state it returns must be
 acceptable where it returns to, there must be enough stack, and the blocks
 the return point expects to own must begin with those the function gives. -/
-structure CallerOk (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+structure CallerOk (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     Prop where
   gives : ret.owned.take sig.gives.length = sig.gives
   ret : CtxSub (sig.returned saved rest room ret.owned) ret
@@ -573,7 +758,7 @@ structure CallerOk (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List T
 
 /-- At its return, a function that owns the blocks it gives and after them
 what the caller owned besides owns what the return point expects. -/
-theorem CallerOk.owned_back {sig : FnSig} {saved : Reg → Ty} {ret : Ctx} {rest : List Ty}
+theorem CallerOk.owned_back {sig : FnSig} {saved : Reg → Ty} {ret : Ctx} {rest : List Shape}
     {room : Nat} {owned : List (BitVec 64 × Shape)} (h : sig.CallerOk saved ret rest room)
     (ho : owned = sig.gives ++ ret.owned.drop sig.gives.length) : owned = ret.owned := by
   rw [ho]
@@ -633,7 +818,7 @@ structure FnSigEx (ι : Type) where
   args : Reg → Ty
   /-- The registers whose types are the same on return as on entry. -/
   preserved : Reg → Bool
-  /-- The number of stack slots the function uses below its return address. -/
+  /-- The number of bytes of stack the function uses below its return address. -/
   need : Nat
   /-- The blocks the function is handed to own. -/
   takes : List (BitVec 64 × Shape) := []
@@ -657,15 +842,15 @@ def regsIn (sig : FnSigEx ι) (saved : Reg → Ty) : Reg → Ty :=
 /-- The context at the function's first instruction, for a caller that
 expects `ret x` on return, whichever `x` the function chooses, has `rest` on
 its stack and owns `frame` besides what the function takes. -/
-def entry [Chosen ι] (sig : FnSigEx ι) (saved : Reg → Ty) (ret : ι → Ctx) (rest : List Ty)
+def entry [Chosen ι] (sig : FnSigEx ι) (saved : Reg → Ty) (ret : ι → Ctx) (rest : List Shape)
     (room : Nat) (frame : List (BitVec 64 × Shape)) : Ctx :=
-  ⟨sig.regsIn saved, .codeAll (fun s => ret (Chosen.dec s)) :: rest, room, Flags.Any,
+  ⟨sig.regsIn saved, .slot (.codeAll (fun s => ret (Chosen.dec s))) :: rest, room, Flags.Any,
     sig.takes ++ frame⟩
 
 /-- What the function needs of its caller: what an ordinary function with
 each of the signatures would need, and that what the caller owns besides is
 the same whichever value is chosen. -/
-structure CallerOk (sig : FnSigEx ι) (saved : Reg → Ty) (ret : ι → Ctx) (rest : List Ty)
+structure CallerOk (sig : FnSigEx ι) (saved : Reg → Ty) (ret : ι → Ctx) (rest : List Shape)
     (room : Nat) (frame : List (BitVec 64 × Shape)) : Prop where
   each : ∀ x, (sig.pick x).CallerOk saved (ret x) rest room
   frame : ∀ x, (ret x).owned.drop (sig.gives x).length = frame
@@ -725,13 +910,13 @@ So "safe to jump to" is asked for every well-formed extension of the memory
 typing, not only the present one. -/
 
 /-- The address of the lowest byte of the stack region a context describes:
-`room` free slots below `rsp`. -/
+`room` free bytes below `rsp`. -/
 def stackBase (Γ : Ctx) (s : State) : BitVec 64 :=
-  s.getReg .rsp - BitVec.ofNat 64 (8 * Γ.room)
+  s.getReg .rsp - BitVec.ofNat 64 Γ.room
 
 /-- The size in bytes of the stack region a context describes. -/
 def stackSize (Γ : Ctx) : Nat :=
-  8 * (Γ.room + Γ.stack.length)
+  Γ.room + stackLen Γ.stack
 
 /-- What a context's owned blocks ask of a state: each is writable, each
 typed value in it is of its type, and the blocks overlap neither the stack
@@ -753,12 +938,14 @@ structure Matches (H : Ty → BitVec 64 → Prop) (Ψ : MemTy) (Γ : Ctx) (s : S
   regs : ∀ r, r ≠ .rsp → H (Γ.regs r) (s.getReg r)
   /-- The flags are as the context says. -/
   flags : Γ.flags s.flags
-  /-- The stack region, free slots included, is writable. -/
+  /-- The stack region, free bytes included, is writable. -/
   stackPerm : s.canWrite (stackBase Γ s) (stackSize Γ) = true
   stackSize_lt : stackSize Γ < 2 ^ 64
-  /-- Each described stack slot holds a value of its type. -/
-  stack : ∀ i τ, Γ.stack[i]? = some τ →
-    H τ (s.load64 (s.getReg .rsp + BitVec.ofNat 64 (8 * i)))
+  /-- Each typed value of each piece of the stack lies inside the piece. -/
+  stackFits : ∀ S ∈ Γ.stack, ∀ p ∈ S.vals, p.1 + 8 ≤ S.size
+  /-- Each typed value of each piece of the stack is of its type. -/
+  stack : ∀ k S, Γ.stack[k]? = some S → ∀ p ∈ S.vals,
+    H p.2 (s.load64 (s.getReg .rsp + BitVec.ofNat 64 (stackOff Γ.stack k + p.1)))
   /-- Each memory block is readable, and writable if its layout says so. -/
   heapPerm : ∀ a l, Ψ a = some l →
     s.canRead a l.size = true ∧ (l.writable = true → s.canWrite a l.size = true)
@@ -787,7 +974,7 @@ def HasTy (fetch : Fetch) (sys : Syscall) : MemTy → Nat → Ty → BitVec 64 �
       Matches (fun τ w => HasTy fetch sys Ψ' k τ w) Ψ' pre s → SafeN fetch sys k s
   | Ψ, n, .fnAll args preserved need takes results gives, v =>
     ∀ k, (hk : k < n) → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF →
-      ∀ (saved : Reg → Ty) (ret : (Nat → BitVec 64) → Ctx) (rest : List Ty) (room : Nat)
+      ∀ (saved : Reg → Ty) (ret : (Nat → BitVec 64) → Ctx) (rest : List Shape) (room : Nat)
         (frame : List (BitVec 64 × Shape)),
       FnSigEx.CallerOk ⟨args, preserved, need, takes, results, gives⟩ saved ret rest room frame →
       ∀ s : State, s.rip = v →
@@ -809,7 +996,7 @@ def HasTy (fetch : Fetch) (sys : Syscall) : MemTy → Nat → Ty → BitVec 64 �
       v = a + BitVec.ofNat 64 (l.shape.size + off)
   | Ψ, n, .fn args results preserved need takes gives, v =>
     ∀ k, (hk : k < n) → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF →
-      ∀ (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat),
+      ∀ (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat),
       FnSig.CallerOk ⟨args, results, preserved, need, takes, gives⟩ saved ret rest room →
       ∀ s : State, s.rip = v →
       Matches (fun τ w => HasTy fetch sys Ψ' k τ w) Ψ'
@@ -968,7 +1155,8 @@ theorem Matches.imp {H H' : Ty → BitVec 64 → Prop} {Γ : Ctx} {s : State}
     flags := h.flags
     stackPerm := h.stackPerm
     stackSize_lt := h.stackSize_lt
-    stack := fun i τ hi => himp _ _ (h.stack i τ hi)
+    stackFits := h.stackFits
+    stack := fun k S hk p hp => himp _ _ (h.stack k S hk p hp)
     heapPerm := h.heapPerm
     heap := fun a l hl p hp => himp _ _ (h.heap a l hl p hp)
     stackHeap := h.stackHeap

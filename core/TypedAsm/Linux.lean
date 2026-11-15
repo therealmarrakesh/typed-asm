@@ -525,10 +525,11 @@ theorem mmap_ok {sys : Syscall} {len : BitVec 64} {S : Shape} {tag : Option Nat}
             flags := h.flags
             stackPerm := by rw [hb]; exact hwr _ _ h.stackPerm
             stackSize_lt := h.stackSize_lt
-            stack := fun i υ hi => by
-              have hw := h.canWrite_slot (i := i) (List.getElem?_eq_some_iff.mp hi).1
+            stackFits := h.stackFits
+            stack := fun k S hk p hp => by
+              have hw := h.canWrite_stack (lo := stackOff Γ.stack k + p.1) (m := 8) (h.stack_in hk hp)
               rw [hg, State.load64_mapZero_out s hal hsz4 hfit64 (hout _ (State.canRead_of_canWrite hw))]
-              exact (h.stack i υ hi).ext hext
+              exact (h.stack k S hk p hp).ext hext
             heapPerm := fun x l hl => by
               rcases hcases x l hl with ⟨hx, hlL⟩ | ⟨-, hl'⟩
               · rw [hx, hlL]
@@ -682,45 +683,40 @@ theorem storeBytes_ok {sys : Syscall} {r : Reg} {S : Shape} {off cnt : Nat}
     · rw [State.mem_storeBytes s _ x _ (by omega), List.getElem?_eq_none (by bv_omega)]
       rfl
 
-/-- Bytes stored in integer stack slots leave the state well typed, whatever
-they are. -/
-theorem storeBytes_ok_stack {sys : Syscall} {r : Reg} {v d : BitVec 64} {cnt : Nat}
-    {data : List (BitVec 8)} (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF) (hr : r ≠ .rsp)
-    (hsp : Γ.regs .rsp = .eq v) (hbuf : Γ.regs r = .eq (v + d)) (h8 : d.toNat % 8 = 0)
-    (hints : ∀ j, j < cnt → Γ.stack[d.toNat / 8 + j]? = some .int)
-    (hlen : data.length ≤ 8 * cnt) :
-    WellTyped fetch sys Ψ n Γ (s.storeBytes (s.getReg r) data) := by
+/-- Bytes stored in a run of bytes of a piece of the stack leave the state
+well typed, whatever they are and whatever was there: the run is plain bytes
+from then on. -/
+theorem storeBytes_ok_stack {sys : Syscall} {r : Reg} {v d : BitVec 64} {k i cnt : Nat}
+    {S : Shape} {data : List (BitVec 8)} (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF)
+    (hr : r ≠ .rsp) (hsp : Γ.regs .rsp = .eq v) (hbuf : Γ.regs r = .eq (v + d))
+    (hat : StackAt Γ.stack k S d.toNat i) (hle : i + cnt ≤ S.size) (hlen : data.length ≤ cnt) :
+    WellTyped fetch sys Ψ n { Γ with stack := Γ.stack.set k (S.clear i cnt) }
+      (s.storeBytes (s.getReg r) data) := by
+  obtain ⟨hk, hd⟩ := hat
   have hv : s.getReg .rsp = v := by
     have := h.sp
     rwa [hsp, hasTy_eq] at this
-  have hsi := h.eqReg hr hbuf
-  have hbase : v + d = s.getReg .rsp + BitVec.ofNat 64 (8 * (d.toNat / 8)) := by
-    rw [hv]; congr 1; apply BitVec.eq_of_toNat_eq; simp only [BitVec.toNat_ofNat]; omega
-  rw [hsi]
-  by_cases hc : cnt = 0
-  · have hz : data = [] := List.length_eq_zero_iff.mp (by omega)
-    rw [hz, State.storeBytes_nil]
-    exact h.congr rfl rfl rfl rfl
-  · have hlast := hints (cnt - 1) (by omega)
-    have hle : d.toNat / 8 + cnt ≤ Γ.stack.length := by
-      have := (List.getElem?_eq_some_iff.mp hlast).1
-      omega
-    have hsz := h.stackSize_lt
-    simp only [stackSize] at hsz
-    refine h.writeSlotsInt hΨ (lo := d.toNat / 8) (cnt := cnt) (by omega) hle
-      (fun j hj hj' => by
-        have := hints (j - d.toNat / 8) (by omega)
-        rwa [show d.toNat / 8 + (j - d.toNat / 8) = j by omega] at this)
-      rfl rfl rfl (fun y hd => ?_) (fun x hx => by
-        show (s.storeBytes _ data).mem x = s.mem x
-        rw [hbase]
-        rw [State.mem_storeBytes s _ x _ (by omega), List.getElem?_eq_none (by bv_omega)]
-        rfl)
-    rw [hbase]
-    refine (State.load64_congr (s := s.storeBytes _ _) rfl y).trans
-      (State.load64_storeBytes_disjoint s _ (by omega) ?_ (hd.2 (by omega)))
-    have h1 := hd.1 (by decide)
-    bv_omega
+  have hend := stackOff_add_le hk
+  have hsz := h.stackSize_lt
+  simp only [stackSize] at hsz
+  have hbase : v + d = s.getReg .rsp + BitVec.ofNat 64 (stackOff Γ.stack k + i) := by
+    rw [hv, ← hd]; simp
+  rw [h.eqReg hr hbuf, hbase]
+  refine h.writeStackClear hΨ hk (i := i) (cnt := cnt) hle rfl rfl rfl
+    (fun y hd => ?_) (fun x hx => ?_)
+  · by_cases hc : cnt = 0
+    · have hz : data = [] := List.length_eq_zero_iff.mp (by omega)
+      rw [hz, State.storeBytes_nil]
+    · refine (State.load64_congr (s := s.storeBytes _ _) rfl y).trans
+        (State.load64_storeBytes_disjoint s _ (by omega) ?_ (hd.2 (by omega)))
+      have h1 := hd.1 (by decide)
+      bv_omega
+  · show (s.storeBytes _ data).mem x = s.mem x
+    by_cases hc : cnt = 0
+    · have hz : data = [] := List.length_eq_zero_iff.mp (by omega)
+      rw [hz, State.storeBytes_nil]
+    · rw [State.mem_storeBytes s _ x _ (by omega), List.getElem?_eq_none (by bv_omega)]
+      rfl
 
 /-- Bytes stored in a run of bytes of an owned block leave the state well
 typed, whatever they are and whatever was there: the run is plain bytes from
@@ -768,17 +764,22 @@ theorem ok {sys : Syscall} {S : Shape} {off : Nat}
   · exact ret_ok ((storeBytes_ok (data := data) h hΨ hr hbuf hle hfree (by omega)).congr
       (t := { s.storeBytes (s.getReg r) data with world := w }) rfl rfl rfl rfl) v
 
-/-- A call that fills a buffer lying in integer stack slots keeps the state
-well typed. -/
-theorem ok_stack {sys : Syscall} {v d : BitVec 64} {cnt : Nat}
+/-- A call that fills a buffer lying in a piece of the stack keeps the state
+well typed, whatever the bytes it covers held: they are plain bytes
+afterwards. -/
+theorem ok_stack {sys : Syscall} {v d : BitVec 64} {k i : Nat} {S : Shape}
     (hf : Fills s (s.getReg r) room t) (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF)
     (hr : r ≠ .rsp) (hsp : Γ.regs .rsp = .eq v) (hbuf : Γ.regs r = .eq (v + d))
-    (h8 : d.toNat % 8 = 0) (hints : ∀ j, j < cnt → Γ.stack[d.toNat / 8 + j]? = some .int)
-    (hroom : room ≤ 8 * cnt) : WellTyped fetch sys Ψ n Γ.afterSyscall t := by
+    (hat : StackAt Γ.stack k S d.toNat i) (hle : i + room ≤ S.size) :
+    WellTyped fetch sys Ψ n
+      ({ Γ with stack := Γ.stack.set k (S.clear i room) } : Ctx).afterSyscall t := by
   rcases hf with hf | ⟨data, v', w, hlen, -, rfl⟩
-  · exact hf.ok h
+  · -- nothing was stored: the bytes are as they were, and are given up as plain
+    have h0 := storeBytes_ok_stack (data := []) h hΨ hr hsp hbuf hat hle (Nat.zero_le _)
+    rw [State.storeBytes_nil] at h0
+    exact hf.ok (h0.congr rfl rfl rfl rfl)
   · exact ret_ok
-      ((storeBytes_ok_stack (data := data) h hΨ hr hsp hbuf h8 hints (by omega)).congr
+      ((storeBytes_ok_stack (data := data) h hΨ hr hsp hbuf hat hle hlen).congr
         (t := { s.storeBytes (s.getReg r) data with world := w }) rfl rfl rfl rfl) v'
 
 /-- A call that fills a buffer lying in an owned block keeps the state well
@@ -967,10 +968,11 @@ theorem mapZero_ok {sys : Syscall} {a : BitVec 64} {size : Nat}
     flags := h.flags
     stackPerm := by rw [hb]; exact hwr _ _ h.stackPerm
     stackSize_lt := h.stackSize_lt
-    stack := fun i υ hi => by
-      have hw := h.canWrite_slot (i := i) (List.getElem?_eq_some_iff.mp hi).1
+    stackFits := h.stackFits
+    stack := fun k S hk p hp => by
+      have hw := h.canWrite_stack (lo := stackOff Γ.stack k + p.1) (m := 8) (h.stack_in hk hp)
       rw [hg, State.load64_mapZero_out s hal hsz4 hfit (hout _ (State.canRead_of_canWrite hw))]
-      exact h.stack i υ hi
+      exact h.stack k S hk p hp
     heapPerm := fun x l hl =>
       ⟨hrd _ _ (h.heapPerm x l hl).1, fun hw => hwr _ _ ((h.heapPerm x l hl).2 hw)⟩
     heap := fun x l hl p hp => by
@@ -1196,60 +1198,23 @@ theorem linux_read {S : Shape} {off : Nat} {len : BitVec 64} (hΓ : Γ.regs .rax
   exact ⟨Linux.read s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok h hΨ (by decide) hbuf hle hfree⟩
 
-/-- Whether the `k` slots from number `off` on are there and are all
-integers. One pass along the list. -/
-def intsFrom : List Ty → Nat → Nat → Bool
-  | _, _, 0 => true
-  | [], _, _ + 1 => false
-  | τ :: rest, 0, k + 1 => τ.isInt && intsFrom rest 0 k
-  | _ :: rest, off + 1, k + 1 => intsFrom rest off (k + 1)
-
-/-- The condition of `linux_read_stack` on the slots, from a check that can
-be computed when the slots and the count are known. -/
-theorem ints_of_check {fields : List Ty} {off k : Nat} (h : intsFrom fields off k = true) :
-    ∀ j, j < k → fields[off + j]? = some .int := by
-  induction fields generalizing off k with
-  | nil =>
-    cases k with
-    | zero => intro j hj; omega
-    | succ k => simp [intsFrom] at h
-  | cons τ rest ih =>
-    cases k with
-    | zero => intro j hj; omega
-    | succ k =>
-      cases off with
-      | zero =>
-        simp only [intsFrom, Bool.and_eq_true] at h
-        intro j hj
-        cases j with
-        | zero =>
-          have hτ : τ = .int := by
-            cases τ <;> first | rfl | exact absurd h.1 (by simp [Ty.isInt])
-          simp [hτ]
-        | succ j =>
-          have := ih (off := 0) h.2 j (by omega)
-          simpa using this
-      | succ off =>
-        simp only [intsFrom] at h
-        intro j hj
-        have := ih (off := off) h j hj
-        rw [show off + 1 + j = (off + j) + 1 by omega, List.getElem?_cons_succ]
-        exact this
-
 /-- `read` into the stack: with 0 in `rax`, the call returns, provided the
 stack pointer's value is known, the buffer in `rsi` is a known distance
-above it, and the `rdx` bytes from there are all in integer stack slots. -/
-theorem linux_read_stack {v d len : BitVec 64} (hΓ : Γ.regs .rax = .eq 0)
-    (hsp : Γ.regs .rsp = .eq v) (hbuf : Γ.regs .rsi = .eq (v + d)) (h8 : d.toNat % 8 = 0)
-    (hlen : Γ.regs .rdx = .eq len)
-    (hints : ∀ j, j < (len.toNat + 7) / 8 → Γ.stack[d.toNat / 8 + j]? = some .int) :
-    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+above it, and the `rdx` bytes from there lie in one piece of the stack.
+Whatever they held, they are plain bytes afterwards. -/
+theorem linux_read_stack {v d len : BitVec 64} {k i : Nat} {S : Shape}
+    (hΓ : Γ.regs .rax = .eq 0)
+    (hsp : Γ.regs .rsp = .eq v) (hbuf : Γ.regs .rsi = .eq (v + d))
+    (hat : StackAt Γ.stack k S d.toNat i) (hlen : Γ.regs .rdx = .eq len)
+    (hle : i + len.toNat ≤ S.size) :
+    SysReturns fetch linux Ψ Γ
+      ({ Γ with stack := Γ.stack.set k (S.clear i len.toNat) } : Ctx).afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.read_fills s
   rw [h.eqReg (by decide) hlen] at hf
   exact ⟨Linux.read s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
-    hf.ok_stack h hΨ (by decide) hsp hbuf h8 hints (by omega)⟩
+    hf.ok_stack h hΨ (by decide) hsp hbuf hat hle⟩
 
 /-- `fstat`: with 5 in `rax`, the call returns, provided the buffer in `rsi`
 points into a writable block and the 144 bytes from there, which is what the
@@ -1265,16 +1230,18 @@ theorem linux_fstat {S : Shape} {off : Nat} (hΓ : Γ.regs .rax = .eq 5)
     hf.ok h hΨ (by decide) hbuf hle hfree⟩
 
 /-- `fstat` into the stack: as `linux_fstat`, with the buffer a known
-distance above the stack pointer and its 144 bytes in integer stack slots. -/
-theorem linux_fstat_stack {v d : BitVec 64} (hΓ : Γ.regs .rax = .eq 5)
-    (hsp : Γ.regs .rsp = .eq v) (hbuf : Γ.regs .rsi = .eq (v + d)) (h8 : d.toNat % 8 = 0)
-    (hints : ∀ j, j < 18 → Γ.stack[d.toNat / 8 + j]? = some .int) :
-    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+distance above the stack pointer and its 144 bytes in one piece of the stack. -/
+theorem linux_fstat_stack {v d : BitVec 64} {k i : Nat} {S : Shape}
+    (hΓ : Γ.regs .rax = .eq 5)
+    (hsp : Γ.regs .rsp = .eq v) (hbuf : Γ.regs .rsi = .eq (v + d))
+    (hat : StackAt Γ.stack k S d.toNat i) (hle : i + 144 ≤ S.size) :
+    SysReturns fetch linux Ψ Γ
+      ({ Γ with stack := Γ.stack.set k (S.clear i 144) } : Ctx).afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.fstat_fills s
   exact ⟨Linux.fstat s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
-    hf.ok_stack h hΨ (by decide) hsp hbuf h8 hints (by omega)⟩
+    hf.ok_stack h hΨ (by decide) hsp hbuf hat hle⟩
 
 /-- `clock_gettime`: with 228 in `rax`, the call returns, provided the buffer
 in `rsi` points into a writable block and the 16 bytes from there are plain
@@ -1290,15 +1257,17 @@ theorem linux_clock_gettime {S : Shape} {off : Nat} (hΓ : Γ.regs .rax = .eq 22
     hf.ok h hΨ (by decide) hbuf hle hfree⟩
 
 /-- `clock_gettime` into the stack. -/
-theorem linux_clock_gettime_stack {v d : BitVec 64} (hΓ : Γ.regs .rax = .eq 228)
-    (hsp : Γ.regs .rsp = .eq v) (hbuf : Γ.regs .rsi = .eq (v + d)) (h8 : d.toNat % 8 = 0)
-    (hints : ∀ j, j < 2 → Γ.stack[d.toNat / 8 + j]? = some .int) :
-    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+theorem linux_clock_gettime_stack {v d : BitVec 64} {k i : Nat} {S : Shape}
+    (hΓ : Γ.regs .rax = .eq 228)
+    (hsp : Γ.regs .rsp = .eq v) (hbuf : Γ.regs .rsi = .eq (v + d))
+    (hat : StackAt Γ.stack k S d.toNat i) (hle : i + 16 ≤ S.size) :
+    SysReturns fetch linux Ψ Γ
+      ({ Γ with stack := Γ.stack.set k (S.clear i 16) } : Ctx).afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.clockGettime_fills s
   exact ⟨Linux.clockGettime s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
-    hf.ok_stack h hΨ (by decide) hsp hbuf h8 hints (by omega)⟩
+    hf.ok_stack h hΨ (by decide) hsp hbuf hat hle⟩
 
 /-- `getrandom`: with 318 in `rax`, the call returns, provided the buffer in
 `rdi` points into a writable block and the `rsi` bytes from there are plain
@@ -1316,17 +1285,19 @@ theorem linux_getrandom {S : Shape} {off : Nat} {len : BitVec 64}
     hf.ok h hΨ (by decide) hbuf hle hfree⟩
 
 /-- `getrandom` into the stack. -/
-theorem linux_getrandom_stack {v d len : BitVec 64} (hΓ : Γ.regs .rax = .eq 318)
-    (hsp : Γ.regs .rsp = .eq v) (hbuf : Γ.regs .rdi = .eq (v + d)) (h8 : d.toNat % 8 = 0)
-    (hlen : Γ.regs .rsi = .eq len)
-    (hints : ∀ j, j < (len.toNat + 7) / 8 → Γ.stack[d.toNat / 8 + j]? = some .int) :
-    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+theorem linux_getrandom_stack {v d len : BitVec 64} {k i : Nat} {S : Shape}
+    (hΓ : Γ.regs .rax = .eq 318)
+    (hsp : Γ.regs .rsp = .eq v) (hbuf : Γ.regs .rdi = .eq (v + d))
+    (hat : StackAt Γ.stack k S d.toNat i) (hlen : Γ.regs .rsi = .eq len)
+    (hle : i + len.toNat ≤ S.size) :
+    SysReturns fetch linux Ψ Γ
+      ({ Γ with stack := Γ.stack.set k (S.clear i len.toNat) } : Ctx).afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.getrandom_fills s
   rw [h.eqReg (by decide) hlen] at hf
   exact ⟨Linux.getrandom s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
-    hf.ok_stack h hΨ (by decide) hsp hbuf h8 hints (by omega)⟩
+    hf.ok_stack h hΨ (by decide) hsp hbuf hat hle⟩
 
 /-- `read` into memory the program owns: the buffer lies inside an owned
 block. Whatever the bytes it covers held, they are plain bytes afterwards. -/

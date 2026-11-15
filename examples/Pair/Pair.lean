@@ -23,14 +23,14 @@ each. -/
 def twoSig : FnSigEx (BitVec 64 × BitVec 64) where
   args := fun _ => .int
   preserved := calleeSaved
-  need := 1
+  need := 8
   results := fun x r => if r = .rax then .eq x.1 else if r = .rdx then .eq x.2 else .int
   gives := fun x => [(x.1, words), (x.2, words)]
 
 /-- Back from the call with the pair `x` in `rax` and `rdx`: the pages at
 both addresses are the program's. -/
 def backCtx (x : BitVec 64 × BitVec 64) : Ctx :=
-  ⟨fun r => if r = .rax then .eq x.1 else if r = .rdx then .eq x.2 else .int, [], 2, Flags.Any,
+  ⟨fun r => if r = .rax then .eq x.1 else if r = .rdx then .eq x.2 else .int, [], 16, Flags.Any,
     [(x.1, words), (x.2, words)]⟩
 
 /-- The contexts allowed at each label. The return point `back` allows one
@@ -38,7 +38,7 @@ for every pair of addresses; `fail` can be reached from anywhere. -/
 inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 2)
   | back (x : BitVec 64 × BitVec 64) : At .back (backCtx x)
-  | two (saved : Reg → Ty) (ret : BitVec 64 × BitVec 64 → Ctx) (rest : List Ty) (room : Nat)
+  | two (saved : Reg → Ty) (ret : BitVec 64 × BitVec 64 → Ctx) (rest : List Shape) (room : Nat)
       (frame : List (BitVec 64 × Shape)) :
     twoSig.CallerOk saved ret rest room frame →
     At .two (twoSig.entry saved ret rest room frame)

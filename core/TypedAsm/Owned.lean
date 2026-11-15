@@ -91,7 +91,8 @@ theorem WellTyped.addBlock {a : BitVec 64} {L : Layout} (h : WellTyped fetch sys
     flags := h.flags
     stackPerm := h.stackPerm
     stackSize_lt := h.stackSize_lt
-    stack := fun i τ hi => (h.stack i τ hi).ext he
+    stackFits := h.stackFits
+    stack := fun k S hk p hp => (h.stack k S hk p hp).ext he
     heapPerm := fun x l hl => by
       rcases MemTy.add_cases hl with ⟨rfl, rfl⟩ | ⟨-, hl'⟩
       · exact hperm
@@ -446,7 +447,7 @@ theorem WellTyped.permOwned {L : List (BitVec 64 × Shape)}
     (h : WellTyped fetch sys Ψ n Γ s) (hp : L.Perm Γ.owned) :
     WellTyped fetch sys Ψ n { Γ with owned := L } s :=
   { regs := h.regs, flags := h.flags, stackPerm := h.stackPerm, stackSize_lt := h.stackSize_lt,
-    stack := h.stack, heapPerm := h.heapPerm, heap := h.heap, stackHeap := h.stackHeap,
+    stackFits := h.stackFits, stack := h.stack, heapPerm := h.heapPerm, heap := h.heap, stackHeap := h.stackHeap,
     sp := h.sp, text := h.text,
     owned :=
       { perm := fun b hb => h.owned.perm b (hp.subset hb)
@@ -484,5 +485,186 @@ theorem BlockOk.mmapOwn {a : BitVec 64} {Γ : Ctx} {len : BitVec 64} {l : BitVec
     match x with
     | .inl e => herr e.1 e.2
     | .inr p => hok p.1 p.2.1 p.2.2)
+
+/-! ## Pieces of the stack
+
+How the stack is cut into pieces is a matter of description: a run of pieces
+may be described by any other run that comes to as many bytes and says
+nothing of them that the first did not. -/
+
+/-- **A run of pieces of the stack may be described another way**, by pieces
+that come to as many bytes, whose typed values each lie inside their piece
+and each are a typed value of the run as it was, at the same place. -/
+theorem WellTyped.repiece {pre mid mid' post : List Shape}
+    (h : WellTyped fetch sys Ψ n Γ s) (hst : Γ.stack = pre ++ mid ++ post)
+    (hlen : stackLen mid' = stackLen mid)
+    (hfits : ∀ T ∈ mid', ∀ q ∈ T.vals, q.1 + 8 ≤ T.size)
+    (hvals : ∀ j T, mid'[j]? = some T → ∀ q ∈ T.vals, ∃ i S p, mid[i]? = some S ∧ p ∈ S.vals ∧
+      p.2 = q.2 ∧ stackOff mid i + p.1 = stackOff mid' j + q.1) :
+    WellTyped fetch sys Ψ n { Γ with stack := pre ++ mid' ++ post } s := by
+  have hz : stackSize { Γ with stack := pre ++ mid' ++ post } = stackSize Γ := by
+    simp only [stackSize, hst, stackLen_append, hlen]
+  have hb : stackBase { Γ with stack := pre ++ mid' ++ post } s = stackBase Γ s := rfl
+  exact {
+    regs := h.regs
+    flags := h.flags
+    stackPerm := by rw [hb, hz]; exact h.stackPerm
+    stackSize_lt := by rw [hz]; exact h.stackSize_lt
+    stackFits := fun T hT q hq => by
+      rcases List.mem_append.mp hT with hT | hT
+      · rcases List.mem_append.mp hT with hT | hT
+        · exact h.stackFits T (by rw [hst]; simp [hT]) q hq
+        · exact hfits T hT q hq
+      · exact h.stackFits T (by rw [hst]; simp [hT]) q hq
+    stack := fun k T hk q hq => by
+      show HasTy fetch sys Ψ n q.2
+        (s.load64 (s.getReg .rsp + BitVec.ofNat 64 (stackOff (pre ++ mid' ++ post) k + q.1)))
+      have hk' : (pre ++ mid' ++ post)[k]? = some T := hk
+      by_cases h1 : k < pre.length
+      · -- a piece before the run: as it was
+        have e1 : (pre ++ mid' ++ post)[k]? = pre[k]? := by
+          rw [List.append_assoc, List.getElem?_append_left h1]
+        have e2 : Γ.stack[k]? = pre[k]? := by
+          rw [hst, List.append_assoc, List.getElem?_append_left h1]
+        have o1 : stackOff (pre ++ mid' ++ post) k = stackOff pre k := by
+          rw [List.append_assoc, stackOff_append_le _ _ (by omega)]
+        have o2 : stackOff Γ.stack k = stackOff pre k := by
+          rw [hst, List.append_assoc, stackOff_append_le _ _ (by omega)]
+        rw [o1, ← o2]
+        exact h.stack k T (by rw [e2, ← e1]; exact hk') q hq
+      · by_cases h2 : k < pre.length + mid'.length
+        · -- a piece of the run: each typed value was one of the run's
+          obtain ⟨j, rfl⟩ : ∃ j, k = pre.length + j := ⟨k - pre.length, by omega⟩
+          have hj : mid'[j]? = some T := by
+            rw [List.getElem?_append_left (by simp; omega),
+              List.getElem?_append_right (by omega)] at hk'
+            simpa using hk'
+          obtain ⟨i, S, p, hi, hp, hty, hoff⟩ := hvals j T hj q hq
+          have hilt : i < mid.length := (List.getElem?_eq_some_iff.mp hi).1
+          have hS : Γ.stack[pre.length + i]? = some S := by
+            rw [hst, List.getElem?_append_left (by simp; omega),
+              List.getElem?_append_right (by omega)]
+            simpa using hi
+          have o1 : stackOff (pre ++ mid' ++ post) (pre.length + j)
+              = stackLen pre + stackOff mid' j := by
+            rw [List.append_assoc, stackOff_append]
+            rw [stackOff_append_le _ _ (by omega)]
+          have o2 : stackOff Γ.stack (pre.length + i) = stackLen pre + stackOff mid i := by
+            rw [hst, List.append_assoc, stackOff_append]
+            rw [stackOff_append_le _ _ (by omega)]
+          have := h.stack (pre.length + i) S hS p hp
+          rw [o2, hty] at this
+          rw [o1]
+          rwa [show stackLen pre + stackOff mid' j + q.1 = stackLen pre + stackOff mid i + p.1
+            by omega]
+        · -- a piece after the run: as it was, the same distance up
+          obtain ⟨j, rfl⟩ : ∃ j, k = (pre ++ mid').length + j :=
+            ⟨k - (pre ++ mid').length, by simp; omega⟩
+          have hj : post[j]? = some T := by
+            rw [List.getElem?_append_right (by omega)] at hk'
+            simpa using hk'
+          have hS : Γ.stack[(pre ++ mid).length + j]? = some T := by
+            rw [hst, List.getElem?_append_right (by omega)]
+            simpa using hj
+          have o1 : stackOff (pre ++ mid' ++ post) ((pre ++ mid').length + j)
+              = stackLen pre + stackLen mid' + stackOff post j := by
+            rw [stackOff_append, stackLen_append]
+          have o2 : stackOff Γ.stack ((pre ++ mid).length + j)
+              = stackLen pre + stackLen mid + stackOff post j := by
+            rw [hst, stackOff_append, stackLen_append]
+          have := h.stack ((pre ++ mid).length + j) T hS q hq
+          rw [o2] at this
+          rw [o1, hlen]
+          exact this
+    heapPerm := h.heapPerm
+    heap := h.heap
+    stackHeap := fun a l hl => by rw [hb, hz]; exact h.stackHeap a l hl
+    owned := h.owned.frame rfl rfl hb hz (fun _ _ _ _ => rfl)
+    text := h.text
+    sp := h.sp }
+
+theorem eq_take_cons_drop {α : Type} {l : List α} {k : Nat} {x : α} (h : l[k]? = some x) :
+    l = l.take k ++ [x] ++ l.drop (k + 1) := by
+  obtain ⟨hk, rfl⟩ := List.getElem?_eq_some_iff.mp h
+  rw [List.append_assoc, List.singleton_append, ← List.drop_eq_getElem_cons hk,
+    List.take_append_drop]
+
+theorem eq_take_two_drop {α : Type} {l : List α} {k : Nat} {x y : α} (h : l[k]? = some x)
+    (h' : l[k + 1]? = some y) : l = l.take k ++ [x, y] ++ l.drop (k + 2) := by
+  obtain ⟨hk, rfl⟩ := List.getElem?_eq_some_iff.mp h
+  obtain ⟨hk', rfl⟩ := List.getElem?_eq_some_iff.mp h'
+  rw [List.append_assoc]
+  show l = List.take k l ++ (l[k] :: l[k + 1] :: List.drop (k + 2) l)
+  rw [← List.drop_eq_getElem_cons hk', ← List.drop_eq_getElem_cons hk, List.take_append_drop]
+
+/-- **A piece of the stack may be regarded as two**: its first `m` bytes and
+the rest. An access then has to keep to one of them, which is how a local of
+so many bytes is kept to exactly that many. -/
+theorem BlockOk.splitStack {a : BitVec 64} {Γ : Ctx} {k m : Nat} {S : Shape}
+    (hk : Γ.stack[k]? = some S) (hm : m ≤ S.size)
+    (hrest : BlockOk Φ fetch sys Ψ a
+      { Γ with stack := Γ.stack.take k ++ [S.take m, S.drop m] ++ Γ.stack.drop (k + 1) }) :
+    BlockOk Φ fetch sys Ψ a Γ :=
+  .weaken (fun _ _ _ _ _ h =>
+    h.repiece (mid := [S]) (eq_take_cons_drop hk)
+      (by simp only [stackLen_cons, stackLen_nil, ShapeOf.take, ShapeOf.drop]; omega)
+      (fun T hT q hq => by
+        have hS := h.stackFits S (List.mem_of_getElem? hk)
+        simp only [List.mem_cons, List.not_mem_nil, or_false] at hT
+        rcases hT with rfl | rfl
+        · simp only [ShapeOf.take, List.mem_filter, decide_eq_true_eq] at hq ⊢
+          exact hq.2
+        · simp only [ShapeOf.drop, List.mem_map, List.mem_filter, decide_eq_true_eq] at hq ⊢
+          obtain ⟨p, ⟨hp, hmp⟩, rfl⟩ := hq
+          have := hS p hp
+          simp only
+          omega)
+      (fun j T hj q hq => by
+        match j, hj with
+        | 0, hj =>
+          simp only [List.getElem?_cons_zero, Option.some.injEq] at hj
+          subst hj
+          simp only [ShapeOf.take, List.mem_filter] at hq
+          exact ⟨0, S, q, rfl, hq.1, rfl, by simp⟩
+        | 1, hj =>
+          simp only [List.getElem?_cons_succ, List.getElem?_cons_zero, Option.some.injEq] at hj
+          subst hj
+          simp only [ShapeOf.drop, List.mem_map, List.mem_filter, decide_eq_true_eq] at hq
+          obtain ⟨p, ⟨hp, hmp⟩, rfl⟩ := hq
+          refine ⟨0, S, p, rfl, hp, rfl, ?_⟩
+          simp only [stackOff_zero, stackOff_cons_succ, ShapeOf.take]
+          omega
+        | j + 2, hj => simp at hj)) hrest
+
+/-- **Two pieces of the stack that lie end to end may be regarded as one.** -/
+theorem BlockOk.joinStack {a : BitVec 64} {Γ : Ctx} {k : Nat} {S₁ S₂ : Shape}
+    (hk : Γ.stack[k]? = some S₁) (hk' : Γ.stack[k + 1]? = some S₂)
+    (hrest : BlockOk Φ fetch sys Ψ a
+      { Γ with stack := Γ.stack.take k ++ [S₁.append S₂] ++ Γ.stack.drop (k + 2) }) :
+    BlockOk Φ fetch sys Ψ a Γ :=
+  .weaken (fun _ _ _ _ _ h =>
+    h.repiece (mid := [S₁, S₂]) (eq_take_two_drop hk hk')
+      (by simp only [stackLen_cons, stackLen_nil, ShapeOf.append]; omega)
+      (fun T hT q hq => by
+        have h1 := h.stackFits S₁ (List.mem_of_getElem? hk)
+        have h2 := h.stackFits S₂ (List.mem_of_getElem? hk')
+        simp only [List.mem_singleton] at hT
+        subst hT
+        simp only [ShapeOf.append, List.mem_append, List.mem_map] at hq ⊢
+        rcases hq with hq | ⟨p, hp, rfl⟩
+        · have := h1 q hq; omega
+        · have := h2 p hp
+          simp only
+          omega)
+      (fun j T hj q hq => by
+        match j, hj with
+        | 0, hj =>
+          simp only [List.getElem?_cons_zero, Option.some.injEq] at hj
+          subst hj
+          simp only [ShapeOf.append, List.mem_append, List.mem_map] at hq
+          rcases hq with hq | ⟨p, hp, rfl⟩
+          · exact ⟨0, S₁, q, rfl, hq, rfl, by simp⟩
+          · exact ⟨1, S₂, p, rfl, hp, rfl, by simp⟩
+        | j + 1, hj => simp at hj)) hrest
 
 end TypedAsm

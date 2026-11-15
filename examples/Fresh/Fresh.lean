@@ -29,11 +29,11 @@ def pageSig : FnSigEx (BitVec 64) where
 
 /-- Back from the call with `x` in `rax`: the page at `x` is the program's. -/
 def backCtx (x : BitVec 64) : Ctx :=
-  ⟨fun r => if r = .rax then .eq x else .int, [], 1, Flags.Any, [(x, words)]⟩
+  ⟨fun r => if r = .rax then .eq x else .int, [], 8, Flags.Any, [(x, words)]⟩
 
 /-- In the loop: `rbx` holds the page's address, and the page is all numbers. -/
 def loopCtx (p : BitVec 64) : Ctx :=
-  ⟨fun r => if r = .rbx then .eq p else .int, [], 1, Flags.Any, [(p, words)]⟩
+  ⟨fun r => if r = .rbx then .eq p else .int, [], 8, Flags.Any, [(p, words)]⟩
 
 /-- The contexts allowed at each label. The return point `back` allows one
 for every address the page could be at; `fail` can be reached from anywhere. -/
@@ -42,7 +42,7 @@ inductive At : Label → Ctx → Prop
   | back (x : BitVec 64) : At .back (backCtx x)
   | loop (p : BitVec 64) : At .loop (loopCtx p)
   | done (p : BitVec 64) : At .done (loopCtx p)
-  | page (saved : Reg → Ty) (ret : BitVec 64 → Ctx) (rest : List Ty) (room : Nat)
+  | page (saved : Reg → Ty) (ret : BitVec 64 → Ctx) (rest : List Shape) (room : Nat)
       (frame : List (BitVec 64 × Shape)) :
     pageSig.CallerOk saved ret rest room frame →
     At .page (pageSig.entry saved ret rest room frame)

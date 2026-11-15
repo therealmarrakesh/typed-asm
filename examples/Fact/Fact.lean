@@ -23,27 +23,27 @@ def factSig (n : Nat) : FnSig where
   args := fun r => if r = .rdi then .eq (num n) else .int
   results := fun _ => .int
   preserved := calleeSaved
-  need := 2 * n
+  need := 16 * n
 
 /-- Nothing is known about any register. -/
-def fin : Ctx := ⟨fun _ => .int, [], 11, Flags.Any, []⟩
+def fin : Ctx := ⟨fun _ => .int, [], 88, Flags.Any, []⟩
 
 /-- The contexts allowed at each label. -/
 inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 11)
   | afterCall : At .afterCall fin
-  | fact (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+  | fact (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     (factSig n).CallerOk saved ret rest room → At .fact ((factSig n).entry saved ret rest room)
   /-- Reached only with an argument that is not zero. -/
-  | again (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+  | again (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     (factSig n).CallerOk saved ret rest room → 0 < n →
     At .again ((factSig n).entry saved ret rest room)
   /-- Back from the inner call: the argument is on the stack, above this
   call's own return address. -/
-  | afterAgain (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (m : Nat) :
-    (factSig n).CallerOk saved ret rest (m + 2) →
+  | afterAgain (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (m : Nat) :
+    (factSig n).CallerOk saved ret rest (m + 16) →
     At .afterAgain ⟨fun r => if calleeSaved r then saved r else .int,
-      .eq (num n) :: .code ret :: rest, m + 1, Flags.Any, ret.owned⟩
+      .slot (.eq (num n)) :: .slot (.code ret) :: rest, m + 8, Flags.Any, ret.owned⟩
 
 /-- The code typing: those contexts, at the addresses of their labels. -/
 def Φ : CodeTy := .ofLabels code base At
@@ -79,9 +79,9 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     subst h0
     simp [Cond.eval, Flags.ofResult, num] at hcond
   | again n saved ret rest room hK hn =>
-    -- the argument is not zero, so the caller left at least two slots
-    have hroom : 2 * n ≤ room := hK.room
-    obtain ⟨m, rfl⟩ : ∃ m, room = m + 2 := ⟨room - 2, by omega⟩
+    -- the argument is not zero, so the caller left at least sixteen bytes
+    have hroom : 16 * n ≤ room := hK.room
+    obtain ⟨m, rfl⟩ : ∃ m, room = m + 16 := ⟨room - 16, by omega⟩
     ty_steps
     ty_call (factSig (n - 1))
     -- the inner call gets exactly one less

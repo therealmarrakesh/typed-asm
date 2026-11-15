@@ -75,7 +75,7 @@ theorem Sub.trans {τ υ φ : Ty} (h₁ : Sub τ υ) (h₂ : Sub υ φ) : Sub τ
 /-- A caller ready for each chosen value is ready for each sequence, read as
 the value it stands for. -/
 theorem FnSigEx.CallerOk.toRaw {ι : Type} [Chosen ι] {sig : FnSigEx ι} {saved : Reg → Ty}
-    {ret : ι → Ctx} {rest : List Ty} {room : Nat} {frame : List (BitVec 64 × Shape)}
+    {ret : ι → Ctx} {rest : List Shape} {room : Nat} {frame : List (BitVec 64 × Shape)}
     (h : sig.CallerOk saved ret rest room frame) :
     sig.raw.CallerOk saved (fun s => ret (Chosen.dec s)) rest room frame :=
   ⟨fun s => h.each (Chosen.dec s), fun s => h.frame (Chosen.dec s)⟩
@@ -83,7 +83,7 @@ theorem FnSigEx.CallerOk.toRaw {ι : Type} [Chosen ι] {sig : FnSigEx ι} {saved
 /-- A caller ready for each sequence is ready for each chosen value, written
 as a sequence. -/
 theorem FnSigEx.CallerOk.ofRaw {ι : Type} [Chosen ι] {sig : FnSigEx ι} {saved : Reg → Ty}
-    {ret : (Nat → BitVec 64) → Ctx} {rest : List Ty} {room : Nat}
+    {ret : (Nat → BitVec 64) → Ctx} {rest : List Shape} {room : Nat}
     {frame : List (BitVec 64 × Shape)} (h : sig.raw.CallerOk saved ret rest room frame) :
     sig.CallerOk saved (fun x => ret (Chosen.enc x)) rest room frame := by
   refine ⟨fun x => ?_, fun x => ?_⟩
@@ -92,9 +92,23 @@ theorem FnSigEx.CallerOk.ofRaw {ι : Type} [Chosen ι] {sig : FnSigEx ι} {saved
   · have := h.frame (Chosen.enc x)
     simpa only [FnSigEx.raw, Chosen.dec_enc] using this
 
-theorem SubList.refl : ∀ σ : List Ty, SubList σ σ
+theorem SubShape.refl (S : Shape) : SubShape S S :=
+  ⟨rfl, fun q hq => ⟨q, hq, rfl, .refl _⟩⟩
+
+/-- A typed value on the stack may be used at a weaker type. -/
+theorem SubShape.slot {τ υ : Ty} (h : Sub τ υ) : SubShape (.slot τ) (.slot υ) :=
+  ⟨rfl, fun q hq => by
+    simp only [ShapeOf.slot, List.mem_singleton] at hq
+    subst hq
+    exact ⟨(0, τ), by simp [ShapeOf.slot], rfl, h⟩⟩
+
+/-- What a piece of the stack holds may be forgotten: it is then plain bytes. -/
+theorem SubShape.raw (S : Shape) : SubShape S (.raw S.size) :=
+  ⟨rfl, fun q hq => by cases hq⟩
+
+theorem SubList.refl : ∀ σ : List Shape, SubList σ σ
   | [] => .nil
-  | τ :: σ => .cons (.refl τ) (SubList.refl σ)
+  | S :: σ => .cons (.refl S) (SubList.refl σ)
 
 theorem CtxSub.refl (Γ : Ctx) : CtxSub Γ Γ :=
   ⟨fun _ _ => .refl _, .refl _, rfl, fun _ h => h, .refl _, rfl⟩
@@ -127,7 +141,7 @@ theorem Sub.shift_congr {τ : Ty} {a b : BitVec 64} (h : a = b) : Sub (τ.shift 
   h ▸ .refl _
 
 /-- Comparing a context whose stack pointer has just moved with another. -/
-theorem CtxSub.ofMoved {Γ Δ : Ctx} {d : BitVec 64} {stack : List Ty} {room : Nat}
+theorem CtxSub.ofMoved {Γ Δ : Ctx} {d : BitVec 64} {stack : List Shape} {room : Nat}
     (hregs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (Δ.regs r)) (hstack : SubList stack Δ.stack)
     (hroom : room = Δ.room) (hflags : ∀ f, Γ.flags f → Δ.flags f)
     (hsp : Sub ((Γ.regs .rsp).shift d) (Δ.regs .rsp)) (howned : Γ.owned = Δ.owned) :
@@ -165,17 +179,6 @@ def CtxOf.afterAlu (Γ : Ctx) (op : AluOp) (d : Reg) : Ctx :=
 `rax`, `rcx`, `r11` and the flags. -/
 def CtxOf.afterSyscall (Γ : Ctx) : Ctx :=
   { ((Γ.setReg .rax .int).setReg .rcx .int).setReg .r11 .int with flags := Flags.Any }
-
-/-- The displacement `disp` addresses 8-byte slot `i`. (A structure, not a
-definition, so that it is never confused with `innerDisp` by unfolding.) -/
-structure slotDisp (i : Nat) (disp : BitVec 32) : Prop where
-  eq : disp = BitVec.ofNat 32 (8 * i)
-  lt : 8 * i < 2 ^ 31
-
-/-- The displacement `disp` addresses byte `k` of 8-byte slot `i`. -/
-structure innerDisp (i k : Nat) (disp : BitVec 32) : Prop where
-  eq : disp = BitVec.ofNat 32 (8 * i + k)
-  lt : 8 * i + k < 2 ^ 31
 
 /-- The displacement `disp` reaches byte `d` from where a pointer points. -/
 structure byteDisp (d : Nat) (disp : BitVec 32) : Prop where
@@ -223,16 +226,36 @@ theorem OwnedAt.addr_sub (v c d : BitVec 64) : v + c = v + d + (c - d) := by bv_
 
 theorem OwnedAt.addr_sub' (v e c d : BitVec 64) : v + e + c = v + d + (e + c - d) := by bv_omega
 
+/-- `StackAt σ k S d i`: byte `d` above the stack pointer is byte `i` of
+piece `k` of the stack `σ`, and that piece is `S`. -/
+structure StackAt (σ : List Shape) (k : Nat) (S : Shape) (d i : Nat) : Prop where
+  entry : σ[k]? = some S
+  off : d = stackOff σ k + i
+
+/-- As `StackAt.mk`, for a search among the pieces: the byte is also shown to
+fall inside the piece, so that a piece it is not in is passed over. -/
+theorem StackAt.of_inside {σ : List Shape} {k : Nat} {S : Shape} {d i : Nat}
+    (entry : σ[k]? = some S) (off : d = stackOff σ k + i) (_inside : i < S.size) :
+    StackAt σ k S d i :=
+  ⟨entry, off⟩
+
 /-- `ReadOk Ψ next Γ n rm`: reading `n` bytes from `rm` is safe. For memory, the
-bytes must lie inside one block or one stack slot. -/
+bytes must lie inside one block or one piece of the stack. -/
 inductive ReadOk (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) (n : Nat) : RM → Prop
   | reg (r : Reg) : ReadOk Ψ next Γ n (.reg r)
   | field {b : Reg} {S : Shape} {writable : Bool} {off d : Nat} {disp : BitVec 32} :
     b ≠ .rsp → Γ.regs b = .ptr S writable off → byteDisp d disp →
     off + d + n ≤ S.size → ReadOk Ψ next Γ n (.mem (.sib (some b) none disp))
-  | slot {i k : Nat} {disp : BitVec 32} {τ : Ty} :
-    innerDisp i k disp → Γ.stack[i]? = some τ → k + n ≤ 8 →
+  | slot {d k i : Nat} {S : Shape} {disp : BitVec 32} :
+    byteDisp d disp → StackAt Γ.stack k S d i → i + n ≤ S.size →
     ReadOk Ψ next Γ n (.mem (.sib (some .rsp) none disp))
+  /-- Bytes of the stack reached through an index holding an exactly known
+  value. -/
+  | slotIndexed {x : IndexReg} {sc : Scale} {d k i : Nat} {S : Shape} {disp : BitVec 32}
+      {c : BitVec 64} :
+    Γ.regs x.toReg = .eq c → (c <<< sc.shift) + disp.signExtend 64 = BitVec.ofNat 64 d →
+    StackAt Γ.stack k S d i → i + n ≤ S.size →
+    ReadOk Ψ next Γ n (.mem (.sib (some .rsp) (some (x, sc)) disp))
   /-- An indexed access: the index register holds an exactly known value,
   and scaled and added to the displacement it lands inside the block. -/
   | indexed {b : Reg} {x : IndexReg} {sc : Scale} {S : Shape} {writable : Bool}
@@ -265,9 +288,18 @@ inductive WriteIntOk (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) (n : Nat) : RM �
     b ≠ .rsp → Γ.regs b = .ptr S true off → byteDisp d disp →
     off + d + n ≤ S.size → S.free (off + d) n = true →
     WriteIntOk Ψ next Γ n (.mem (.sib (some b) none disp)) Γ
-  | slot {i k : Nat} {disp : BitVec 32} {τ : Ty} :
-    innerDisp i k disp → Γ.stack[i]? = some τ → k + n ≤ 8 →
-    WriteIntOk Ψ next Γ n (.mem (.sib (some .rsp) none disp)) { Γ with stack := Γ.stack.set i .int }
+  /-- Any bytes of a piece of the stack. Whatever typed value reached into
+  them is forgotten: the stack is the program's own. -/
+  | slot {d k i : Nat} {S : Shape} {disp : BitVec 32} :
+    byteDisp d disp → StackAt Γ.stack k S d i → i + n ≤ S.size →
+    WriteIntOk Ψ next Γ n (.mem (.sib (some .rsp) none disp))
+      { Γ with stack := Γ.stack.set k (S.clear i n) }
+  | slotIndexed {x : IndexReg} {sc : Scale} {d k i : Nat} {S : Shape} {disp : BitVec 32}
+      {c : BitVec 64} :
+    Γ.regs x.toReg = .eq c → (c <<< sc.shift) + disp.signExtend 64 = BitVec.ofNat 64 d →
+    StackAt Γ.stack k S d i → i + n ≤ S.size →
+    WriteIntOk Ψ next Γ n (.mem (.sib (some .rsp) (some (x, sc)) disp))
+      { Γ with stack := Γ.stack.set k (S.clear i n) }
   | indexed {b : Reg} {x : IndexReg} {sc : Scale} {S : Shape} {off d : Nat}
       {disp : BitVec 32} {c : BitVec 64} :
     b ≠ .rsp → Γ.regs b = .ptr S true off → Γ.regs x.toReg = .eq c →
@@ -292,7 +324,7 @@ inductive WriteIntOk (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) (n : Nat) : RM �
       { Γ with owned := Γ.owned.set k (a, S.clear off.toNat n) }
 
 /-- `Holds Ψ next Γ rm τ`: `rm` is a register, a typed value of a block or a
-whole stack slot, holding a value of type `τ`. -/
+typed value on the stack, holding a value of type `τ`. -/
 inductive Holds (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) : RM → Ty → Prop
   | indexed {b : Reg} {x : IndexReg} {sc : Scale} {S : Shape} {writable : Bool}
       {off d : Nat} {disp : BitVec 32} {c : BitVec 64} {τ : Ty} :
@@ -308,8 +340,8 @@ inductive Holds (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) : RM → Ty → Prop
       {τ : Ty} :
     b ≠ .rsp → Γ.regs b = .ptr S writable off → byteDisp d disp →
     S.valAt (off + d) = some τ → Holds Ψ next Γ (.mem (.sib (some b) none disp)) τ
-  | slot {i : Nat} {disp : BitVec 32} {τ : Ty} :
-    slotDisp i disp → Γ.stack[i]? = some τ →
+  | slot {d k i : Nat} {S : Shape} {disp : BitVec 32} {τ : Ty} :
+    byteDisp d disp → StackAt Γ.stack k S d i → S.valAt i = some τ →
     Holds Ψ next Γ (.mem (.sib (some .rsp) none disp)) τ
 
 /-- At least the named flags are defined. -/
@@ -448,30 +480,36 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
     s ≠ .rsp → Ψ base = some l → l.writable = true →
     next + disp.signExtend 64 = base + BitVec.ofNat 64 k → l.shape.valAt k = some τ →
     l.shape.sole k = true → Sub (Γ.regs s) τ → Straight Ψ next Γ (.mov .w64 (.rm_r (.mem (.rip disp)) s)) Γ
-  /-- Load stack slot `i`. -/
-  | loadStack {Γ : Ctx} {d : Reg} {i : Nat} {disp : BitVec 32} {τ : Ty} :
-    d ≠ .rsp → slotDisp i disp → Γ.stack[i]? = some τ →
-    Straight Ψ next Γ (.mov .w64 (.r_m d (.sib (some .rsp) none disp))) (Γ.setReg d τ)
-  /-- Load the stack slot an index picks out, keeping its type. The index
-  register holds an exactly known value, and scaled and added to the
-  displacement it is the offset of a whole slot. This is how a program gets
-  at an argument whose number it has computed. -/
-  | loadStackIndexed {Γ : Ctx} {d : Reg} {x : IndexReg} {sc : Scale} {i : Nat}
+  /-- Load a typed value from the stack. -/
+  | loadStack {Γ : Ctx} {r : Reg} {d k i : Nat} {S : Shape} {disp : BitVec 32} {τ : Ty} :
+    r ≠ .rsp → byteDisp d disp → StackAt Γ.stack k S d i → S.valAt i = some τ →
+    Straight Ψ next Γ (.mov .w64 (.r_m r (.sib (some .rsp) none disp))) (Γ.setReg r τ)
+  /-- Load the typed value on the stack that an index picks out. The index
+  register holds an exactly known value. This is how a program gets at an
+  argument whose number it has computed. -/
+  | loadStackIndexed {Γ : Ctx} {r : Reg} {x : IndexReg} {sc : Scale} {d k i : Nat} {S : Shape}
       {disp : BitVec 32} {c : BitVec 64} {τ : Ty} :
-    d ≠ .rsp → Γ.regs x.toReg = .eq c →
-    (c <<< sc.shift) + disp.signExtend 64 = BitVec.ofNat 64 (8 * i) →
-    Γ.stack[i]? = some τ →
-    Straight Ψ next Γ (.mov .w64 (.r_m d (.sib (some .rsp) (some (x, sc)) disp))) (Γ.setReg d τ)
-  /-- Store into stack slot `i`. The slot takes the type of the stored value. -/
-  | storeStack {Γ : Ctx} {s : Reg} {i : Nat} {disp : BitVec 32} {τ : Ty} :
-    s ≠ .rsp → slotDisp i disp → Γ.stack[i]? = some τ →
+    r ≠ .rsp → Γ.regs x.toReg = .eq c →
+    (c <<< sc.shift) + disp.signExtend 64 = BitVec.ofNat 64 d →
+    StackAt Γ.stack k S d i → S.valAt i = some τ →
+    Straight Ψ next Γ (.mov .w64 (.r_m r (.sib (some .rsp) (some (x, sc)) disp))) (Γ.setReg r τ)
+  /-- Store eight bytes into the stack. They take the type of what is stored,
+  whatever was there before. -/
+  | storeStack {Γ : Ctx} {s : Reg} {d k i : Nat} {S : Shape} {disp : BitVec 32} :
+    s ≠ .rsp → byteDisp d disp → StackAt Γ.stack k S d i → i + 8 ≤ S.size →
     Straight Ψ next Γ (.mov .w64 (.rm_r (.mem (.sib (some .rsp) none disp)) s))
-      { Γ with stack := Γ.stack.set i (Γ.regs s) }
-  | push {Γ : Ctx} {r : Reg} {n : Nat} : r ≠ .rsp → Γ.room = n + 1 →
-    Straight Ψ next Γ (.push r) { Γ.moveSp (-8) with stack := Γ.regs r :: Γ.stack, room := n }
-  | pop {Γ : Ctx} {r : Reg} {τ : Ty} {σ : List Ty} : r ≠ .rsp → Γ.stack = τ :: σ →
+      { Γ with stack := Γ.stack.set k (S.set i (Γ.regs s)) }
+  | push {Γ : Ctx} {r : Reg} {n : Nat} : r ≠ .rsp → Γ.room = n + 8 →
+    Straight Ψ next Γ (.push r)
+      { Γ.moveSp (-8) with stack := .slot (Γ.regs r) :: Γ.stack, room := n }
+  | pop {Γ : Ctx} {r : Reg} {τ : Ty} {σ : List Shape} : r ≠ .rsp → Γ.stack = .slot τ :: σ →
     Straight Ψ next Γ (.pop r)
-      (CtxOf.setReg { Γ.moveSp 8 with stack := σ, room := Γ.room + 1 } r τ)
+      (CtxOf.setReg { Γ.moveSp 8 with stack := σ, room := Γ.room + 8 } r τ)
+  /-- Pop eight bytes that are not known to be one typed value: a number. -/
+  | popPlain {Γ : Ctx} {r : Reg} {S : Shape} {σ : List Shape} :
+    r ≠ .rsp → Γ.stack = S :: σ → S.size = 8 →
+    Straight Ψ next Γ (.pop r)
+      (CtxOf.setReg { Γ.moveSp 8 with stack := σ, room := Γ.room + 8 } r .int)
   /-- Arithmetic between registers. The result is an integer whatever the operands were. -/
   | aluRR {Γ : Ctx} {op : AluOp} {w : Width} {d s : Reg} :
     d ≠ .rsp → (op.readsCarry = true → ∀ f, Γ.flags f → f.cf.isSome = true) →
@@ -492,17 +530,17 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
     Straight Ψ next Γ (.alu op .w64 (.rm_r (.reg d) s))
       { (bif op.writesDst then Γ.setReg d (.eq (op.apply a b).1) else Γ) with
         flags := (· = (op.apply a b).2) }
-  /-- Reserve `k` stack slots. Their contents are unknown, so they are integers. -/
+  /-- Reserve `k` bytes of stack: one piece of plain bytes. -/
   | allocFrame {Γ : Ctx} {k m : Nat} {imm : BitVec 32} :
-    slotDisp k imm → Γ.room = m + k →
+    byteDisp k imm → Γ.room = m + k →
     Straight Ψ next Γ (.alu .sub .w64 (.rm_i (.reg .rsp) imm))
-      { Γ.moveSp (-BitVec.ofNat 64 (8 * k)) with
-        stack := List.replicate k .int ++ Γ.stack, room := m, flags := Flags.Known }
-  /-- Release the top `k` stack slots. -/
-  | freeFrame {Γ : Ctx} {k : Nat} {imm : BitVec 32} {top rest : List Ty} :
-    slotDisp k imm → Γ.stack = top ++ rest → top.length = k →
+      { Γ.moveSp (-BitVec.ofNat 64 k) with
+        stack := .raw k :: Γ.stack, room := m, flags := Flags.Known }
+  /-- Release the pieces at the top of the stack that come to `k` bytes. -/
+  | freeFrame {Γ : Ctx} {k : Nat} {imm : BitVec 32} {top rest : List Shape} :
+    byteDisp k imm → Γ.stack = top ++ rest → stackLen top = k →
     Straight Ψ next Γ (.alu .add .w64 (.rm_i (.reg .rsp) imm))
-      { Γ.moveSp (BitVec.ofNat 64 (8 * k)) with
+      { Γ.moveSp (BitVec.ofNat 64 k) with
         stack := rest, room := Γ.room + k, flags := Flags.Known }
   /-- Advancing a pointer keeps it a pointer into the same block, that many
   bytes on. -/
@@ -727,6 +765,7 @@ theorem ReadOk.ext {Ψ Ψ' : MemTy} {next : BitVec 64} {Γ : Ctx} {n : Nat} {rm 
     | exact .reg _
     | (apply ReadOk.field <;> assumption)
     | (apply ReadOk.slot <;> assumption)
+    | (apply ReadOk.slotIndexed <;> assumption)
     | (apply ReadOk.indexed <;> assumption)
     | (apply ReadOk.text <;> assumption)
     | (apply ReadOk.owned <;> assumption)
@@ -740,6 +779,7 @@ theorem WriteIntOk.ext {Ψ Ψ' : MemTy} {next : BitVec 64} {Γ Γ' : Ctx} {n : N
     | (apply WriteIntOk.reg <;> assumption)
     | (apply WriteIntOk.field <;> assumption)
     | (apply WriteIntOk.slot <;> assumption)
+    | (apply WriteIntOk.slotIndexed <;> assumption)
     | (apply WriteIntOk.indexed <;> assumption)
     | (apply WriteIntOk.owned <;> assumption)
     | (apply WriteIntOk.ownedClear <;> assumption)
@@ -786,6 +826,7 @@ local macro "ext_rule" : tactic =>
     | (apply Straight.storeStack <;> ext_premise)
     | (apply Straight.push <;> ext_premise)
     | (apply Straight.pop <;> ext_premise)
+    | (apply Straight.popPlain <;> ext_premise)
     | (apply Straight.aluRR <;> ext_premise)
     | (apply Straight.aluRI <;> ext_premise)
     | (apply Straight.aluExact <;> ext_premise)
@@ -901,23 +942,23 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
   /-- A call pushes the return address, typed as a pointer to code expecting
   the context required at the instruction after the call. The callee sees it
   on top of the stack. -/
-  | call {Γ ret : Ctx} {d : BitVec 32} {n : Nat} : Γ.room = n + 1 → Φ next ret →
+  | call {Γ ret : Ctx} {d : BitVec 32} {n : Nat} : Γ.room = n + 8 → Φ next ret →
     Accepts Φ (next + d.signExtend 64)
-      { Γ.moveSp (-8) with stack := .code ret :: Γ.stack, room := n } →
+      { Γ.moveSp (-8) with stack := .slot (.code ret) :: Γ.stack, room := n } →
     HasType Φ fetch sys Ψ next Γ (.call (.rel d))
   /-- A call whose return address is typed as code ready for any of a family
   of contexts: the instruction after the call must be typed for each. The
   callee chooses which one it returns into, once it knows. -/
   | callAll {Γ : Ctx} {ret : (Nat → BitVec 64) → Ctx} {d : BitVec 32} {n : Nat} :
-    Γ.room = n + 1 →
+    Γ.room = n + 8 →
     (∀ x, Φ next (ret x)) →
     Accepts Φ (next + d.signExtend 64)
-      { Γ.moveSp (-8) with stack := .codeAll ret :: Γ.stack, room := n } →
+      { Γ.moveSp (-8) with stack := .slot (.codeAll ret) :: Γ.stack, room := n } →
     HasType Φ fetch sys Ψ next Γ (.call (.rel d))
   /-- A return needs a code pointer on top of the stack, and the state with it
   popped must match what that code requires. -/
-  | ret {Γ Δ : Ctx} {σ : List Ty} : Γ.stack = .code Δ :: σ →
-    CtxSub { Γ.moveSp 8 with stack := σ, room := Γ.room + 1 } Δ →
+  | ret {Γ Δ : Ctx} {σ : List Shape} : Γ.stack = .slot (.code Δ) :: σ →
+    CtxSub { Γ.moveSp 8 with stack := σ, room := Γ.room + 8 } Δ →
     HasType Φ fetch sys Ψ next Γ .ret
   /-- A system call that returns. It is typed only where the operating
   system is shown to return to the next instruction with a state matching
@@ -931,8 +972,8 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
     HasType Φ fetch sys Ψ next Γ (.jmp (.ind rm))
   /-- Call through a register, field or stack slot holding a code pointer.
   The callee sees the return address on top of the stack. -/
-  | callInd {Γ Δ ret : Ctx} {rm : RM} {n : Nat} : Holds Ψ next Γ rm (.code Δ) → Γ.room = n + 1 → Φ next ret →
-    CtxSub { Γ.moveSp (-8) with stack := .code ret :: Γ.stack, room := n } Δ →
+  | callInd {Γ Δ ret : Ctx} {rm : RM} {n : Nat} : Holds Ψ next Γ rm (.code Δ) → Γ.room = n + 8 → Φ next ret →
+    CtxSub { Γ.moveSp (-8) with stack := .slot (.code ret) :: Γ.stack, room := n } Δ →
     HasType Φ fetch sys Ψ next Γ (.call (.ind rm))
   /-- A register holding exactly the address of a function may be treated as
   a pointer to that function, to be called by any caller. -/
@@ -942,7 +983,7 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
   /-- Call through a register, field or stack slot holding a function
   pointer. The conditions are those of a direct call to that function. -/
   | callFn {Γ ret : Ctx} {rm : RM} {sig : FnSig} {m : Nat} :
-    Holds Ψ next Γ rm sig.ty → Γ.room = m + 1 → Φ next ret →
+    Holds Ψ next Γ rm sig.ty → Γ.room = m + 8 → Φ next ret →
     (∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn (Γ.moveSp (-8)).regs r)) →
     Sub ((Γ.regs .rsp).shift (-8)) (sig.regsIn (Γ.moveSp (-8)).regs .rsp) →
     CtxSub (sig.returned (Γ.moveSp (-8)).regs Γ.stack m ret.owned) ret → sig.need ≤ m →
@@ -960,7 +1001,7 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
   the function may choose. -/
   | callFnAll {ι : Type} [Chosen ι] {Γ : Ctx} {ret : ι → Ctx} {rm : RM} {sig : FnSigEx ι}
       {m : Nat} {frame : List (BitVec 64 × Shape)} :
-    Holds Ψ next Γ rm sig.ty → Γ.room = m + 1 → (∀ x, Φ next (ret x)) →
+    Holds Ψ next Γ rm sig.ty → Γ.room = m + 8 → (∀ x, Φ next (ret x)) →
     (∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn (Γ.moveSp (-8)).regs r)) →
     Sub ((Γ.regs .rsp).shift (-8)) (sig.regsIn (Γ.moveSp (-8)).regs .rsp) →
     (∀ x, CtxSub ((sig.pick x).returned (Γ.moveSp (-8)).regs Γ.stack m (ret x).owned) (ret x)) →
@@ -971,12 +1012,12 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
   /-- Jump to such a function through a pointer to it: a tail call, made on
   behalf of a caller that is ready for whatever value is chosen. -/
   | jmpFnAll {ι : Type} [Chosen ι] {Γ : Ctx} {ret : ι → Ctx} {rm : RM} {sig : FnSigEx ι}
-      {saved : Reg → Ty} {rest : List Ty} {room : Nat} {frame : List (BitVec 64 × Shape)} :
+      {saved : Reg → Ty} {rest : List Shape} {room : Nat} {frame : List (BitVec 64 × Shape)} :
     Holds Ψ next Γ rm sig.ty → sig.CallerOk saved ret rest room frame →
     CtxSub Γ (sig.entry saved ret rest room frame) → HasType Φ fetch sys Ψ next Γ (.jmp (.ind rm))
   /-- Jump to a function through a pointer to it: a tail call, made on
   behalf of the caller the current function would have returned to. -/
-  | jmpFn {Γ ret : Ctx} {rm : RM} {sig : FnSig} {saved : Reg → Ty} {rest : List Ty}
+  | jmpFn {Γ ret : Ctx} {rm : RM} {sig : FnSig} {saved : Reg → Ty} {rest : List Shape}
       {room : Nat} :
     Holds Ψ next Γ rm sig.ty → sig.CallerOk saved ret rest room →
     CtxSub Γ (sig.entry saved ret rest room) → HasType Φ fetch sys Ψ next Γ (.jmp (.ind rm))

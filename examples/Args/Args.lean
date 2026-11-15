@@ -16,8 +16,8 @@ namespace Args
 
 /-- The stack as the program finds it when given `c` arguments: the count,
 the address of each one's text, and four more words. -/
-def slots (c : BitVec 64) : List Ty :=
-  .eq c :: (List.replicate c.toNat (.str false) ++ List.replicate 4 .int)
+def slots (c : BitVec 64) : List Shape :=
+  [.slot (.eq c), (ShapeOf.slot (.str false)).rep c.toNat, .raw 32]
 
 /-- Between arguments: `r13` holds exactly the count `c` and `r14` exactly
 the number `v` of the argument to do next. -/

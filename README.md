@@ -45,7 +45,11 @@ What exists and is checked today:
 - Memory described to the byte. A block has a size in bytes and typed values
   at byte offsets; everything else in it is plain bytes, which can be read
   and written at any offset and any width that stays inside the block. The
-  stack is the exception: it is still described in eight-byte slots.
+  stack is described the same way, as pieces laid end to end above the stack
+  pointer: a `push` adds a piece of eight bytes, and making room for locals
+  adds a piece of as many bytes as are asked for, which can be cut into the
+  locals it holds. An array of any shape can be reached through an index
+  known only by a bound.
 - A model of the Linux calls a program needs (`read`, `write`, `openat`,
   `close`, `fstat`, `lseek`, `mmap`, `munmap`, `exit`, `exit_group`,
   `clock_gettime`, `getrandom`).

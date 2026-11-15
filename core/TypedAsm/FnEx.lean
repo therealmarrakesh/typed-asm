@@ -25,7 +25,7 @@ omit [Chosen ι] in
 /-- At its return into `ret x`, a function that owns the blocks it gives for
 `x` and after them what the caller owned besides owns what `ret x` expects. -/
 theorem CallerOk.owned_back {sig : FnSigEx ι} {saved : Reg → Ty} {ret : ι → Ctx}
-    {rest : List Ty} {room : Nat} {frame owned : List (BitVec 64 × Shape)}
+    {rest : List Shape} {room : Nat} {frame owned : List (BitVec 64 × Shape)}
     (h : sig.CallerOk saved ret rest room frame) (x : ι)
     (ho : owned = sig.gives x ++ frame) : owned = (ret x).owned :=
   (h.each x).owned_back (by
@@ -35,7 +35,7 @@ theorem CallerOk.owned_back {sig : FnSigEx ι} {saved : Reg → Ty} {ret : ι �
 
 /-- The caller left room for the function's own stack use, and possibly more. -/
 theorem CallerOk.room_split {sig : FnSigEx ι} {saved : Reg → Ty} {ret : ι → Ctx}
-    {rest : List Ty} {room : Nat} {frame : List (BitVec 64 × Shape)}
+    {rest : List Shape} {room : Nat} {frame : List (BitVec 64 × Shape)}
     (h : sig.CallerOk saved ret rest room frame) : ∃ m, room = m + sig.need :=
   ⟨room - sig.need, by
     have := (h.each (Chosen.dec fun _ => 0)).room
@@ -50,7 +50,7 @@ the instruction after the call. -/
 theorem call_ok {sig : FnSigEx ι} {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
     {next : BitVec 64} {Γ : Ctx} {ret : ι → Ctx} {d : BitVec 32} {m : Nat}
     {frame : List (BitVec 64 × Shape)}
-    (hf : sig.At Φ (next + d.signExtend 64)) (hroom : Γ.room = m + 1)
+    (hf : sig.At Φ (next + d.signExtend 64)) (hroom : Γ.room = m + 8)
     (hret : ∀ x, Φ next (ret x))
     (hargs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn (Γ.moveSp (-8)).regs r))
     (hsp : Sub ((Γ.regs .rsp).shift (-8)) (sig.regsIn (Γ.moveSp (-8)).regs .rsp))
@@ -67,9 +67,9 @@ theorem call_ok {sig : FnSigEx ι} {Φ : CodeTy} {fetch : Fetch} {sys : Syscall}
 
 end FnSigEx
 
-/-- A stack with one slot's type weakened is a weakening of the stack. -/
-theorem SubList.set {σ : List Ty} {i : Nat} {τ υ : Ty} (hi : σ[i]? = some τ) (h : Sub τ υ) :
-    SubList σ (σ.set i υ) := by
+/-- A stack with one piece weakened is a weakening of the stack. -/
+theorem SubList.set {σ : List Shape} {i : Nat} {S T : Shape} (hi : σ[i]? = some S)
+    (h : SubShape S T) : SubList σ (σ.set i T) := by
   induction σ generalizing i with
   | nil => cases hi
   | cons x xs ih =>
@@ -88,15 +88,17 @@ variable {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
 contexts may be treated, from here on, as ready for the one of them the
 function has decided on. -/
 theorem BlockOk.chooseRet {ι : Type} [Chosen ι] {a : BitVec 64} {Γ : Ctx} {i : Nat}
-    {ret : ι → Ctx} (x : ι) (hslot : Γ.stack[i]? = some (.codeAll fun s => ret (Chosen.dec s)))
-    (hrest : BlockOk Φ fetch sys Ψ a { Γ with stack := Γ.stack.set i (.code (ret x)) }) :
+    {ret : ι → Ctx} (x : ι)
+    (hslot : Γ.stack[i]? = some (.slot (.codeAll fun s => ret (Chosen.dec s))))
+    (hrest : BlockOk Φ fetch sys Ψ a
+      { Γ with stack := Γ.stack.set i (.slot (.code (ret x))) }) :
     BlockOk Φ fetch sys Ψ a Γ :=
   .weaken (fun _ _ _ _ _ h =>
-    h.sub (Δ := { Γ with stack := Γ.stack.set i (.code (ret x)) })
+    h.sub (Δ := { Γ with stack := Γ.stack.set i (.slot (.code (ret x))) })
       ⟨fun _ _ => .refl _,
-        SubList.set hslot (by
+        SubList.set hslot (.slot (by
           have := Sub.codeAll (fun s => ret (Chosen.dec s)) (Chosen.enc x)
-          rwa [Chosen.dec_enc] at this),
+          rwa [Chosen.dec_enc] at this)),
         rfl, fun _ hf => hf, .refl _, rfl⟩) hrest
 
 end TypedAsm

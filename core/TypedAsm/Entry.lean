@@ -88,43 +88,52 @@ structure Entry (entry base : BitVec 64) (image : List Byte) (dataBase : BitVec 
   text : ∀ x ∈ blocks, x.2.text ≠ 0 → s.mem (x.1 + BitVec.ofNat 64 (x.2.size - 1)) = 0
 
 /-- The context a program is entered in: nothing known about any register,
-`room` free slots, and the given types for the slots at and above `rsp`;
-none, unless the program looks at its arguments. -/
-def entryCtx (room : Nat) (stack : List Ty := []) : Ctx :=
-  ⟨fun _ => .int, stack, room, Flags.Any, []⟩
+room below `rsp` for `room` eight-byte words, and the given pieces at and
+above `rsp`; none, unless the program looks at its arguments. The room is
+counted in words here, as the entry contract counts it; in the context it is
+that many bytes. -/
+def entryCtx (room : Nat) (stack : List Shape := []) : Ctx :=
+  ⟨fun _ => .int, stack, 8 * room, Flags.Any, []⟩
 
 /-- The context a program that looks at its arguments is entered in: `above`
-slots at and above `rsp`, each holding some number. The first is the number
+eight-byte words at and above `rsp`, as plain bytes. The first is the number
 of arguments; the ones after it are addresses of their text. -/
 def entryCtxArgs (room above : Nat) : Ctx :=
-  entryCtx room (List.replicate above .int)
+  entryCtx room [.raw (8 * above)]
 
 variable {entry base dataBase : BitVec 64} {image data : List Byte}
   {blocks : List (BitVec 64 × Layout)} {room above : Nat}
 
 /-- A state meeting the entry contract matches the entry context with any
-types for the slots at and above `rsp` that those slots have, provided each
-typed value of each block is of its type to begin with. -/
-theorem Entry.matchesStack {H : Ty → BitVec 64 → Prop} {s : State} {σ : List Ty}
+pieces at and above `rsp` that come to the bytes that are there and whose
+typed values are of their types, provided each typed value of each block is
+of its type to begin with. -/
+theorem Entry.matchesStack {H : Ty → BitVec 64 → Prop} {s : State} {σ : List Shape}
     (h : Entry entry base image dataBase data blocks room above s) (hint : ∀ v, H .int v)
     (hfields : ∀ x ∈ blocks, ∀ p ∈ x.2.shape.vals,
       H p.2 (s.load64 (x.1 + BitVec.ofNat 64 p.1)))
-    (hσ : σ.length = above)
-    (hslots : ∀ i τ, σ[i]? = some τ → H τ (s.load64 (s.getReg .rsp + BitVec.ofNat 64 (8 * i)))) :
+    (hσ : stackLen σ = 8 * above)
+    (hfits : ∀ S ∈ σ, ∀ p ∈ S.vals, p.1 + 8 ≤ S.size)
+    (hslots : ∀ k S, σ[k]? = some S → ∀ p ∈ S.vals,
+      H p.2 (s.load64 (s.getReg .rsp + BitVec.ofNat 64 (stackOff σ k + p.1)))) :
     Matches H (MemTy.ofList blocks kinds) (entryCtx room σ) s where
   regs := fun _ _ => hint _
   flags := trivial
   stackPerm := by
     have := h.stack
+    rw [Nat.mul_add] at this
     simpa only [stackBase, stackSize, entryCtx, hσ] using this
   stackSize_lt := by
     have := h.room_lt
+    rw [Nat.mul_add] at this
     simpa only [stackSize, entryCtx, hσ] using this
+  stackFits := hfits
   stack := hslots
   heapPerm := fun a l hl => h.perms (a, l) (MemTy.mem_of_ofList hl)
   heap := fun a l hl p hp => hfields (a, l) (MemTy.mem_of_ofList hl) p hp
   stackHeap := fun a l hl => by
     have := h.apart (a, l) (MemTy.mem_of_ofList hl)
+    rw [Nat.mul_add] at this
     simpa only [stackBase, stackSize, entryCtx, hσ] using this
   sp := hint _
   text := fun a l hl => h.text (a, l) (MemTy.mem_of_ofList hl)
@@ -138,7 +147,7 @@ theorem Entry.matches {H : Ty → BitVec 64 → Prop} {s : State}
     (hfields : ∀ x ∈ blocks, ∀ p ∈ x.2.shape.vals,
       H p.2 (s.load64 (x.1 + BitVec.ofNat 64 p.1))) :
     Matches H (MemTy.ofList blocks kinds) (entryCtx room) s :=
-  h.matchesStack hint hfields rfl (fun i τ hi => by simp at hi)
+  h.matchesStack hint hfields rfl (fun S hS => by cases hS) (fun k S hk => by simp at hk)
 
 /-- The same when the blocks are all plain bytes, which needs nothing of the
 data. -/
@@ -159,14 +168,18 @@ theorem Entry.matchesArgs {H : Ty → BitVec 64 → Prop} {s : State}
   h.matchesStack hint (fun x hx p hp => by
       rw [hfields x hx] at hp
       cases hp)
-    List.length_replicate (fun i τ hi => by
-      have hτ : τ = .int := by
-        rw [List.getElem?_replicate] at hi
-        split at hi
-        · exact (Option.some.inj hi).symm
-        · cases hi
-      rw [hτ]
-      exact hint _)
+    (by simp [stackLen])
+    (fun S hS p hp => by
+      simp only [List.mem_singleton] at hS
+      subst hS
+      cases hp)
+    (fun k S hk p hp => by
+      cases k with
+      | zero =>
+        simp only [List.getElem?_cons_zero, Option.some.injEq] at hk
+        subst hk
+        cases hp
+      | succ k => simp at hk)
 
 /-- The entry contract says nothing about the outside world: it holds
 whatever there is to read. -/
@@ -462,10 +475,10 @@ in it: one context for each `c`. -/
 
 /-- The context of a program that goes through its arguments, when it was
 given `c` of them: `[rsp]` holds exactly `c`, and after it come `c + 4`
-slots holding numbers. The first `c` of those are the addresses of the
-arguments' texts. -/
+eight-byte words, as plain bytes. The first `c` of those are the addresses
+of the arguments' texts. -/
 def argsCtx (room : Nat) (c : BitVec 64) : Ctx :=
-  entryCtx room (.eq c :: List.replicate (c.toNat + 4) .int)
+  entryCtx room [.slot (.eq c), .raw (8 * (c.toNat + 4))]
 
 /-- What a program that goes through its arguments needs of its starting
 state: the entry contract with as many slots as Linux provides for the
@@ -485,21 +498,29 @@ theorem Entry.matchesCount {H : Ty → BitVec 64 → Prop} {s : State} {c : BitV
   h.matchesStack hint (fun x hx p hp => by
       rw [hfields x hx] at hp
       cases hp)
-    (by simp only [List.length_cons, List.length_replicate])
-    (fun i τ hi => by
-      cases i with
-      | zero =>
-        simp only [List.getElem?_cons_zero, Option.some.injEq] at hi
-        rw [← hi, show s.getReg .rsp + BitVec.ofNat 64 (8 * 0) = s.getReg .rsp by simp, hc]
+    (by simp only [stackLen, ShapeOf.slot_size, ShapeOf.raw_size]; omega)
+    (fun S hS p hp => by
+      simp only [List.mem_cons, List.not_mem_nil, or_false] at hS
+      rcases hS with rfl | rfl
+      · simp only [ShapeOf.slot, List.mem_singleton] at hp
+        subst hp
+        exact Nat.le_refl _
+      · cases hp)
+    (fun k S hk p hp => by
+      match k, hk with
+      | 0, hk =>
+        simp only [List.getElem?_cons_zero, Option.some.injEq] at hk
+        subst hk
+        simp only [ShapeOf.slot, List.mem_singleton] at hp
+        subst hp
+        rw [show s.getReg .rsp + BitVec.ofNat 64 (stackOff _ 0 + 0) = s.getReg .rsp by
+          simp [stackOff], hc]
         exact heq c
-      | succ j =>
-        have hτ : τ = .int := by
-          rw [List.getElem?_cons_succ, List.getElem?_replicate] at hi
-          split at hi
-          · exact (Option.some.inj hi).symm
-          · cases hi
-        rw [hτ]
-        exact hint _)
+      | 1, hk =>
+        simp only [List.getElem?_cons_succ, List.getElem?_cons_zero, Option.some.injEq] at hk
+        subst hk
+        cases hp
+      | k + 2, hk => simp at hk)
 
 theorem EntryArgs.withWorld {s : State} (h : EntryArgs entry base image dataBase data blocks room s)
     (w : World) : EntryArgs entry base image dataBase data blocks room { s with world := w } :=

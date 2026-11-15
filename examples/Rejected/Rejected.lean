@@ -130,7 +130,7 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i11) Γ := by ty_step
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i12) Γ := by ty_step
 
 /-- error: at address 39: cannot type `add dword ptr [rsp+8], eax` in the current context
-• aluStoreR: there is no stack slot at that offset -/
+• aluStoreR: those bytes are not known to be inside one piece of the stack -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i13) Γ := by ty_step
 
@@ -197,8 +197,8 @@ def jumpFetch : Fetch := Asm.fetch 0 jumps
 /-- Nothing is known, and the stack is empty. -/
 def bare : Ctx := ⟨fun _ => .int, [], 0, Flags.Any, []⟩
 
-/-- One integer on the stack. -/
-def oneSlot : Ctx := ⟨fun _ => .int, [.int], 0, Flags.Any, []⟩
+/-- Eight plain bytes on the stack. -/
+def oneSlot : Ctx := ⟨fun _ => .int, [.raw 8], 0, Flags.Any, []⟩
 
 inductive AtTarget : Target → Ctx → Prop
   | start : AtTarget .start bare
@@ -243,13 +243,13 @@ def plain : FnSig where
   preserved := calleeSaved
   need := 0
 
-/-- Nothing is known, and there is room for one more slot. -/
-def roomy : Ctx := ⟨fun _ => .int, [], 1, Flags.Any, []⟩
+/-- Nothing is known, and there is room for eight more bytes. -/
+def roomy : Ctx := ⟨fun _ => .int, [], 8, Flags.Any, []⟩
 
 inductive AtCallee : Callee → Ctx → Prop
   | direct : AtCallee .direct bare
   | indirect : AtCallee .indirect roomy
-  | f (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+  | f (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     plain.CallerOk saved ret rest room → AtCallee .f (plain.entry saved ret rest room)
 
 def Φc : CodeTy := .ofLabels calls 0 AtCallee
@@ -369,7 +369,7 @@ error: at address 0: cannot type `mov rsi, qword ptr [rsp+rax*8+8]` in the curre
 example : BlockOk Φy argFetch linux Ψ (Asm.addr argLoads 0 .unknown) (argsCtx 0 2) := by ty_block
 
 /-- error: at address 12: cannot type `mov rsi, qword ptr [rsp+rax*8+8]` in the current context
-• loadStackIndexed: there is no stack slot at that offset -/
+• loadStackIndexed: those bytes are not known to be inside one piece of the stack -/
 #guard_msgs in
 example : BlockOk Φy argFetch linux Ψ (Asm.addr argLoads 0 .beyond) (argsCtx 0 2) := by ty_block
 
@@ -647,9 +647,9 @@ def pageSig (p : BitVec 64) : FnSig where
   gives := [(p, .raw 4096)]
 
 inductive AtFn : Fn → Ctx → Prop
-  | drops (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+  | drops (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     (pageSig p).CallerOk saved ret rest room → AtFn .drops ((pageSig p).entry saved ret rest room)
-  | reaches (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+  | reaches (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     (pageSig p).CallerOk saved ret rest room →
     AtFn .reaches ((pageSig p).entry saved ret rest room)
 
@@ -657,7 +657,7 @@ def Φh : CodeTy := .ofLabels handed 0 AtFn
 
 /-- error: `ret`: the blocks owned here are not the ones the function gives back, followed by the caller's own; a function must hand back what its signature says and dispose of anything else it took -/
 #guard_msgs in
-example (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat)
+example (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat)
     (hK : (pageSig p).CallerOk saved ret rest room) :
     BlockOk Φh handedFetch linux Ψ (Asm.addr handed 0 .drops)
       ((pageSig p).entry saved ret rest room) := by
@@ -672,7 +672,7 @@ error: at address 13: cannot type `mov rax, qword ptr [rdi+rcx*8]` in the curren
 • loadInt: the bytes are not known to be inside the block: a bound on the index is needed among the hypotheses
 -/
 #guard_msgs in
-example (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat)
+example (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat)
     (hK : (pageSig p).CallerOk saved ret rest room) :
     BlockOk Φh handedFetch linux Ψ (Asm.addr handed 0 .reaches)
       ((pageSig p).entry saved ret rest room) := by
@@ -699,7 +699,7 @@ def makeSig : FnSigEx (BitVec 64) where
   gives := fun x => [(x, .raw 4096)]
 
 inductive AtMk : Mk → Ctx → Prop
-  | make (saved : Reg → Ty) (ret : BitVec 64 → Ctx) (rest : List Ty) (room : Nat)
+  | make (saved : Reg → Ty) (ret : BitVec 64 → Ctx) (rest : List Shape) (room : Nat)
       (frame : List (BitVec 64 × Shape)) :
     makeSig.CallerOk saved ret rest room frame → AtMk .make (makeSig.entry saved ret rest room frame)
 
@@ -707,7 +707,7 @@ def Φk : CodeTy := .ofLabels making 0 AtMk
 
 /-- error: `ret`: the return address here is ready for a family of contexts, one for each value the function may hand back; say which the function returns into with `ty_return_as` -/
 #guard_msgs in
-example (saved : Reg → Ty) (ret : BitVec 64 → Ctx) (rest : List Ty) (room : Nat)
+example (saved : Reg → Ty) (ret : BitVec 64 → Ctx) (rest : List Shape) (room : Nat)
     (frame : List (BitVec 64 × Shape)) (hK : makeSig.CallerOk saved ret rest room frame) :
     BlockOk Φk makingFetch linux Ψ (Asm.addr making 0 .make)
       (makeSig.entry saved ret rest room frame) := by
@@ -715,7 +715,7 @@ example (saved : Reg → Ty) (ret : BitVec 64 → Ctx) (rest : List Ty) (room : 
 
 /-- error: `ret`: the blocks owned here are not the ones the function gives back, followed by the caller's own; a function must hand back what its signature says and dispose of anything else it took -/
 #guard_msgs in
-example (saved : Reg → Ty) (ret : BitVec 64 → Ctx) (rest : List Ty) (room : Nat)
+example (saved : Reg → Ty) (ret : BitVec 64 → Ctx) (rest : List Shape) (room : Nat)
     (frame : List (BitVec 64 × Shape)) (hK : makeSig.CallerOk saved ret rest room frame) :
     BlockOk Φk makingFetch linux Ψ (Asm.addr making 0 .make)
       (makeSig.entry saved ret rest room frame) := by
@@ -755,7 +755,7 @@ example : ∃ Γ', Straight Ψ 10 Γ₂ (.mov .w64 (.rm_r (.mem (.sib (some .rdx
 /-- One integer on the stack; `rdi` a writable record of two integers. -/
 def Γ₃ : Ctx where
   regs := fun r => if r = .rdi then .ptr (.raw 16) true 0 else .int
-  stack := [.int]
+  stack := [.raw 8]
   room := 0
   flags := Flags.Any
 
@@ -793,7 +793,7 @@ def Γ₄ : Ctx where
     else if r = .rsi then .ptr ((ShapeOf.mk 8 [(0, .ptr (.raw 16) true 0)]).rep 4) false 0
     else if r = .rcx then .eq 2
     else .int
-  stack := [.int]
+  stack := [.raw 8]
   room := 0
   flags := Flags.Any
 
@@ -808,7 +808,7 @@ example : Straight Ψ 10 Γ₄ (.mov .w64 (.r_m .rax (.sib (some .rsi) (some (.r
 /-! A stack slot holding an integer can be given a name, like a register. -/
 
 example (h : ∀ v : BitVec 64, BlockOk Φ fetch linux Ψ 0
-    { Γ₄ with stack := [.eq v] }) : BlockOk Φ fetch linux Ψ 0 Γ₄ := by
+    { Γ₄ with stack := [.slot (.eq v)] }) : BlockOk Φ fetch linux Ψ 0 Γ₄ := by
   ty_name_slot 0 as v
   exact (h v).asTable
 
@@ -845,16 +845,16 @@ about, need no rule of their own: the context is stated for every tail.
 Here `rdi` points to a record that starts with sixteen plain bytes and goes
 on in any way at all, and the stack holds one integer above anything at all. -/
 
-example (more : Shape) (rest : List Ty) :
+example (more : Shape) (rest : List Shape) :
     ∃ Γ', Straight Ψ 10
-      ⟨fun r => if r = .rdi then .ptr ((ShapeOf.raw 16).append more) true 0 else .int, .int :: rest, 0,
+      ⟨fun r => if r = .rdi then .ptr ((ShapeOf.raw 16).append more) true 0 else .int, .raw 8 :: rest, 0,
         Flags.Any, []⟩
       (.mov .w64 (.r_m .rax (.sib (some .rdi) none 8))) Γ' :=
   ⟨_, by ty_straight⟩
 
-example (more : Shape) (rest : List Ty) :
+example (more : Shape) (rest : List Shape) :
     ∃ Γ', Straight Ψ 10
-      ⟨fun r => if r = .rdi then .ptr ((ShapeOf.raw 16).append more) true 0 else .int, .int :: rest, 0,
+      ⟨fun r => if r = .rdi then .ptr ((ShapeOf.raw 16).append more) true 0 else .int, .raw 8 :: rest, 0,
         Flags.Any, []⟩
       (.mov .w64 (.rm_r (.mem (.sib (some .rsp) none 0)) .rdi)) Γ' :=
   ⟨_, by ty_straight⟩
@@ -969,6 +969,58 @@ example (n : Nat) (i : BitVec 64) (hi : i.toNat < n) :
         else if r = .rcx then .eq i else .int, [], 0, Flags.Any, []⟩ : Ctx).setReg .rax
           (.ptr (.raw 16) true 0)) := by
   ty_straight
+
+/-! The stack is exact to the byte too. A frame of 104 bytes holds a buffer
+of 100: once the frame is regarded as those hundred bytes and four more, a
+store through an index below 100 is inside the buffer, and one that might
+reach byte 100 is refused, though the frame goes on. Inside a piece any
+bytes may be read at any offset; across two pieces none may. -/
+
+/-- `rcx` holds exactly `i`, and the stack is the given pieces. -/
+def frame (i : BitVec 64) (σ : List Shape) : Ctx :=
+  ⟨fun r => if r = .rcx then .eq i else .int, σ, 0, Flags.Any, []⟩
+
+example (i : BitVec 64) (h : BlockOk Φ fetch linux Ψ 0 (frame i [.raw 100, .raw 4])) :
+    BlockOk Φ fetch linux Ψ 0 (frame i [.raw 104]) := by
+  ty_stack_split at 100
+  exact h.asTable
+
+example (i : BitVec 64) (h : BlockOk Φ fetch linux Ψ 0 (frame i [.raw 104])) :
+    BlockOk Φ fetch linux Ψ 0 (frame i [.raw 100, .raw 4]) := by
+  ty_stack_join at 100
+  exact h.asTable
+
+example (i : BitVec 64) (hlt : i.toNat < 100) :
+    ∃ Γ', Straight Ψ 10 (frame i [.raw 100, .raw 4])
+      (.store8 (.sib (some .rsp) (some (.rcx, .s1)) 0) .rax) Γ' :=
+  ⟨_, by ty_straight⟩
+
+example (i : BitVec 64) :
+    ∃ Γ', Straight Ψ 10 (frame i [.raw 100, .raw 4])
+      (.mov .w64 (.r_m .rax (.sib (some .rsp) none 3))) Γ' :=
+  ⟨_, by ty_straight⟩
+
+example (i : BitVec 64) :
+    ∃ Γ', Straight Ψ 10 (frame i [.raw 100, .raw 4])
+      (.mov .w32 (.rm_r (.mem (.sib (some .rsp) none 100)) .rax)) Γ' :=
+  ⟨_, by ty_straight⟩
+
+/-- error: cannot type `mov byte ptr [rsp+rcx*1], al` in the current context
+• store8RM: those bytes are not known to be inside one piece of the stack -/
+#guard_msgs in
+example (i : BitVec 64) (hlt : i.toNat < 101) :
+    ∃ Γ', Straight Ψ 10 (frame i [.raw 100, .raw 4])
+      (.store8 (.sib (some .rsp) (some (.rcx, .s1)) 0) .rax) Γ' :=
+  ⟨_, by ty_straight⟩
+
+/-- error: cannot type `mov rax, qword ptr [rsp+96]` in the current context
+• loadStack: no typed value of that piece of the stack starts at that offset
+• loadInt: the access would reach past the end of the piece of the stack it starts in -/
+#guard_msgs in
+example (i : BitVec 64) :
+    ∃ Γ', Straight Ψ 10 (frame i [.raw 100, .raw 4])
+      (.mov .w64 (.r_m .rax (.sib (some .rsp) none 96))) Γ' :=
+  ⟨_, by ty_straight⟩
 
 /-! ## Exactly known values
 

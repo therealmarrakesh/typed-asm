@@ -23,18 +23,18 @@ def computeSig : FnSig where
   args := fun r => if r = .rdi then pair else .int
   results := fun _ => .int
   preserved := calleeSaved
-  need := 2
+  need := 16
 
 /-- After the call: nothing is known about any register, and the slot that
 held the function pointer is still allocated. -/
-def afterCtx : Ctx := ⟨fun _ => .int, [.int], 3, Flags.Any, []⟩
+def afterCtx : Ctx := ⟨fun _ => .int, [.raw 8], 24, Flags.Any, []⟩
 
 /-- Nothing is known about any register, and the stack is empty. -/
-def fin : Ctx := ⟨fun _ => .int, [], 4, Flags.Any, []⟩
+def fin : Ctx := ⟨fun _ => .int, [], 32, Flags.Any, []⟩
 
 /-- What the function pointer in `_start` points to: `compute`, entered by a
 caller with one slot on its stack that returns to `afterCall`. -/
-def computeCtx : Ctx := computeSig.entry (fun _ => .int) afterCtx [.int] 2
+def computeCtx : Ctx := computeSig.entry (fun _ => .int) afterCtx [.raw 8] 16
 
 /-- The contexts allowed at each label. -/
 inductive At : Label → Ctx → Prop
@@ -44,7 +44,7 @@ inductive At : Label → Ctx → Prop
   /-- No state matches this context: its flags predicate is never true. So
   nothing can jump here, and the `ud2` is never executed. -/
   | trap : At .trap ⟨fun _ => .int, [], 0, fun _ => False, []⟩
-  | compute (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+  | compute (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     computeSig.CallerOk saved ret rest room → At .compute (computeSig.entry saved ret rest room)
 
 /-- The code typing: those contexts, at the addresses of their labels. -/

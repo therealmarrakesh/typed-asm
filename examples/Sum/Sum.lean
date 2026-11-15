@@ -36,19 +36,19 @@ def sumSig (n : Nat) : FnSig where
   need := 0
 
 /-- After the call: nothing is known about any register. -/
-def fin : Ctx := ⟨fun _ => .int, [], 1, Flags.Any, []⟩
+def fin : Ctx := ⟨fun _ => .int, [], 8, Flags.Any, []⟩
 
 /-- The contexts allowed at each label. -/
 inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 1)
   | afterCall : At .afterCall fin
-  | sum (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+  | sum (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     (sumSig n).CallerOk saved ret rest room → At .sum ((sumSig n).entry saved ret rest room)
   /-- The loop invariant, for `i < n` elements consumed. -/
-  | loop (n i : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+  | loop (n i : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     (sumSig n).CallerOk saved ret rest room → i < n →
-    At .loop ⟨sumRegs n i saved, .code ret :: rest, room, Flags.Any, ret.owned⟩
-  | done (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+    At .loop ⟨sumRegs n i saved, .slot (.code ret) :: rest, room, Flags.Any, ret.owned⟩
+  | done (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     (sumSig n).CallerOk saved ret rest room → At .done ((sumSig n).exit saved ret rest room)
 
 /-- The code typing: those contexts, at the addresses of their labels. -/

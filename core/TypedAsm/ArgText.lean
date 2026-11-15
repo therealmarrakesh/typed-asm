@@ -51,10 +51,10 @@ def EntryTexts (entry base : BitVec 64) (image : List Byte) (dataBase : BitVec 6
     (∀ t ∈ texts, ∀ x ∈ blocks, x.1 ≠ t.1)
 
 /-- The context of a program that reads its arguments, when it was given `c`
-of them: `[rsp]` holds exactly `c`, the `c` slots after it each hold the
-address of the start of a text, and four more slots hold numbers. -/
+of them: `[rsp]` holds exactly `c`; after it comes an array of `c` addresses,
+each of the start of a text; and after that 32 plain bytes. -/
 def textsCtx (room : Nat) (c : BitVec 64) : Ctx :=
-  entryCtx room (.eq c :: (List.replicate c.toNat (.str false) ++ List.replicate 4 .int))
+  entryCtx room [.slot (.eq c), (ShapeOf.slot (.str false)).rep c.toNat, .raw 32]
 
 variable {kinds : List (Nat × Shape)}
 
@@ -119,39 +119,59 @@ theorem EntryTexts.wellTyped {s : State}
   refine ⟨BitVec.ofNat 64 texts.length, _, MemTy.ofList_ext blocks _, hWF, hE.rip, hE.code,
     fun n => ?_⟩
   refine hE.matchesStack HasTy.int (fun x hx p hp => ?_) (by
-    simp only [List.length_cons, List.length_append, List.length_replicate, hn]) ?_
+    simp only [stackLen, ShapeOf.slot_size, ShapeOf.raw_size, ShapeOf.rep_size, hn]
+    omega) ?_ ?_
   · -- the program's own blocks are plain bytes; a block of text has no typed values
     rcases List.mem_append.mp hx with hx | hx
     · rw [hfields x hx] at hp
       cases hp
     · obtain ⟨t, -, rfl⟩ := List.mem_map.mp hx
       cases hp
-  · intro i τ hi
-    cases i with
-    | zero =>
-      simp only [List.getElem?_cons_zero, Option.some.injEq] at hi
-      rw [← hi, show s.getReg .rsp + BitVec.ofNat 64 (8 * 0) = s.getReg .rsp by simp, hc]
+  · intro S hS p hp
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at hS
+    rcases hS with rfl | rfl | rfl
+    · simp only [ShapeOf.slot, List.mem_singleton] at hp
+      subst hp
+      exact Nat.le_refl _
+    · exact ShapeOf.fits_mem (ShapeOf.fits_rep rfl _) p hp
+    · cases hp
+  · intro k S hk p hp
+    match k, hk with
+    | 0, hk =>
+      simp only [List.getElem?_cons_zero, Option.some.injEq] at hk
+      subst hk
+      simp only [ShapeOf.slot, List.mem_singleton] at hp
+      subst hp
+      rw [show s.getReg .rsp + BitVec.ofNat 64 (stackOff _ 0 + 0) = s.getReg .rsp by
+        simp [stackOff], hc]
       exact hasTy_eq.mpr rfl
-    | succ j =>
-      rw [List.getElem?_cons_succ, hn] at hi
-      by_cases hj : j < texts.length
-      · -- an argument's slot holds the address of its text
-        rw [List.getElem?_append_left (by simpa using hj), List.getElem?_replicate] at hi
-        simp only [hj, ↓reduceIte, Option.some.injEq] at hi
-        rw [← hi, hslots j hj]
-        obtain ⟨m, hm⟩ := MemTy.ofList_text (kinds := kinds) (List.getElem_mem hj)
-          (hno _ (List.getElem_mem hj))
-        have hpos := hWF.nonempty _ _ hm
-        exact hasTy_str.mpr ⟨_, _, 0, hm, by
-          simpa [Layout.size] using hpos, by simp⟩
-      · have hτ : τ = .int := by
-          rw [List.getElem?_append_right (by simpa using Nat.le_of_not_lt hj),
-            List.getElem?_replicate] at hi
-          split at hi
-          · exact (Option.some.inj hi).symm
-          · cases hi
-        rw [hτ]
-        exact HasTy.int _
+    | 1, hk =>
+      -- an argument's place in the array holds the address of its text
+      simp only [List.getElem?_cons_succ, List.getElem?_cons_zero, Option.some.injEq] at hk
+      subst hk
+      obtain ⟨j, hj, q, hq, rfl⟩ := ShapeOf.mem_repFrom hp
+      rw [hn] at hj
+      simp only [ShapeOf.slot, List.mem_singleton] at hq
+      subst hq
+      have e : s.getReg .rsp + BitVec.ofNat 64
+          (stackOff [ShapeOf.slot (Ty.eq (BitVec.ofNat 64 texts.length)),
+            (ShapeOf.slot (Ty.str false)).rep (BitVec.ofNat 64 texts.length).toNat,
+            ShapeOf.raw 32] 1 + (0 + j * (ShapeOf.slot (Ty.str false)).size + 0))
+          = s.getReg .rsp + BitVec.ofNat 64 (8 * (j + 1)) := by
+        simp only [stackOff, ShapeOf.slot_size]
+        congr 2
+        omega
+      rw [e, hslots j hj]
+      obtain ⟨m, hm⟩ := MemTy.ofList_text (kinds := kinds) (List.getElem_mem hj)
+        (hno _ (List.getElem_mem hj))
+      have hpos := hWF.nonempty _ _ hm
+      exact hasTy_str.mpr ⟨_, _, 0, hm, by
+        simpa [Layout.size] using hpos, by simp⟩
+    | 2, hk =>
+      simp only [List.getElem?_cons_succ, List.getElem?_cons_zero, Option.some.injEq] at hk
+      subst hk
+      cases hp
+    | k + 3, hk => simp at hk
 
 /-! ## How the model lays out the arguments -/
 

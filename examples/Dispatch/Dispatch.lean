@@ -26,11 +26,11 @@ def unary : FnSig where
 def tablePtr : Ty := .ptr ⟨16, [(0, unary.ty), (8, unary.ty)]⟩ false 0
 
 /-- After the first call: `rbx` still points to the table. -/
-def withTable : Ctx := ⟨fun r => if r = .rbx then tablePtr else .int, [], 1, Flags.Any, []⟩
+def withTable : Ctx := ⟨fun r => if r = .rbx then tablePtr else .int, [], 8, Flags.Any, []⟩
 
 /-- After the later calls: `r12` also still holds a function pointer. -/
 def withFn : Ctx :=
-  ⟨fun r => if r = .rbx then tablePtr else if r = .r12 then unary.ty else .int, [], 1, Flags.Any, []⟩
+  ⟨fun r => if r = .rbx then tablePtr else if r = .r12 then unary.ty else .int, [], 8, Flags.Any, []⟩
 
 /-- The contexts allowed at each label. -/
 inductive At : Label → Ctx → Prop
@@ -39,9 +39,9 @@ inductive At : Label → Ctx → Prop
   | afterSecond : At .afterSecond withFn
   | afterThird : At .afterThird withFn
   | bad : At .bad (entryCtx 1)
-  | double (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+  | double (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     unary.CallerOk saved ret rest room → At .double (unary.entry saved ret rest room)
-  | square (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+  | square (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     unary.CallerOk saved ret rest room → At .square (unary.entry saved ret rest room)
 
 /-- The code typing: those contexts, at the addresses of their labels. -/

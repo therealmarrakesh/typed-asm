@@ -27,22 +27,22 @@ def getSig (n : Nat) : FnSig where
   need := 0
 
 /-- Nothing is known about any register. -/
-def fin : Ctx := ⟨fun _ => .int, [], 1, Flags.Any, []⟩
+def fin : Ctx := ⟨fun _ => .int, [], 8, Flags.Any, []⟩
 
 /-- The contexts allowed at each label. -/
 inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 1)
   | afterCall : At .afterCall fin
-  | get (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+  | get (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     (getSig n).CallerOk saved ret rest room → n < 2 ^ 64 →
     At .get ((getSig n).entry saved ret rest room)
   /-- Reached only with the index, here called `v`, below the length. -/
-  | inbounds (n : Nat) (v : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty)
+  | inbounds (n : Nat) (v : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape)
       (room : Nat) :
     (getSig n).CallerOk saved ret rest room → v.toNat < n →
     At .inbounds ⟨fun r => if calleeSaved r then saved r
         else if r = .rdi then arr n else if r = .rdx then .eq v else .int,
-      .code ret :: rest, room, Flags.Any, ret.owned⟩
+      .slot (.code ret) :: rest, room, Flags.Any, ret.owned⟩
 
 /-- The code typing: those contexts, at the addresses of their labels. -/
 def Φ : CodeTy := .ofLabels code base At

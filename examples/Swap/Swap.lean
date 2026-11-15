@@ -32,9 +32,9 @@ def only (reg : Reg) : Reg → Ty := fun r => if r = reg then pair else .int
 inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 2)
   /-- After the first call the pointer is still in `rbx`. -/
-  | afterFirst : At .afterFirst ⟨only .rbx, [], 2, Flags.Any, []⟩
-  | afterSecond : At .afterSecond ⟨only .rbx, [pair], 1, Flags.Any, []⟩
-  | swap (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+  | afterFirst : At .afterFirst ⟨only .rbx, [], 16, Flags.Any, []⟩
+  | afterSecond : At .afterSecond ⟨only .rbx, [.slot pair], 8, Flags.Any, []⟩
+  | swap (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     swapSig.CallerOk saved ret rest room → At .swap (swapSig.entry saved ret rest room)
 
 /-- The code typing: those contexts, at the addresses of their labels. -/

@@ -25,17 +25,17 @@ def pauseSig : FnSig where
 /-- Back from the call: the stack pointer is exactly `sp`, as before it,
 and `rbx` holds the address of the buffer, which is where `rsp` points. -/
 def kept (sp : BitVec 64) : Ctx :=
-  ⟨fun r => if r = .rsp then .eq sp else if r = .rbx then .eq sp else .int, [.int, .int], 1, Flags.Any, []⟩
+  ⟨fun r => if r = .rsp then .eq sp else if r = .rbx then .eq sp else .int, [.raw 16], 8, Flags.Any, []⟩
 
 /-- Nothing is known about any register; the buffer is still allocated. -/
-def ending : Ctx := ⟨fun _ => .int, [.int, .int], 1, Flags.Any, []⟩
+def ending : Ctx := ⟨fun _ => .int, [.raw 16], 8, Flags.Any, []⟩
 
 /-- The contexts allowed at each label. -/
 inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 3)
   | back (sp : BitVec 64) : At .back (kept sp)
   | done : At .done ending
-  | pause (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+  | pause (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     pauseSig.CallerOk saved ret rest room → At .pause (pauseSig.entry saved ret rest room)
 
 /-- The code typing: those contexts, at the addresses of their labels. -/

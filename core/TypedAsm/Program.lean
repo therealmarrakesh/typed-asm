@@ -194,40 +194,29 @@ theorem BlockOk.nameSp {a : BitVec 64} {Γ : Ctx}
         simp only [CtxOf.setReg, ↓reduceIte]
         exact hasTy_eq.mpr rfl)⟩) hrest
 
-/-- A stack slot may be given a name for the value it holds: the rest of
-the block is typed for every value `v`, with the slot typed as exactly `v`.
-Whatever else was known about the slot is given up, so this is for slots
-typed as integers. -/
-theorem BlockOk.nameSlot {a : BitVec 64} {Γ : Ctx} {i : Nat} (hi : i < Γ.stack.length)
-    (hrest : ∀ v, BlockOk Φ fetch sys Ψ a { Γ with stack := Γ.stack.set i (.eq v) }) :
+/-- Eight bytes of the stack may be given a name for the value they hold:
+the rest of the block is typed for every value `v`, with those bytes typed
+as exactly `v`. Whatever else was known of them is given up, so this is for
+plain bytes. -/
+theorem BlockOk.nameSlot {a : BitVec 64} {Γ : Ctx} {k i : Nat} {S : Shape}
+    (hk : Γ.stack[k]? = some S) (hi : i + 8 ≤ S.size)
+    (hrest : ∀ v, BlockOk Φ fetch sys Ψ a
+      { Γ with stack := Γ.stack.set k (S.set i (.eq v)) }) :
     BlockOk Φ fetch sys Ψ a Γ :=
-  .cover (Γ' := fun v => { Γ with stack := Γ.stack.set i (.eq v) })
-    (fun _ _ _ n s h => ⟨s.load64 (s.getReg .rsp + BitVec.ofNat 64 (8 * i)),
-      { regs := h.regs
-        flags := h.flags
-        stackPerm := by
-          have := h.stackPerm
-          simpa only [stackBase, stackSize, List.length_set] using this
-        stackSize_lt := by
-          have := h.stackSize_lt
-          simpa only [stackSize, List.length_set] using this
-        stack := fun j τ hj => by
-          by_cases hji : j = i
-          · subst hji
-            rw [List.getElem?_set_self hi] at hj
-            cases hj
-            exact hasTy_eq.mpr rfl
-          · rw [List.getElem?_set_ne (Ne.symm hji)] at hj
-            exact h.stack j τ hj
-        heapPerm := h.heapPerm
-        heap := h.heap
-        stackHeap := fun b l hl => by
-          have := h.stackHeap b l hl
-          simpa only [stackBase, stackSize, List.length_set] using this
-        sp := h.sp
-        text := h.text
-        owned := h.owned.frame rfl rfl rfl (by simp only [stackSize, List.length_set])
-          (fun _ _ _ _ => rfl) }⟩) hrest
+  .cover (Γ' := fun v => { Γ with stack := Γ.stack.set k (S.set i (.eq v)) })
+    (fun _ _ hΨ₁ n s h =>
+      ⟨s.load64 (s.getReg .rsp + BitVec.ofNat 64 (stackOff Γ.stack k + i)),
+        h.writeStack hΨ₁ hk (S' := S.set i (.eq _)) (i := i) (cnt := 0) (by omega) rfl
+          (fun p hp => by
+            rcases List.mem_cons.mp hp with rfl | hp
+            · exact hi
+            · exact h.stackFits S (List.mem_of_getElem? hk) p (ShapeOf.mem_clear hp).1)
+          rfl rfl rfl (fun _ _ => rfl) (fun _ _ => rfl)
+          (fun p hp => by
+            rcases List.mem_cons.mp hp with rfl | hp
+            · exact .inr (hasTy_eq.mpr rfl)
+            · have := ShapeOf.mem_clear hp
+              exact .inl ⟨this.1, by omega⟩)⟩) hrest
 
 /-! ## Blocks of a kind, and values that may be null -/
 
@@ -426,7 +415,7 @@ theorem BlocksOk.hasTy_fnAll (hB : BlocksOk Φ fetch sys Ψ) {ι : Type} [Chosen
   refine safeUpTo hB.programOk k k (Nat.le_refl k) Ψ' he hΨ' v _
     (hB _ _ (hat saved (fun x => ret (Chosen.enc x)) rest room frame hK.ofRaw)) s hs ?_
   exact hw.sub ⟨fun _ _ => .refl _,
-    .cons (.codeAllMap ret fun q => Chosen.enc (Chosen.dec (ι := ι) q)) (.refl _), rfl,
+    .cons (.slot (.codeAllMap ret fun q => Chosen.enc (Chosen.dec (ι := ι) q))) (.refl _), rfl,
     fun _ hf => hf, .refl _, rfl⟩
 
 /-- **Soundness, block by block.** -/

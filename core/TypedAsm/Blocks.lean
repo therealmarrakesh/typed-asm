@@ -100,12 +100,13 @@ def stateCheck (bs : List (BitVec 64 × Layout)) (Γ : Ctx) (s : State) : Bool :
     decide (Disjoint (stackBase Γ s) (stackSize Γ) x.1 x.2.size))
 
 /-- A state matches a context if the computed checks pass and the registers,
-flags, stack slots and the blocks' typed values hold what the context says. -/
+flags, the stack's typed values and the blocks' hold what the context says. -/
 theorem Matches.ofCheck {H : Ty → BitVec 64 → Prop} {bs : List (BitVec 64 × Layout)} {Γ : Ctx}
     {s : State} (hc : stateCheck bs Γ s = true)
     (hregs : ∀ r, r ≠ .rsp → H (Γ.regs r) (s.getReg r)) (hflags : Γ.flags s.flags)
-    (hstack : ∀ i τ, Γ.stack[i]? = some τ →
-      H τ (s.load64 (s.getReg .rsp + BitVec.ofNat 64 (8 * i))))
+    (hfits : ∀ S ∈ Γ.stack, ∀ p ∈ S.vals, p.1 + 8 ≤ S.size)
+    (hstack : ∀ k S, Γ.stack[k]? = some S → ∀ p ∈ S.vals,
+      H p.2 (s.load64 (s.getReg .rsp + BitVec.ofNat 64 (stackOff Γ.stack k + p.1))))
     (hheap : ∀ x ∈ bs, ∀ p ∈ x.2.shape.vals,
       H p.2 (s.load64 (x.1 + BitVec.ofNat 64 p.1)))
     (hrsp : H (Γ.regs .rsp) (s.getReg .rsp))
@@ -120,6 +121,7 @@ theorem Matches.ofCheck {H : Ty → BitVec 64 → Prop} {bs : List (BitVec 64 ×
     flags := hflags
     stackPerm := hsp
     stackSize_lt := hsz
+    stackFits := hfits
     stack := hstack
     heapPerm := fun a l hl => by
       obtain ⟨⟨hr, hw⟩, -⟩ := hb _ (MemTy.mem_of_ofList hl)

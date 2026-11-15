@@ -23,23 +23,24 @@ def pickSig : FnSig where
   args := fun r => if r = .rdi then pair else .int
   results := fun _ => .int
   preserved := calleeSaved
-  need := 2
+  need := 16
 
 /-- Nothing is known about any register. -/
-def fin : Ctx := ⟨fun _ => .int, [], 3, Flags.Any, []⟩
+def fin : Ctx := ⟨fun _ => .int, [], 24, Flags.Any, []⟩
 
 /-- The contexts allowed at each label. -/
 inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 3)
   | afterCall : At .afterCall fin
   | spin : At .spin fin
-  | pick (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+  | pick (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     pickSig.CallerOk saved ret rest room → At .pick (pickSig.entry saved ret rest room)
-  /-- At `skip` the frame is still allocated: local 0 is the pointer, local 1 an integer. -/
-  | skip (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (m : Nat) :
-    pickSig.CallerOk saved ret rest (m + 2) →
+  /-- At `skip` the frame is still allocated: sixteen bytes, the first eight
+  of them holding the pointer. -/
+  | skip (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (m : Nat) :
+    pickSig.CallerOk saved ret rest (m + 16) →
     At .skip ⟨fun r => if calleeSaved r then saved r else .int,
-      pair :: .int :: .code ret :: rest, m, Flags.Any, ret.owned⟩
+      ⟨16, [(0, pair)]⟩ :: .slot (.code ret) :: rest, m, Flags.Any, ret.owned⟩
 
 /-- The code typing: those contexts, at the addresses of their labels. -/
 def Φ : CodeTy := .ofLabels code base At

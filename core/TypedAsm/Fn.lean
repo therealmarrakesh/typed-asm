@@ -20,14 +20,14 @@ def calleeSaved : Reg → Bool
 namespace FnSig
 
 /-- The caller left room for the function's own stack use, and possibly more. -/
-theorem CallerOk.room_split {sig : FnSig} {saved : Reg → Ty} {ret : Ctx} {rest : List Ty}
+theorem CallerOk.room_split {sig : FnSig} {saved : Reg → Ty} {ret : Ctx} {rest : List Shape}
     {room : Nat} (h : sig.CallerOk saved ret rest room) : ∃ m, room = m + sig.need :=
   ⟨room - sig.need, by have := h.room; omega⟩
 
 /-- Returning from a function is well typed. -/
 theorem ret_ok {sig : FnSig} {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
     {next : BitVec 64} {saved : Reg → Ty} {ret : Ctx}
-    {rest : List Ty} {room : Nat} (hK : sig.CallerOk saved ret rest room) :
+    {rest : List Shape} {room : Nat} (hK : sig.CallerOk saved ret rest room) :
     HasType Φ fetch sys Ψ next (sig.exit saved ret rest room) .ret :=
   .ret rfl (.ofMoved (fun r hr => by have := hK.ret.regs r hr; rwa [returned_regs hr] at this)
     hK.ret.stack hK.ret.room hK.ret.flags (by have := hK.ret.sp; rwa [returned_sp] at this) rfl)
@@ -36,10 +36,10 @@ theorem ret_ok {sig : FnSig} {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ :
 function's exit context. -/
 theorem ret_of {sig : FnSig} {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
     {next : BitVec 64} {saved : Reg → Ty} {Γ ret : Ctx}
-    {rest : List Ty} {room : Nat} (hK : sig.CallerOk saved ret rest room)
+    {rest : List Shape} {room : Nat} (hK : sig.CallerOk saved ret rest room)
     (hregs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsOut saved r))
     (hsp : Sub ((Γ.regs .rsp).shift 8) ((sig.regsOut saved .rsp).shift 8))
-    (hstack : Γ.stack = .code ret :: rest) (hroom : Γ.room = room)
+    (hstack : Γ.stack = .slot (.code ret) :: rest) (hroom : Γ.room = room)
     (hown : Γ.owned = ret.owned) :
     HasType Φ fetch sys Ψ next Γ .ret :=
   .ret hstack
@@ -56,7 +56,7 @@ caller owns must be the ones the function takes, then any others, which it
 still owns afterwards behind the ones the function gives back. -/
 theorem call_ok {sig : FnSig} {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
     {next : BitVec 64} {Γ ret : Ctx} {d : BitVec 32}
-    {m : Nat} (hf : sig.At Φ (next + d.signExtend 64)) (hroom : Γ.room = m + 1)
+    {m : Nat} (hf : sig.At Φ (next + d.signExtend 64)) (hroom : Γ.room = m + 8)
     (hret : Φ next ret)
     (hargs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn (Γ.moveSp (-8)).regs r))
     (hsp : Sub ((Γ.regs .rsp).shift (-8)) (sig.regsIn (Γ.moveSp (-8)).regs .rsp))
@@ -73,8 +73,8 @@ pointer to it. The pointer's type fixes the types `saved` the function is
 entered with for its preserved registers, and the stack `rest` it sees
 below the return address; the caller's own must be at least as strong. -/
 theorem callInd_ok {sig : FnSig} {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
-    {next : BitVec 64} {Γ ret : Ctx} {rm : RM} {saved : Reg → Ty} {rest : List Ty} {m : Nat}
-    (hf : Holds Ψ next Γ rm (.code (sig.entry saved ret rest m))) (hroom : Γ.room = m + 1)
+    {next : BitVec 64} {Γ ret : Ctx} {rm : RM} {saved : Reg → Ty} {rest : List Shape} {m : Nat}
+    (hf : Holds Ψ next Γ rm (.code (sig.entry saved ret rest m))) (hroom : Γ.room = m + 8)
     (hret : Φ next ret) (hargs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn saved r))
     (hsp : Sub ((Γ.regs .rsp).shift (-8)) (sig.regsIn saved .rsp))
     (hstack : SubList Γ.stack rest)
