@@ -2786,7 +2786,7 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
       exact ih k (by omega) Ψ'' (he.trans he') hΨ'' a _ (hat saved ret rest room hK) t
         (ht.trans hp) hwt
     exact ihc he hΨ (h.retype hr hv) hrip
-  | @callFn Γ ret rm sig m hholds hroom hret hargs hsp hback hneed hown =>
+  | @callFn Γ ret rm sig m hholds hroom hret hargs hsp hback hneed hgives hown =>
     obtain ⟨v, hv, hp⟩ := (hholds.ext he).sound h hrip
     rw [hasTy_fn] at hp
     have hw : (s.setReg .rsp (s.getReg .rsp - 8)).canWrite (s.getReg .rsp - 8) 8 = true :=
@@ -2809,7 +2809,7 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
     refine ⟨rfl, fun s' heq => ?_⟩
     cases heq
     exact hp n (Nat.lt_succ_self n) Ψ' (.refl _) hΨ (Γ.moveSp (-8)).regs ret Γ.stack m
-      ⟨hback, hneed⟩ _ rfl
+      ⟨hgives, hback, hneed⟩ _ rfl
       (((hw'.sub (Δ := sig.entry (Γ.moveSp (-8)).regs ret Γ.stack m)
         ⟨fun r hr => by
             show Sub ((Γ.moveSp (-8)).regs r) _

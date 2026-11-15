@@ -896,7 +896,8 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
     (∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn (Γ.moveSp (-8)).regs r)) →
     Sub ((Γ.regs .rsp).shift (-8)) (sig.regsIn (Γ.moveSp (-8)).regs .rsp) →
     CtxSub (sig.returned (Γ.moveSp (-8)).regs Γ.stack m ret.owned) ret → sig.need ≤ m →
-    Γ.owned = ret.owned →
+    ret.owned.take sig.gives.length = sig.gives →
+    Γ.owned = sig.takes ++ ret.owned.drop sig.gives.length →
     HasType Φ fetch sys Ψ next Γ (.call (.ind rm))
   /-- Jump to a function through a pointer to it: a tail call, made on
   behalf of the caller the current function would have returned to. -/

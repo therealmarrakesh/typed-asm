@@ -641,7 +641,8 @@ macro "ty_dsimp_ctx" : tactic =>
       ShiftOp.apply, Scale.shift,
       ShiftOp.flagsAfter, Width.bits, Nat.reduceEqDiff, Nat.reduceBEq, ↓reduceIte,
       AluOp.writesDst, List.set_cons_zero, List.set_cons_succ, List.eraseIdx_cons_zero,
-      List.eraseIdx_cons_succ,
+      List.eraseIdx_cons_succ, List.cons_append, List.nil_append, List.length_cons,
+      List.length_nil, List.drop_zero,
       Bool.cond_true, Bool.cond_false, Nat.add_zero, Nat.zero_add, BitVec.reduceToNat, Nat.reduceDiv,
       Nat.reduceMod, Nat.reduceAdd, Nat.reduceMul, Nat.reduceSub,
       BitVec.reduceSetWidth, BitVec.reduceSignExtend, BitVec.reduceAdd, BitVec.reduceSub,
@@ -1998,10 +1999,13 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
         left := left ++ (← runOn g (do evalTactic (← `(tactic| ty_sub))))
       else if t.isAppOf ``Eq then
         try
-          discard <| runOn g (do evalTactic (← `(tactic| rfl)))
+          discard <| deep <| runOn g (do evalTactic (← `(tactic| first
+            | rfl
+            | exact FnSig.CallerOk.owned_back (by assumption) rfl)))
         catch _ =>
-          throwError "`ret`: the blocks owned here are not the ones the caller owns; a \
-            function must give back or hand over every block it took"
+          throwError "`ret`: the blocks owned here are not the ones the function gives back, \
+            followed by the caller's own; a function must hand back what its signature says \
+            and dispose of anything else it took"
       else if ← isProp t then
         left := left ++ (← runOn g (do evalTactic (← `(tactic| sub_regs))))
     return .done left
@@ -2160,7 +2164,7 @@ elab "ty_call " sig:term : tactic => do
       try
         let gs ← runOn typed (do evalTactic (← `(tactic|
           refine HasType.callFn (sig := $sig) (ret := ?_) ?callee rfl ?retpoint ?args ?sp ?back
-            ?need ?own)))
+            ?need ?gives ?own)))
         discard <| runOn (← goalNamed gs `callee) (do evalTactic (← `(tactic| ty_operand)))
         pure (some gs)
       catch _ =>
@@ -2210,7 +2214,7 @@ elab "ty_call " sig:term : tactic => do
       try
         runOn typed (do evalTactic (← `(tactic|
           refine FnSig.call_ok (sig := $sig) (ret := ?_) ?callee rfl ?retpoint ?args ?sp ?back
-            ?need ?own)))
+            ?need ?gives ?own)))
       catch _ => throwError (← noRoom (instr?.getD .nop))
   let mut left : List MVarId := []
   -- the callee first: it involves no unknowns
@@ -2236,9 +2240,11 @@ elab "ty_call " sig:term : tactic => do
       left := left ++ (← runOn g (do evalTactic (← `(tactic| ctx_sub))))
     else if t.isAppOf ``Eq then
       try
-        discard <| runOn g (do evalTactic (← `(tactic| rfl)))
+        discard <| deep <| runOn g (do evalTactic (← `(tactic| rfl)))
       catch _ =>
-        throwError "ty_call: the blocks owned here are not the ones owned at the return point"
+        throwError "ty_call: the blocks owned do not match. Those owned here must be the \
+          ones the function takes, in its order, then any others; and the return point must \
+          own the ones the function gives, then those others"
     else if t.isForall then
       left := left ++ (← runOn g (do evalTactic (← `(tactic| sub_regs))))
     else if t.isAppOf ``Sub then
@@ -2278,10 +2284,10 @@ elab "ty_code_ptr " r:term " to " Δ:term : tactic => do
   for g in ← proveAtLabel (← goalNamed gs `here) (pure []) do
     let t ← instantiateMVars (← g.getType)
     if t.isAppOf ``FnSig.CallerOk then
-      let parts ← runOn g (do evalTactic (← `(tactic| refine FnSig.CallerOk.mk ?ret ?room)))
+      let parts ← runOn g (do evalTactic (← `(tactic| refine FnSig.CallerOk.mk ?gives ?ret ?room)))
       for p in parts do
         let after ← try
-            runOn p (do evalTactic (← `(tactic| first | ctx_sub | decide | omega)))
+            runOn p (do evalTactic (← `(tactic| first | rfl | ctx_sub | decide | omega)))
           catch _ => pure [p]
         left := left ++ after
     else left := left ++ [g]

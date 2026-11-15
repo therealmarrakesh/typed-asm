@@ -50,6 +50,7 @@ inductive Ty
   called by any caller that meets the signature, whatever that caller's own
   stack and whatever it keeps in the preserved registers. -/
   | fn (args results : Reg → Ty) (preserved : Reg → Bool) (need : Nat)
+      (takes gives : List (BitVec 64 × List Ty))
   /-- The address of field `index` of a memory block of the kind named
   `tag`. The type does not spell out the block's fields, so a field of a
   block may have this type with the block's own tag: that is how a record
@@ -198,6 +199,13 @@ structure FnSig where
   preserved : Reg → Bool
   /-- The number of stack slots the function uses below its return address. -/
   need : Nat
+  /-- The blocks the function is handed to own: the caller owns them before
+  the call and not while the function runs. A signature that takes a block
+  names its address, so it is one of a family, a signature for each address. -/
+  takes : List (BitVec 64 × List Ty) := []
+  /-- The blocks the function hands back for the caller to own from the
+  return on. Often those it took, with the types its work has given them. -/
+  gives : List (BitVec 64 × List Ty) := []
 
 namespace FnSig
 
@@ -210,11 +218,13 @@ def regsOut (sig : FnSig) (saved : Reg → Ty) : Reg → Ty :=
   fun r => if sig.preserved r then saved r else sig.results r
 
 /-- The context at the function's first instruction, for a caller that
-expects `ret` on return and has `rest` on its stack. The blocks the caller
-owns are still owned while the function runs, and are those the return
-point expects: a function leaves them alone, whatever they are. -/
+expects `ret` on return and has `rest` on its stack. The function owns the
+blocks it takes, and after them whatever else the caller owns: those are the
+blocks the return point expects after the ones the function gives back, and
+the function leaves them alone, whatever they are. -/
 def entry (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) : Ctx :=
-  ⟨sig.regsIn saved, .code ret :: rest, room, Flags.Any, ret.owned⟩
+  ⟨sig.regsIn saved, .code ret :: rest, room, Flags.Any,
+    sig.takes ++ ret.owned.drop sig.gives.length⟩
 
 /-- The context at the function's `ret` instruction. -/
 def exit (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) : Ctx :=
@@ -240,11 +250,22 @@ theorem returned_sp (sig : FnSig) (saved : Reg → Ty) (rest : List Ty) (room : 
   simp only [returned, ↓reduceIte]
 
 /-- What a function needs of its caller: the state it returns must be
-acceptable where it returns to, and there must be enough stack. -/
+acceptable where it returns to, there must be enough stack, and the blocks
+the return point expects to own must begin with those the function gives. -/
 structure CallerOk (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
     Prop where
+  gives : ret.owned.take sig.gives.length = sig.gives
   ret : CtxSub (sig.returned saved rest room ret.owned) ret
   room : sig.need ≤ room
+
+/-- At its return, a function that owns the blocks it gives and after them
+what the caller owned besides owns what the return point expects. -/
+theorem CallerOk.owned_back {sig : FnSig} {saved : Reg → Ty} {ret : Ctx} {rest : List Ty}
+    {room : Nat} {owned : List (BitVec 64 × List Ty)} (h : sig.CallerOk saved ret rest room)
+    (ho : owned = sig.gives ++ ret.owned.drop sig.gives.length) : owned = ret.owned := by
+  rw [ho]
+  conv => lhs; arg 1; rw [← h.gives]
+  exact List.take_append_drop _ _
 
 /-- `sig.At Φ a`: the code typing lets address `a` be entered as a function
 with signature `sig`, by any caller. -/
@@ -253,7 +274,7 @@ def At (sig : FnSig) (Φ : CodeTy) (a : BitVec 64) : Prop :=
 
 /-- The type of a pointer to a function with this signature. -/
 def ty (sig : FnSig) : Ty :=
-  .fn sig.args sig.results sig.preserved sig.need
+  .fn sig.args sig.results sig.preserved sig.need sig.takes sig.gives
 
 end FnSig
 
@@ -358,13 +379,13 @@ def HasTy (fetch : Fetch) (sys : Syscall) : MemTy → Nat → Ty → BitVec 64 �
   | Ψ, _, .str more, v =>
     ∃ a l off, Ψ a = some l ∧ off + (if more then 1 else 0) < l.text ∧
       v = a + BitVec.ofNat 64 (8 * l.fields.length + off)
-  | Ψ, n, .fn args results preserved need, v =>
+  | Ψ, n, .fn args results preserved need takes gives, v =>
     ∀ k, (hk : k < n) → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF →
       ∀ (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat),
-      FnSig.CallerOk ⟨args, results, preserved, need⟩ saved ret rest room →
+      FnSig.CallerOk ⟨args, results, preserved, need, takes, gives⟩ saved ret rest room →
       ∀ s : State, s.rip = v →
       Matches (fun τ w => HasTy fetch sys Ψ' k τ w) Ψ'
-        (FnSig.entry ⟨args, results, preserved, need⟩ saved ret rest room) s →
+        (FnSig.entry ⟨args, results, preserved, need, takes, gives⟩ saved ret rest room) s →
       SafeN fetch sys k s
 termination_by _ n τ => (n, τ)
 
@@ -444,8 +465,8 @@ theorem HasTy.mono {m : Nat} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys Ψ n
   | code pre =>
     rw [hasTy_code] at h ⊢
     exact fun k hk => h k (by omega)
-  | fn args results preserved need =>
-    have e : Ty.fn args results preserved need = FnSig.ty ⟨args, results, preserved, need⟩ := rfl
+  | fn args results preserved need takes gives =>
+    have e : Ty.fn args results preserved need takes gives = FnSig.ty ⟨args, results, preserved, need, takes, gives⟩ := rfl
     rw [e, hasTy_fn] at h ⊢
     exact fun k hk => h k (by omega)
 termination_by sizeOf τ
@@ -474,8 +495,8 @@ theorem HasTy.ext {Ψ' : MemTy} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys �
   | code pre =>
     rw [hasTy_code] at h ⊢
     exact fun k hk Ψ'' he' => h k hk Ψ'' (he.trans he')
-  | fn args results preserved need =>
-    have e : Ty.fn args results preserved need = FnSig.ty ⟨args, results, preserved, need⟩ := rfl
+  | fn args results preserved need takes gives =>
+    have e : Ty.fn args results preserved need takes gives = FnSig.ty ⟨args, results, preserved, need, takes, gives⟩ := rfl
     rw [e, hasTy_fn] at h ⊢
     exact fun k hk Ψ'' he' => h k hk Ψ'' (he.trans he')
 termination_by sizeOf τ

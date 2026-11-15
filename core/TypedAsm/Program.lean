@@ -102,8 +102,8 @@ theorem HasType.mono (h : ∀ a Γ, Φ a Γ → Φ' a Γ) {next : BitVec 64} {Γ
   | unreachable hun => exact .unreachable hun
   | sem hs hacc => exact .sem hs (fun x => (hacc x).mono h)
   | fnPtr hr hΓ hat _ ih => exact .fnPtr hr hΓ (fun sv rt rs rm hK => h _ _ (hat sv rt rs rm hK)) ih
-  | callFn hh hroom hret hargs hsp hback hneed hown =>
-    exact .callFn hh hroom (h _ _ hret) hargs hsp hback hneed hown
+  | callFn hh hroom hret hargs hsp hback hneed hgives hown =>
+    exact .callFn hh hroom (h _ _ hret) hargs hsp hback hneed hgives hown
   | jmpFn hh hK hsub => exact .jmpFn hh hK hsub
   | cover hsem _ ih => exact .cover hsem ih
   | grow hsem _ ih => exact .grow hsem ih

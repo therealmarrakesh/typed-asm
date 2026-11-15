@@ -51,7 +51,9 @@ theorem ret_of {sig : FnSig} {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ :
 /-- Calling a function is well typed if there is room for the return address
 and the function's stack use, the argument registers hold what the function
 expects, and what the function returns is acceptable after the call. The
-preserved registers keep the types the caller has for them. -/
+preserved registers keep the types the caller has for them. The blocks the
+caller owns must be the ones the function takes, then any others, which it
+still owns afterwards behind the ones the function gives back. -/
 theorem call_ok {sig : FnSig} {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
     {next : BitVec 64} {Γ ret : Ctx} {d : BitVec 32}
     {m : Nat} (hf : sig.At Φ (next + d.signExtend 64)) (hroom : Γ.room = m + 1)
@@ -59,10 +61,11 @@ theorem call_ok {sig : FnSig} {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ 
     (hargs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn (Γ.moveSp (-8)).regs r))
     (hsp : Sub ((Γ.regs .rsp).shift (-8)) (sig.regsIn (Γ.moveSp (-8)).regs .rsp))
     (hback : CtxSub (sig.returned (Γ.moveSp (-8)).regs Γ.stack m ret.owned) ret)
-    (hneed : sig.need ≤ m) (hown : Γ.owned = ret.owned) :
+    (hneed : sig.need ≤ m) (hgives : ret.owned.take sig.gives.length = sig.gives)
+    (hown : Γ.owned = sig.takes ++ ret.owned.drop sig.gives.length) :
     HasType Φ fetch sys Ψ next Γ (.call (.rel d)) :=
   .call hroom hret
-    ⟨sig.entry (Γ.moveSp (-8)).regs ret Γ.stack m, hf _ _ _ _ ⟨hback, hneed⟩,
+    ⟨sig.entry (Γ.moveSp (-8)).regs ret Γ.stack m, hf _ _ _ _ ⟨hgives, hback, hneed⟩,
       .ofMoved hargs (.refl _) rfl (fun _ _ => trivial) hsp hown⟩
 
 /-- Calling a function through a register, field or stack slot that holds a
@@ -74,7 +77,8 @@ theorem callInd_ok {sig : FnSig} {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {
     (hf : Holds Ψ next Γ rm (.code (sig.entry saved ret rest m))) (hroom : Γ.room = m + 1)
     (hret : Φ next ret) (hargs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn saved r))
     (hsp : Sub ((Γ.regs .rsp).shift (-8)) (sig.regsIn saved .rsp))
-    (hstack : SubList Γ.stack rest) (hown : Γ.owned = ret.owned) :
+    (hstack : SubList Γ.stack rest)
+    (hown : Γ.owned = sig.takes ++ ret.owned.drop sig.gives.length) :
     HasType Φ fetch sys Ψ next Γ (.call (.ind rm)) :=
   .callInd hf hroom hret
     (.ofMoved hargs (.cons (.refl _) hstack) rfl (fun _ _ => trivial) hsp hown)
