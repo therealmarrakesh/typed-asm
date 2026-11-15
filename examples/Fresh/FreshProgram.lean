@@ -149,14 +149,13 @@ def entry : BitVec 64 := Asm.addr code base .start
 -- Every jump and call reaches the label it names.
 #guard Asm.offsetsFit base code
 
-/-- The starting state but for `rip`: the program in memory, and with it
-one free
-stack slot, for the return address of the one call. -/
+/-- The starting state but for `rip`: the program in memory, and with it one
+free stack slot, for the return address of the one call. -/
 def prepared : State :=
   ((Asm.load State.init base code).setPerm 0x7ffffff8 8 .rw).setReg .rsp 0x80000000
 
-/-- A starting state: `prepared`, with `rip` at the entry. Nothing is
-waiting to be read, and every request for memory is refused. -/
+/-- A starting state: `prepared`, with `rip` at the entry. Nothing is waiting
+to be read, and every request for memory is refused. -/
 def start : State :=
   { prepared with rip := entry }
 

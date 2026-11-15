@@ -87,9 +87,8 @@ def entry : BitVec 64 := Asm.addr code base .start
 #guard Asm.offsetsFit base code
 
 /-- The starting state but for `rip`: the program in memory, and with it
-eleven free
-stack slots below `rsp`, one for the first return address and two for each
-of the five levels below it. -/
+eleven free stack slots below `rsp`, one for the first return address and two
+for each of the five levels below it. -/
 def prepared : State :=
   ((Asm.load State.init base code).setPerm 0x7fffffa8 88 .rw).setReg .rsp 0x80000000
 

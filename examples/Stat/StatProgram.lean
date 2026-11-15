@@ -160,9 +160,8 @@ def entry : BitVec 64 := Asm.addr code base .start
 
 #guard name == bytesOf "input.txt"
 
-/-- The starting state but for `rip`: the program in memory, and with it
-its two
-data segments in memory, the name readable and the buffer writable. The
+/-- The starting state but for `rip`: the program in memory, and with it its
+two data segments in memory, the name readable and the buffer writable. The
 program uses no stack. -/
 def prepared : State :=
   (Asm.load State.init base code).setReg .rsp 0x80000000

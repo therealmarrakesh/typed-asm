@@ -86,9 +86,8 @@ def entry : BitVec 64 := Asm.addr code base .start
 /-- The data's bytes: three nodes, each a value and the address of the next. -/
 def listBytes : List Byte := Asm.dataAt base code .first 48
 
-/-- The starting state but for `rip`: the program in memory, and with it
-the list.
-The program uses no stack. -/
+/-- The starting state but for `rip`: the program in memory, and with it the
+list. The program uses no stack. -/
 def prepared : State :=
   (Asm.load State.init base code).setReg .rsp 0x80000000
 

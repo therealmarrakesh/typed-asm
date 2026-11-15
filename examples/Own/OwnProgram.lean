@@ -164,13 +164,13 @@ def entry : BitVec 64 := Asm.addr code base .start
 -- reference to data reaches the label it names.
 #guard Asm.wellFormed code && Asm.offsetsFit base code
 
-/-- The starting state but for `rip`: the program in memory, and with it
-the record,
-in read-only memory. The program uses no stack. -/
+/-- The starting state but for `rip`: the program in memory, and with it the
+record, in read-only memory. The program uses no stack. -/
 def prepared : State :=
   (Asm.load State.init base code).setReg .rsp 0x80000000
 
-/-- A starting state: `prepared`, with `rip` at the entry. Every request for memory is refused. -/
+/-- A starting state: `prepared`, with `rip` at the entry. Every request for
+memory is refused. -/
 def start : State :=
   { prepared with rip := entry }
 

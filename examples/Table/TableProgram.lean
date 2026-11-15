@@ -80,8 +80,8 @@ def entry : BitVec 64 := Asm.addr code base .start
 /-- The data's bytes: the address of the record, then its two fields. -/
 def dataBytes : List Byte := Asm.dataAt base code .table 24
 
-/-- The starting state but for `rip`: the program in memory, and with it
-the data. -/
+/-- The starting state but for `rip`: the program in memory, and with it the
+data. -/
 def prepared : State :=
   (Asm.load State.init base code).setReg .rsp 0x80000000
 

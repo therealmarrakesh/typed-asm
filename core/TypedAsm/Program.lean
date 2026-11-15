@@ -112,7 +112,7 @@ theorem HasType.mono (h : ∀ a Γ, Φ a Γ → Φ' a Γ) {next : BitVec 64} {Γ
     exact .callFn hh hroom (h _ _ hret) hargs hsp hback hneed hgives hown
   | jmpFn hh hK hsub => exact .jmpFn hh hK hsub
   | fnPtrAll hr hΓ hat _ ih =>
-    exact .fnPtrAll hr hΓ (fun sv rt rs rm fr hK => h _ _ (hat sv rt rs rm fr hK)) ih
+    exact .fnPtrAll hr hΓ (fun sv rt rs rm fr ab hK => h _ _ (hat sv rt rs rm fr ab hK)) ih
   | callFnAll hh hroom hret hargs hsp hback hneed hgives hframe hown =>
     exact .callFnAll hh hroom (fun x => h _ _ (hret x)) hargs hsp hback hneed hgives hframe hown
   | jmpFnAll hh hK hsub => exact .jmpFnAll hh hK hsub
@@ -159,7 +159,7 @@ theorem BlocksOk.programOk (h : BlocksOk Φ fetch sys Ψ) :
   | fnPtrAll hr hΓ hat _ ih =>
     obtain ⟨i, len, hf, ht⟩ := ih
     exact ⟨i, len, hf,
-      .fnPtrAll hr hΓ (fun sv rt rs rm fr hK => h _ _ (hat sv rt rs rm fr hK)) ht⟩
+      .fnPtrAll hr hΓ (fun sv rt rs rm fr ab hK => h _ _ (hat sv rt rs rm fr ab hK)) ht⟩
   | last hf ht => exact ⟨_, _, hf, ht.mono h⟩
 
 /-- A register holding exactly the address of a byte of a memory block may
@@ -389,10 +389,10 @@ theorem FnSig.at_label {sig : FnSig} {l : L}
 
 /-- The same for a function whose results depend on a value it chooses. -/
 theorem FnSigEx.at_label {ι : Type} [Chosen ι] {sig : FnSigEx ι} {l : L}
-    (h : ∀ saved ret rest room frame, sig.CallerOk saved ret rest room frame →
-      T l (sig.entry saved ret rest room frame)) :
+    (h : ∀ saved ret rest room frame above, sig.CallerOk saved ret rest room frame above →
+      T l (sig.entry saved ret rest room frame above)) :
     sig.At (CodeTy.ofLabels prog base T) (Asm.addr prog base l) :=
-  fun saved ret rest room frame hK => .intro (h saved ret rest room frame hK)
+  fun saved ret rest room frame above hK => .intro (h saved ret rest room frame above hK)
 
 end Labels
 
@@ -411,12 +411,12 @@ theorem BlocksOk.hasTy_fnAll (hB : BlocksOk Φ fetch sys Ψ) {ι : Type} [Chosen
     {sig : FnSigEx ι} {v : BitVec 64} (hat : sig.At Φ v) (n : Nat) :
     HasTy fetch sys Ψ n sig.ty v := by
   rw [TypedAsm.hasTy_fnAll]
-  intro k hk Ψ' he hΨ' saved ret rest room frame hK s hs hw
+  intro k hk Ψ' he hΨ' saved ret rest room frame above hK s hs hw
   refine safeUpTo hB.programOk k k (Nat.le_refl k) Ψ' he hΨ' v _
-    (hB _ _ (hat saved (fun x => ret (Chosen.enc x)) rest room frame hK.ofRaw)) s hs ?_
+    (hB _ _ (hat saved (fun x => ret (Chosen.enc x)) rest room frame above hK.ofRaw)) s hs ?_
   exact hw.sub ⟨fun _ _ => .refl _,
     .cons (.slot (.codeAllMap ret fun q => Chosen.enc (Chosen.dec (ι := ι) q))) (.refl _), rfl,
-    fun _ hf => hf, .refl _, rfl⟩
+    fun _ hf => hf, .refl _, rfl, rfl⟩
 
 /-- **Soundness, block by block.** -/
 theorem soundness_blocks {s : State} (hB : BlocksOk Φ fetch sys Ψ)

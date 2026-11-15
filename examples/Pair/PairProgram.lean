@@ -143,14 +143,14 @@ def entry : BitVec 64 := Asm.addr code base .start
 -- takes the function's address.
 #guard Asm.offsetsFit base code
 
-/-- The starting state but for `rip`: the program in memory, and with it
-two free
-stack slots, for a return address and the page the function keeps while it
-asks for another. -/
+/-- The starting state but for `rip`: the program in memory, and with it two
+free stack slots, for a return address and the page the function keeps while
+it asks for another. -/
 def prepared : State :=
   ((Asm.load State.init base code).setPerm 0x7ffffff0 16 .rw).setReg .rsp 0x80000000
 
-/-- A starting state: `prepared`, with `rip` at the entry. Every request for memory is refused. -/
+/-- A starting state: `prepared`, with `rip` at the entry. Every request for
+memory is refused. -/
 def start : State :=
   { prepared with rip := entry }
 

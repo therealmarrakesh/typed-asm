@@ -150,9 +150,8 @@ with it the buffer in writable memory. -/
 def prepared : State :=
   Asm.load State.init base code
 
-/-- A starting state: `prepared`, given a stack that holds the arguments,
-with `rip` at the entry. The first
-argument is by custom the program's own name. -/
+/-- A starting state: `prepared`, given a stack that holds the arguments, with
+`rip` at the entry. The first argument is by custom the program's own name. -/
 def startArgs (args : List (List Byte)) : State :=
   { prepared.withArgs 0 args with rip := entry }
 
