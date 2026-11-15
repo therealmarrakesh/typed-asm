@@ -221,7 +221,7 @@ theorem congr {t : State} (h : WellTyped fetch sys Ψ ix Γ s) (hr : t.regs = s.
     regs := fun r hr' => by rw [hg]; exact h.regs r hr'
     flags := by rw [hf]; exact h.flags
     stackPerm := by rw [hb, State.canWrite_congr hp]; exact h.stackPerm
-    stackSize_lt := h.stackSize_lt
+    stackBound := h.stackBound
     stackFits := h.stackFits
     stack := fun k S hk p hp => by rw [hg, State.load64_congr hm]; exact h.stack k S hk p hp
     heapPerm := fun a l hl => by
@@ -241,7 +241,7 @@ theorem sub {Δ : Ctx} (h : WellTyped fetch sys Ψ ix Γ s) (hs : CtxSub Γ Δ) 
     regs := fun r hr => (h.regs r hr).sub (hs.regs r hr)
     flags := hs.flags _ h.flags
     stackPerm := by rw [hb, hz]; exact h.stackPerm
-    stackSize_lt := by rw [hz]; exact h.stackSize_lt
+    stackBound := by rw [hz, ← hs.above]; exact h.stackBound
     stackFits := fun T hT q hq => by
       obtain ⟨k, hk⟩ := List.getElem?_of_mem hT
       obtain ⟨S, hS, hsub⟩ := hs.stack.get k T hk
@@ -281,7 +281,7 @@ theorem setReg {r : Reg} {τ : Ty} {v : BitVec 64} (h : WellTyped fetch sys Ψ i
         exact h.regs r' hr'
     flags := h.flags
     stackPerm := by rw [hb, State.canWrite_congr hp]; exact h.stackPerm
-    stackSize_lt := h.stackSize_lt
+    stackBound := h.stackBound
     stackFits := h.stackFits
     stack := fun k S hk p hp => by rw [hsp, State.load64_congr hm]; exact h.stack k S hk p hp
     heapPerm := fun a l hl => by
@@ -298,7 +298,7 @@ theorem setReg {r : Reg} {τ : Ty} {v : BitVec 64} (h : WellTyped fetch sys Ψ i
 /-- Replacing the flags with ones that satisfy the new context's flags predicate. -/
 theorem setFlags {f : Flags} {P : Flags → Prop} (h : WellTyped fetch sys Ψ ix Γ s) (hf : P f) :
     WellTyped fetch sys Ψ ix { Γ with flags := P } { s with flags := f } :=
-  { regs := h.regs, flags := hf, stackPerm := h.stackPerm, stackSize_lt := h.stackSize_lt,
+  { regs := h.regs, flags := hf, stackPerm := h.stackPerm, stackBound := h.stackBound,
     stackFits := h.stackFits, stack := h.stack, heapPerm := h.heapPerm, heap := h.heap, stackHeap := h.stackHeap,
     owned := h.owned.frame rfl rfl rfl rfl (fun _ _ _ _ => rfl),
     text := h.text,
@@ -399,15 +399,16 @@ theorem setSp {Γ' : Ctx} (h : WellTyped fetch sys Ψ ix Γ s)
     (hregs : ∀ r, r ≠ .rsp → Γ'.regs r = Γ.regs r) (hstack : Γ'.stack = Γ.stack)
     (hroom : Γ'.room = Γ.room) (hflags : Γ'.flags = Γ.flags)
     (hv : HasTy fetch sys Ψ ix (Γ'.regs .rsp) (s.getReg .rsp))
-    (howned : Γ'.owned = Γ.owned := by rfl) : WellTyped fetch sys Ψ ix Γ' s :=
+    (howned : Γ'.owned = Γ.owned := by rfl) (habove : Γ'.above = Γ.above := by rfl) :
+    WellTyped fetch sys Ψ ix Γ' s :=
   { regs := fun r hr => by rw [hregs r hr]; exact h.regs r hr
     flags := by rw [hflags]; exact h.flags
     stackPerm := by
       have := h.stackPerm
       simpa only [stackBase, stackSize, hstack, hroom] using this
-    stackSize_lt := by
-      have := h.stackSize_lt
-      simpa only [stackSize, hstack, hroom] using this
+    stackBound := by
+      have := h.stackBound
+      simpa only [stackSize, hstack, hroom, habove] using this
     stackFits := by rw [hstack]; exact h.stackFits
     stack := by rw [hstack]; exact h.stack
     heapPerm := h.heapPerm
@@ -456,7 +457,7 @@ theorem growStack {s' : State} {X : Shape} {m : Nat} (h : WellTyped fetch sys Ψ
       exact h.regs r hr
     flags := by rw [hflags]; exact h.flags
     stackPerm := by rw [hb, hz, State.canWrite_congr hperm]; exact h.stackPerm
-    stackSize_lt := by rw [hz]; exact h.stackSize_lt
+    stackBound := by rw [hz]; exact h.stackBound
     stackFits := fun S hS p hp => by
       rcases List.mem_cons.mp hS with rfl | hS
       · exact hX p hp
@@ -532,7 +533,7 @@ theorem shrinkStack {top rest : List Shape} {k : Nat} (h : WellTyped fetch sys �
       exact h.regs r hr
     flags := h.flags
     stackPerm := by rw [hb, hz, State.canWrite_congr hp]; exact h.stackPerm
-    stackSize_lt := by rw [hz]; exact h.stackSize_lt
+    stackBound := by rw [hz]; exact h.stackBound
     stackFits := fun S hS p hp' =>
       h.stackFits S (by rw [hst]; exact List.mem_append_right _ hS) p hp'
     stack := fun j S hj p hp' => by
@@ -675,7 +676,7 @@ theorem writeHeap {a : BitVec 64} {l : Layout} {lo cnt : Nat} {s' : State}
     regs := fun r hr => by rw [hg]; exact h.regs r hr
     flags := by rw [hflags]; exact h.flags
     stackPerm := by rw [hb, State.canWrite_congr hperm]; exact h.stackPerm
-    stackSize_lt := h.stackSize_lt
+    stackBound := h.stackBound
     stackFits := h.stackFits
     stack := fun k S hk p hp => by
       have hpf := h.stack_in hk hp
@@ -801,7 +802,7 @@ theorem writeOwned {s' : State} {k : Nat} {a : BitVec 64} {S S' : Shape} {lo cnt
     regs := fun r hr => by rw [hg]; exact h.regs r hr
     flags := by rw [hflags]; exact h.flags
     stackPerm := by rw [hb, State.canWrite_congr hperm]; exact h.stackPerm
-    stackSize_lt := h.stackSize_lt
+    stackBound := h.stackBound
     stackFits := h.stackFits
     stack := fun k S hk p hp => by
       have hpf := h.stack_in hk hp
@@ -905,7 +906,7 @@ theorem addOwned {b : BitVec 64 × Shape} (h : WellTyped fetch sys Ψ ix Γ s)
     (hheap : ∀ a l, Ψ a = some l → Disjoint b.1 b.2.size a l.size)
     (hapart : ∀ c ∈ Γ.owned, Disjoint b.1 b.2.size c.1 c.2.size) :
     WellTyped fetch sys Ψ ix { Γ with owned := b :: Γ.owned } s :=
-  { regs := h.regs, flags := h.flags, stackPerm := h.stackPerm, stackSize_lt := h.stackSize_lt,
+  { regs := h.regs, flags := h.flags, stackPerm := h.stackPerm, stackBound := h.stackBound,
     stackFits := h.stackFits, stack := h.stack, heapPerm := h.heapPerm, heap := h.heap, stackHeap := h.stackHeap,
     sp := h.sp, text := h.text,
     owned :=
@@ -984,7 +985,7 @@ theorem eraseOwned {s' : State} {k : Nat} {a : BitVec 64} {S : Shape}
     stackPerm := by
       rw [hb]
       exact State.canWrite_apart hst.symm hsz h.stackSize_lt hperm h.stackPerm
-    stackSize_lt := h.stackSize_lt
+    stackBound := h.stackBound
     stackFits := h.stackFits
     stack := fun k S hk p hp => by rw [hg, State.load64_congr hmem]; exact h.stack k S hk p hp
     heapPerm := fun b l hl =>
@@ -1073,7 +1074,7 @@ theorem writeStack {s' : State} {k : Nat} {S S' : Shape} {i cnt : Nat}
     regs := fun r hr => by rw [hg]; exact h.regs r hr
     flags := by rw [hflags]; exact h.flags
     stackPerm := by rw [hb, hz, State.canWrite_congr hperm]; exact h.stackPerm
-    stackSize_lt := by rw [hz]; exact h.stackSize_lt
+    stackBound := by rw [hz]; exact h.stackBound
     stackFits := fun T hT p hp => by
       rcases List.mem_or_eq_of_mem_set hT with hT | rfl
       · exact h.stackFits T hT p hp
@@ -2749,7 +2750,7 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
     refine ⟨rfl, fun s' heq => ?_⟩
     cases heq
     exact hp n (Nat.lt_succ_self n) Ψ' (.refl _) hΨ (Γ.moveSp (-8)).regs ret Γ.stack m
-      ⟨hgives, hback, hneed⟩ _ rfl
+      (.ofBack hgives hback hneed) _ rfl
       (((hw'.sub (Δ := sig.entry (Γ.moveSp (-8)).regs ret Γ.stack m)
         ⟨fun r hr => by
             show Sub ((Γ.moveSp (-8)).regs r) _
@@ -2758,7 +2759,7 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
           .refl _, rfl, fun _ _ => trivial, by
             show Sub ((Γ.moveSp (-8)).regs .rsp) _
             rw [CtxOf.moveSp_sp]
-            exact hsp, hown⟩).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
+            exact hsp, hown, hback.above⟩).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
   | @jmpFn Γ ret rm sig saved rest room hholds hK hsub =>
     obtain ⟨v, hv, hp⟩ := (hholds.ext he).sound h hΨ hrip
     rw [hasTy_fn] at hp
@@ -2776,12 +2777,12 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
     -- values they stand for.
     have hv : HasTy fetch sys Ψ' (n + 1) sig.ty (s.getReg r) := by
       rw [hasTy_fnAll]
-      intro k hk Ψ'' he' hΨ'' saved ret rest room frame hK t ht hwt
+      intro k hk Ψ'' he' hΨ'' saved ret rest room frame above hK t ht hwt
       refine ih k (by omega) Ψ'' (he.trans he') hΨ'' a _
-        (hat saved (fun x => ret (Chosen.enc x)) rest room frame hK.ofRaw) t (ht.trans hp) ?_
+        (hat saved (fun x => ret (Chosen.enc x)) rest room frame above hK.ofRaw) t (ht.trans hp) ?_
       exact hwt.sub ⟨fun _ _ => .refl _,
         .cons (.slot (.codeAllMap ret fun s => Chosen.enc (Chosen.dec (ι := ι) s))) (.refl _), rfl,
-        fun _ hf => hf, .refl _, rfl⟩
+        fun _ hf => hf, .refl _, rfl, rfl⟩
     exact ihc he hΨ (h.retype hr hv) hrip
   | @callFnAll ι inst Γ ret rm sig m frame hholds hroom hret hargs hsp hback hneed hgives hframe
       hown =>
@@ -2809,11 +2810,11 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
     rw [hex]
     refine ⟨rfl, fun s' heq => ?_⟩
     cases heq
-    have hK : sig.CallerOk (Γ.moveSp (-8)).regs ret Γ.stack m frame :=
-      ⟨fun x => ⟨hgives x, hback x, hneed⟩, hframe⟩
-    exact hp n (Nat.lt_succ_self n) Ψ' (.refl _) hΨ (Γ.moveSp (-8)).regs _ Γ.stack m frame
+    have hK : sig.CallerOk (Γ.moveSp (-8)).regs ret Γ.stack m frame Γ.above :=
+      ⟨fun x => .ofBack (hgives x) (hback x) hneed, hframe, fun x => (hback x).above.symm⟩
+    exact hp n (Nat.lt_succ_self n) Ψ' (.refl _) hΨ (Γ.moveSp (-8)).regs _ Γ.stack m frame Γ.above
       hK.toRaw _ rfl
-      (((hw'.sub (Δ := sig.entry (Γ.moveSp (-8)).regs ret Γ.stack m frame)
+      (((hw'.sub (Δ := sig.entry (Γ.moveSp (-8)).regs ret Γ.stack m frame Γ.above)
         ⟨fun r hr => by
             show Sub ((Γ.moveSp (-8)).regs r) _
             rw [CtxOf.moveSp_regs hr]
@@ -2821,8 +2822,8 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
           .refl _, rfl, fun _ _ => trivial, by
             show Sub ((Γ.moveSp (-8)).regs .rsp) _
             rw [CtxOf.moveSp_sp]
-            exact hsp, hown⟩).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
-  | @jmpFnAll ι inst Γ ret rm sig saved rest room frame hholds hK hsub =>
+            exact hsp, hown, rfl⟩).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
+  | @jmpFnAll ι inst Γ ret rm sig saved rest room frame above hholds hK hsub =>
     obtain ⟨v, hv, hp⟩ := (hholds.ext he).sound h hΨ hrip
     rw [hasTy_fnAll] at hp
     have hex : exec sys (.jmp (.ind rm)) s = .next { s with rip := v } := by
@@ -2830,7 +2831,7 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
     rw [hex]
     refine ⟨rfl, fun s' heq => ?_⟩
     cases heq
-    exact hp n (Nat.lt_succ_self n) Ψ' (.refl _) hΨ saved _ rest room frame hK.toRaw _ rfl
+    exact hp n (Nat.lt_succ_self n) Ψ' (.refl _) hΨ saved _ rest room frame above hK.toRaw _ rfl
       (((h.sub hsub).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
   | @cover ι Γ Γ' i hsem _ ihc =>
     obtain ⟨x, hx⟩ := hsem Ψ' he hΨ _ _ h

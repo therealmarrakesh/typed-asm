@@ -26,7 +26,7 @@ omit [Chosen ι] in
 `x` and after them what the caller owned besides owns what `ret x` expects. -/
 theorem CallerOk.owned_back {sig : FnSigEx ι} {saved : Reg → Ty} {ret : ι → Ctx}
     {rest : List Shape} {room : Nat} {frame owned : List (BitVec 64 × Shape)}
-    (h : sig.CallerOk saved ret rest room frame) (x : ι)
+    (h : sig.CallerOk saved ret rest room frame above) (x : ι)
     (ho : owned = sig.gives x ++ frame) : owned = (ret x).owned :=
   (h.each x).owned_back (by
     rw [ho]
@@ -36,7 +36,7 @@ theorem CallerOk.owned_back {sig : FnSigEx ι} {saved : Reg → Ty} {ret : ι �
 /-- The caller left room for the function's own stack use, and possibly more. -/
 theorem CallerOk.room_split {sig : FnSigEx ι} {saved : Reg → Ty} {ret : ι → Ctx}
     {rest : List Shape} {room : Nat} {frame : List (BitVec 64 × Shape)}
-    (h : sig.CallerOk saved ret rest room frame) : ∃ m, room = m + sig.need :=
+    (h : sig.CallerOk saved ret rest room frame above) : ∃ m, room = m + sig.need :=
   ⟨room - sig.need, by
     have := (h.each (Chosen.dec fun _ => 0)).room
     have e : (sig.pick (Chosen.dec fun _ => 0)).need = sig.need := rfl
@@ -55,14 +55,15 @@ theorem call_ok {sig : FnSigEx ι} {Φ : CodeTy} {fetch : Fetch} {sys : Syscall}
     (hargs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn (Γ.moveSp (-8)).regs r))
     (hsp : Sub ((Γ.regs .rsp).shift (-8)) (sig.regsIn (Γ.moveSp (-8)).regs .rsp))
     (hback : ∀ x,
-      CtxSub ((sig.pick x).returned (Γ.moveSp (-8)).regs Γ.stack m (ret x).owned) (ret x))
+      CtxSub ((sig.pick x).returned (Γ.moveSp (-8)).regs Γ.stack m (ret x).owned Γ.above) (ret x))
     (hneed : sig.need ≤ m) (hown : Γ.owned = sig.takes ++ frame)
     (hgives : ∀ x, (ret x).owned.take (sig.gives x).length = sig.gives x)
     (hframe : ∀ x, (ret x).owned.drop (sig.gives x).length = frame) :
     HasType Φ fetch sys Ψ next Γ (.call (.rel d)) :=
   .callAll hroom (fun s => hret (Chosen.dec s))
-    ⟨sig.entry (Γ.moveSp (-8)).regs ret Γ.stack m frame,
-      hf _ _ _ _ _ ⟨fun x => ⟨hgives x, hback x, hneed⟩, hframe⟩,
+    ⟨sig.entry (Γ.moveSp (-8)).regs ret Γ.stack m frame Γ.above,
+      hf _ _ _ _ _ _ ⟨fun x => .ofBack (hgives x) (hback x) hneed, hframe,
+        fun x => (hback x).above.symm⟩,
       .ofMoved hargs (.refl _) rfl (fun _ _ => trivial) hsp hown⟩
 
 end FnSigEx
@@ -99,6 +100,6 @@ theorem BlockOk.chooseRet {ι : Type} [Chosen ι] {a : BitVec 64} {Γ : Ctx} {i 
         SubList.set hslot (.slot (by
           have := Sub.codeAll (fun s => ret (Chosen.dec s)) (Chosen.enc x)
           rwa [Chosen.dec_enc] at this)),
-        rfl, fun _ hf => hf, .refl _, rfl⟩) hrest
+        rfl, fun _ hf => hf, .refl _, rfl, rfl⟩) hrest
 
 end TypedAsm

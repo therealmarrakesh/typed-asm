@@ -24,7 +24,7 @@ def nodeShape : Shape := ⟨16, [(8, link)]⟩
 def nodeLayout : Layout := ⟨nodeShape, false, some 1, 0⟩
 
 /-- In the loop `rdi` holds a link. -/
-def walking : Ctx := ⟨fun r => if r = .rdi then link else .int, [], 0, Flags.Any, []⟩
+def walking : Ctx := ⟨fun r => if r = .rdi then link else .int, [], 0, Flags.Any, [], 0⟩
 
 /-- The contexts allowed at each label. -/
 inductive At : Label → Ctx → Prop

@@ -490,6 +490,11 @@ structure CtxOf (τ : Type) where
   type as it is stored to, and the block may be given back. A pointer to one is just its address, exactly
   known; what makes it usable is the entry here. -/
   owned : List (BitVec 64 × ShapeOf τ) := []
+  /-- How many bytes above the pieces of `stack` have been detached from it:
+  pieces that were the stack's topmost and are for now blocks this code or
+  its callers own, so that a function can be handed one. They can be
+  attached again, and the count says there is room for them. -/
+  above : Nat := 0
 
 /-- The type of a 64-bit value. -/
 inductive Ty
@@ -683,6 +688,8 @@ structure CtxSub (Γ Δ : Ctx) : Prop where
   sp : Sub (Γ.regs .rsp) (Δ.regs .rsp)
   /-- The owned blocks agree exactly. -/
   owned : Γ.owned = Δ.owned
+  /-- So does what has been detached from the stack. -/
+  above : Γ.above = Δ.above
 
 /-! ## Function signatures -/
 
@@ -722,29 +729,29 @@ blocks the return point expects after the ones the function gives back, and
 the function leaves them alone, whatever they are. -/
 def entry (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) : Ctx :=
   ⟨sig.regsIn saved, .slot (.code ret) :: rest, room, Flags.Any,
-    sig.takes ++ ret.owned.drop sig.gives.length⟩
+    sig.takes ++ ret.owned.drop sig.gives.length, ret.above⟩
 
 /-- The context at the function's `ret` instruction. -/
 def exit (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) : Ctx :=
-  ⟨sig.regsOut saved, .slot (.code ret) :: rest, room, Flags.Any, ret.owned⟩
+  ⟨sig.regsOut saved, .slot (.code ret) :: rest, room, Flags.Any, ret.owned, ret.above⟩
 
 /-- The context the caller is in once the function has returned. The stack
 pointer is 8 above where it was at the function's `ret`, having popped the
 return address; so a function that leaves the stack pointer's type as it
 found it has, for its caller, put the stack pointer back. -/
 def returned (sig : FnSig) (saved : Reg → Ty) (rest : List Shape) (room : Nat)
-    (owned : List (BitVec 64 × Shape)) : Ctx :=
+    (owned : List (BitVec 64 × Shape)) (above : Nat) : Ctx :=
   ⟨fun r => if r = .rsp then (sig.regsOut saved .rsp).shift 8 else sig.regsOut saved r, rest,
-    room + 8, Flags.Any, owned⟩
+    room + 8, Flags.Any, owned, above⟩
 
 theorem returned_regs {sig : FnSig} {saved : Reg → Ty} {rest : List Shape} {room : Nat}
-    {owned : List (BitVec 64 × Shape)} {r : Reg}
-    (hr : r ≠ .rsp) : (sig.returned saved rest room owned).regs r = sig.regsOut saved r := by
+    {owned : List (BitVec 64 × Shape)} {above : Nat} {r : Reg}
+    (hr : r ≠ .rsp) : (sig.returned saved rest room owned above).regs r = sig.regsOut saved r := by
   simp only [returned, hr, ↓reduceIte]
 
 theorem returned_sp (sig : FnSig) (saved : Reg → Ty) (rest : List Shape) (room : Nat)
-    (owned : List (BitVec 64 × Shape)) :
-    (sig.returned saved rest room owned).regs .rsp = (sig.regsOut saved .rsp).shift 8 := by
+    (owned : List (BitVec 64 × Shape)) (above : Nat) :
+    (sig.returned saved rest room owned above).regs .rsp = (sig.regsOut saved .rsp).shift 8 := by
   simp only [returned, ↓reduceIte]
 
 /-- What a function needs of its caller: the state it returns must be
@@ -753,8 +760,18 @@ the return point expects to own must begin with those the function gives. -/
 structure CallerOk (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     Prop where
   gives : ret.owned.take sig.gives.length = sig.gives
-  ret : CtxSub (sig.returned saved rest room ret.owned) ret
+  ret : CtxSub (sig.returned saved rest room ret.owned ret.above) ret
   room : sig.need ≤ room
+
+/-- A caller is ready if the state the function returns is acceptable where
+it returns to with as much detached from the stack as there is now. -/
+theorem CallerOk.ofBack {sig : FnSig} {saved : Reg → Ty} {ret : Ctx} {rest : List Shape}
+    {room above : Nat} (hgives : ret.owned.take sig.gives.length = sig.gives)
+    (hback : CtxSub (sig.returned saved rest room ret.owned above) ret) (hneed : sig.need ≤ room) :
+    sig.CallerOk saved ret rest room := by
+  have e : above = ret.above := hback.above
+  subst e
+  exact ⟨hgives, hback, hneed⟩
 
 /-- At its return, a function that owns the blocks it gives and after them
 what the caller owned besides owns what the return point expects. -/
@@ -843,23 +860,26 @@ def regsIn (sig : FnSigEx ι) (saved : Reg → Ty) : Reg → Ty :=
 expects `ret x` on return, whichever `x` the function chooses, has `rest` on
 its stack and owns `frame` besides what the function takes. -/
 def entry [Chosen ι] (sig : FnSigEx ι) (saved : Reg → Ty) (ret : ι → Ctx) (rest : List Shape)
-    (room : Nat) (frame : List (BitVec 64 × Shape)) : Ctx :=
+    (room : Nat) (frame : List (BitVec 64 × Shape)) (above : Nat) : Ctx :=
   ⟨sig.regsIn saved, .slot (.codeAll (fun s => ret (Chosen.dec s))) :: rest, room, Flags.Any,
-    sig.takes ++ frame⟩
+    sig.takes ++ frame, above⟩
 
 /-- What the function needs of its caller: what an ordinary function with
 each of the signatures would need, and that what the caller owns besides is
 the same whichever value is chosen. -/
 structure CallerOk (sig : FnSigEx ι) (saved : Reg → Ty) (ret : ι → Ctx) (rest : List Shape)
-    (room : Nat) (frame : List (BitVec 64 × Shape)) : Prop where
+    (room : Nat) (frame : List (BitVec 64 × Shape)) (above : Nat) : Prop where
   each : ∀ x, (sig.pick x).CallerOk saved (ret x) rest room
   frame : ∀ x, (ret x).owned.drop (sig.gives x).length = frame
+  /-- What has been detached from the stack is the same whichever value is
+  chosen. -/
+  detached : ∀ x, (ret x).above = above
 
 /-- `sig.At Φ a`: the code typing lets address `a` be entered as a function
 with signature `sig`, by any caller. -/
 def At [Chosen ι] (sig : FnSigEx ι) (Φ : CodeTy) (a : BitVec 64) : Prop :=
-  ∀ saved ret rest room frame, sig.CallerOk saved ret rest room frame →
-    Φ a (sig.entry saved ret rest room frame)
+  ∀ saved ret rest room frame above, sig.CallerOk saved ret rest room frame above →
+    Φ a (sig.entry saved ret rest room frame above)
 
 /-- The signature with its chosen value written as a sequence, which is the
 form a type carries it in. -/
@@ -940,7 +960,9 @@ structure Matches (H : Ty → BitVec 64 → Prop) (Ψ : MemTy) (Γ : Ctx) (s : S
   flags : Γ.flags s.flags
   /-- The stack region, free bytes included, is writable. -/
   stackPerm : s.canWrite (stackBase Γ s) (stackSize Γ) = true
-  stackSize_lt : stackSize Γ < 2 ^ 64
+  /-- The stack region, with what has been detached from above it, is
+  smaller than the address space. -/
+  stackBound : stackSize Γ + Γ.above < 2 ^ 64
   /-- Each typed value of each piece of the stack lies inside the piece. -/
   stackFits : ∀ S ∈ Γ.stack, ∀ p ∈ S.vals, p.1 + 8 ≤ S.size
   /-- Each typed value of each piece of the stack is of its type. -/
@@ -961,6 +983,11 @@ structure Matches (H : Ty → BitVec 64 → Prop) (Ψ : MemTy) (Γ : Ctx) (s : S
   /-- The owned blocks are there and hold what the context says. -/
   owned : OwnedOk H Ψ Γ s
 
+/-- The stack region is smaller than the address space. -/
+theorem Matches.stackSize_lt {H : Ty → BitVec 64 → Prop} {Ψ : MemTy} {Γ : Ctx} {s : State}
+    (h : Matches H Ψ Γ s) : stackSize Γ < 2 ^ 64 :=
+  Nat.lt_of_le_of_lt (Nat.le_add_right _ _) h.stackBound
+
 /-- `HasTy fetch sys Ψ n τ v`: the value `v` has type `τ`, at step count `n`.
 This does not depend on the machine state. -/
 def HasTy (fetch : Fetch) (sys : Syscall) : MemTy → Nat → Ty → BitVec 64 → Prop
@@ -975,12 +1002,12 @@ def HasTy (fetch : Fetch) (sys : Syscall) : MemTy → Nat → Ty → BitVec 64 �
   | Ψ, n, .fnAll args preserved need takes results gives, v =>
     ∀ k, (hk : k < n) → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF →
       ∀ (saved : Reg → Ty) (ret : (Nat → BitVec 64) → Ctx) (rest : List Shape) (room : Nat)
-        (frame : List (BitVec 64 × Shape)),
-      FnSigEx.CallerOk ⟨args, preserved, need, takes, results, gives⟩ saved ret rest room frame →
+        (frame : List (BitVec 64 × Shape)) (above : Nat),
+      FnSigEx.CallerOk ⟨args, preserved, need, takes, results, gives⟩ saved ret rest room frame above →
       ∀ s : State, s.rip = v →
       Matches (fun τ w => HasTy fetch sys Ψ' k τ w) Ψ'
         (FnSigEx.entry ⟨args, preserved, need, takes, results, gives⟩ saved ret rest room
-          frame) s →
+          frame above) s →
       SafeN fetch sys k s
   | Ψ, n, .codeAll pre, v =>
     ∀ x : Nat → BitVec 64, ∀ k, (hk : k < n) → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State,
@@ -1075,9 +1102,9 @@ carries them. -/
 theorem hasTy_fnAll {ι : Type} [Chosen ι] {sig : FnSigEx ι} {v : BitVec 64} :
     HasTy fetch sys Ψ n sig.ty v ↔
       ∀ k, k < n → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF →
-        ∀ saved ret rest room frame, sig.raw.CallerOk saved ret rest room frame →
+        ∀ saved ret rest room frame above, sig.raw.CallerOk saved ret rest room frame above →
         ∀ s : State, s.rip = v →
-        WellTyped fetch sys Ψ' k (sig.raw.entry saved ret rest room frame) s →
+        WellTyped fetch sys Ψ' k (sig.raw.entry saved ret rest room frame above) s →
         SafeN fetch sys k s := by
   rw [FnSigEx.ty, HasTy]
   rfl
@@ -1154,7 +1181,7 @@ theorem Matches.imp {H H' : Ty → BitVec 64 → Prop} {Γ : Ctx} {s : State}
   { regs := fun r hr => himp _ _ (h.regs r hr)
     flags := h.flags
     stackPerm := h.stackPerm
-    stackSize_lt := h.stackSize_lt
+    stackBound := h.stackBound
     stackFits := h.stackFits
     stack := fun k S hk p hp => himp _ _ (h.stack k S hk p hp)
     heapPerm := h.heapPerm

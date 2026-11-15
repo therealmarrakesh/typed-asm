@@ -23,7 +23,7 @@ node. -/
 def nodeShape : Shape := ⟨80, [(0, link)]⟩
 
 /-- The list so far is in `rbx`; nothing is known about the other registers. -/
-def listCtx : Ctx := ⟨fun r => if r = .rbx then link else .int, [], 0, Flags.Any, []⟩
+def listCtx : Ctx := ⟨fun r => if r = .rbx then link else .int, [], 0, Flags.Any, [], 0⟩
 
 /-- The contexts allowed at each label. -/
 inductive At : Label → Ctx → Prop

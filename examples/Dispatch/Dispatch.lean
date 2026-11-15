@@ -26,11 +26,11 @@ def unary : FnSig where
 def tablePtr : Ty := .ptr ⟨16, [(0, unary.ty), (8, unary.ty)]⟩ false 0
 
 /-- After the first call: `rbx` still points to the table. -/
-def withTable : Ctx := ⟨fun r => if r = .rbx then tablePtr else .int, [], 8, Flags.Any, []⟩
+def withTable : Ctx := ⟨fun r => if r = .rbx then tablePtr else .int, [], 8, Flags.Any, [], 0⟩
 
 /-- After the later calls: `r12` also still holds a function pointer. -/
 def withFn : Ctx :=
-  ⟨fun r => if r = .rbx then tablePtr else if r = .r12 then unary.ty else .int, [], 8, Flags.Any, []⟩
+  ⟨fun r => if r = .rbx then tablePtr else if r = .r12 then unary.ty else .int, [], 8, Flags.Any, [], 0⟩
 
 /-- The contexts allowed at each label. -/
 inductive At : Label → Ctx → Prop

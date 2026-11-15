@@ -27,10 +27,10 @@ def computeSig : FnSig where
 
 /-- After the call: nothing is known about any register, and the slot that
 held the function pointer is still allocated. -/
-def afterCtx : Ctx := ⟨fun _ => .int, [.raw 8], 24, Flags.Any, []⟩
+def afterCtx : Ctx := ⟨fun _ => .int, [.raw 8], 24, Flags.Any, [], 0⟩
 
 /-- Nothing is known about any register, and the stack is empty. -/
-def fin : Ctx := ⟨fun _ => .int, [], 32, Flags.Any, []⟩
+def fin : Ctx := ⟨fun _ => .int, [], 32, Flags.Any, [], 0⟩
 
 /-- What the function pointer in `_start` points to: `compute`, entered by a
 caller with one slot on its stack that returns to `afterCall`. -/
@@ -43,7 +43,7 @@ inductive At : Label → Ctx → Prop
   | finish : At .finish fin
   /-- No state matches this context: its flags predicate is never true. So
   nothing can jump here, and the `ud2` is never executed. -/
-  | trap : At .trap ⟨fun _ => .int, [], 0, fun _ => False, []⟩
+  | trap : At .trap ⟨fun _ => .int, [], 0, fun _ => False, [], 0⟩
   | compute (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     computeSig.CallerOk saved ret rest room → At .compute (computeSig.entry saved ret rest room)
 

@@ -26,7 +26,7 @@ def factSig (n : Nat) : FnSig where
   need := 16 * n
 
 /-- Nothing is known about any register. -/
-def fin : Ctx := ⟨fun _ => .int, [], 88, Flags.Any, []⟩
+def fin : Ctx := ⟨fun _ => .int, [], 88, Flags.Any, [], 0⟩
 
 /-- The contexts allowed at each label. -/
 inductive At : Label → Ctx → Prop
@@ -43,7 +43,7 @@ inductive At : Label → Ctx → Prop
   | afterAgain (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (m : Nat) :
     (factSig n).CallerOk saved ret rest (m + 16) →
     At .afterAgain ⟨fun r => if calleeSaved r then saved r else .int,
-      .slot (.eq (num n)) :: .slot (.code ret) :: rest, m + 8, Flags.Any, ret.owned⟩
+      .slot (.eq (num n)) :: .slot (.code ret) :: rest, m + 8, Flags.Any, ret.owned, ret.above⟩
 
 /-- The code typing: those contexts, at the addresses of their labels. -/
 def Φ : CodeTy := .ofLabels code base At

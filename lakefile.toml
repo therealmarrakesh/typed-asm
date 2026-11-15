@@ -1,6 +1,6 @@
 name = "typed-assembly"
 version = "0.1.0"
-defaultTargets = ["TypedAsm", "Sum", "Swap", "Frame", "Ops", "Index", "Echo", "Table", "Dispatch", "List", "Fact", "Buffer", "Keep", "Alloc", "Cat", "Stat", "Args", "Own", "Double", "Fresh", "Pair", "Rejected", "sum", "swap", "frame", "ops", "index", "echo", "table", "dispatch", "list", "fact", "buffer", "keep", "alloc", "cat", "stat", "args", "own", "double", "fresh", "pair"]
+defaultTargets = ["TypedAsm", "Sum", "Swap", "Frame", "Ops", "Index", "Echo", "Table", "Dispatch", "List", "Fact", "Buffer", "Keep", "Alloc", "Cat", "Stat", "Args", "Own", "Double", "Fresh", "Pair", "Lend", "Rejected", "sum", "swap", "frame", "ops", "index", "echo", "table", "dispatch", "list", "fact", "buffer", "keep", "alloc", "cat", "stat", "args", "own", "double", "fresh", "pair", "lend"]
 testDriver = "tests"
 
 # The core library: machine model, instruction set, semantics, type system.
@@ -128,6 +128,16 @@ roots = ["Buffer", "BufferProgram"]
 name = "buffer"
 root = "BufferMain"
 srcDir = "examples/Buffer"
+
+[[lean_lib]]
+name = "Lend"
+srcDir = "examples/Lend"
+roots = ["Lend", "LendProgram"]
+
+[[lean_exe]]
+name = "lend"
+root = "LendMain"
+srcDir = "examples/Lend"
 
 [[lean_lib]]
 name = "Keep"

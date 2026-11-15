@@ -19,6 +19,7 @@ import OwnProgram
 import DoubleProgram
 import FreshProgram
 import PairProgram
+import LendProgram
 
 /-!
 # Whole programs, against a real machine
@@ -60,6 +61,7 @@ def cases : List Case := [
   { label := "list", program := List3.program },
   { label := "fact", program := Fact.program },
   { label := "own", program := Own.program },
+  { label := "lend", program := Lend.program },
   { label := "echo-empty", program := Echo.program },
   { label := "echo-line", program := Echo.program, input := bytesOf "hello, world\n" },
   { label := "echo-bytes", program := Echo.program, input := pattern 5000 },

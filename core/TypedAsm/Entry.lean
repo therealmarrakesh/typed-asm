@@ -122,7 +122,7 @@ above `rsp`; none, unless the program looks at its arguments. The room is
 counted in words here, as the entry contract counts it; in the context it is
 that many bytes. -/
 def entryCtx (room : Nat) (stack : List Shape := []) : Ctx :=
-  ⟨fun _ => .int, stack, 8 * room, Flags.Any, []⟩
+  ⟨fun _ => .int, stack, 8 * room, Flags.Any, [], 0⟩
 
 /-- The context a program that looks at its arguments is entered in: `above`
 eight-byte words at and above `rsp`, as plain bytes. The first is the number
@@ -165,10 +165,10 @@ theorem Entry.matchesStack {H : Ty → BitVec 64 → Prop} {s : State} {σ : Lis
     have := h.stack
     rw [Nat.mul_add] at this
     simpa only [stackBase, stackSize, entryCtx, hσ] using this
-  stackSize_lt := by
+  stackBound := by
     have := h.room_lt
     rw [Nat.mul_add] at this
-    simpa only [stackSize, entryCtx, hσ] using this
+    simpa only [stackSize, entryCtx, hσ, Nat.add_zero] using this
   stackFits := hfits
   stack := hslots
   heapPerm := fun a l hl => h.perms (a, l) (MemTy.mem_of_ofList hl)

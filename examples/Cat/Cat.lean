@@ -19,7 +19,7 @@ about to do argument number `v`: `r13` holds exactly `c`, `r14` exactly `v`,
 and the stack is as the program found it. -/
 def loopCtx (c v : BitVec 64) : Ctx :=
   ⟨fun r => if r = .r13 then .eq c else if r = .r14 then .eq v else .int,
-    [.slot (.eq c), .raw (8 * (c.toNat + 4))], 0, Flags.Any, []⟩
+    [.slot (.eq c), .raw (8 * (c.toNat + 4))], 0, Flags.Any, [], 0⟩
 
 /-- The contexts allowed at each label, one for every number of arguments
 and, in the loop, every argument reached. The descriptor in `r12` is a

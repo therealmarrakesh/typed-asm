@@ -48,8 +48,10 @@ What exists and is checked today:
   stack is described the same way, as pieces laid end to end above the stack
   pointer: a `push` adds a piece of eight bytes, and making room for locals
   adds a piece of as many bytes as are asked for, which can be cut into the
-  locals it holds. An array of any shape can be reached through an index
-  known only by a bound.
+  locals it holds. A local can be handed to a function: its piece of the
+  stack is detached and becomes a block the function is given to own, and is
+  attached again when the function has given it back. An array of any shape
+  can be reached through an index known only by a bound.
 - An assembler core with labels for code and for data. A program is a list
   of lines in segments: any number, in any order, each executable, read-only
   or writable, holding instructions, data or both, with alignment where it is
@@ -61,10 +63,10 @@ What exists and is checked today:
 - A model of the Linux calls a program needs (`read`, `write`, `openat`,
   `close`, `fstat`, `lseek`, `mmap`, `munmap`, `exit`, `exit_group`,
   `clock_gettime`, `getrandom`).
-- Twenty example programs in `examples/`, each built into an executable whose
+- Twenty-one example programs in `examples/`, each built into an executable whose
   safety theorem depends only on Lean's three standard axioms.
 - Tests against real tools: 79,628 instructions against the GNU assembler,
-  13,460 instruction sequences against a real processor, and 41 whole-program
+  13,460 instruction sequences against a real processor, and 42 whole-program
   runs compared with the same programs run as Linux executables.
 
 There is no surface language. The example programs are written as Lean

@@ -90,7 +90,7 @@ theorem WellTyped.addBlock {a : BitVec 64} {L : Layout} (h : WellTyped fetch sys
   { regs := fun r hr => (h.regs r hr).ext he
     flags := h.flags
     stackPerm := h.stackPerm
-    stackSize_lt := h.stackSize_lt
+    stackBound := h.stackBound
     stackFits := h.stackFits
     stack := fun k S hk p hp => (h.stack k S hk p hp).ext he
     heapPerm := fun x l hl => by
@@ -446,7 +446,7 @@ private theorem perm_cons_eraseIdx {α : Type} {l : List α} {k : Nat} {b : α}
 theorem WellTyped.permOwned {L : List (BitVec 64 × Shape)}
     (h : WellTyped fetch sys Ψ n Γ s) (hp : L.Perm Γ.owned) :
     WellTyped fetch sys Ψ n { Γ with owned := L } s :=
-  { regs := h.regs, flags := h.flags, stackPerm := h.stackPerm, stackSize_lt := h.stackSize_lt,
+  { regs := h.regs, flags := h.flags, stackPerm := h.stackPerm, stackBound := h.stackBound,
     stackFits := h.stackFits, stack := h.stack, heapPerm := h.heapPerm, heap := h.heap, stackHeap := h.stackHeap,
     sp := h.sp, text := h.text,
     owned :=
@@ -509,7 +509,7 @@ theorem WellTyped.repiece {pre mid mid' post : List Shape}
     regs := h.regs
     flags := h.flags
     stackPerm := by rw [hb, hz]; exact h.stackPerm
-    stackSize_lt := by rw [hz]; exact h.stackSize_lt
+    stackBound := by rw [hz]; exact h.stackBound
     stackFits := fun T hT q hq => by
       rcases List.mem_append.mp hT with hT | hT
       · rcases List.mem_append.mp hT with hT | hT
@@ -666,5 +666,342 @@ theorem BlockOk.joinStack {a : BitVec 64} {Γ : Ctx} {k : Nat} {S₁ S₂ : Shap
           · exact ⟨0, S₁, q, rfl, hq, rfl, by simp⟩
           · exact ⟨1, S₂, p, rfl, hp, rfl, by simp⟩
         | j + 1, hj => simp at hj)) hrest
+
+/-! ## Handing a piece of the stack to a function
+
+A function is handed memory by being handed a block to own. So that a local
+can be handed over, the topmost pieces of the stack may be detached from it:
+each becomes a block the code owns, at its address, and the stack is that
+much shorter. A block is then an argument like any other. When the function
+has given it back, it is attached again, and is a piece of the stack as
+before, with whatever the function left in it.
+
+Only the top of the stack can be detached, so everything above the piece
+wanted is detached with it and attached again afterwards; in a function that
+includes its return address and its caller's pieces, whatever those are.
+While they are detached nothing reaches them, which is right: the function
+that was called has no business there. -/
+
+/-- The pieces of a stack as blocks, the first of them `off` bytes above `v`. -/
+def stackBlocks (v : BitVec 64) : Nat → List Shape → List (BitVec 64 × Shape)
+  | _, [] => []
+  | off, S :: L => (v + BitVec.ofNat 64 off, S) :: stackBlocks v (off + S.size) L
+
+/-- A range apart from another has every beginning of it apart from that other. -/
+theorem Disjoint.prefix_left {a b : BitVec 64} {n n' m : Nat} (h : Disjoint a n b m)
+    (hle : n' ≤ n) (hn : n < 2 ^ 64) (hm : m < 2 ^ 64) : Disjoint a n' b m := by
+  have := h.symm.sub_right (p := 0) (m' := n') (by omega) hm hn
+  rw [show a + BitVec.ofNat 64 0 = a by simp] at this
+  exact this.symm
+
+/-- A state matching a context matches any context with the same parts. -/
+theorem WellTyped.recast {Γ' : Ctx} (h : WellTyped fetch sys Ψ n Γ s) (hregs : Γ'.regs = Γ.regs)
+    (hstack : Γ'.stack = Γ.stack) (hroom : Γ'.room = Γ.room) (hflags : Γ'.flags = Γ.flags)
+    (howned : Γ'.owned = Γ.owned) (habove : Γ'.above = Γ.above) :
+    WellTyped fetch sys Ψ n Γ' s := by
+  cases Γ
+  cases Γ'
+  simp only at hregs hstack hroom hflags howned habove
+  subst hregs hstack hroom hflags howned habove
+  exact h
+
+/-- **The topmost piece of the stack may be detached**: it becomes a block
+the code owns, at the address it has, and the stack ends below it. -/
+theorem WellTyped.detach {v : BitVec 64} {top : List Shape} {S : Shape}
+    {owned' : List (BitVec 64 × Shape)} {above' : Nat}
+    (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF) (hsp : Γ.regs .rsp = .eq v)
+    (hst : Γ.stack = top ++ [S])
+    (howned : owned' = (v + BitVec.ofNat 64 (stackLen top), S) :: Γ.owned)
+    (habove : above' = Γ.above + S.size) :
+    WellTyped fetch sys Ψ n { Γ with stack := top, owned := owned', above := above' } s := by
+  subst howned habove
+  have hv : s.getReg .rsp = v := by
+    have := h.sp
+    rw [hsp] at this
+    exact hasTy_eq.mp this
+  have hlen : stackLen Γ.stack = stackLen top + S.size := by
+    rw [hst, stackLen_append]
+    simp
+  have hlt := h.stackSize_lt
+  have hSin : S ∈ Γ.stack := by rw [hst]; simp
+  have hsz : stackSize Γ = Γ.room + stackLen top + S.size := by
+    simp only [stackSize, hlen]
+    omega
+  have hle : Γ.room + stackLen top ≤ stackSize Γ := by omega
+  have haddr : stackBase Γ s + BitVec.ofNat 64 (Γ.room + stackLen top)
+      = v + BitVec.ofNat 64 (stackLen top) := by
+    simp only [stackBase, hv]
+    bv_omega
+  -- the stack without its topmost piece
+  have h₁ : WellTyped fetch sys Ψ n { Γ with stack := top, above := Γ.above + S.size } s :=
+    { regs := h.regs
+      flags := h.flags
+      stackPerm := Linux.canWrite_le h.stackPerm hle
+      stackBound := by
+        have := h.stackBound
+        show Γ.room + stackLen top + (Γ.above + S.size) < 2 ^ 64
+        omega
+      stackFits := fun T hT => h.stackFits T (by rw [hst]; exact List.mem_append_left _ hT)
+      stack := fun k T hk p hp => by
+        have hkl : k < top.length := (List.getElem?_eq_some_iff.mp hk).1
+        have := h.stack k T (by rw [hst, List.getElem?_append_left hkl]; exact hk) p hp
+        rwa [hst, stackOff_append_le _ _ (by omega)] at this
+      heapPerm := h.heapPerm
+      heap := h.heap
+      stackHeap := fun a l hl => (h.stackHeap a l hl).prefix_left hle hlt (hΨ.size_lt a l hl)
+      sp := h.sp
+      text := h.text
+      owned :=
+        { perm := h.owned.perm
+          size_lt := h.owned.size_lt
+          fits := h.owned.fits
+          vals := h.owned.vals
+          stack := fun b hb =>
+            (h.owned.stack b hb).prefix_left hle hlt (h.owned.size_lt b hb)
+          heap := h.owned.heap
+          apart := h.owned.apart } }
+  refine h₁.addOwned (b := (v + BitVec.ofNat 64 (stackLen top), S)) ?_ ?_ ?_ ?_ ?_ ?_ ?_
+  · have := State.canWrite_sub h.stackPerm (o := Γ.room + stackLen top) (m := S.size) (by omega)
+    rwa [haddr] at this
+  · show S.size < 2 ^ 64
+    omega
+  · exact h.stackFits S hSin
+  · intro p hp
+    have := h.stack top.length S (by rw [hst]; simp) p hp
+    have ho : stackOff Γ.stack top.length = stackLen top := by
+      rw [hst]
+      have := stackOff_append top [S] 0
+      simpa using this
+    rw [ho, hv] at this
+    show HasTy fetch sys Ψ n p.2
+      (s.load64 (v + BitVec.ofNat 64 (stackLen top) + BitVec.ofNat 64 p.1))
+    rwa [show v + BitVec.ofNat 64 (stackLen top) + BitVec.ofNat 64 p.1
+        = v + BitVec.ofNat 64 (stackLen top + p.1) by bv_omega]
+  · show Disjoint (s.getReg .rsp - BitVec.ofNat 64 Γ.room) (Γ.room + stackLen top)
+      (v + BitVec.ofNat 64 (stackLen top)) S.size
+    rw [hv]
+    refine ⟨fun _ => ?_, fun _ => ?_⟩ <;> bv_omega
+  · intro a l hl
+    have := (h.stackHeap a l hl).symm.sub_right (p := Γ.room + stackLen top) (m' := S.size)
+      (by omega) (hΨ.size_lt a l hl) hlt
+    rw [haddr] at this
+    exact this.symm
+  · intro c hc
+    have := (h.owned.stack c hc).symm.sub_right (p := Γ.room + stackLen top) (m' := S.size)
+      (by omega) (h.owned.size_lt c hc) hlt
+    rw [haddr] at this
+    exact this.symm
+
+/-- **A block that lies where the stack ends may be attached to it**, if it
+was detached from there: it becomes the stack's topmost piece. -/
+theorem WellTyped.attach {v : BitVec 64} {S : Shape} {rest : List (BitVec 64 × Shape)}
+    {stack' : List Shape} {above' : Nat}
+    (h : WellTyped fetch sys Ψ n Γ s) (hsp : Γ.regs .rsp = .eq v)
+    (hown : Γ.owned = (v + BitVec.ofNat 64 (stackLen Γ.stack), S) :: rest)
+    (hS : S.size ≤ Γ.above) (hstack : stack' = Γ.stack ++ [S])
+    (habove : above' = Γ.above - S.size) :
+    WellTyped fetch sys Ψ n { Γ with stack := stack', owned := rest, above := above' } s := by
+  subst hstack habove
+  have hv : s.getReg .rsp = v := by
+    have := h.sp
+    rw [hsp] at this
+    exact hasTy_eq.mp this
+  have hin : (v + BitVec.ofNat 64 (stackLen Γ.stack), S) ∈ Γ.owned := by
+    rw [hown]
+    exact List.mem_cons_self
+  have hsub : ∀ c ∈ rest, c ∈ Γ.owned := fun c hc => by
+    rw [hown]
+    exact List.mem_cons_of_mem _ hc
+  have hpm := h.owned.perm _ hin
+  have hft := h.owned.fits _ hin
+  have hvl := h.owned.vals _ hin
+  have hhp := h.owned.heap _ hin
+  simp only at hpm hft hvl hhp
+  have hap : ∀ c ∈ rest,
+      Disjoint (v + BitVec.ofNat 64 (stackLen Γ.stack)) S.size c.1 c.2.size := by
+    have := h.owned.apart
+    rw [hown] at this
+    exact (List.pairwise_cons.mp this).1
+  have hbound := h.stackBound
+  have hlen : stackLen (Γ.stack ++ [S]) = stackLen Γ.stack + S.size := by
+    rw [stackLen_append]
+    simp
+  have hbase : stackBase Γ s + BitVec.ofNat 64 (stackSize Γ)
+      = v + BitVec.ofNat 64 (stackLen Γ.stack) := by
+    simp only [stackBase, stackSize, hv]
+    bv_omega
+  have hz : stackSize
+      ({ Γ with stack := Γ.stack ++ [S], owned := rest, above := Γ.above - S.size } : Ctx)
+      = stackSize Γ + S.size := by
+    simp only [stackSize, hlen]
+    omega
+  have hb : stackBase
+      ({ Γ with stack := Γ.stack ++ [S], owned := rest, above := Γ.above - S.size } : Ctx) s
+      = stackBase Γ s := rfl
+  exact {
+    regs := h.regs
+    flags := h.flags
+    stackPerm := by
+      rw [hb, hz, State.canWrite_iff]
+      intro i hi
+      by_cases h1 : i < stackSize Γ
+      · exact State.canWrite_iff.mp h.stackPerm i h1
+      · have := State.canWrite_iff.mp hpm (i - stackSize Γ) (by omega)
+        rwa [show v + BitVec.ofNat 64 (stackLen Γ.stack) + BitVec.ofNat 64 (i - stackSize Γ)
+            = stackBase Γ s + BitVec.ofNat 64 i by rw [← hbase]; bv_omega] at this
+    stackBound := by
+      rw [hz]
+      show stackSize Γ + S.size + (Γ.above - S.size) < 2 ^ 64
+      omega
+    stackFits := fun T hT => by
+      rcases List.mem_append.mp hT with hT | hT
+      · exact h.stackFits T hT
+      · simp only [List.mem_singleton] at hT
+        subst hT
+        exact hft
+    stack := fun k T hk p hp => by
+      show HasTy fetch sys Ψ n p.2
+        (s.load64 (s.getReg .rsp + BitVec.ofNat 64 (stackOff (Γ.stack ++ [S]) k + p.1)))
+      have hk' : (Γ.stack ++ [S])[k]? = some T := hk
+      by_cases hkl : k < Γ.stack.length
+      · rw [stackOff_append_le _ _ (by omega)]
+        exact h.stack k T (by rwa [List.getElem?_append_left hkl] at hk') p hp
+      · have hkeq : k = Γ.stack.length := by
+          have := (List.getElem?_eq_some_iff.mp hk').1
+          simp only [List.length_append, List.length_singleton] at this
+          omega
+        subst hkeq
+        have hT : S = T := by simpa using hk'
+        subst hT
+        have ho : stackOff (Γ.stack ++ [S]) Γ.stack.length = stackLen Γ.stack := by
+          have := stackOff_append Γ.stack [S] 0
+          simpa using this
+        rw [ho, hv]
+        have := hvl p hp
+        rwa [show v + BitVec.ofNat 64 (stackLen Γ.stack) + BitVec.ofNat 64 p.1
+            = v + BitVec.ofNat 64 (stackLen Γ.stack + p.1) by bv_omega] at this
+    heapPerm := h.heapPerm
+    heap := h.heap
+    stackHeap := fun a l hl => by
+      rw [hb, hz]
+      have h1 := (h.stackHeap a l hl).symm
+      have h2 := (hhp a l hl).symm
+      rw [← hbase] at h2
+      exact (h1.union_right h2 (by omega)).symm
+    sp := h.sp
+    text := h.text
+    owned :=
+      { perm := fun c hc => h.owned.perm c (hsub c hc)
+        size_lt := fun c hc => h.owned.size_lt c (hsub c hc)
+        fits := fun c hc => h.owned.fits c (hsub c hc)
+        vals := fun c hc => h.owned.vals c (hsub c hc)
+        stack := fun c hc => by
+          rw [hb, hz]
+          have h1 := (h.owned.stack c (hsub c hc)).symm
+          have h2 := (hap c hc).symm
+          rw [← hbase] at h2
+          exact (h1.union_right h2 (by omega)).symm
+        heap := fun c hc => h.owned.heap c (hsub c hc)
+        apart := by
+          have := h.owned.apart
+          rw [hown] at this
+          exact (List.pairwise_cons.mp this).2 } }
+
+/-- Detaching several pieces, the topmost first. -/
+theorem WellTyped.detachAll {v : BitVec 64} (hΨ : Ψ.WF) (L : List Shape) :
+    ∀ {Γ : Ctx} {top : List Shape}, WellTyped fetch sys Ψ n Γ s → Γ.regs .rsp = .eq v →
+      Γ.stack = top ++ L →
+      WellTyped fetch sys Ψ n
+        { Γ with stack := top, owned := stackBlocks v (stackLen top) L ++ Γ.owned,
+                 above := Γ.above + stackLen L } s := by
+  induction L with
+  | nil =>
+    intro Γ top h _ hst
+    exact h.recast rfl (by rw [hst]; simp) rfl rfl rfl rfl
+  | cons S L ih =>
+    intro Γ top h hsp hst
+    have e : stackLen (top ++ [S]) = stackLen top + S.size := by
+      rw [stackLen_append]
+      simp
+    have h₁ := ih (top := top ++ [S]) h hsp (by rw [hst]; simp)
+    exact h₁.detach hΨ (v := v) (top := top) (S := S) hsp rfl
+      (by simp only [stackBlocks, e, List.cons_append])
+      (by simp only [stackLen_cons]; omega)
+
+/-- Attaching several blocks, the lowest first. -/
+theorem WellTyped.attachAll {v : BitVec 64} (L : List Shape) :
+    ∀ {Γ : Ctx} {rest : List (BitVec 64 × Shape)}, WellTyped fetch sys Ψ n Γ s →
+      Γ.regs .rsp = .eq v → Γ.owned = stackBlocks v (stackLen Γ.stack) L ++ rest →
+      stackLen L ≤ Γ.above →
+      WellTyped fetch sys Ψ n
+        { Γ with stack := Γ.stack ++ L, owned := rest, above := Γ.above - stackLen L } s := by
+  induction L with
+  | nil =>
+    intro Γ rest h _ hown _
+    exact h.recast rfl (by simp) rfl rfl (by rw [hown]; rfl) rfl
+  | cons S L ih =>
+    intro Γ rest h hsp hown hL
+    simp only [stackLen_cons] at hL
+    have e : stackLen (Γ.stack ++ [S]) = stackLen Γ.stack + S.size := by
+      rw [stackLen_append]
+      simp
+    have h₁ := h.attach (S := S) (rest := stackBlocks v (stackLen Γ.stack + S.size) L ++ rest)
+      hsp (by rw [hown]; rfl) (by omega) rfl rfl
+    have h₂ := ih h₁ hsp (by show _ = stackBlocks v (stackLen (Γ.stack ++ [S])) L ++ rest; rw [e])
+      (by show stackLen L ≤ Γ.above - S.size; omega)
+    exact h₂.recast rfl (by simp) rfl rfl rfl (by simp only [stackLen_cons]; omega)
+
+/-- **The pieces of the stack from some piece up may be detached**, when the
+stack pointer's value is known: each becomes a block the code owns, and may
+be handed to a function. -/
+theorem BlockOk.detachStack {a : BitVec 64} {Γ : Ctx} {v : BitVec 64} {top L : List Shape}
+    (hsp : Γ.regs .rsp = .eq v) (hst : Γ.stack = top ++ L)
+    (hrest : BlockOk Φ fetch sys Ψ a
+      { Γ with stack := top, owned := stackBlocks v (stackLen top) L ++ Γ.owned,
+               above := Γ.above + stackLen L }) :
+    BlockOk Φ fetch sys Ψ a Γ :=
+  .weaken (fun _ _ hΨ₁ _ _ h => h.detachAll hΨ₁ L hsp hst) hrest
+
+/-- **Blocks detached from the stack may be attached to it again**, lowest
+first, when they lie where the stack ends: they are its topmost pieces as
+before, holding whatever they were left holding. -/
+theorem BlockOk.attachStack {a : BitVec 64} {Γ : Ctx} {v : BitVec 64} {L : List Shape}
+    {rest : List (BitVec 64 × Shape)} (hsp : Γ.regs .rsp = .eq v)
+    (hown : Γ.owned = stackBlocks v (stackLen Γ.stack) L ++ rest) (hL : stackLen L ≤ Γ.above)
+    (hrest : BlockOk Φ fetch sys Ψ a
+      { Γ with stack := Γ.stack ++ L, owned := rest, above := Γ.above - stackLen L }) :
+    BlockOk Φ fetch sys Ψ a Γ :=
+  .weaken (fun _ _ _ _ _ h => h.attachAll L hsp hown hL) hrest
+
+/-- The pieces of a stack below its `k`th come to as many bytes as the `k`th
+is above the stack pointer. -/
+theorem stackLen_take {σ : List Shape} {k : Nat} (hk : k ≤ σ.length) :
+    stackLen (σ.take k) = stackOff σ k := by
+  have := stackOff_append (σ.take k) (σ.drop k) 0
+  rw [List.take_append_drop, List.length_take, Nat.min_eq_left hk] at this
+  simpa using this.symm
+
+/-- A context with the pieces of its stack from the `k`th up detached, when
+its stack pointer holds `v`: what `BlockOk.detachStackAt` leaves. A label
+reached while pieces are detached has a context of this form. -/
+def CtxOf.detach (Γ : Ctx) (v : BitVec 64) (k : Nat) : Ctx :=
+  { Γ with
+    stack := Γ.stack.take k
+    owned := stackBlocks v (stackOff Γ.stack k) (Γ.stack.drop k) ++ Γ.owned
+    above := Γ.above + stackLen (Γ.stack.drop k) }
+
+/-- Detaching the pieces from the `k`th up: the one that begins `d` bytes
+above the stack pointer. -/
+theorem BlockOk.detachStackAt {a : BitVec 64} {Γ : Ctx} {v : BitVec 64} {k d : Nat}
+    (hsp : Γ.regs .rsp = .eq v) (hk : k ≤ Γ.stack.length) (hd : stackOff Γ.stack k = d)
+    (hrest : BlockOk Φ fetch sys Ψ a
+      { Γ with stack := Γ.stack.take k, owned := stackBlocks v d (Γ.stack.drop k) ++ Γ.owned,
+               above := Γ.above + stackLen (Γ.stack.drop k) }) :
+    BlockOk Φ fetch sys Ψ a Γ := by
+  subst hd
+  refine BlockOk.detachStack (top := Γ.stack.take k) (L := Γ.stack.drop k) hsp
+    (List.take_append_drop _ _).symm ?_
+  rw [stackLen_take hk]
+  exact hrest
 
 end TypedAsm

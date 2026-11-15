@@ -165,7 +165,7 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i19) Γ := by ty_step
 
 /-- `rdi` holds a pointer to three integers, or null. -/
 def maybe : Ctx :=
-  ⟨fun r => if r = .rdi then .nullable (.ptr (.raw 24) false 0) else .int, [], 0, Flags.Any, []⟩
+  ⟨fun r => if r = .rdi then .nullable (.ptr (.raw 24) false 0) else .int, [], 0, Flags.Any, [], 0⟩
 
 /-- error: at address 3: cannot type `mov rax, qword ptr [rdi+16]` in the current context
 • loadField: `rdi` must hold a pointer, but its type is `read-only pointer to 24 bytes or null`: it must be tested for null first, and `ty_null` then gives the two cases -/
@@ -195,17 +195,17 @@ def jumps : List (Asm Target) := [
 def jumpFetch : Fetch := Asm.fetch 0 jumps
 
 /-- Nothing is known, and the stack is empty. -/
-def bare : Ctx := ⟨fun _ => .int, [], 0, Flags.Any, []⟩
+def bare : Ctx := ⟨fun _ => .int, [], 0, Flags.Any, [], 0⟩
 
 /-- Eight plain bytes on the stack. -/
-def oneSlot : Ctx := ⟨fun _ => .int, [.raw 8], 0, Flags.Any, []⟩
+def oneSlot : Ctx := ⟨fun _ => .int, [.raw 8], 0, Flags.Any, [], 0⟩
 
 inductive AtTarget : Target → Ctx → Prop
   | start : AtTarget .start bare
   | far : AtTarget .far bare
   | needsSlot : AtTarget .needsSlot oneSlot
   | needsPtr :
-    AtTarget .needsPtr ⟨fun r => if r = .rdi then .ptr (.raw 8) true 0 else .int, [], 0, Flags.Any, []⟩
+    AtTarget .needsPtr ⟨fun r => if r = .rdi then .ptr (.raw 8) true 0 else .int, [], 0, Flags.Any, [], 0⟩
 
 def Φj : CodeTy := .ofLabels jumps 0 AtTarget
 
@@ -244,7 +244,7 @@ def plain : FnSig where
   need := 0
 
 /-- Nothing is known, and there is room for eight more bytes. -/
-def roomy : Ctx := ⟨fun _ => .int, [], 8, Flags.Any, []⟩
+def roomy : Ctx := ⟨fun _ => .int, [], 8, Flags.Any, [], 0⟩
 
 inductive AtCallee : Callee → Ctx → Prop
   | direct : AtCallee .direct bare
@@ -265,6 +265,31 @@ example : BlockOk Φc callFetch linux Ψ (Asm.addr calls 0 .indirect) roomy := b
 /-- error: ty_call: the instruction here is `ret`, not a call -/
 #guard_msgs in
 example : BlockOk Φc callFetch linux Ψ (Asm.addr calls 0 .f) bare := by ty_call plain
+
+/-! ### Handing over a piece of the stack -/
+
+/-- error: ty_stack_detach: the stack pointer's value must be known here (name it with `ty_name .rsp as sp`), and a piece of the stack must begin at that byte -/
+#guard_msgs in
+example (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat)
+    (hK : plain.CallerOk saved ret rest room) :
+    BlockOk Φc callFetch linux Ψ (Asm.addr calls 0 .f) (plain.entry saved ret rest room) := by
+  ty_stack_detach at 8
+
+/-- error: ty_stack_attach: the first block the context owns is not one detached from the stack that lies where the stack now ends; the stack pointer's value must be known too -/
+#guard_msgs in
+example (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat)
+    (hK : plain.CallerOk saved ret rest room) :
+    BlockOk Φc callFetch linux Ψ (Asm.addr calls 0 .f) (plain.entry saved ret rest room) := by
+  ty_stack_attach
+
+/-- error: `ret`: pieces of the stack are still detached; a function must attach them again (`ty_stack_attach`) and leave the stack as it found it -/
+#guard_msgs in
+example (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat)
+    (hK : plain.CallerOk saved ret rest room) :
+    BlockOk Φc callFetch linux Ψ (Asm.addr calls 0 .f) (plain.entry saved ret rest room) := by
+  ty_name .rsp as sp
+  ty_stack_detach at 8
+  ty_block
 
 /-! ## Branching on flags that an instruction leaves
 
@@ -320,7 +345,7 @@ def Φy : CodeTy := fun _ _ => False
 
 /-- `rsi` points to a writable block of the given shape. -/
 def buffer (S : Shape) : Ctx :=
-  ⟨fun r => if r = .rsi then .ptr S true 0 else .int, [], 0, Flags.Any, []⟩
+  ⟨fun r => if r = .rsi then .ptr S true 0 else .int, [], 0, Flags.Any, [], 0⟩
 
 /-- error: `syscall`: the call number in `rax` must be exactly known, but its type is `int` -/
 #guard_msgs in
@@ -391,7 +416,7 @@ def texts : List (Asm Txt) := [
 def textFetch : Fetch := Asm.fetch 0 texts
 
 /-- `rdi` points into text. -/
-def atText : Ctx := ⟨fun r => if r = .rdi then .str false else .int, [], 0, Flags.Any, []⟩
+def atText : Ctx := ⟨fun r => if r = .rdi then .str false else .int, [], 0, Flags.Any, [], 0⟩
 
 /--
 error: at address 4: cannot type `movzx eax, byte ptr [rdi]` in the current context
@@ -428,7 +453,7 @@ def fillFetch : Fetch := Asm.fetch 0 fills
 
 /-- Register `r` points to a writable block of two integers. -/
 def twoAt (r : Reg) : Ctx :=
-  ⟨fun r' => if r' = r then .ptr (.raw 16) true 0 else .int, [], 0, Flags.Any, []⟩
+  ⟨fun r' => if r' = r then .ptr (.raw 16) true 0 else .int, [], 0, Flags.Any, [], 0⟩
 
 /-- error: `fstat` could overwrite something that is not plain bytes: the buffer in `rsi` does not have room in plain bytes of its block for the 144 bytes the kernel stores -/
 #guard_msgs in
@@ -700,25 +725,25 @@ def makeSig : FnSigEx (BitVec 64) where
 
 inductive AtMk : Mk → Ctx → Prop
   | make (saved : Reg → Ty) (ret : BitVec 64 → Ctx) (rest : List Shape) (room : Nat)
-      (frame : List (BitVec 64 × Shape)) :
-    makeSig.CallerOk saved ret rest room frame → AtMk .make (makeSig.entry saved ret rest room frame)
+      (frame : List (BitVec 64 × Shape)) (above : Nat) :
+    makeSig.CallerOk saved ret rest room frame above → AtMk .make (makeSig.entry saved ret rest room frame above)
 
 def Φk : CodeTy := .ofLabels making 0 AtMk
 
 /-- error: `ret`: the return address here is ready for a family of contexts, one for each value the function may hand back; say which the function returns into with `ty_return_as` -/
 #guard_msgs in
 example (saved : Reg → Ty) (ret : BitVec 64 → Ctx) (rest : List Shape) (room : Nat)
-    (frame : List (BitVec 64 × Shape)) (hK : makeSig.CallerOk saved ret rest room frame) :
+    (frame : List (BitVec 64 × Shape)) (above : Nat) (hK : makeSig.CallerOk saved ret rest room frame above) :
     BlockOk Φk makingFetch linux Ψ (Asm.addr making 0 .make)
-      (makeSig.entry saved ret rest room frame) := by
+      (makeSig.entry saved ret rest room frame above) := by
   ty_block
 
 /-- error: `ret`: the blocks owned here are not the ones the function gives back, followed by the caller's own; a function must hand back what its signature says and dispose of anything else it took -/
 #guard_msgs in
 example (saved : Reg → Ty) (ret : BitVec 64 → Ctx) (rest : List Shape) (room : Nat)
-    (frame : List (BitVec 64 × Shape)) (hK : makeSig.CallerOk saved ret rest room frame) :
+    (frame : List (BitVec 64 × Shape)) (above : Nat) (hK : makeSig.CallerOk saved ret rest room frame above) :
     BlockOk Φk makingFetch linux Ψ (Asm.addr making 0 .make)
-      (makeSig.entry saved ret rest room frame) := by
+      (makeSig.entry saved ret rest room frame above) := by
   ty_name .rax as v
   ty_return_as v
   ty_block
@@ -733,7 +758,7 @@ def callingFetch : Fetch := Asm.fetch 0 calling
 /-- error: ty_call: the operand does not hold a pointer to a function with this signature. A register holding the exact address of a function becomes a pointer to it with `ty_fn_ptr` -/
 #guard_msgs in
 example : BlockOk Φk callingFetch linux Ψ (Asm.addr calling 0 .make) roomy := by
-  ty_call makeSig returning fun x => ⟨fun _ => .int, [], 1, Flags.Any, [(x, .raw 4096)]⟩
+  ty_call makeSig returning fun x => ⟨fun _ => .int, [], 1, Flags.Any, [(x, .raw 4096)], 0⟩
 
 /-! ## Accepted, for contrast
 
@@ -819,7 +844,7 @@ take it from. -/
 /-- Two owned blocks; `rbx` holds the address of the second. -/
 def Γo (p q : BitVec 64) : Ctx :=
   ⟨fun r => if r = .rbx then .eq q else .int, [], 0, Flags.Any,
-    [(p, .raw 8), (q, .raw 16)]⟩
+    [(p, .raw 8), (q, .raw 16)], 0⟩
 
 example (p q : BitVec 64)
     (h : BlockOk Φ fetch linux Ψ 0 { Γo p q with owned := [(q, .raw 16), (p, .raw 8)] }) :
@@ -833,7 +858,7 @@ falls in: here the sixth. -/
 /-- Six owned blocks of eight bytes each, the last holding a known value; `rbx` holds the address of the last. -/
 def Γ₆ (a b c d e f : BitVec 64) : Ctx :=
   ⟨fun r => if r = .rbx then .eq f else .int, [], 0, Flags.Any,
-    [(a, .raw 8), (b, .raw 8), (c, .raw 8), (d, .raw 8), (e, .raw 8), (f, ⟨8, [(0, .eq 7)]⟩)]⟩
+    [(a, .raw 8), (b, .raw 8), (c, .raw 8), (d, .raw 8), (e, .raw 8), (f, ⟨8, [(0, .eq 7)]⟩)], 0⟩
 
 example (a b c d e f : BitVec 64) :
     Straight Ψ 10 (Γ₆ a b c d e f) (.mov .w64 (.r_m .rax (.sib (some .rbx) none 0)))
@@ -848,14 +873,14 @@ on in any way at all, and the stack holds one integer above anything at all. -/
 example (more : Shape) (rest : List Shape) :
     ∃ Γ', Straight Ψ 10
       ⟨fun r => if r = .rdi then .ptr ((ShapeOf.raw 16).append more) true 0 else .int, .raw 8 :: rest, 0,
-        Flags.Any, []⟩
+        Flags.Any, [], 0⟩
       (.mov .w64 (.r_m .rax (.sib (some .rdi) none 8))) Γ' :=
   ⟨_, by ty_straight⟩
 
 example (more : Shape) (rest : List Shape) :
     ∃ Γ', Straight Ψ 10
       ⟨fun r => if r = .rdi then .ptr ((ShapeOf.raw 16).append more) true 0 else .int, .raw 8 :: rest, 0,
-        Flags.Any, []⟩
+        Flags.Any, [], 0⟩
       (.mov .w64 (.rm_r (.mem (.sib (some .rsp) none 0)) .rdi)) Γ' :=
   ⟨_, by ty_straight⟩
 
@@ -884,7 +909,7 @@ def node : Shape := ⟨80, [(0, .nullable (.ref 1 true 0))]⟩
 /-- `rbx` points to a node; `rcx` holds exactly `i`. -/
 def filling (i : BitVec 64) : Ctx :=
   ⟨fun r => if r = .rbx then .ptr node true 0 else if r = .rcx then .eq i else .int, [], 0,
-    Flags.Any, []⟩
+    Flags.Any, [], 0⟩
 
 example (i : BitVec 64) (hlt : i.toNat < 64) :
     Straight Ψ 10 (filling i) (.store8 (.sib (some .rbx) (some (.rcx, .s1)) 16) .rax)
@@ -920,7 +945,7 @@ def entryShape : Shape := ⟨24, [(8, .ptr (.raw 16) true 0)]⟩
 /-- `rbx` points at record `k` of an array of `n`. -/
 def walking (n k : Nat) : Ctx :=
   ⟨fun r => if r = .rbx then .ptr (entryShape.rep n) true (24 * k) else .int, [], 0,
-    Flags.Any, []⟩
+    Flags.Any, [], 0⟩
 
 example (n k : Nat) (hk : k < n) :
     Straight Ψ 10 (walking n k) (.mov .w64 (.r_m .rax (.sib (some .rbx) none 8)))
@@ -963,10 +988,10 @@ below `n`. -/
 example (n : Nat) (i : BitVec 64) (hi : i.toNat < n) :
     Straight Ψ 10
       ⟨fun r => if r = .rsi then .ptr ((ShapeOf.mk 8 [(0, .ptr (.raw 16) true 0)]).rep n) false 0
-        else if r = .rcx then .eq i else .int, [], 0, Flags.Any, []⟩
+        else if r = .rcx then .eq i else .int, [], 0, Flags.Any, [], 0⟩
       (.mov .w64 (.r_m .rax (.sib (some .rsi) (some (.rcx, .s8)) 0)))
       ((⟨fun r => if r = .rsi then .ptr ((ShapeOf.mk 8 [(0, .ptr (.raw 16) true 0)]).rep n) false 0
-        else if r = .rcx then .eq i else .int, [], 0, Flags.Any, []⟩ : Ctx).setReg .rax
+        else if r = .rcx then .eq i else .int, [], 0, Flags.Any, [], 0⟩ : Ctx).setReg .rax
           (.ptr (.raw 16) true 0)) := by
   ty_straight
 
@@ -978,7 +1003,7 @@ bytes may be read at any offset; across two pieces none may. -/
 
 /-- `rcx` holds exactly `i`, and the stack is the given pieces. -/
 def frame (i : BitVec 64) (σ : List Shape) : Ctx :=
-  ⟨fun r => if r = .rcx then .eq i else .int, σ, 0, Flags.Any, []⟩
+  ⟨fun r => if r = .rcx then .eq i else .int, σ, 0, Flags.Any, [], 0⟩
 
 example (i : BitVec 64) (h : BlockOk Φ fetch linux Ψ 0 (frame i [.raw 100, .raw 4])) :
     BlockOk Φ fetch linux Ψ 0 (frame i [.raw 104]) := by
@@ -1050,7 +1075,7 @@ def exactFetch : Fetch := Asm.fetch 0 exact
 
 /-- At `out`, `rsi` is exactly `8 + 3 * 8 + 1`. -/
 def Φe : CodeTy := .ofLabels exact 0
-  (fun _ Δ => Δ = ⟨fun r => if r = .rsi then .eq 33 else .int, [], 0, Flags.Any, []⟩)
+  (fun _ Δ => Δ = ⟨fun r => if r = .rsi then .eq 33 else .int, [], 0, Flags.Any, [], 0⟩)
 
 example : BlockOk Φe exactFetch linux Ψ (Asm.addr exact 0 .start) bare := by
   ty_block
@@ -1079,10 +1104,10 @@ def divideFetch : Fetch := Asm.fetch 0 divide
 
 inductive AtDivide : Divide → Ctx → Prop
   | check : AtDivide .check
-      ⟨fun r => if r = .rdi then .ptr (.raw 8) false 0 else .int, [], 0, Flags.Any, []⟩
+      ⟨fun r => if r = .rdi then .ptr (.raw 8) false 0 else .int, [], 0, Flags.Any, [], 0⟩
   | start (a v : BitVec 64) : v ≠ 0 →
     AtDivide .start ⟨fun r => if r = .rax then .eq a else if r = .rcx then .eq v else .int,
-      [], 0, Flags.Any, []⟩
+      [], 0, Flags.Any, [], 0⟩
   | out : AtDivide .out bare
 
 def Φd : CodeTy := .ofLabels divide 0 AtDivide
@@ -1121,7 +1146,7 @@ def signedFetch : Fetch := Asm.fetch 0 signed
 inductive AtSigned : Signed → Ctx → Prop
   | start (a v : BitVec 64) : v ≠ 0 → v ≠ -1 →
     AtSigned .start ⟨fun r => if r = .rax then .eq a else if r = .rcx then .eq v else .int,
-      [], 0, Flags.Any, []⟩
+      [], 0, Flags.Any, [], 0⟩
   | out : AtSigned .out bare
 
 def Φs : CodeTy := .ofLabels signed 0 AtSigned

@@ -15,7 +15,7 @@ namespace Buffer
 /-! ## The typing -/
 
 /-- In the loop the buffer is allocated: sixteen plain bytes of stack. -/
-def looping : Ctx := ⟨fun _ => .int, [.raw 16], 0, Flags.Any, []⟩
+def looping : Ctx := ⟨fun _ => .int, [.raw 16], 0, Flags.Any, [], 0⟩
 
 /-- The contexts allowed at each label. -/
 inductive At : Label → Ctx → Prop

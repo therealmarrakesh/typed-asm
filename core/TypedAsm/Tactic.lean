@@ -27,6 +27,10 @@ needs an argument, typically a fact about values at a branch.
 * `ty_straight` types a single instruction; the two above are built on it.
 * `ty_name r as v` gives the value in a register a name; `ty_name_slot i as v`
   does the same for a stack slot.
+* `ty_stack_detach at d` makes the pieces of the stack from byte `d` up
+  blocks the context owns, so that one can be handed to a function: that is
+  how a function is handed a local. `ty_stack_attach` makes them pieces of
+  the stack again.
 * `ty_open r` and `ty_null r` open a pointer to a kind of block and
   split a value that may be null.
 * `ty_mmap shape` and `ty_mmap_kind tag` type an `mmap` for fresh memory;
@@ -447,8 +451,9 @@ elab "ctx_same" : tactic => withMainContext do
 automatically; register comparisons it cannot settle are left as goals. -/
 macro "ctx_sub" : tactic =>
   `(tactic| first | ctx_same | (
-    refine CtxSub.mk ?regs ?stack ?room ?flags ?sp ?owned
+    refine CtxSub.mk ?regs ?stack ?room ?flags ?sp ?owned ?above
     case owned => rfl
+    case above => first | rfl | omega | (dsimp only; omega)
     case stack => ty_stack
     case room => first | rfl | omega
     case flags => ty_flags
@@ -851,6 +856,8 @@ syntax "ty_name " term " as " ident : tactic
 syntax "ty_name_slot " term " as " ident : tactic
 syntax "ty_stack_split " "at " term : tactic
 syntax "ty_stack_join " "at " term : tactic
+syntax "ty_stack_detach " "at " term : tactic
+syntax "ty_stack_attach" : tactic
 syntax "ty_open " term : tactic
 syntax "ty_null " term : tactic
 syntax "ty_err " term " as " ident : tactic
@@ -1354,11 +1361,43 @@ private partial def normStack (e : Expr) : MetaM Expr := do
     else pure S
   return mkApp3 e'.appFn!.appFn!.appFn! e'.appFn!.appFn!.appArg! hd' (← normStack e'.appArg!)
 
-/-- A context written as its five parts, with each register's type and the
+/-- A count of bytes detached from the stack with as much of it added up as
+is known: a field of a context given by a definition is looked up, and the
+length of a stack written out piece by piece is the sizes of its pieces. -/
+private partial def normAbove (e : Expr) : MetaM Expr := do
+  if e.isAppOfArity ``CtxOf.above 2 then
+    let c ← whnf e.appArg!
+    if c.isAppOfArity ``CtxOf.mk 7 then return ← normAbove c.getAppArgs[6]!
+    return e
+  if e.isAppOfArity ``stackLen 2 then
+    let mut sizes : Array Nat := #[]
+    let mut l ← whnf e.appArg!
+    while l.isAppOfArity ``List.cons 3 do
+      let some n ← natOf (← whnf (← mkAppM ``ShapeOf.size #[l.appFn!.appArg!])) | return e
+      sizes := sizes.push n
+      l ← whnf l.appArg!
+    if sizes.isEmpty then return e
+    let mut out ← if l.isAppOfArity ``List.nil 1 then pure (mkNatLit 0)
+      else pure (mkApp e.appFn! l)
+    if l.isAppOfArity ``List.nil 1 then
+      return mkNatLit (sizes.foldl (· + ·) 0)
+    for n in sizes.reverse do
+      out ← mkAppM ``HAdd.hAdd #[mkNatLit n, out]
+    return out
+  if e.isAppOfArity ``HAdd.hAdd 6 || e.isAppOfArity ``HSub.hSub 6 then
+    let a ← normAbove e.appFn!.appArg!
+    let b ← normAbove e.appArg!
+    match a.nat?, b.nat? with
+    | some x, some y =>
+      return mkNatLit (if e.isAppOfArity ``HAdd.hAdd 6 then x + y else x - y)
+    | _, _ => return mkApp2 e.appFn!.appFn! a b
+  return e
+
+/-- A context written as its six parts, with each register's type and the
 list of owned blocks worked out where a definition stood in for them: a
 signature's field, say. Returns nothing if there was nothing to do. -/
 private def workOutCtx (ctx : Expr) : MetaM (Option Expr) := do
-  unless ctx.isAppOfArity ``CtxOf.mk 6 do return none
+  unless ctx.isAppOfArity ``CtxOf.mk 7 do return none
   let args := ctx.getAppArgs
   let mut regs := args[1]!
   let mut changed := false
@@ -1377,8 +1416,12 @@ private def workOutCtx (ctx : Expr) : MetaM (Option Expr) := do
   unless owned == args[5]! do changed := true
   let stack ← normStack args[2]!
   unless stack == args[2]! do changed := true
+  -- how much is detached from the stack, added up as far as it is known
+  let above ← normAbove args[6]!
+  unless above == args[6]! do changed := true
   unless changed do return none
-  return some (mkAppN ctx.getAppFn (((args.set! 1 regs).set! 2 stack).set! 5 owned))
+  return some (mkAppN ctx.getAppFn
+    ((((args.set! 1 regs).set! 2 stack).set! 5 owned).set! 6 above))
 
 elab_rules : tactic
   | `(tactic| ty_normalize) => do
@@ -2237,6 +2280,17 @@ private def proveAccepts (g : MVarId) : TacticM (List MVarId) := do
         unless sameOwned do
           throwError "the blocks owned do not match: a block taken here must be given back \
             or frozen before control goes there"
+        -- or what has been detached from the stack
+        let sameAbove ← sub.withContext do
+          try
+            let args := (← instantiateMVars (← sub.getType)).getAppArgs
+            let here ← whnf (← mkAppM ``CtxOf.above #[args[0]!])
+            let there ← whnf (← mkAppM ``CtxOf.above #[args[1]!])
+            if here.isRawNatLit && there.isRawNatLit then pure (here == there) else pure true
+          catch _ => pure true
+        unless sameAbove do
+          throwError "what has been detached from the stack does not match: a piece detached \
+            here must be attached again before control goes there"
         throwError "the stack, the free room or the flags do not match"
     rejectImpossible left
     pure left)
@@ -2413,7 +2467,7 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
     let gs ← try
         runOn goal (do evalTactic (← `(tactic|
           refine BlockOk.last (by ty_fetch)
-            (FnSig.ret_of (sig := ?_) (saved := ?_) ?caller ?regs ?sp rfl rfl ?own))))
+            (FnSig.ret_of (sig := ?_) (saved := ?_) ?caller ?regs ?sp rfl rfl ?own ?above))))
       catch _ =>
         let family ← goal.withContext do
           try
@@ -2440,9 +2494,30 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
             | assumption
             | exact FnSigEx.CallerOk.each (by assumption) _)))
         catch _ =>
+          -- with pieces of the stack detached, the stack is not the one the caller expects
+          let detached ← goal.withContext do
+            try
+              let t := (← instantiateMVars (← goal.getType)).consumeMData
+              let above ← normAbove (← mkAppM ``CtxOf.above #[t.appArg!])
+              pure !(above.isAppOfArity ``CtxOf.above 2 || above.isProj)
+            catch _ => pure false
+          if detached then
+            throwError "`ret`: pieces of the stack are still detached; a function must attach \
+              them again (`ty_stack_attach`) and leave the stack as it found it"
           throwError "`ret` needs the caller's requirement (`sig.CallerOk …`) among the hypotheses"
       else if t.isAppOf ``Sub then
         left := left ++ (← runOn g (do evalTactic (← `(tactic| ty_sub))))
+      else if (← g.getTag).eraseMacroScopes == `above then
+        try
+          discard <| deep <| runOn g (do evalTactic (← `(tactic| first
+            | rfl
+            | exact (FnSigEx.CallerOk.detached (by assumption) _).symm
+            | omega
+            | (dsimp only; omega)
+            | (simp only [← FnSigEx.CallerOk.detached (by assumption)]; omega))))
+        catch _ =>
+          throwError "`ret`: a piece detached from the stack has not been attached again; a \
+            function must leave the stack as it found it"
       else if t.isAppOf ``Eq then
         try
           discard <| deep <| runOn g (do evalTactic (← `(tactic| first
@@ -2629,7 +2704,7 @@ elab "ty_call " sig:term : tactic => do
       let gs ← try
           runOn typed (do evalTactic (← `(tactic|
             refine FnSig.callInd_ok (sig := $sig) (saved := ?_) (ret := ?_) (rest := ?_)
-              ?callee rfl ?retpoint ?args ?sp ?stack ?own)))
+              ?callee rfl ?retpoint ?args ?sp ?stack ?own ?above)))
         catch _ => throwError (← noRoom instr)
       let callee ← goalNamed gs `callee
       try
@@ -2653,6 +2728,11 @@ elab "ty_call " sig:term : tactic => do
         discard <| runOn (← goalNamed gs `own) (do evalTactic (← `(tactic| rfl)))
       catch _ =>
         throwError "ty_call: the blocks owned here are not the ones owned at the return point"
+      try
+        discard <| runOn (← goalNamed gs `above) (do evalTactic (← `(tactic| first | rfl | omega | (dsimp only; omega))))
+      catch _ =>
+        throwError "ty_call: what is detached from the stack here is not what is detached at \
+          the return point"
       setGoals (left ++ others)
       return
   | some instr => throwError "ty_call: the instruction here is `{instr.toAsm}`, not a call"
@@ -2741,7 +2821,7 @@ elab "ty_call " sig:term " returning " ret:term : tactic => do
           the return address"
   let mut left : List MVarId := []
   if direct then
-    let [entry] ← runOn (← goalNamed gs `callee) (do evalTactic (← `(tactic| intro _ _ _ _ _ hK)))
+    let [entry] ← runOn (← goalNamed gs `callee) (do evalTactic (← `(tactic| intro _ _ _ _ _ _ hK)))
       | throwError "ty_call: unexpected goals"
     left := left ++ (← proveAtLabel entry (pure []))
   else
@@ -2836,7 +2916,7 @@ elab "ty_fn_ptr " r:term " to " sig:term : tactic => do
         throwError "ty_fn_ptr: the register does not hold an exactly known address here"
   discard <| runOn (← goalNamed gs `ne) (do evalTactic (← `(tactic| decide)))
   let [entry] ← runOn (← goalNamed gs `here) (do
-      if chosen then evalTactic (← `(tactic| intro _ _ _ _ _ hK))
+      if chosen then evalTactic (← `(tactic| intro _ _ _ _ _ _ hK))
       else evalTactic (← `(tactic| intro _ _ _ _ hK)))
     | throwError "ty_fn_ptr: unexpected goals"
   let left ← try
@@ -3173,7 +3253,7 @@ elab_rules : tactic
 /-- Applies to the block goal the first of the tactics made for the pieces
 of its stack that works, leaving the rest of the block. -/
 private def atStackPiece (name : String) (mk : Nat → TacticM (TSyntax `tactic))
-    (failure : MessageData) : TacticM Unit := withMainContext do
+    (failure : MessageData) (past : Nat := 0) : TacticM Unit := withMainContext do
   let others := (← getGoals).drop 1
   setGoals [← getMainGoal]
   evalTactic (← `(tactic| ty_normalize))
@@ -3181,7 +3261,7 @@ private def atStackPiece (name : String) (mk : Nat → TacticM (TSyntax `tactic)
   let t := (← instantiateMVars (← goal.getType)).consumeMData
   unless t.isAppOfArity ``BlockOk 6 do throwError "{name}: the goal is not a block"
   let n ← stackCount (← mkAppM ``CtxOf.stack #[t.appArg!])
-  for k in [0:n] do
+  for k in [0:n + past] do
     let saved ← saveState
     try
       setGoals [goal]
@@ -3216,6 +3296,88 @@ elab_rules : tactic
           refine BlockOk.joinStackAt (k := $kq) (d := $d) rfl rfl ?meet ?rest
           case meet => ty_stack_in)))
       m!"ty_stack_join: no two pieces of the stack meet there"
+
+/-- `ty_stack_detach at d`: the pieces of the stack from the one that begins
+`d` bytes above the stack pointer up are from here on blocks the context
+owns, first among those it owns, and the stack ends below them. A block can
+be handed to a function, which is how a function is handed a local. The
+stack pointer's value must be known: name it first with `ty_name .rsp as sp`. -/
+elab_rules : tactic
+  | `(tactic| ty_stack_detach at $d) =>
+    atStackPiece "ty_stack_detach" (fun k => do
+      let kq := Syntax.mkNumLit (toString k)
+      `(tactic| (
+          refine BlockOk.detachStackAt (v := ?_) (k := $kq) (d := $d) ?sp ?len ?off ?rest
+          case sp => rfl
+          case len => first | decide | (simp only [List.length_cons, List.length_nil]; omega)
+          case off => first | rfl | (simp [stackOff]; done))))
+      m!"ty_stack_detach: the stack pointer's value must be known here (name it with \
+        `ty_name .rsp as sp`), and a piece of the stack must begin at that byte"
+      -- the pieces not written out may be detached by themselves
+      (past := 1)
+
+/-- Attaches to the stack the first block owned, or with `single` unset a
+run of blocks standing for pieces not written out, and returns the rest of
+the block. -/
+private def attachOnce (goal : MVarId) (single : Bool) : TacticM MVarId := do
+  let tac ← if single then
+      `(tactic| refine BlockOk.attachStack (v := ?_) (L := [?_]) (rest := ?_) ?_ ?_ ?_ ?_)
+    else `(tactic| refine BlockOk.attachStack (v := ?_) (L := ?_) (rest := ?_) ?_ ?_ ?_ ?_)
+  let gs ← runOn goal (do evalTactic tac)
+  -- the equations first: they settle the stack pointer's value and what is attached
+  for g in gs do
+    if ← g.isAssigned then continue
+    if (← instantiateMVars (← g.getType)).isAppOf ``Eq then
+      discard <| runOn g (do evalTactic (← `(tactic| rfl)))
+  let mut rest? : Option MVarId := none
+  for g in gs do
+    if ← g.isAssigned then continue
+    let t ← instantiateMVars (← g.getType)
+    if t.isAppOf ``BlockOk then rest? := some g
+    else if t.isAppOf ``LE.le then
+      discard <| runOn g (do evalTactic (← `(tactic| first
+        | decide
+        | omega
+        | (simp only [stackLen_cons, stackLen_nil, ShapeOf.slot_size, ShapeOf.raw_size]; omega))))
+  let some rest := rest? | throwError "nothing is left of the block"
+  return rest
+
+/-- `ty_stack_attach`: the blocks the context owns that were detached from
+the stack, and lie where the stack now ends, are from here on its topmost
+pieces again, holding whatever they were left holding. They must come first
+among the blocks owned, lowest first, as `ty_stack_detach` left them. -/
+elab_rules : tactic
+  | `(tactic| ty_stack_attach) => withMainContext do
+    let others := (← getGoals).drop 1
+    setGoals [← getMainGoal]
+    evalTactic (← `(tactic| ty_normalize))
+    let mut goal ← getMainGoal
+    let mut any := false
+    for _ in [0:64] do
+      let saved ← saveState
+      let next? ← try
+          let g ← Tactic.withoutRecover (attachOnce goal true)
+          setGoals [g]
+          evalTactic (← `(tactic| ty_normalize))
+          pure (some (← getMainGoal))
+        catch _ =>
+          saved.restore
+          try
+            let g ← Tactic.withoutRecover (attachOnce goal false)
+            setGoals [g]
+            evalTactic (← `(tactic| ty_normalize))
+            pure (some (← getMainGoal))
+          catch _ =>
+            saved.restore
+            pure none
+      let some next := next? | break
+      goal := next
+      any := true
+    unless any do
+      throwError "ty_stack_attach: the first block the context owns is not one detached from \
+        the stack that lies where the stack now ends; the stack pointer's value must be known \
+        too"
+    setGoals (goal :: others)
 
 /-- Applies a rule about the owned block at one of the places in the
 context's list, whichever fits, and returns the goals it leaves. -/

@@ -31,13 +31,13 @@ def doubleSig (p : BitVec 64) : FnSig where
 /-- Back from the call: `rbx` still holds the page's address, and the page
 is the program's again. -/
 def backCtx (p : BitVec 64) : Ctx :=
-  ⟨fun r => if r = .rbx then .eq p else .int, [], 8, Flags.Any, [(p, words)]⟩
+  ⟨fun r => if r = .rbx then .eq p else .int, [], 8, Flags.Any, [(p, words)], 0⟩
 
 /-- Inside the function: `rdi` holds the page's address, the page is the
 function's, and after it come whatever blocks the caller owns besides. -/
 def inside (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) : Ctx :=
   ⟨fun r => if r = .rdi then .eq p else if calleeSaved r then saved r else .int,
-    .slot (.code ret) :: rest, room, Flags.Any, (p, words) :: ret.owned.drop 1⟩
+    .slot (.code ret) :: rest, room, Flags.Any, (p, words) :: ret.owned.drop 1, ret.above⟩
 
 /-- The contexts allowed at each label. -/
 inductive At : Label → Ctx → Prop

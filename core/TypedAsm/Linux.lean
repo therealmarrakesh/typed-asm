@@ -524,7 +524,7 @@ theorem mmap_ok {sys : Syscall} {len : BitVec 64} {S : Shape} {tag : Option Nat}
           { regs := fun r hr => by rw [hg]; exact (h.regs r hr).ext hext
             flags := h.flags
             stackPerm := by rw [hb]; exact hwr _ _ h.stackPerm
-            stackSize_lt := h.stackSize_lt
+            stackBound := h.stackBound
             stackFits := h.stackFits
             stack := fun k S hk p hp => by
               have hw := h.canWrite_stack (lo := stackOff Γ.stack k + p.1) (m := 8) (h.stack_in hk hp)
@@ -967,7 +967,7 @@ theorem mapZero_ok {sys : Syscall} {a : BitVec 64} {size : Nat}
     regs := fun r hr => by rw [hg]; exact h.regs r hr
     flags := h.flags
     stackPerm := by rw [hb]; exact hwr _ _ h.stackPerm
-    stackSize_lt := h.stackSize_lt
+    stackBound := h.stackBound
     stackFits := h.stackFits
     stack := fun k S hk p hp => by
       have hw := h.canWrite_stack (lo := stackOff Γ.stack k + p.1) (m := 8) (h.stack_in hk hp)

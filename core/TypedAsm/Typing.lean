@@ -76,17 +76,20 @@ theorem Sub.trans {τ υ φ : Ty} (h₁ : Sub τ υ) (h₂ : Sub υ φ) : Sub τ
 the value it stands for. -/
 theorem FnSigEx.CallerOk.toRaw {ι : Type} [Chosen ι] {sig : FnSigEx ι} {saved : Reg → Ty}
     {ret : ι → Ctx} {rest : List Shape} {room : Nat} {frame : List (BitVec 64 × Shape)}
-    (h : sig.CallerOk saved ret rest room frame) :
-    sig.raw.CallerOk saved (fun s => ret (Chosen.dec s)) rest room frame :=
-  ⟨fun s => h.each (Chosen.dec s), fun s => h.frame (Chosen.dec s)⟩
+    {above : Nat}
+    (h : sig.CallerOk saved ret rest room frame above) :
+    sig.raw.CallerOk saved (fun s => ret (Chosen.dec s)) rest room frame above :=
+  ⟨fun s => h.each (Chosen.dec s), fun s => h.frame (Chosen.dec s),
+    fun s => h.detached (Chosen.dec s)⟩
 
 /-- A caller ready for each sequence is ready for each chosen value, written
 as a sequence. -/
 theorem FnSigEx.CallerOk.ofRaw {ι : Type} [Chosen ι] {sig : FnSigEx ι} {saved : Reg → Ty}
     {ret : (Nat → BitVec 64) → Ctx} {rest : List Shape} {room : Nat}
-    {frame : List (BitVec 64 × Shape)} (h : sig.raw.CallerOk saved ret rest room frame) :
-    sig.CallerOk saved (fun x => ret (Chosen.enc x)) rest room frame := by
-  refine ⟨fun x => ?_, fun x => ?_⟩
+    {frame : List (BitVec 64 × Shape)} {above : Nat}
+    (h : sig.raw.CallerOk saved ret rest room frame above) :
+    sig.CallerOk saved (fun x => ret (Chosen.enc x)) rest room frame above := by
+  refine ⟨fun x => ?_, fun x => ?_, fun x => h.detached (Chosen.enc x)⟩
   · have := h.each (Chosen.enc x)
     simpa only [FnSigEx.raw, FnSigEx.pick, Chosen.dec_enc] using this
   · have := h.frame (Chosen.enc x)
@@ -111,7 +114,7 @@ theorem SubList.refl : ∀ σ : List Shape, SubList σ σ
   | S :: σ => .cons (.refl S) (SubList.refl σ)
 
 theorem CtxSub.refl (Γ : Ctx) : CtxSub Γ Γ :=
-  ⟨fun _ _ => .refl _, .refl _, rfl, fun _ h => h, .refl _, rfl⟩
+  ⟨fun _ _ => .refl _, .refl _, rfl, fun _ h => h, .refl _, rfl, rfl⟩
 
 /-- The code at `a` may be entered from a state matching `Γ`: one of the
 contexts allowed there is `Γ` or weaker. -/
@@ -144,7 +147,8 @@ theorem Sub.shift_congr {τ : Ty} {a b : BitVec 64} (h : a = b) : Sub (τ.shift 
 theorem CtxSub.ofMoved {Γ Δ : Ctx} {d : BitVec 64} {stack : List Shape} {room : Nat}
     (hregs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (Δ.regs r)) (hstack : SubList stack Δ.stack)
     (hroom : room = Δ.room) (hflags : ∀ f, Γ.flags f → Δ.flags f)
-    (hsp : Sub ((Γ.regs .rsp).shift d) (Δ.regs .rsp)) (howned : Γ.owned = Δ.owned) :
+    (hsp : Sub ((Γ.regs .rsp).shift d) (Δ.regs .rsp)) (howned : Γ.owned = Δ.owned)
+    (habove : Γ.above = Δ.above := by rfl) :
     CtxSub { Γ.moveSp d with stack := stack, room := room } Δ :=
   ⟨fun r hr => by
       show Sub ((Γ.moveSp d).regs r) _
@@ -153,7 +157,7 @@ theorem CtxSub.ofMoved {Γ Δ : Ctx} {d : BitVec 64} {stack : List Shape} {room 
     hstack, hroom, hflags, by
       show Sub ((Γ.moveSp d).regs .rsp) _
       rw [CtxOf.moveSp_sp]
-      exact hsp, howned⟩
+      exact hsp, howned, habove⟩
 
 /-- Whether the operation reads the carry flag. -/
 def AluOp.readsCarry : AluOp → Bool
@@ -986,7 +990,7 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
     Holds Ψ next Γ rm sig.ty → Γ.room = m + 8 → Φ next ret →
     (∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn (Γ.moveSp (-8)).regs r)) →
     Sub ((Γ.regs .rsp).shift (-8)) (sig.regsIn (Γ.moveSp (-8)).regs .rsp) →
-    CtxSub (sig.returned (Γ.moveSp (-8)).regs Γ.stack m ret.owned) ret → sig.need ≤ m →
+    CtxSub (sig.returned (Γ.moveSp (-8)).regs Γ.stack m ret.owned Γ.above) ret → sig.need ≤ m →
     ret.owned.take sig.gives.length = sig.gives →
     Γ.owned = sig.takes ++ ret.owned.drop sig.gives.length →
     HasType Φ fetch sys Ψ next Γ (.call (.ind rm))
@@ -1004,7 +1008,7 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
     Holds Ψ next Γ rm sig.ty → Γ.room = m + 8 → (∀ x, Φ next (ret x)) →
     (∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn (Γ.moveSp (-8)).regs r)) →
     Sub ((Γ.regs .rsp).shift (-8)) (sig.regsIn (Γ.moveSp (-8)).regs .rsp) →
-    (∀ x, CtxSub ((sig.pick x).returned (Γ.moveSp (-8)).regs Γ.stack m (ret x).owned) (ret x)) →
+    (∀ x, CtxSub ((sig.pick x).returned (Γ.moveSp (-8)).regs Γ.stack m (ret x).owned Γ.above) (ret x)) →
     sig.need ≤ m → (∀ x, (ret x).owned.take (sig.gives x).length = sig.gives x) →
     (∀ x, (ret x).owned.drop (sig.gives x).length = frame) →
     Γ.owned = sig.takes ++ frame →
@@ -1012,9 +1016,10 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
   /-- Jump to such a function through a pointer to it: a tail call, made on
   behalf of a caller that is ready for whatever value is chosen. -/
   | jmpFnAll {ι : Type} [Chosen ι] {Γ : Ctx} {ret : ι → Ctx} {rm : RM} {sig : FnSigEx ι}
-      {saved : Reg → Ty} {rest : List Shape} {room : Nat} {frame : List (BitVec 64 × Shape)} :
-    Holds Ψ next Γ rm sig.ty → sig.CallerOk saved ret rest room frame →
-    CtxSub Γ (sig.entry saved ret rest room frame) → HasType Φ fetch sys Ψ next Γ (.jmp (.ind rm))
+      {saved : Reg → Ty} {rest : List Shape} {room : Nat} {frame : List (BitVec 64 × Shape)}
+      {above : Nat} :
+    Holds Ψ next Γ rm sig.ty → sig.CallerOk saved ret rest room frame above →
+    CtxSub Γ (sig.entry saved ret rest room frame above) → HasType Φ fetch sys Ψ next Γ (.jmp (.ind rm))
   /-- Jump to a function through a pointer to it: a tail call, made on
   behalf of the caller the current function would have returned to. -/
   | jmpFn {Γ ret : Ctx} {rm : RM} {sig : FnSig} {saved : Reg → Ty} {rest : List Shape}

@@ -94,7 +94,7 @@ theorem MemTy.wf_of_check {bs : List (BitVec 64 × Layout)} (h : MemTy.check bs 
 /-- The parts of "the state matches the context" that are decided by
 computation: permissions, sizes, and that no block overlaps the stack. -/
 def stateCheck (bs : List (BitVec 64 × Layout)) (Γ : Ctx) (s : State) : Bool :=
-  s.canWrite (stackBase Γ s) (stackSize Γ) && decide (stackSize Γ < 2 ^ 64) &&
+  s.canWrite (stackBase Γ s) (stackSize Γ) && decide (stackSize Γ + Γ.above < 2 ^ 64) &&
   bs.all (fun x =>
     s.canRead x.1 x.2.size && (!x.2.writable || s.canWrite x.1 x.2.size) &&
     decide (Disjoint (stackBase Γ s) (stackSize Γ) x.1 x.2.size))
@@ -120,7 +120,7 @@ theorem Matches.ofCheck {H : Ty → BitVec 64 → Prop} {bs : List (BitVec 64 ×
     regs := hregs
     flags := hflags
     stackPerm := hsp
-    stackSize_lt := hsz
+    stackBound := hsz
     stackFits := hfits
     stack := hstack
     heapPerm := fun a l hl => by
