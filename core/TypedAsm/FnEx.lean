@@ -25,7 +25,7 @@ omit [Chosen ι] in
 /-- At its return into `ret x`, a function that owns the blocks it gives for
 `x` and after them what the caller owned besides owns what `ret x` expects. -/
 theorem CallerOk.owned_back {sig : FnSigEx ι} {saved : Reg → Ty} {ret : ι → Ctx}
-    {rest : List Ty} {room : Nat} {frame owned : List (BitVec 64 × List Ty)}
+    {rest : List Ty} {room : Nat} {frame owned : List (BitVec 64 × Shape)}
     (h : sig.CallerOk saved ret rest room frame) (x : ι)
     (ho : owned = sig.gives x ++ frame) : owned = (ret x).owned :=
   (h.each x).owned_back (by
@@ -35,7 +35,7 @@ theorem CallerOk.owned_back {sig : FnSigEx ι} {saved : Reg → Ty} {ret : ι �
 
 /-- The caller left room for the function's own stack use, and possibly more. -/
 theorem CallerOk.room_split {sig : FnSigEx ι} {saved : Reg → Ty} {ret : ι → Ctx}
-    {rest : List Ty} {room : Nat} {frame : List (BitVec 64 × List Ty)}
+    {rest : List Ty} {room : Nat} {frame : List (BitVec 64 × Shape)}
     (h : sig.CallerOk saved ret rest room frame) : ∃ m, room = m + sig.need :=
   ⟨room - sig.need, by
     have := (h.each (Chosen.dec fun _ => 0)).room
@@ -49,7 +49,7 @@ and whatever value the function chooses, what it returns is acceptable at
 the instruction after the call. -/
 theorem call_ok {sig : FnSigEx ι} {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
     {next : BitVec 64} {Γ : Ctx} {ret : ι → Ctx} {d : BitVec 32} {m : Nat}
-    {frame : List (BitVec 64 × List Ty)}
+    {frame : List (BitVec 64 × Shape)}
     (hf : sig.At Φ (next + d.signExtend 64)) (hroom : Γ.room = m + 1)
     (hret : ∀ x, Φ next (ret x))
     (hargs : ∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn (Γ.moveSp (-8)).regs r))

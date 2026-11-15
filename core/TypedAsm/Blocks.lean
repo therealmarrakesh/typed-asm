@@ -131,6 +131,7 @@ theorem Matches.ofCheck {H : Ty → BitVec 64 → Prop} {bs : List (BitVec 64 ×
     owned :=
       { perm := fun b hb => by rw [howned] at hb; cases hb
         size_lt := fun b hb => by rw [howned] at hb; cases hb
+        fits := fun b hb => by rw [howned] at hb; cases hb
         vals := fun b hb => by rw [howned] at hb; cases hb
         stack := fun b hb => by rw [howned] at hb; cases hb
         heap := fun b hb => by rw [howned] at hb; cases hb

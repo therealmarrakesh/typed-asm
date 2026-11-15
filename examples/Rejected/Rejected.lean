@@ -331,7 +331,7 @@ example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .unknown) bare := by ty_
 #guard_msgs in
 example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .unmodelled) bare := by ty_block
 
-/-- error: `read` needs `rsi` to hold a writable pointer to the buffer, the address of stack slots taken with `lea` once `rsp` has a name, or the address of a field of a block the context owns, but its type is `int` -/
+/-- error: `read` needs `rsi` to hold a writable pointer to the buffer, the address of stack slots taken with `lea` once `rsp` has a name, or the address of a byte of a block the context owns, but its type is `int` -/
 #guard_msgs in
 example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .noBuffer) bare := by ty_block
 
@@ -437,7 +437,7 @@ def twoAt (r : Reg) : Ctx :=
 #guard_msgs in
 example : BlockOk Φy fillFetch linux Ψ (Asm.addr fills 0 .statSmall) (twoAt .rsi) := by ty_block
 
-/-- error: `clock_gettime` needs `rsi` to hold a writable pointer to the buffer, the address of stack slots taken with `lea` once `rsp` has a name, or the address of a field of a block the context owns, but its type is `int` -/
+/-- error: `clock_gettime` needs `rsi` to hold a writable pointer to the buffer, the address of stack slots taken with `lea` once `rsp` has a name, or the address of a byte of a block the context owns, but its type is `int` -/
 #guard_msgs in
 example : BlockOk Φy fillFetch linux Ψ (Asm.addr fills 0 .clockInt) bare := by ty_block
 
@@ -613,7 +613,7 @@ example : BlockOk Φm ownFetch linux Ψ (Asm.addr owning 0 .afterFree) bare := b
 
 /--
 error: ty_split: could not show
-  512 < (List.replicate 512 Ty.int).length
+  4097 ≤ 4096
 -/
 #guard_msgs in
 example : BlockOk Φm ownFetch linux Ψ (Asm.addr owning 0 .afterFree) bare := by
@@ -623,7 +623,7 @@ example : BlockOk Φm ownFetch linux Ψ (Asm.addr owning 0 .afterFree) bare := b
   · ty_step
     ty_branch
     ty_step
-    ty_split .rbx at 512
+    ty_split .rbx at 4097
     ty_block
 
 /-! A function handed a page must hand it back: it may not give it to the
@@ -648,8 +648,8 @@ def pageSig (p : BitVec 64) : FnSig where
   results := fun _ => .int
   preserved := calleeSaved
   need := 0
-  takes := [(p, List.replicate 512 .int)]
-  gives := [(p, List.replicate 512 .int)]
+  takes := [(p, .raw 4096)]
+  gives := [(p, .raw 4096)]
 
 inductive AtFn : Fn → Ctx → Prop
   | drops (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
@@ -673,9 +673,8 @@ example (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room 
 /--
 error: at address 13: cannot type `mov rax, qword ptr [rdi+rcx*8]` in the current context
 • loadIndexed: `rdi` must hold a pointer, but its type is `exactly p`
-• loadOwned: the address is not known to be that of a field of a block the context owns
-• loadOwnedAt: the field is not known to be inside the block: a bound on the index is needed among the hypotheses
-• loadInt: `rdi` must hold a pointer, but its type is `exactly p`
+• loadOwned: the address is not known to be inside a block the context owns
+• loadInt: the bytes are not known to be inside the block: a bound on the index is needed among the hypotheses
 -/
 #guard_msgs in
 example (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat)
@@ -702,11 +701,11 @@ def makeSig : FnSigEx (BitVec 64) where
   preserved := calleeSaved
   need := 0
   results := fun x r => if r = .rax then .eq x else .int
-  gives := fun x => [(x, List.replicate 512 .int)]
+  gives := fun x => [(x, .raw 4096)]
 
 inductive AtMk : Mk → Ctx → Prop
   | make (saved : Reg → Ty) (ret : BitVec 64 → Ctx) (rest : List Ty) (room : Nat)
-      (frame : List (BitVec 64 × List Ty)) :
+      (frame : List (BitVec 64 × Shape)) :
     makeSig.CallerOk saved ret rest room frame → AtMk .make (makeSig.entry saved ret rest room frame)
 
 def Φk : CodeTy := .ofLabels making 0 AtMk
@@ -714,7 +713,7 @@ def Φk : CodeTy := .ofLabels making 0 AtMk
 /-- error: `ret`: the return address here is ready for a family of contexts, one for each value the function may hand back; say which the function returns into with `ty_return_as` -/
 #guard_msgs in
 example (saved : Reg → Ty) (ret : BitVec 64 → Ctx) (rest : List Ty) (room : Nat)
-    (frame : List (BitVec 64 × List Ty)) (hK : makeSig.CallerOk saved ret rest room frame) :
+    (frame : List (BitVec 64 × Shape)) (hK : makeSig.CallerOk saved ret rest room frame) :
     BlockOk Φk makingFetch linux Ψ (Asm.addr making 0 .make)
       (makeSig.entry saved ret rest room frame) := by
   ty_block
@@ -722,7 +721,7 @@ example (saved : Reg → Ty) (ret : BitVec 64 → Ctx) (rest : List Ty) (room : 
 /-- error: `ret`: the blocks owned here are not the ones the function gives back, followed by the caller's own; a function must hand back what its signature says and dispose of anything else it took -/
 #guard_msgs in
 example (saved : Reg → Ty) (ret : BitVec 64 → Ctx) (rest : List Ty) (room : Nat)
-    (frame : List (BitVec 64 × List Ty)) (hK : makeSig.CallerOk saved ret rest room frame) :
+    (frame : List (BitVec 64 × Shape)) (hK : makeSig.CallerOk saved ret rest room frame) :
     BlockOk Φk makingFetch linux Ψ (Asm.addr making 0 .make)
       (makeSig.entry saved ret rest room frame) := by
   ty_name .rax as v
@@ -739,7 +738,7 @@ def callingFetch : Fetch := Asm.fetch 0 calling
 /-- error: ty_call: the operand does not hold a pointer to a function with this signature. A register holding the exact address of a function becomes a pointer to it with `ty_fn_ptr` -/
 #guard_msgs in
 example : BlockOk Φk callingFetch linux Ψ (Asm.addr calling 0 .make) roomy := by
-  ty_call makeSig returning fun x => ⟨fun _ => .int, [], 1, Flags.Any, [(x, List.replicate 512 .int)]⟩
+  ty_call makeSig returning fun x => ⟨fun _ => .int, [], 1, Flags.Any, [(x, .raw 4096)]⟩
 
 /-! ## Accepted, for contrast
 
@@ -825,10 +824,10 @@ take it from. -/
 /-- Two owned blocks; `rbx` holds the address of the second. -/
 def Γo (p q : BitVec 64) : Ctx :=
   ⟨fun r => if r = .rbx then .eq q else .int, [], 0, Flags.Any,
-    [(p, [.int]), (q, [.int, .int])]⟩
+    [(p, .raw 8), (q, .raw 16)]⟩
 
 example (p q : BitVec 64)
-    (h : BlockOk Φ fetch linux Ψ 0 { Γo p q with owned := [(q, [.int, .int]), (p, [.int])] }) :
+    (h : BlockOk Φ fetch linux Ψ 0 { Γo p q with owned := [(q, .raw 16), (p, .raw 8)] }) :
     BlockOk Φ fetch linux Ψ 0 (Γo p q) := by
   ty_own_first .rbx
   exact h.asTable
@@ -836,10 +835,10 @@ example (p q : BitVec 64)
 /-! However many blocks a context owns, an address is found in the one it
 falls in: here the sixth. -/
 
-/-- Six owned blocks of one field each; `rbx` holds the address of the last. -/
+/-- Six owned blocks of eight bytes each, the last holding a known value; `rbx` holds the address of the last. -/
 def Γ₆ (a b c d e f : BitVec 64) : Ctx :=
   ⟨fun r => if r = .rbx then .eq f else .int, [], 0, Flags.Any,
-    [(a, [.int]), (b, [.int]), (c, [.int]), (d, [.int]), (e, [.int]), (f, [.eq 7])]⟩
+    [(a, .raw 8), (b, .raw 8), (c, .raw 8), (d, .raw 8), (e, .raw 8), (f, ⟨8, [(0, .eq 7)]⟩)]⟩
 
 example (a b c d e f : BitVec 64) :
     Straight Ψ 10 (Γ₆ a b c d e f) (.mov .w64 (.r_m .rax (.sib (some .rbx) none 0)))

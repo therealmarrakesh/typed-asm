@@ -554,18 +554,18 @@ theorem mmap_ok {sys : Syscall} {len : BitVec 64} {fields : List Ty} {tag : Opti
             owned :=
               { perm := fun b hb' => hwr _ _ (h.owned.perm b hb')
                 size_lt := h.owned.size_lt
-                vals := fun b hb' i υ hi => by
-                  have hlt := (List.getElem?_eq_some_iff.mp hi).1
+                fits := h.owned.fits
+                vals := fun b hb' p hp => by
                   have hr := State.canRead_of_canWrite (State.canWrite_sub (h.owned.perm b hb')
-                    (o := 8 * i) (m := 8) (by omega))
+                    (o := p.1) (m := 8) (h.owned.fits b hb' p hp))
                   rw [State.load64_mapZero_out s hal hsz4 hfit64 (hout _ hr)]
-                  exact (h.owned.vals b hb' i υ hi).ext hext
+                  exact (h.owned.vals b hb' p hp).ext hext
                 stack := fun b hb' => by rw [hb]; exact h.owned.stack b hb'
                 heap := fun b hb' x l hl => by
                   rcases hcases x l hl with ⟨hx, hlL⟩ | ⟨-, hl'⟩
                   · rw [hx, hlL]
                     show Disjoint _ _ _ (8 * fields.length + 0)
-                    exact (hR b.1 (8 * b.2.length) (h.owned.size_lt b hb')
+                    exact (hR b.1 b.2.size (h.owned.size_lt b hb')
                       (State.canRead_of_canWrite (h.owned.perm b hb'))).symm
                   · exact h.owned.heap b hb' x l hl'
                 apart := h.owned.apart }
@@ -724,125 +724,35 @@ theorem storeBytes_ok_stack {sys : Syscall} {r : Reg} {v d : BitVec 64} {cnt : N
     have h1 := hd.1 (by decide)
     bv_omega
 
-/-- A list of field types with the `k` fields from number `lo` on made
-integers: what a block's fields are once a call has stored bytes there. -/
-def intRun : List Ty → Nat → Nat → List Ty
-  | [], _, _ => []
-  | τ :: rest, 0, 0 => τ :: rest
-  | _ :: rest, 0, k + 1 => .int :: intRun rest 0 k
-  | τ :: rest, lo + 1, k => τ :: intRun rest lo k
-
-theorem length_intRun (F : List Ty) (lo k : Nat) : (intRun F lo k).length = F.length := by
-  induction F generalizing lo k with
-  | nil => rfl
-  | cons τ rest ih =>
-    cases lo with
-    | zero => cases k <;> simp [intRun, ih]
-    | succ lo => simp [intRun, ih]
-
-theorem intRun_outside (F : List Ty) (lo k j : Nat) (h : j < lo ∨ lo + k ≤ j) :
-    (intRun F lo k)[j]? = F[j]? := by
-  induction F generalizing lo k j with
-  | nil => rfl
-  | cons τ rest ih =>
-    cases lo with
-    | zero =>
-      cases k with
-      | zero => rfl
-      | succ k =>
-        cases j with
-        | zero => omega
-        | succ j => simp only [intRun, List.getElem?_cons_succ]; exact ih 0 k j (by omega)
-    | succ lo =>
-      cases j with
-      | zero => rfl
-      | succ j => simp only [intRun, List.getElem?_cons_succ]; exact ih lo k j (by omega)
-
-theorem intRun_inside (F : List Ty) (lo k j : Nat) (h₁ : lo ≤ j) (h₂ : j < lo + k)
-    (hlen : j < F.length) : (intRun F lo k)[j]? = some .int := by
-  induction F generalizing lo k j with
-  | nil => simp at hlen
-  | cons τ rest ih =>
-    cases lo with
-    | zero =>
-      cases k with
-      | zero => omega
-      | succ k =>
-        cases j with
-        | zero => rfl
-        | succ j =>
-          simp only [intRun, List.getElem?_cons_succ]
-          exact ih 0 k j (by omega) (by omega) (by simpa using hlen)
-    | succ lo =>
-      cases j with
-      | zero => omega
-      | succ j =>
-        simp only [intRun, List.getElem?_cons_succ]
-        exact ih lo k j (by omega) (by omega) (by simpa using hlen)
-
-/-- A whole list made integers is that many integers. -/
-theorem intRun_all (F : List Ty) (k : Nat) (h : F.length ≤ k) :
-    intRun F 0 k = List.replicate F.length .int := by
-  induction F generalizing k with
-  | nil => rfl
-  | cons τ rest ih =>
-    cases k with
-    | zero => simp at h
-    | succ k =>
-      simp only [intRun, List.length_cons, List.replicate_succ]
-      rw [ih k (by simpa using h)]
-
-/-- A run of integers made integers is as it was. -/
-theorem intRun_replicate_int (n lo k : Nat) :
-    intRun (List.replicate n .int) lo k = List.replicate n .int := by
-  induction n generalizing lo k with
-  | zero => rfl
-  | succ n ih =>
-    rw [List.replicate_succ]
-    cases lo with
-    | zero =>
-      cases k with
-      | zero => rfl
-      | succ k => simp only [intRun, ih]
-    | succ lo => simp only [intRun, ih]
-
-/-- Bytes stored in a run of fields of an owned block leave the state well
-typed, whatever they are, with those fields integers from then on and the
-others as they were. -/
+/-- Bytes stored in a run of bytes of an owned block leave the state well
+typed, whatever they are and whatever was there: the run is plain bytes from
+then on. -/
 theorem storeBytes_ok_owned {sys : Syscall} {r : Reg} {k lo cnt : Nat} {a v : BitVec 64}
-    {F F' : List Ty} {data : List (BitVec 8)} (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF)
-    (hr : r ≠ .rsp) (hbuf : Γ.regs r = .eq v) (hat : OwnedIdx Γ.owned k a F v lo)
-    (hle : lo + cnt ≤ F.length) (hlen' : F'.length = F.length)
-    (hsame : ∀ j, j < lo ∨ lo + cnt ≤ j → F'[j]? = F[j]?)
-    (hints : ∀ j, lo ≤ j → j < lo + cnt → F'[j]? = some .int)
-    (hlen : data.length ≤ 8 * cnt) :
-    WellTyped fetch sys Ψ n { Γ with owned := Γ.owned.set k (a, F') }
+    {S : Shape} {data : List (BitVec 8)} (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF)
+    (hr : r ≠ .rsp) (hbuf : Γ.regs r = .eq v) (hat : OwnedByte Γ.owned k a S v lo)
+    (hle : lo + cnt ≤ S.size) (hlen : data.length ≤ cnt) :
+    WellTyped fetch sys Ψ n { Γ with owned := Γ.owned.set k (a, S.clear lo cnt) }
       (s.storeBytes (s.getReg r) data) := by
   obtain ⟨hklt, hkeq⟩ := List.getElem?_eq_some_iff.mp hat.entry
-  have hin : (a, F) ∈ Γ.owned := hkeq ▸ List.getElem_mem hklt
+  have hin : (a, S) ∈ Γ.owned := hkeq ▸ List.getElem_mem hklt
   have hsz := h.owned.size_lt _ hin
   simp only at hsz
   rw [h.eqReg hr hbuf, hat.addr]
-  by_cases hc : cnt = 0
-  · have hz : data = [] := List.length_eq_zero_iff.mp (by omega)
-    have hF : F' = F := List.ext_getElem? fun j => hsame j (by omega)
-    have hset : Γ.owned.set k (a, F) = Γ.owned := by
-      rw [← hkeq]; exact List.set_getElem_self hklt
-    rw [hz, State.storeBytes_nil, hF, hset]
-    exact h.congr rfl rfl rfl rfl
-  · refine h.writeOwned hΨ hat.entry (lo := lo) (cnt := cnt) (by omega) hle hlen' hsame
-      rfl rfl rfl (fun y hd => ?_) (fun x hx => by
-        show (s.storeBytes _ data).mem x = s.mem x
-        rw [State.mem_storeBytes s _ x _ (by omega), List.getElem?_eq_none (by bv_omega)]
-        rfl)
-      (fun j τ h1 h2 hj => by
-        rw [hints j h1 h2] at hj
-        cases hj
-        exact HasTy.int _)
-    refine (State.load64_congr (s := s.storeBytes _ _) rfl y).trans
-      (State.load64_storeBytes_disjoint s _ (by omega) ?_ (hd.2 (by omega)))
-    have h1 := hd.1 (by decide)
-    bv_omega
+  refine h.writeOwnedClear hΨ hat.entry (lo := lo) (cnt := cnt) hle rfl rfl rfl
+    (fun y hd => ?_) (fun x hx => ?_)
+  · by_cases hc : cnt = 0
+    · have hz : data = [] := List.length_eq_zero_iff.mp (by omega)
+      rw [hz, State.storeBytes_nil]
+    · refine (State.load64_congr (s := s.storeBytes _ _) rfl y).trans
+        (State.load64_storeBytes_disjoint s _ (by omega) ?_ (hd.2 (by omega)))
+      have h1 := hd.1 (by decide)
+      bv_omega
+  · show (s.storeBytes _ data).mem x = s.mem x
+    by_cases hc : cnt = 0
+    · have hz : data = [] := List.length_eq_zero_iff.mp (by omega)
+      rw [hz, State.storeBytes_nil]
+    · rw [State.mem_storeBytes s _ x _ (by omega), List.getElem?_eq_none (by bv_omega)]
+      rfl
 
 namespace Fills
 
@@ -873,55 +783,22 @@ theorem ok_stack {sys : Syscall} {v d : BitVec 64} {cnt : Nat}
       ((storeBytes_ok_stack (data := data) h hΨ hr hsp hbuf h8 hints (by omega)).congr
         (t := { s.storeBytes (s.getReg r) data with world := w }) rfl rfl rfl rfl) v'
 
-/-- A call that fills a buffer lying in a run of fields of an owned block
-keeps the state well typed, with those fields integers afterwards. -/
-theorem ok_owned {sys : Syscall} {k lo cnt : Nat} {a v : BitVec 64} {F F' : List Ty}
+/-- A call that fills a buffer lying in an owned block keeps the state well
+typed, whatever the bytes it covers held: they are plain bytes afterwards. -/
+theorem ok_owned {sys : Syscall} {k lo : Nat} {a v : BitVec 64} {S : Shape}
     (hf : Fills s (s.getReg r) room t) (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF)
-    (hr : r ≠ .rsp) (hbuf : Γ.regs r = .eq v) (hat : OwnedIdx Γ.owned k a F v lo)
-    (hle : lo + cnt ≤ F.length) (hlen' : F'.length = F.length)
-    (hsame : ∀ j, j < lo ∨ lo + cnt ≤ j → F'[j]? = F[j]?)
-    (hints : ∀ j, lo ≤ j → j < lo + cnt → F'[j]? = some .int) (hroom : room ≤ 8 * cnt) :
+    (hr : r ≠ .rsp) (hbuf : Γ.regs r = .eq v) (hat : OwnedByte Γ.owned k a S v lo)
+    (hle : lo + room ≤ S.size) :
     WellTyped fetch sys Ψ n
-      ({ Γ with owned := Γ.owned.set k (a, F') } : Ctx).afterSyscall t := by
+      ({ Γ with owned := Γ.owned.set k (a, S.clear lo room) } : Ctx).afterSyscall t := by
   rcases hf with hf | ⟨data, v', w, hlen, -, rfl⟩
-  · -- nothing was stored: the fields that become integers hold what they held
-    have h0 := storeBytes_ok_owned (data := []) h hΨ hr hbuf hat hle hlen' hsame hints
-      (Nat.zero_le _)
+  · -- nothing was stored: the bytes are as they were, and are given up as plain
+    have h0 := storeBytes_ok_owned (data := []) h hΨ hr hbuf hat hle (Nat.zero_le _)
     rw [State.storeBytes_nil] at h0
     exact hf.ok (h0.congr rfl rfl rfl rfl)
   · exact ret_ok
-      ((storeBytes_ok_owned (data := data) h hΨ hr hbuf hat hle hlen' hsame hints
-        (by omega)).congr
+      ((storeBytes_ok_owned (data := data) h hΨ hr hbuf hat hle hlen).congr
         (t := { s.storeBytes (s.getReg r) data with world := w }) rfl rfl rfl rfl) v'
-
-/-- A call that fills a buffer lying in a run of fields of an owned block
-keeps the state well typed, whatever those fields held: they are integers
-afterwards. -/
-theorem ok_owned_run {sys : Syscall} {k lo cnt : Nat} {a v : BitVec 64} {F : List Ty}
-    (hf : Fills s (s.getReg r) room t) (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF)
-    (hr : r ≠ .rsp) (hbuf : Γ.regs r = .eq v) (hat : OwnedIdx Γ.owned k a F v lo)
-    (hle : lo + cnt ≤ F.length) (hroom : room ≤ 8 * cnt) :
-    WellTyped fetch sys Ψ n
-      ({ Γ with owned := Γ.owned.set k (a, intRun F lo cnt) } : Ctx).afterSyscall t :=
-  ok_owned hf h hΨ hr hbuf hat hle (length_intRun F lo cnt)
-    (fun j hj => intRun_outside F lo cnt j hj)
-    (fun j h₁ h₂ => intRun_inside F lo cnt j h₁ h₂ (by omega)) hroom
-
-/-- The same when the fields are integers already: the context stays as it is. -/
-theorem ok_owned_int {sys : Syscall} {k lo cnt : Nat} {a v : BitVec 64} {F : List Ty}
-    (hf : Fills s (s.getReg r) room t) (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF)
-    (hr : r ≠ .rsp) (hbuf : Γ.regs r = .eq v) (hat : OwnedIdx Γ.owned k a F v lo)
-    (hle : lo + cnt ≤ F.length) (hints : ∀ j, j < cnt → F[lo + j]? = some .int)
-    (hroom : room ≤ 8 * cnt) : WellTyped fetch sys Ψ n Γ.afterSyscall t := by
-  have := ok_owned (F' := F) hf h hΨ hr hbuf hat hle rfl (fun _ _ => rfl)
-    (fun j h1 h2 => by
-      have := hints (j - lo) (by omega)
-      rwa [show lo + (j - lo) = j by omega] at this) hroom
-  obtain ⟨hklt, hkeq⟩ := List.getElem?_eq_some_iff.mp hat.entry
-  have hset : Γ.owned.set k (a, F) = Γ.owned := by
-    rw [← hkeq]; exact List.set_getElem_self hklt
-  rw [hset] at this
-  exact this
 
 theorem rip {buf : BitVec 64} (hf : Fills s buf room t) : t.rip = s.rip := by
   rcases hf with hf | ⟨data, v, w, -, -, rfl⟩
@@ -1106,12 +983,12 @@ theorem mapZero_ok {sys : Syscall} {a : BitVec 64} {size : Nat}
     owned :=
       { perm := fun b hb' => hwr _ _ (h.owned.perm b hb')
         size_lt := h.owned.size_lt
-        vals := fun b hb' i υ hi => by
-          have hlt := (List.getElem?_eq_some_iff.mp hi).1
+        fits := h.owned.fits
+        vals := fun b hb' p hp => by
           have hr := State.canRead_of_canWrite (State.canWrite_sub (h.owned.perm b hb')
-            (o := 8 * i) (m := 8) (by omega))
+            (o := p.1) (m := 8) (h.owned.fits b hb' p hp))
           rw [State.load64_mapZero_out s hal hsz4 hfit (hout _ hr)]
-          exact h.owned.vals b hb' i υ hi
+          exact h.owned.vals b hb' p hp
         stack := fun b hb' => by rw [hb]; exact h.owned.stack b hb'
         heap := h.owned.heap
         apart := h.owned.apart }
@@ -1127,12 +1004,12 @@ theorem mapZero_ok {sys : Syscall} {a : BitVec 64} {size : Nat}
       · exact h.text x l hl ht }
 
 /-- Fresh memory, found where nothing was accessible, may be owned as a block
-of integers. -/
-theorem mapZero_owned {sys : Syscall} {a : BitVec 64} {size cnt : Nat}
+of plain bytes. -/
+theorem mapZero_owned {sys : Syscall} {a : BitVec 64} {size : Nat}
     (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF) (hal : a.toNat % 4096 = 0)
     (hsz4 : size % 4096 = 0) (hfit64 : a.toNat + size ≤ 2 ^ 64)
-    (hlt : size < 2 ^ 64) (hun : s.unmapped a size = true) (hG : 8 * cnt = size) :
-    WellTyped fetch sys Ψ n { Γ with owned := (a, List.replicate cnt .int) :: Γ.owned }
+    (hlt : size < 2 ^ 64) (hun : s.unmapped a size = true) :
+    WellTyped fetch sys Ψ n { Γ with owned := (a, ShapeOf.raw size) :: Γ.owned }
       (s.mapZero a size) := by
   have hU : ∀ x : BitVec 64, (x - a).toNat < size → s.perm x = .none :=
     fun x hx => perm_of_unmapped hal hfit64 hun hx
@@ -1144,29 +1021,20 @@ theorem mapZero_owned {sys : Syscall} {a : BitVec 64} {size cnt : Nat}
     have : (a + BitVec.ofNat 64 i - a).toNat < size := by bv_omega
     simp only [this, ↓reduceIte]
     rfl
-  refine hZ.addOwned (b := (a, List.replicate cnt .int)) ?_ ?_ ?_ ?_ ?_ ?_
-  · simp only [List.length_replicate, hG]; exact hnew
-  · simp only [List.length_replicate, hG]; omega
-  · intro i τ hi
-    rw [List.getElem?_replicate] at hi
-    split at hi
-    · cases hi; exact HasTy.int _
-    · cases hi
-  · simp only [List.length_replicate, hG]
-    exact (disjoint_of_unmapped hU (by omega) (Nat.le_refl _) h.stackSize_lt
+  refine hZ.addOwned (b := (a, ShapeOf.raw size)) hnew hlt (fun _ hp => nomatch hp)
+    (fun _ hp => nomatch hp) ?_ ?_ ?_
+  · exact (disjoint_of_unmapped hU (by omega) (Nat.le_refl _) h.stackSize_lt
       (State.canRead_of_canWrite h.stackPerm)).symm
   · intro x l hl
-    simp only [List.length_replicate, hG]
     exact disjoint_of_unmapped hU (by omega) (Nat.le_refl _) (hΨ.size_lt x l hl)
       (h.heapPerm x l hl).1
   · intro c hc'
-    simp only [List.length_replicate, hG]
     exact disjoint_of_unmapped hU (by omega) (Nat.le_refl _) (h.owned.size_lt c hc')
       (State.canRead_of_canWrite (h.owned.perm c hc'))
 
 /-- What follows an `mmap` whose memory the program is to own: an error
 number in `rax`, or the address of whole pages, zeroed, that the context now
-owns as a block of integers. The address is the start of a page and lies
+owns as a block of plain bytes. The address is the start of a page and lies
 where the kernel puts a program's memory, in the lower half of the address
 space; so it is never an error number. -/
 def mmapOwnCtx (Γ : Ctx) (len : BitVec 64) :
@@ -1175,7 +1043,7 @@ def mmapOwnCtx (Γ : Ctx) (len : BitVec 64) :
   | .inl e => Γ.afterSyscall.setReg .rax (.eq e.1)
   | .inr a =>
     { Γ.afterSyscall.setReg .rax (.eq a.1) with
-      owned := (a.1, List.replicate ((len.toNat + 4095) / 4096 * 512) .int) :: Γ.owned }
+      owned := (a.1, ShapeOf.raw ((len.toNat + 4095) / 4096 * 4096)) :: Γ.owned }
 
 /-- **Fresh memory may be owned.** An `mmap` in the modelled form returns an
 error number, or the address of memory that was not accessible before, which
@@ -1201,9 +1069,8 @@ theorem mmapOwn_ok {sys : Syscall} {len : BitVec 64}
       split
       · next hok =>
         obtain ⟨hal, -, htop, hun⟩ := hok
-        have hOwn := mapZero_owned h hΨ hal (cnt := (len.toNat + 4095) / 4096 * 512)
-          (size := (len.toNat + 4095) / 4096 * 4096) (by omega) (by omega) (by omega)
-          hun (by omega)
+        have hOwn := mapZero_owned h hΨ hal
+          (size := (len.toNat + 4095) / 4096 * 4096) (by omega) (by omega) (by omega) hun
         have hlow : a < 0x800000000000 := by
           rw [BitVec.lt_def]
           show a.toNat < 0x800000000000
@@ -1244,11 +1111,11 @@ theorem munmap_frame (s : State) : Frame s (munmap s) := by
 /-- **Memory the program owns may be given back.** A `munmap` of exactly an
 owned block leaves a state matching the context without it, whether or not
 the kernel did as asked. -/
-theorem munmap_ok {sys : Syscall} {k : Nat} {a len : BitVec 64} {F : List Ty}
+theorem munmap_ok {sys : Syscall} {k : Nat} {a len : BitVec 64} {S : Shape}
     (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF)
     (hdi : Γ.regs .rdi = .eq a) (hsi : Γ.regs .rsi = .eq len)
-    (hk : Γ.owned[k]? = some (a, F))
-    (hsz : 8 * F.length = (len.toNat + 4095) / 4096 * 4096) :
+    (hk : Γ.owned[k]? = some (a, S))
+    (hsz : S.size = (len.toNat + 4095) / 4096 * 4096) :
     WellTyped fetch sys Ψ n { Γ.afterSyscall with owned := Γ.owned.eraseIdx k } (munmap s) := by
   have hrdi := h.eqReg (by decide) hdi
   have hrsi := h.eqReg (by decide) hsi
@@ -1258,8 +1125,8 @@ theorem munmap_ok {sys : Syscall} {k : Nat} {a len : BitVec 64} {F : List Ty}
     obtain ⟨hal, -, htop, -⟩ := hok
     have hsz4 : (len.toNat + 4095) / 4096 * 4096 % 4096 = 0 := by omega
     rw [← hsz] at htop hsz4 ⊢
-    have hfit : a.toNat + 8 * F.length ≤ 2 ^ 64 := by omega
-    exact ret_ok (h.eraseOwned hΨ hk (s' := s.unmap a (8 * F.length)) rfl rfl rfl (fun x => by
+    have hfit : a.toNat + S.size ≤ 2 ^ 64 := by omega
+    exact ret_ok (h.eraseOwned hΨ hk (s' := s.unmap a (S.size)) rfl rfl rfl (fun x => by
       rw [State.perm_unmap s hal hsz4 hfit]
       split
       · next hin => exact .inr hin
@@ -1329,11 +1196,6 @@ theorem linux_read {fields : List Ty} {off : Nat} {len : BitVec 64} (hΓ : Γ.re
   rw [h.eqReg (by decide) hlen] at hf
   exact ⟨Linux.read s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok h hΨ (by decide) hbuf hints (by omega)⟩
-
-/-- Whether a type is the integer type. -/
-def Ty.isInt : Ty → Bool
-  | .int => true
-  | _ => false
 
 /-- Whether the `k` fields from number `off` on are there and are all
 integers. One pass along the list. -/
@@ -1467,69 +1329,65 @@ theorem linux_getrandom_stack {v d len : BitVec 64} (hΓ : Γ.regs .rax = .eq 31
   exact ⟨Linux.getrandom s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok_stack h hΨ (by decide) hsp hbuf h8 hints (by omega)⟩
 
-/-- `read` into memory the program owns: the buffer starts at a field of an
-owned block and lies within it. Whatever the fields it covers held, they are
-integers afterwards. -/
-theorem linux_read_owned {k lo : Nat} {a v : BitVec 64} {F : List Ty} {len : BitVec 64}
+/-- `read` into memory the program owns: the buffer lies inside an owned
+block. Whatever the bytes it covers held, they are plain bytes afterwards. -/
+theorem linux_read_owned {k lo : Nat} {a v : BitVec 64} {S : Shape} {len : BitVec 64}
     (hΓ : Γ.regs .rax = .eq 0) (hbuf : Γ.regs .rsi = .eq v)
-    (hat : OwnedIdx Γ.owned k a F v lo)
+    (hat : OwnedByte Γ.owned k a S v lo)
     (hlen : Γ.regs .rdx = .eq len)
-    (hle : lo + ((len.toNat + 7) / 8) ≤ F.length) :
+    (hle : lo + len.toNat ≤ S.size) :
     SysReturns fetch linux Ψ Γ
-      ({ Γ with owned := Γ.owned.set k (a, Linux.intRun F lo ((len.toNat + 7) / 8)) } : Ctx).afterSyscall := by
+      ({ Γ with owned := Γ.owned.set k (a, S.clear lo len.toNat) } : Ctx).afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.read_fills s
   rw [h.eqReg (by decide) hlen] at hf
   exact ⟨Linux.read s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
-    hf.ok_owned_run h hΨ (by decide) hbuf hat hle (by omega)⟩
+    hf.ok_owned h hΨ (by decide) hbuf hat hle⟩
 
-/-- `fstat` into memory the program owns: the buffer starts at a field of an
-owned block and lies within it. Whatever the fields it covers held, they are
-integers afterwards. -/
-theorem linux_fstat_owned {k lo : Nat} {a v : BitVec 64} {F : List Ty}
+/-- `fstat` into memory the program owns: the buffer lies inside an owned
+block. Whatever the bytes it covers held, they are plain bytes afterwards. -/
+theorem linux_fstat_owned {k lo : Nat} {a v : BitVec 64} {S : Shape}
     (hΓ : Γ.regs .rax = .eq 5) (hbuf : Γ.regs .rsi = .eq v)
-    (hat : OwnedIdx Γ.owned k a F v lo)
-    (hle : lo + 18 ≤ F.length) :
+    (hat : OwnedByte Γ.owned k a S v lo)
+    (hle : lo + 144 ≤ S.size) :
     SysReturns fetch linux Ψ Γ
-      ({ Γ with owned := Γ.owned.set k (a, Linux.intRun F lo 18) } : Ctx).afterSyscall := by
+      ({ Γ with owned := Γ.owned.set k (a, S.clear lo 144) } : Ctx).afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.fstat_fills s
   exact ⟨Linux.fstat s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
-    hf.ok_owned_run h hΨ (by decide) hbuf hat hle (by omega)⟩
+    hf.ok_owned h hΨ (by decide) hbuf hat hle⟩
 
-/-- `clock_gettime` into memory the program owns: the buffer starts at a field of an
-owned block and lies within it. Whatever the fields it covers held, they are
-integers afterwards. -/
-theorem linux_clock_gettime_owned {k lo : Nat} {a v : BitVec 64} {F : List Ty}
+/-- `clock_gettime` into memory the program owns: the buffer lies inside an owned
+block. Whatever the bytes it covers held, they are plain bytes afterwards. -/
+theorem linux_clock_gettime_owned {k lo : Nat} {a v : BitVec 64} {S : Shape}
     (hΓ : Γ.regs .rax = .eq 228) (hbuf : Γ.regs .rsi = .eq v)
-    (hat : OwnedIdx Γ.owned k a F v lo)
-    (hle : lo + 2 ≤ F.length) :
+    (hat : OwnedByte Γ.owned k a S v lo)
+    (hle : lo + 16 ≤ S.size) :
     SysReturns fetch linux Ψ Γ
-      ({ Γ with owned := Γ.owned.set k (a, Linux.intRun F lo 2) } : Ctx).afterSyscall := by
+      ({ Γ with owned := Γ.owned.set k (a, S.clear lo 16) } : Ctx).afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.clockGettime_fills s
   exact ⟨Linux.clockGettime s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
-    hf.ok_owned_run h hΨ (by decide) hbuf hat hle (by omega)⟩
+    hf.ok_owned h hΨ (by decide) hbuf hat hle⟩
 
-/-- `getrandom` into memory the program owns: the buffer starts at a field of an
-owned block and lies within it. Whatever the fields it covers held, they are
-integers afterwards. -/
-theorem linux_getrandom_owned {k lo : Nat} {a v : BitVec 64} {F : List Ty} {len : BitVec 64}
+/-- `getrandom` into memory the program owns: the buffer lies inside an owned
+block. Whatever the bytes it covers held, they are plain bytes afterwards. -/
+theorem linux_getrandom_owned {k lo : Nat} {a v : BitVec 64} {S : Shape} {len : BitVec 64}
     (hΓ : Γ.regs .rax = .eq 318) (hbuf : Γ.regs .rdi = .eq v)
-    (hat : OwnedIdx Γ.owned k a F v lo)
+    (hat : OwnedByte Γ.owned k a S v lo)
     (hlen : Γ.regs .rsi = .eq len)
-    (hle : lo + ((len.toNat + 7) / 8) ≤ F.length) :
+    (hle : lo + len.toNat ≤ S.size) :
     SysReturns fetch linux Ψ Γ
-      ({ Γ with owned := Γ.owned.set k (a, Linux.intRun F lo ((len.toNat + 7) / 8)) } : Ctx).afterSyscall := by
+      ({ Γ with owned := Γ.owned.set k (a, S.clear lo len.toNat) } : Ctx).afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.getrandom_fills s
   rw [h.eqReg (by decide) hlen] at hf
   exact ⟨Linux.getrandom s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
-    hf.ok_owned_run h hΨ (by decide) hbuf hat hle (by omega)⟩
+    hf.ok_owned h hΨ (by decide) hbuf hat hle⟩
 
 /-- `mmap` for a block of plain fields: with 9 in `rax`, the length in `rsi`,
 3 in `rdx` and 0x22 in `r10`, the call returns an error number or a writable
@@ -1585,10 +1443,10 @@ theorem linux_mmap_own {next : BitVec 64} {len : BitVec 64} (hΓ : Γ.regs .rax 
 /-- `munmap` of a block the context owns: with 11 in `rax`, the block's
 address in `rdi` and a length in `rsi` that covers exactly the block, the
 call returns and the context no longer owns the block. -/
-theorem linux_munmap {k : Nat} {a len : BitVec 64} {F : List Ty} (hΓ : Γ.regs .rax = .eq 11)
+theorem linux_munmap {k : Nat} {a len : BitVec 64} {S : Shape} (hΓ : Γ.regs .rax = .eq 11)
     (hdi : Γ.regs .rdi = .eq a) (hsi : Γ.regs .rsi = .eq len)
-    (hk : Γ.owned[k]? = some (a, F))
-    (hsz : 8 * F.length = (len.toNat + 4095) / 4096 * 4096) :
+    (hk : Γ.owned[k]? = some (a, S))
+    (hsz : S.size = (len.toNat + 4095) / 4096 * 4096) :
     SysReturns fetch linux Ψ Γ { Γ.afterSyscall with owned := Γ.owned.eraseIdx k } := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ

@@ -14,11 +14,11 @@ namespace Pair
 
 /-! ## The typing -/
 
-/-- A page of numbers. -/
-abbrev words : List Ty := List.replicate 512 .int
+/-- A page of plain bytes. -/
+abbrev words : Shape := .raw 4096
 
 /-- `two` takes nothing and uses one stack slot. Whatever pair of addresses
-`x` it returns in `rax` and `rdx`, it hands its caller a page of numbers at
+`x` it returns in `rax` and `rdx`, it hands its caller a page of plain bytes at
 each. -/
 def twoSig : FnSigEx (BitVec 64 × BitVec 64) where
   args := fun _ => .int
@@ -39,7 +39,7 @@ inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 2)
   | back (x : BitVec 64 × BitVec 64) : At .back (backCtx x)
   | two (saved : Reg → Ty) (ret : BitVec 64 × BitVec 64 → Ctx) (rest : List Ty) (room : Nat)
-      (frame : List (BitVec 64 × List Ty)) :
+      (frame : List (BitVec 64 × Shape)) :
     twoSig.CallerOk saved ret rest room frame →
     At .two (twoSig.entry saved ret rest room frame)
   | fail (Γ : Ctx) : At .fail Γ

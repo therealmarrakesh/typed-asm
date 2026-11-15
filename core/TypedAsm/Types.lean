@@ -6,10 +6,110 @@ import TypedAsm.Safety
 What the type system can say about a 64-bit value, about the machine as a
 whole, and what those statements mean.
 
-Every stack slot and every field of a memory block is 8 bytes.
+Every stack slot is 8 bytes. A block of memory is described byte for byte.
 -/
 
 namespace TypedAsm
+
+/-- What a block of memory holds, byte for byte, over some notion `τ` of
+type: so many bytes, of which some stretches of eight hold a value of a
+known type. Every other byte is a plain number, of which nothing is said. A
+typed value may sit at any byte, not only at a multiple of eight. -/
+structure ShapeOf (τ : Type) where
+  /-- The size of the block in bytes. -/
+  size : Nat
+  /-- The typed values: where each starts, and its type. -/
+  vals : List (Nat × τ) := []
+
+namespace ShapeOf
+
+variable {τ : Type}
+
+/-- A block of plain bytes. -/
+def raw (n : Nat) : ShapeOf τ := ⟨n, []⟩
+
+/-- Whether the typed value at `p` keeps clear of the `n` bytes from `o`. -/
+def clearOf (o n : Nat) (p : Nat × τ) : Bool :=
+  p.1 + 8 ≤ o || o + n ≤ p.1
+
+/-- The type of the value that starts at byte `o`, if a typed value does. -/
+def valAt (S : ShapeOf τ) (o : Nat) : Option τ :=
+  (S.vals.find? fun p => p.1 == o).map (·.2)
+
+/-- Whether the `n` bytes from `o` are all plain: no typed value reaches into them. -/
+def free (S : ShapeOf τ) (o n : Nat) : Bool :=
+  S.vals.all (clearOf o n)
+
+/-- The block with the `n` bytes from `o` made plain: any typed value that
+reaches into them is forgotten. -/
+def clear (S : ShapeOf τ) (o n : Nat) : ShapeOf τ :=
+  ⟨S.size, S.vals.filter (clearOf o n)⟩
+
+/-- The block with a value of type `t` at byte `o`, in place of whatever
+reached into those eight bytes. -/
+def set (S : ShapeOf τ) (o : Nat) (t : τ) : ShapeOf τ :=
+  ⟨S.size, (o, t) :: (S.clear o 8).vals⟩
+
+/-- Whether exactly one typed value reaches into the eight bytes from `o`. -/
+def sole (S : ShapeOf τ) (o : Nat) : Bool :=
+  (S.vals.filter fun p => !clearOf o 8 p).length == 1
+
+/-- The first `m` bytes of the block, as a block. -/
+def take (S : ShapeOf τ) (m : Nat) : ShapeOf τ :=
+  ⟨m, S.vals.filter fun p => p.1 + 8 ≤ m⟩
+
+/-- The block from byte `m` on, as a block. -/
+def drop (S : ShapeOf τ) (m : Nat) : ShapeOf τ :=
+  ⟨S.size - m, (S.vals.filter fun p => m ≤ p.1).map fun p => (p.1 - m, p.2)⟩
+
+/-- One block followed by another, as one block. -/
+def append (S T : ShapeOf τ) : ShapeOf τ :=
+  ⟨S.size + T.size, S.vals ++ T.vals.map fun p => (S.size + p.1, p.2)⟩
+
+/-- Whether every typed value lies wholly inside the block. -/
+def fits (S : ShapeOf τ) : Bool :=
+  S.vals.all fun p => p.1 + 8 ≤ S.size
+
+theorem mem_of_valAt {S : ShapeOf τ} {o : Nat} {t : τ} (h : S.valAt o = some t) :
+    (o, t) ∈ S.vals := by
+  simp only [valAt, Option.map_eq_some_iff] at h
+  obtain ⟨p, hp, rfl⟩ := h
+  have hm := List.mem_of_find?_eq_some hp
+  have he := List.find?_some hp
+  simp only [beq_iff_eq] at he
+  rw [← he]
+  exact hm
+
+theorem clearOf_of_free {S : ShapeOf τ} {o n : Nat} (h : S.free o n = true) (p : Nat × τ)
+    (hp : p ∈ S.vals) : p.1 + 8 ≤ o ∨ o + n ≤ p.1 := by
+  have := List.all_eq_true.mp h p hp
+  simpa [clearOf] using this
+
+theorem mem_clear {S : ShapeOf τ} {o n : Nat} {p : Nat × τ} (hp : p ∈ (S.clear o n).vals) :
+    p ∈ S.vals ∧ (p.1 + 8 ≤ o ∨ o + n ≤ p.1) := by
+  simp only [clear, List.mem_filter, clearOf, Bool.or_eq_true, decide_eq_true_eq] at hp
+  exact hp
+
+theorem fits_mem {S : ShapeOf τ} (h : S.fits = true) (p : Nat × τ) (hp : p ∈ S.vals) :
+    p.1 + 8 ≤ S.size := by
+  have := List.all_eq_true.mp h p hp
+  simpa using this
+
+/-- Where one typed value alone reaches into eight bytes, any two that do
+are the same one. -/
+theorem eq_of_sole {S : ShapeOf τ} {o : Nat} (h : S.sole o = true) {p q : Nat × τ}
+    (hp : p ∈ S.vals) (hq : q ∈ S.vals) (hpc : ¬(p.1 + 8 ≤ o ∨ o + 8 ≤ p.1))
+    (hqc : ¬(q.1 + 8 ≤ o ∨ o + 8 ≤ q.1)) : p = q := by
+  simp only [sole, beq_iff_eq] at h
+  obtain ⟨x, hx⟩ := List.length_eq_one_iff.mp h
+  have hp' : p ∈ S.vals.filter fun p => !clearOf o 8 p :=
+    List.mem_filter.mpr ⟨hp, by simpa [clearOf] using hpc⟩
+  have hq' : q ∈ S.vals.filter fun p => !clearOf o 8 p :=
+    List.mem_filter.mpr ⟨hq, by simpa [clearOf] using hqc⟩
+  rw [hx] at hp' hq'
+  rw [List.mem_singleton.mp hp', List.mem_singleton.mp hq']
+
+end ShapeOf
 
 /-- A description of the machine at one program point, over some notion `τ` of type.
 `Ctx` below is this with `τ` filled in. -/
@@ -24,12 +124,12 @@ structure CtxOf (τ : Type) where
   room : Nat
   /-- What is known about the flags. -/
   flags : Flags → Prop
-  /-- The blocks of memory this code owns outright: where each is, and the
-  types of its fields. Nothing else points into an owned block that the
-  types know of, so its fields may change type as they are stored to, and
-  the block may be given back. A pointer to one is just its address, exactly
+  /-- The blocks of memory this code owns outright: where each is, how many
+  bytes long, and which of its bytes hold typed values. Nothing else points
+  into an owned block that the types know of, so what it holds may change
+  type as it is stored to, and the block may be given back. A pointer to one is just its address, exactly
   known; what makes it usable is the entry here. -/
-  owned : List (BitVec 64 × List τ) := []
+  owned : List (BitVec 64 × ShapeOf τ) := []
 
 /-- The type of a 64-bit value. -/
 inductive Ty
@@ -56,13 +156,13 @@ inductive Ty
   /-- The address of a function whose results, and the blocks it gives,
   depend on values it chooses as it returns (see `FnSigEx`). -/
   | fnAll (args : Reg → Ty) (preserved : Reg → Bool) (need : Nat)
-      (takes : List (BitVec 64 × List Ty)) (results : (Nat → BitVec 64) → Reg → Ty)
-      (gives : (Nat → BitVec 64) → List (BitVec 64 × List Ty))
+      (takes : List (BitVec 64 × ShapeOf Ty)) (results : (Nat → BitVec 64) → Reg → Ty)
+      (gives : (Nat → BitVec 64) → List (BitVec 64 × ShapeOf Ty))
   /-- The address of a function with this signature (see `FnSig`): it may be
   called by any caller that meets the signature, whatever that caller's own
   stack and whatever it keeps in the preserved registers. -/
   | fn (args results : Reg → Ty) (preserved : Reg → Bool) (need : Nat)
-      (takes gives : List (BitVec 64 × List Ty))
+      (takes gives : List (BitVec 64 × ShapeOf Ty))
   /-- The address of field `index` of a memory block of the kind named
   `tag`. The type does not spell out the block's fields, so a field of a
   block may have this type with the block's own tag: that is how a record
@@ -82,6 +182,64 @@ inductive Ty
 
 /-- A description of the machine at one program point. -/
 abbrev Ctx := CtxOf Ty
+
+/-- What a block of memory holds, byte for byte. -/
+abbrev Shape := ShapeOf Ty
+
+/-- Whether a type is the type of plain numbers. -/
+def Ty.isInt : Ty → Bool
+  | .int => true
+  | _ => false
+
+theorem Ty.eq_int_of_isInt {τ : Ty} (h : τ.isInt = true) : τ = .int := by
+  cases τ <;> first | rfl | exact absurd h (by simp [Ty.isInt])
+
+/-- The typed values of a run of eight-byte cells starting at byte `o`: one
+for each cell that is not a plain number. -/
+def Shape.cellsFrom (o : Nat) : List Ty → List (Nat × Ty)
+  | [] => []
+  | τ :: rest => if τ.isInt then cellsFrom (o + 8) rest else (o, τ) :: cellsFrom (o + 8) rest
+
+/-- A block laid out as eight-byte cells with the given types. -/
+def Shape.cells (F : List Ty) : Shape := ⟨8 * F.length, Shape.cellsFrom 0 F⟩
+
+theorem Shape.mem_cellsFrom {F : List Ty} {o i : Nat} {τ : Ty} (h : F[i]? = some τ) :
+    τ = .int ∨ (o + 8 * i, τ) ∈ Shape.cellsFrom o F := by
+  induction F generalizing o i with
+  | nil => cases h
+  | cons υ rest ih =>
+    cases i with
+    | zero =>
+      simp only [List.getElem?_cons_zero, Option.some.injEq] at h
+      subst h
+      simp only [Shape.cellsFrom]
+      split
+      · next hi => exact .inl (Ty.eq_int_of_isInt hi)
+      · exact .inr (by simp)
+    | succ i =>
+      simp only [List.getElem?_cons_succ] at h
+      rcases ih (o := o + 8) h with hτ | hm
+      · exact .inl hτ
+      · right
+        simp only [Shape.cellsFrom]
+        have e : o + 8 * (i + 1) = o + 8 + 8 * i := by omega
+        rw [e]
+        split
+        · exact hm
+        · exact List.mem_cons_of_mem _ hm
+
+theorem Shape.fits_cellsFrom {F : List Ty} {o : Nat} {p : Nat × Ty}
+    (h : p ∈ Shape.cellsFrom o F) : o ≤ p.1 ∧ p.1 + 8 ≤ o + 8 * F.length := by
+  induction F generalizing o with
+  | nil => cases h
+  | cons υ rest ih =>
+    simp only [Shape.cellsFrom] at h
+    simp only [List.length_cons]
+    split at h
+    · have := ih h; omega
+    · rcases List.mem_cons.mp h with rfl | h
+      · simp only; omega
+      · have := ih h; omega
 
 /-- The layout of one memory block. -/
 structure Layout where
@@ -220,10 +378,10 @@ structure FnSig where
   /-- The blocks the function is handed to own: the caller owns them before
   the call and not while the function runs. A signature that takes a block
   names its address, so it is one of a family, a signature for each address. -/
-  takes : List (BitVec 64 × List Ty) := []
+  takes : List (BitVec 64 × Shape) := []
   /-- The blocks the function hands back for the caller to own from the
   return on. Often those it took, with the types its work has given them. -/
-  gives : List (BitVec 64 × List Ty) := []
+  gives : List (BitVec 64 × Shape) := []
 
 namespace FnSig
 
@@ -253,17 +411,17 @@ pointer is 8 above where it was at the function's `ret`, having popped the
 return address; so a function that leaves the stack pointer's type as it
 found it has, for its caller, put the stack pointer back. -/
 def returned (sig : FnSig) (saved : Reg → Ty) (rest : List Ty) (room : Nat)
-    (owned : List (BitVec 64 × List Ty)) : Ctx :=
+    (owned : List (BitVec 64 × Shape)) : Ctx :=
   ⟨fun r => if r = .rsp then (sig.regsOut saved .rsp).shift 8 else sig.regsOut saved r, rest,
     room + 1, Flags.Any, owned⟩
 
 theorem returned_regs {sig : FnSig} {saved : Reg → Ty} {rest : List Ty} {room : Nat}
-    {owned : List (BitVec 64 × List Ty)} {r : Reg}
+    {owned : List (BitVec 64 × Shape)} {r : Reg}
     (hr : r ≠ .rsp) : (sig.returned saved rest room owned).regs r = sig.regsOut saved r := by
   simp only [returned, hr, ↓reduceIte]
 
 theorem returned_sp (sig : FnSig) (saved : Reg → Ty) (rest : List Ty) (room : Nat)
-    (owned : List (BitVec 64 × List Ty)) :
+    (owned : List (BitVec 64 × Shape)) :
     (sig.returned saved rest room owned).regs .rsp = (sig.regsOut saved .rsp).shift 8 := by
   simp only [returned, ↓reduceIte]
 
@@ -279,7 +437,7 @@ structure CallerOk (sig : FnSig) (saved : Reg → Ty) (ret : Ctx) (rest : List T
 /-- At its return, a function that owns the blocks it gives and after them
 what the caller owned besides owns what the return point expects. -/
 theorem CallerOk.owned_back {sig : FnSig} {saved : Reg → Ty} {ret : Ctx} {rest : List Ty}
-    {room : Nat} {owned : List (BitVec 64 × List Ty)} (h : sig.CallerOk saved ret rest room)
+    {room : Nat} {owned : List (BitVec 64 × Shape)} (h : sig.CallerOk saved ret rest room)
     (ho : owned = sig.gives ++ ret.owned.drop sig.gives.length) : owned = ret.owned := by
   rw [ho]
   conv => lhs; arg 1; rw [← h.gives]
@@ -341,11 +499,11 @@ structure FnSigEx (ι : Type) where
   /-- The number of stack slots the function uses below its return address. -/
   need : Nat
   /-- The blocks the function is handed to own. -/
-  takes : List (BitVec 64 × List Ty) := []
+  takes : List (BitVec 64 × Shape) := []
   /-- The types left in the registers on return, for the value chosen. -/
   results : ι → Reg → Ty
   /-- The blocks the function hands back, for the value chosen. -/
-  gives : ι → List (BitVec 64 × List Ty)
+  gives : ι → List (BitVec 64 × Shape)
 
 namespace FnSigEx
 
@@ -363,7 +521,7 @@ def regsIn (sig : FnSigEx ι) (saved : Reg → Ty) : Reg → Ty :=
 expects `ret x` on return, whichever `x` the function chooses, has `rest` on
 its stack and owns `frame` besides what the function takes. -/
 def entry [Chosen ι] (sig : FnSigEx ι) (saved : Reg → Ty) (ret : ι → Ctx) (rest : List Ty)
-    (room : Nat) (frame : List (BitVec 64 × List Ty)) : Ctx :=
+    (room : Nat) (frame : List (BitVec 64 × Shape)) : Ctx :=
   ⟨sig.regsIn saved, .codeAll (fun s => ret (Chosen.dec s)) :: rest, room, Flags.Any,
     sig.takes ++ frame⟩
 
@@ -371,7 +529,7 @@ def entry [Chosen ι] (sig : FnSigEx ι) (saved : Reg → Ty) (ret : ι → Ctx)
 each of the signatures would need, and that what the caller owns besides is
 the same whichever value is chosen. -/
 structure CallerOk (sig : FnSigEx ι) (saved : Reg → Ty) (ret : ι → Ctx) (rest : List Ty)
-    (room : Nat) (frame : List (BitVec 64 × List Ty)) : Prop where
+    (room : Nat) (frame : List (BitVec 64 × Shape)) : Prop where
   each : ∀ x, (sig.pick x).CallerOk saved (ret x) rest room
   frame : ∀ x, (ret x).owned.drop (sig.gives x).length = frame
 
@@ -437,16 +595,17 @@ def stackSize (Γ : Ctx) : Nat :=
   8 * (Γ.room + Γ.stack.length)
 
 /-- What a context's owned blocks ask of a state: each is writable, each
-field holds a value of its type, and the blocks overlap neither the stack
+typed value in it is of its type, and the blocks overlap neither the stack
 region, nor any block of the memory typing, nor one another. -/
 structure OwnedOk (H : Ty → BitVec 64 → Prop) (Ψ : MemTy) (Γ : Ctx) (s : State) : Prop where
-  perm : ∀ b ∈ Γ.owned, s.canWrite b.1 (8 * b.2.length) = true
-  size_lt : ∀ b ∈ Γ.owned, 8 * b.2.length < 2 ^ 64
-  vals : ∀ b ∈ Γ.owned, ∀ i τ, b.2[i]? = some τ →
-    H τ (s.load64 (b.1 + BitVec.ofNat 64 (8 * i)))
-  stack : ∀ b ∈ Γ.owned, Disjoint (stackBase Γ s) (stackSize Γ) b.1 (8 * b.2.length)
-  heap : ∀ b ∈ Γ.owned, ∀ a l, Ψ a = some l → Disjoint b.1 (8 * b.2.length) a l.size
-  apart : Γ.owned.Pairwise fun b c => Disjoint b.1 (8 * b.2.length) c.1 (8 * c.2.length)
+  perm : ∀ b ∈ Γ.owned, s.canWrite b.1 b.2.size = true
+  size_lt : ∀ b ∈ Γ.owned, b.2.size < 2 ^ 64
+  /-- Each typed value lies inside its block. -/
+  fits : ∀ b ∈ Γ.owned, ∀ p ∈ b.2.vals, p.1 + 8 ≤ b.2.size
+  vals : ∀ b ∈ Γ.owned, ∀ p ∈ b.2.vals, H p.2 (s.load64 (b.1 + BitVec.ofNat 64 p.1))
+  stack : ∀ b ∈ Γ.owned, Disjoint (stackBase Γ s) (stackSize Γ) b.1 b.2.size
+  heap : ∀ b ∈ Γ.owned, ∀ a l, Ψ a = some l → Disjoint b.1 b.2.size a l.size
+  apart : Γ.owned.Pairwise fun b c => Disjoint b.1 b.2.size c.1 c.2.size
 
 /-- `Matches H Ψ Γ s`: the state `s` matches the context `Γ`, where `H τ v`
 says what it means for the value `v` to have type `τ`. -/
@@ -490,7 +649,7 @@ def HasTy (fetch : Fetch) (sys : Syscall) : MemTy → Nat → Ty → BitVec 64 �
   | Ψ, n, .fnAll args preserved need takes results gives, v =>
     ∀ k, (hk : k < n) → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF →
       ∀ (saved : Reg → Ty) (ret : (Nat → BitVec 64) → Ctx) (rest : List Ty) (room : Nat)
-        (frame : List (BitVec 64 × List Ty)),
+        (frame : List (BitVec 64 × Shape)),
       FnSigEx.CallerOk ⟨args, preserved, need, takes, results, gives⟩ saved ret rest room frame →
       ∀ s : State, s.rip = v →
       Matches (fun τ w => HasTy fetch sys Ψ' k τ w) Ψ'
@@ -676,7 +835,7 @@ theorem Matches.imp {H H' : Ty → BitVec 64 → Prop} {Γ : Ctx} {s : State}
     stackHeap := h.stackHeap
     sp := himp _ _ h.sp
     text := h.text
-    owned := { h.owned with vals := fun b hb i τ hi => himp _ _ (h.owned.vals b hb i τ hi) } }
+    owned := { h.owned with vals := fun b hb p hp => himp _ _ (h.owned.vals b hb p hp) } }
 
 /-- A state well typed at a step count is well typed at every smaller one. -/
 theorem WellTyped.mono {m : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch sys Ψ n Γ s)

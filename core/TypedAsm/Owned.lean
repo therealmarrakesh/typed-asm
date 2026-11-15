@@ -79,7 +79,7 @@ theorem WellTyped.addBlock {a : BitVec 64} {L : Layout} (h : WellTyped fetch sys
     (hvals : ∀ i τ, L.fields[i]? = some τ →
       HasTy fetch sys Ψ n τ (s.load64 (a + BitVec.ofNat 64 (8 * i))))
     (hstack : Disjoint (stackBase Γ s) (stackSize Γ) a L.size) (htext : L.text = 0)
-    (howned : ∀ c ∈ Γ.owned, Disjoint c.1 (8 * c.2.length) a L.size) :
+    (howned : ∀ c ∈ Γ.owned, Disjoint c.1 c.2.size a L.size) :
     WellTyped fetch sys (Ψ.add a L) n Γ s :=
   have he := MemTy.add_ext (L := L) hN
   { regs := fun r hr => (h.regs r hr).ext he
@@ -107,7 +107,8 @@ theorem WellTyped.addBlock {a : BitVec 64} {L : Layout} (h : WellTyped fetch sys
     owned :=
       { perm := h.owned.perm
         size_lt := h.owned.size_lt
-        vals := fun c hc i τ hi => (h.owned.vals c hc i τ hi).ext he
+        fits := h.owned.fits
+        vals := fun c hc p hp => (h.owned.vals c hc p hp).ext he
         stack := h.owned.stack
         heap := fun c hc x l hl => by
           rcases MemTy.add_cases hl with ⟨rfl, rfl⟩ | ⟨-, hl'⟩
@@ -117,21 +118,23 @@ theorem WellTyped.addBlock {a : BitVec 64} {L : Layout} (h : WellTyped fetch sys
 
 /-- **An owned block may be frozen.** It leaves the context and joins the
 memory typing as a block with the fields it has, and the register holding
-its address becomes a pointer to it. -/
+its address becomes a pointer to it. The block must be laid out as
+eight-byte cells, which is what a block of the memory typing is. -/
 theorem freeze_ok {r : Reg} {k : Nat} {base : BitVec 64} {F : List Ty} {tag : Option Nat}
     {τ : Ty} (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF) (hr : r ≠ .rsp)
-    (hΓ : Γ.regs r = .eq base) (hk : Γ.owned[k]? = some (base, F)) (hne : F ≠ [])
+    (hΓ : Γ.regs r = .eq base) (hk : Γ.owned[k]? = some (base, Shape.cells F)) (hne : F ≠ [])
     (hkind : ∀ t, tag = some t → Ψ.kinds t = some F)
     (hτ : ∀ Ψ₂ : MemTy, Ψ₂ base = some ⟨F, true, tag, 0⟩ → HasTy fetch sys Ψ₂ n τ base) :
     ∃ Ψ₂ : MemTy, Ψ.Ext Ψ₂ ∧ Ψ₂.WF ∧
       WellTyped fetch sys Ψ₂ n (({ Γ with owned := Γ.owned.eraseIdx k } : Ctx).setReg r τ) s := by
   obtain ⟨hklt, hkeq⟩ := List.getElem?_eq_some_iff.mp hk
-  have hin : (base, F) ∈ Γ.owned := hkeq ▸ List.getElem_mem hklt
+  have hin : (base, Shape.cells F) ∈ Γ.owned := hkeq ▸ List.getElem_mem hklt
+  have hS : (Shape.cells F).size = 8 * F.length := rfl
   have hsz := h.owned.size_lt _ hin
   have hpm := h.owned.perm _ hin
   have hst := h.owned.stack _ hin
   have hhp := h.owned.heap _ hin
-  simp only at hsz hpm hst hhp
+  simp only [hS] at hsz hpm hst hhp
   have hlen : 0 < F.length := List.length_pos_iff.mpr hne
   -- no block of the memory typing starts where this one does
   have hN : Ψ base = none := by
@@ -144,7 +147,11 @@ theorem freeze_ok {r : Reg} {k : Nat} {base : BitVec 64} {F : List Ty} {tag : Op
   have h₀ := h.eraseOwned hΨ hk (s' := s) rfl rfl rfl (fun _ => .inl rfl)
   have hB := h₀.addBlock (a := base) (L := ⟨F, true, tag, 0⟩) hN
     (by rw [hsize]; exact ⟨State.canRead_of_canWrite hpm, fun _ => hpm⟩)
-    (fun i τ hi => h.owned.vals _ hin i τ hi)
+    (fun i τ hi => by
+      rcases Shape.mem_cellsFrom (o := 0) hi with rfl | hm
+      · exact HasTy.int _
+      · have := h.owned.vals _ hin _ hm
+        simpa using this)
     (by rw [hsize]; exact hst) rfl
     (fun c hc => by
       obtain ⟨m, hm, hmk, rfl⟩ := List.mem_eraseIdx_iff_getElem.mp hc
@@ -163,7 +170,7 @@ theorem freeze_ok {r : Reg} {k : Nat} {base : BitVec 64} {F : List Ty} {tag : Op
 one, and the register is a pointer to its fields. -/
 theorem BlockOk.freeze {a : BitVec 64} {Γ : Ctx} {r : Reg} {k : Nat} {base : BitVec 64}
     {F : List Ty} {w : Bool} (hr : r ≠ .rsp) (hΓ : Γ.regs r = .eq base)
-    (hk : Γ.owned[k]? = some (base, F)) (hne : F ≠ [])
+    (hk : Γ.owned[k]? = some (base, Shape.cells F)) (hne : F ≠ [])
     (hrest : BlockOk Φ fetch sys Ψ a
       (({ Γ with owned := Γ.owned.eraseIdx k } : Ctx).setReg r (.ptr F w 0))) :
     BlockOk Φ fetch sys Ψ a Γ :=
@@ -178,7 +185,8 @@ theorem BlockOk.freeze {a : BitVec 64} {Γ : Ctx} {r : Reg} {k : Nat} {base : Bi
 to a block of that kind, which other blocks of the kind may then point to. -/
 theorem BlockOk.freezeKind {a : BitVec 64} {Γ : Ctx} {r : Reg} {k : Nat} {base : BitVec 64}
     {F : List Ty} {tag : Nat} {w : Bool} (hr : r ≠ .rsp) (hΓ : Γ.regs r = .eq base)
-    (hk : Γ.owned[k]? = some (base, F)) (hne : F ≠ []) (hkind : Ψ.kinds tag = some F)
+    (hk : Γ.owned[k]? = some (base, Shape.cells F)) (hne : F ≠ [])
+    (hkind : Ψ.kinds tag = some F)
     (hrest : BlockOk Φ fetch sys Ψ a
       (({ Γ with owned := Γ.owned.eraseIdx k } : Ctx).setReg r (.ref tag w 0))) :
     BlockOk Φ fetch sys Ψ a Γ :=
@@ -203,28 +211,27 @@ theorem Disjoint.sub_right {a b : BitVec 64} {n m p m' : Nat} (h : Disjoint a n 
     · have h' := h.of_pos hn0 (by omega)
       refine ⟨fun _ => ?_, fun _ => ?_⟩ <;> bv_omega
 
-/-- **An owned block may be split in two.** The first `m` fields stay a
-block where it was; the rest become a block of their own, `8 * m` bytes on.
-Each may then be stored to, frozen or kept on its own. -/
-theorem WellTyped.splitOwned {k m : Nat} {base : BitVec 64} {F : List Ty}
-    (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF) (hk : Γ.owned[k]? = some (base, F))
-    (hm : 0 < m) (hlt : m < F.length) :
+/-- **An owned block may be split in two** at any byte. The first `m` bytes
+stay a block where it was; the rest become a block of their own, `m` bytes
+on. A typed value that lay across the split is forgotten. Each part may then
+be stored to, frozen or given back on its own. -/
+theorem WellTyped.splitOwned {k m : Nat} {base : BitVec 64} {S : Shape}
+    (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF) (hk : Γ.owned[k]? = some (base, S))
+    (hm : m ≤ S.size) :
     WellTyped fetch sys Ψ n
       { Γ with owned :=
-          (base + BitVec.ofNat 64 (8 * m), F.drop m) :: (base, F.take m) ::
-            Γ.owned.eraseIdx k } s := by
+          (base + BitVec.ofNat 64 m, S.drop m) :: (base, S.take m) :: Γ.owned.eraseIdx k } s := by
   obtain ⟨hklt, hkeq⟩ := List.getElem?_eq_some_iff.mp hk
-  have hin : (base, F) ∈ Γ.owned := hkeq ▸ List.getElem_mem hklt
+  have hin : (base, S) ∈ Γ.owned := hkeq ▸ List.getElem_mem hklt
   have hsz := h.owned.size_lt _ hin
   have hpm := h.owned.perm _ hin
   have hst := h.owned.stack _ hin
   have hhp := h.owned.heap _ hin
-  simp only at hsz hpm hst hhp
-  have htake : (F.take m).length = m := by rw [List.length_take]; omega
-  have hdrop : (F.drop m).length = F.length - m := List.length_drop
+  have hft := h.owned.fits _ hin
+  have hvl := h.owned.vals _ hin
+  simp only at hsz hpm hst hhp hft hvl
   -- the other blocks are apart from the whole of this one
-  have hother : ∀ c ∈ Γ.owned.eraseIdx k,
-      Disjoint base (8 * F.length) c.1 (8 * c.2.length) := by
+  have hother : ∀ c ∈ Γ.owned.eraseIdx k, Disjoint base S.size c.1 c.2.size := by
     intro c hc
     obtain ⟨j, hj, hjk, rfl⟩ := List.mem_eraseIdx_iff_getElem.mp hc
     have hd := h.owned_apart hj hklt hjk
@@ -233,64 +240,68 @@ theorem WellTyped.splitOwned {k m : Nat} {base : BitVec 64} {F : List Ty}
   have hsub : ∀ c ∈ Γ.owned.eraseIdx k, c ∈ Γ.owned :=
     fun c hc => (List.eraseIdx_sublist _ _).subset hc
   have h₀ := h.eraseOwned hΨ hk (s' := s) rfl rfl rfl (fun _ => .inl rfl)
-  -- the first part
   have e0 : base + BitVec.ofNat 64 0 = base := by simp
-  have h₁ := h₀.addOwned (b := (base, F.take m))
-    (by simp only [htake]; exact Linux.canWrite_le hpm (by omega))
-    (by simp only [htake]; omega)
-    (fun i τ hi => by
-      rw [List.getElem?_take] at hi
-      split at hi
-      · exact h.owned.vals _ hin i τ hi
-      · cases hi)
+  -- the first part
+  have h₁ := h₀.addOwned (b := (base, S.take m))
+    (Linux.canWrite_le hpm hm) (by show m < 2 ^ 64; omega)
+    (fun p hp => by
+      simp only [ShapeOf.take, List.mem_filter, decide_eq_true_eq] at hp
+      exact hp.2)
+    (fun p hp => by
+      simp only [ShapeOf.take, List.mem_filter] at hp
+      exact hvl p hp.1)
     (by
-      have := hst.sub_right (p := 0) (m' := 8 * m) (by omega) h.stackSize_lt hsz
+      have := hst.sub_right (p := 0) (m' := m) (by omega) h.stackSize_lt hsz
       rw [e0] at this
-      simp only [htake]
       exact this)
     (fun x l hl => by
-      have := (hhp x l hl).symm.sub_right (p := 0) (m' := 8 * m) (by omega)
+      have := (hhp x l hl).symm.sub_right (p := 0) (m' := m) (by omega)
         (hΨ.size_lt x l hl) hsz
       rw [e0] at this
-      simpa only [htake] using this.symm)
+      exact this.symm)
     (fun c hc => by
-      have := (hother c hc).symm.sub_right (p := 0) (m' := 8 * m) (by omega)
+      have := (hother c hc).symm.sub_right (p := 0) (m' := m) (by omega)
         (h.owned.size_lt c (hsub c hc)) hsz
       rw [e0] at this
-      simpa only [htake] using this.symm)
+      exact this.symm)
   -- the rest
-  refine h₁.addOwned (b := (base + BitVec.ofNat 64 (8 * m), F.drop m)) ?_ ?_ ?_ ?_ ?_ ?_
-  · simp only [hdrop]
-    exact State.canWrite_sub hpm (by omega)
-  · simp only [hdrop]; omega
-  · intro i τ hi
-    rw [List.getElem?_drop] at hi
-    have := h.owned.vals _ hin (m + i) τ hi
-    simp only at this ⊢
-    rwa [show base + BitVec.ofNat 64 (8 * m) + BitVec.ofNat 64 (8 * i)
-        = base + BitVec.ofNat 64 (8 * (m + i)) by bv_omega]
-  · simp only [hdrop]
-    exact hst.sub_right (by omega) h.stackSize_lt hsz
+  refine h₁.addOwned (b := (base + BitVec.ofNat 64 m, S.drop m)) ?_ ?_ ?_ ?_ ?_ ?_ ?_
+  · exact State.canWrite_sub hpm (by show m + (S.size - m) ≤ S.size; omega)
+  · show S.size - m < 2 ^ 64; omega
+  · intro p hp
+    simp only [ShapeOf.drop, List.mem_map, List.mem_filter, decide_eq_true_eq] at hp
+    obtain ⟨q, ⟨hq, hmq⟩, rfl⟩ := hp
+    have := hft q hq
+    show q.1 - m + 8 ≤ S.size - m
+    omega
+  · intro p hp
+    simp only [ShapeOf.drop, List.mem_map, List.mem_filter, decide_eq_true_eq] at hp
+    obtain ⟨q, ⟨hq, hmq⟩, rfl⟩ := hp
+    have := hvl q hq
+    have hq8 := hft q hq
+    show HasTy fetch sys Ψ n q.2 (s.load64 (base + BitVec.ofNat 64 m + BitVec.ofNat 64 (q.1 - m)))
+    rwa [show base + BitVec.ofNat 64 m + BitVec.ofNat 64 (q.1 - m)
+        = base + BitVec.ofNat 64 q.1 by bv_omega]
+  · exact hst.sub_right (by show m + (S.size - m) ≤ S.size; omega) h.stackSize_lt hsz
   · intro x l hl
-    simp only [hdrop]
-    exact ((hhp x l hl).symm.sub_right (by omega) (hΨ.size_lt x l hl) hsz).symm
+    exact ((hhp x l hl).symm.sub_right (by show m + (S.size - m) ≤ S.size; omega)
+      (hΨ.size_lt x l hl) hsz).symm
   · intro c hc
-    simp only [hdrop]
     rcases List.mem_cons.mp hc with rfl | hc
-    · simp only [htake]
+    · show Disjoint (base + BitVec.ofNat 64 m) (S.size - m) base m
       refine ⟨fun _ => ?_, fun _ => ?_⟩ <;> bv_omega
-    · exact ((hother c hc).symm.sub_right (by omega) (h.owned.size_lt c (hsub c hc)) hsz).symm
+    · exact ((hother c hc).symm.sub_right (by show m + (S.size - m) ≤ S.size; omega)
+        (h.owned.size_lt c (hsub c hc)) hsz).symm
 
 /-- Splitting between instructions. -/
 theorem BlockOk.splitOwned {a : BitVec 64} {Γ : Ctx} {r : Reg} {k m : Nat} {base : BitVec 64}
-    {F : List Ty} (_hΓ : Γ.regs r = .eq base) (hk : Γ.owned[k]? = some (base, F))
-    (hm : 0 < m) (hlt : m < F.length)
+    {S : Shape} (_hΓ : Γ.regs r = .eq base) (hk : Γ.owned[k]? = some (base, S))
+    (hm : m ≤ S.size)
     (hrest : BlockOk Φ fetch sys Ψ a
       { Γ with owned :=
-          (base + BitVec.ofNat 64 (8 * m), F.drop m) :: (base, F.take m) ::
-            Γ.owned.eraseIdx k }) :
+          (base + BitVec.ofNat 64 m, S.drop m) :: (base, S.take m) :: Γ.owned.eraseIdx k }) :
     BlockOk Φ fetch sys Ψ a Γ :=
-  .weaken (fun _ _ hΨ₁ _ _ h => h.splitOwned hΨ₁ hk hm hlt) hrest
+  .weaken (fun _ _ hΨ₁ _ _ h => h.splitOwned hΨ₁ hk hm) hrest
 
 /-- A range apart from each of two that lie end to end is apart from the two
 taken as one. -/
@@ -324,28 +335,28 @@ private theorem mem_eraseIdx_two {α : Type} {L : List α} {lo hi : Nat} {c : α
     · omega
 
 /-- Two owned blocks may be replaced by one that is writable, holds what its
-field types say, and is apart from whatever both of them were apart from. -/
-private theorem WellTyped.mergeOwned {lo hi : Nat} {bl bh b : BitVec 64 × List Ty}
+shape says, and is apart from whatever both of them were apart from. -/
+private theorem WellTyped.mergeOwned {lo hi : Nat} {bl bh b : BitVec 64 × Shape}
     (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF) (hlt : lo < hi)
     (hlo : Γ.owned[lo]? = some bl) (hhi : Γ.owned[hi]? = some bh)
-    (hperm : s.canWrite b.1 (8 * b.2.length) = true) (hsz : 8 * b.2.length < 2 ^ 64)
-    (hvals : ∀ i τ, b.2[i]? = some τ →
-      HasTy fetch sys Ψ n τ (s.load64 (b.1 + BitVec.ofNat 64 (8 * i))))
-    (hcover : ∀ a m, Disjoint a m bl.1 (8 * bl.2.length) → Disjoint a m bh.1 (8 * bh.2.length) →
-      Disjoint a m b.1 (8 * b.2.length)) :
+    (hperm : s.canWrite b.1 b.2.size = true) (hsz : b.2.size < 2 ^ 64)
+    (hfits : ∀ p ∈ b.2.vals, p.1 + 8 ≤ b.2.size)
+    (hvals : ∀ p ∈ b.2.vals, HasTy fetch sys Ψ n p.2 (s.load64 (b.1 + BitVec.ofNat 64 p.1)))
+    (hcover : ∀ a m, Disjoint a m bl.1 bl.2.size → Disjoint a m bh.1 bh.2.size →
+      Disjoint a m b.1 b.2.size) :
     WellTyped fetch sys Ψ n
       { Γ with owned := b :: (Γ.owned.eraseIdx hi).eraseIdx lo } s := by
   obtain ⟨hlolt, hloeq⟩ := List.getElem?_eq_some_iff.mp hlo
   obtain ⟨hhilt, hhieq⟩ := List.getElem?_eq_some_iff.mp hhi
   have hinl : bl ∈ Γ.owned := hloeq ▸ List.getElem_mem hlolt
   have hinh : bh ∈ Γ.owned := hhieq ▸ List.getElem_mem hhilt
-  have h₁ := h.eraseOwned (a := bh.1) (F := bh.2) hΨ hhi (s' := s) rfl rfl rfl (fun _ => .inl rfl)
+  have h₁ := h.eraseOwned (a := bh.1) (S := bh.2) hΨ hhi (s' := s) rfl rfl rfl (fun _ => .inl rfl)
   have hlo' : (Γ.owned.eraseIdx hi)[lo]? = some bl := by
     rw [List.getElem?_eraseIdx_of_lt hlt]
     exact hlo
-  have h₂ := h₁.eraseOwned (a := bl.1) (F := bl.2) hΨ hlo' (s' := s) rfl rfl rfl
+  have h₂ := h₁.eraseOwned (a := bl.1) (S := bl.2) hΨ hlo' (s' := s) rfl rfl rfl
     (fun _ => .inl rfl)
-  refine h₂.addOwned hperm hsz hvals ?_ ?_ ?_
+  refine h₂.addOwned hperm hsz hfits hvals ?_ ?_ ?_
   · exact hcover _ _ (h.owned.stack _ hinl) (h.owned.stack _ hinh)
   · intro x l hl
     exact (hcover _ _ (h.owned.heap _ hinl x l hl).symm (h.owned.heap _ hinh x l hl).symm).symm
@@ -357,63 +368,62 @@ private theorem WellTyped.mergeOwned {lo hi : Nat} {bl bh b : BitVec 64 × List 
     rw [hhieq] at d₂
     exact (hcover _ _ d₁.symm d₂.symm).symm
 
-/-- **Two owned blocks that lie end to end may be joined into one**, with
-the fields of the first followed by those of the second. -/
-theorem WellTyped.joinOwned {k₁ k₂ : Nat} {base : BitVec 64} {F₁ F₂ : List Ty}
-    (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF) (hk₁ : Γ.owned[k₁]? = some (base, F₁))
-    (hk₂ : Γ.owned[k₂]? = some (base + BitVec.ofNat 64 (8 * F₁.length), F₂)) (hne : k₁ ≠ k₂)
-    (hsz : 8 * (F₁.length + F₂.length) < 2 ^ 64) :
+/-- **Two owned blocks that lie end to end may be joined into one**, the
+bytes of the first followed by those of the second. -/
+theorem WellTyped.joinOwned {k₁ k₂ : Nat} {base : BitVec 64} {S₁ S₂ : Shape}
+    (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF) (hk₁ : Γ.owned[k₁]? = some (base, S₁))
+    (hk₂ : Γ.owned[k₂]? = some (base + BitVec.ofNat 64 S₁.size, S₂)) (hne : k₁ ≠ k₂)
+    (hsz : S₁.size + S₂.size < 2 ^ 64) :
     WellTyped fetch sys Ψ n
       { Γ with owned :=
-          (base, F₁ ++ F₂) :: (Γ.owned.eraseIdx (max k₁ k₂)).eraseIdx (min k₁ k₂) } s := by
-  have hin₁ : (base, F₁) ∈ Γ.owned := List.mem_of_getElem? hk₁
-  have hin₂ : (base + BitVec.ofNat 64 (8 * F₁.length), F₂) ∈ Γ.owned := List.mem_of_getElem? hk₂
-  have hperm : s.canWrite base (8 * (F₁ ++ F₂).length) = true := by
+          (base, S₁.append S₂) :: (Γ.owned.eraseIdx (max k₁ k₂)).eraseIdx (min k₁ k₂) } s := by
+  have hin₁ : (base, S₁) ∈ Γ.owned := List.mem_of_getElem? hk₁
+  have hin₂ : (base + BitVec.ofNat 64 S₁.size, S₂) ∈ Γ.owned := List.mem_of_getElem? hk₂
+  have hperm : s.canWrite base (S₁.append S₂).size = true := by
     have p₁ := State.canWrite_iff.mp (h.owned.perm _ hin₁)
     have p₂ := State.canWrite_iff.mp (h.owned.perm _ hin₂)
     simp only at p₁ p₂
-    rw [State.canWrite_iff, List.length_append]
+    rw [State.canWrite_iff]
+    show ∀ i, i < S₁.size + S₂.size → _
     intro i hi
-    by_cases hi₁ : i < 8 * F₁.length
+    by_cases hi₁ : i < S₁.size
     · exact p₁ i hi₁
-    · have := p₂ (i - 8 * F₁.length) (by omega)
-      rwa [show base + BitVec.ofNat 64 (8 * F₁.length) + BitVec.ofNat 64 (i - 8 * F₁.length)
+    · have := p₂ (i - S₁.size) (by omega)
+      rwa [show base + BitVec.ofNat 64 S₁.size + BitVec.ofNat 64 (i - S₁.size)
           = base + BitVec.ofNat 64 i by bv_omega] at this
-  have hvals : ∀ i τ, (F₁ ++ F₂)[i]? = some τ →
-      HasTy fetch sys Ψ n τ (s.load64 (base + BitVec.ofNat 64 (8 * i))) := by
-    intro i τ hi
-    by_cases hi₁ : i < F₁.length
-    · rw [List.getElem?_append_left hi₁] at hi
-      exact h.owned.vals _ hin₁ i τ hi
-    · rw [List.getElem?_append_right (by omega)] at hi
-      have := h.owned.vals _ hin₂ (i - F₁.length) τ hi
-      simp only at this
-      rwa [show base + BitVec.ofNat 64 (8 * F₁.length) + BitVec.ofNat 64 (8 * (i - F₁.length))
-          = base + BitVec.ofNat 64 (8 * i) by bv_omega] at this
-  have hlen : 8 * (F₁ ++ F₂).length = 8 * F₁.length + 8 * F₂.length := by
-    rw [List.length_append]; omega
+  have hfits : ∀ p ∈ (S₁.append S₂).vals, p.1 + 8 ≤ (S₁.append S₂).size := by
+    intro p hp
+    simp only [ShapeOf.append, List.mem_append, List.mem_map] at hp
+    show p.1 + 8 ≤ S₁.size + S₂.size
+    rcases hp with hp | ⟨q, hq, rfl⟩
+    · have := h.owned.fits _ hin₁ p hp; simp only at this; omega
+    · have := h.owned.fits _ hin₂ q hq; simp only at this ⊢; omega
+  have hvals : ∀ p ∈ (S₁.append S₂).vals,
+      HasTy fetch sys Ψ n p.2 (s.load64 (base + BitVec.ofNat 64 p.1)) := by
+    intro p hp
+    simp only [ShapeOf.append, List.mem_append, List.mem_map] at hp
+    rcases hp with hp | ⟨q, hq, rfl⟩
+    · exact h.owned.vals _ hin₁ p hp
+    · have := h.owned.vals _ hin₂ q hq
+      simp only at this ⊢
+      rwa [show base + BitVec.ofNat 64 S₁.size + BitVec.ofNat 64 q.1
+          = base + BitVec.ofNat 64 (S₁.size + q.1) by bv_omega] at this
   rcases Nat.lt_or_gt_of_ne hne with hlt | hgt
   · rw [Nat.max_eq_right (by omega), Nat.min_eq_left (by omega)]
-    exact h.mergeOwned (b := (base, F₁ ++ F₂)) hΨ hlt hk₁ hk₂ hperm
-      (by rw [List.length_append]; exact hsz) hvals
-      (fun a m d₁ d₂ => by
-        simp only [hlen]
-        exact Disjoint.union_right (m₁ := 8 * F₁.length) (m₂ := 8 * F₂.length) d₁ d₂ (by omega))
+    exact h.mergeOwned (b := (base, S₁.append S₂)) hΨ hlt hk₁ hk₂ hperm hsz hfits hvals
+      (fun a m d₁ d₂ => Disjoint.union_right (m₁ := S₁.size) (m₂ := S₂.size) d₁ d₂ hsz)
   · rw [Nat.max_eq_left (by omega), Nat.min_eq_right (by omega)]
-    exact h.mergeOwned (b := (base, F₁ ++ F₂)) hΨ hgt hk₂ hk₁ hperm
-      (by rw [List.length_append]; exact hsz) hvals
-      (fun a m d₂ d₁ => by
-        simp only [hlen]
-        exact Disjoint.union_right (m₁ := 8 * F₁.length) (m₂ := 8 * F₂.length) d₁ d₂ (by omega))
+    exact h.mergeOwned (b := (base, S₁.append S₂)) hΨ hgt hk₂ hk₁ hperm hsz hfits hvals
+      (fun a m d₂ d₁ => Disjoint.union_right (m₁ := S₁.size) (m₂ := S₂.size) d₁ d₂ hsz)
 
 /-- Joining between instructions. -/
 theorem BlockOk.joinOwned {a : BitVec 64} {Γ : Ctx} {r : Reg} {k₁ k₂ : Nat} {base : BitVec 64}
-    {F₁ F₂ : List Ty} (_hΓ : Γ.regs r = .eq base) (hk₁ : Γ.owned[k₁]? = some (base, F₁))
-    (hk₂ : Γ.owned[k₂]? = some (base + BitVec.ofNat 64 (8 * F₁.length), F₂)) (hne : k₁ ≠ k₂)
-    (hsz : 8 * (F₁.length + F₂.length) < 2 ^ 64)
+    {S₁ S₂ : Shape} (_hΓ : Γ.regs r = .eq base) (hk₁ : Γ.owned[k₁]? = some (base, S₁))
+    (hk₂ : Γ.owned[k₂]? = some (base + BitVec.ofNat 64 S₁.size, S₂)) (hne : k₁ ≠ k₂)
+    (hsz : S₁.size + S₂.size < 2 ^ 64)
     (hrest : BlockOk Φ fetch sys Ψ a
       { Γ with owned :=
-          (base, F₁ ++ F₂) :: (Γ.owned.eraseIdx (max k₁ k₂)).eraseIdx (min k₁ k₂) }) :
+          (base, S₁.append S₂) :: (Γ.owned.eraseIdx (max k₁ k₂)).eraseIdx (min k₁ k₂) }) :
     BlockOk Φ fetch sys Ψ a Γ :=
   .weaken (fun _ _ hΨ₁ _ _ h => h.joinOwned hΨ₁ hk₁ hk₂ hne hsz) hrest
 
@@ -434,7 +444,7 @@ private theorem perm_cons_eraseIdx {α : Type} {l : List α} {k : Nat} {b : α}
       exact (List.Perm.swap x b _).trans ((ih h).cons x)
 
 /-- **The order in which a context lists the blocks it owns means nothing.** -/
-theorem WellTyped.permOwned {L : List (BitVec 64 × List Ty)}
+theorem WellTyped.permOwned {L : List (BitVec 64 × Shape)}
     (h : WellTyped fetch sys Ψ n Γ s) (hp : L.Perm Γ.owned) :
     WellTyped fetch sys Ψ n { Γ with owned := L } s :=
   { regs := h.regs, flags := h.flags, stackPerm := h.stackPerm, stackSize_lt := h.stackSize_lt,
@@ -443,6 +453,7 @@ theorem WellTyped.permOwned {L : List (BitVec 64 × List Ty)}
     owned :=
       { perm := fun b hb => h.owned.perm b (hp.subset hb)
         size_lt := fun b hb => h.owned.size_lt b (hp.subset hb)
+        fits := fun b hb => h.owned.fits b (hp.subset hb)
         vals := fun b hb => h.owned.vals b (hp.subset hb)
         stack := fun b hb => h.owned.stack b (hp.subset hb)
         heap := fun b hb => h.owned.heap b (hp.subset hb)
@@ -451,26 +462,26 @@ theorem WellTyped.permOwned {L : List (BitVec 64 × List Ty)}
 /-- Listing one owned block first, between instructions: a call hands over
 the blocks its signature takes from the front of the list. -/
 theorem BlockOk.frontOwned {a : BitVec 64} {Γ : Ctx} {r : Reg} {k : Nat} {base : BitVec 64}
-    {F : List Ty} (_hΓ : Γ.regs r = .eq base) (hk : Γ.owned[k]? = some (base, F))
-    (hrest : BlockOk Φ fetch sys Ψ a { Γ with owned := (base, F) :: Γ.owned.eraseIdx k }) :
+    {S : Shape} (_hΓ : Γ.regs r = .eq base) (hk : Γ.owned[k]? = some (base, S))
+    (hrest : BlockOk Φ fetch sys Ψ a { Γ with owned := (base, S) :: Γ.owned.eraseIdx k }) :
     BlockOk Φ fetch sys Ψ a Γ :=
   .weaken (fun _ _ _ _ _ h => h.permOwned (perm_cons_eraseIdx hk)) hrest
 
-/-- An `mmap` whose memory the program is to own, in a block: the rest of
-the block is typed once for every error number, and once for every address
-`p` of whole pages, with the pages owned as a block of integers. -/
-theorem BlockOk.mmapOwn {a : BitVec 64} {Γ : Ctx} {len : BitVec 64} {l : BitVec 64} {cnt : Nat}
+/-- An `mmap` whose memory the program is to own, in a block: what follows is
+typed twice, for an error number in `rax` and for the address of whole pages
+of plain bytes that the context then owns. -/
+theorem BlockOk.mmapOwn {a : BitVec 64} {Γ : Ctx} {len : BitVec 64} {l : BitVec 64} {size : Nat}
     (hf : fetch a = some (.syscall, l)) (hΓ : Γ.regs .rax = .eq 9)
     (hlen : Γ.regs .rsi = .eq len) (hprot : Γ.regs .rdx = .eq 3)
-    (hflags : Γ.regs .r10 = .eq 0x22) (hcnt : cnt = (len.toNat + 4095) / 4096 * 512)
+    (hflags : Γ.regs .r10 = .eq 0x22) (hsize : size = (len.toNat + 4095) / 4096 * 4096)
     (herr : ∀ e, SysErr e →
       BlockOk Φ fetch linux Ψ (a + l) (Γ.afterSyscall.setReg .rax (.eq e)))
     (hok : ∀ p : BitVec 64, p.toNat % 4096 = 0 → p < 0x800000000000 →
       BlockOk Φ fetch linux Ψ (a + l)
         { Γ.afterSyscall.setReg .rax (.eq p) with
-          owned := (p, List.replicate cnt .int) :: Γ.owned }) :
+          owned := (p, ShapeOf.raw size) :: Γ.owned }) :
     BlockOk Φ fetch linux Ψ a Γ := by
-  subst hcnt
+  subst hsize
   exact .sem hf (linux_mmap_own hΓ hlen hprot hflags) (fun x =>
     match x with
     | .inl e => herr e.1 e.2

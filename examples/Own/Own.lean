@@ -48,8 +48,8 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
       ty_branch
       -- mov rbx, rax
       ty_step
-      -- regard the page as two blocks: its first two fields, and the rest
-      ty_split .rbx at 2
+      -- regard the page as two blocks: its first sixteen bytes, and the rest
+      ty_split .rbx at 16
       -- the stores give the fields their types, in whichever block each
       -- address falls; the loads find them
       ty_steps
@@ -65,7 +65,7 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
         -- mov rbx, rax
         ty_step
         -- a block for each page; give the second back
-        ty_split .rbx at 512
+        ty_split .rbx at 4096
         ty_steps
         ty_munmap
         -- lea rcx, [rip + record]

@@ -15,11 +15,11 @@ namespace Double
 
 /-! ## The typing -/
 
-/-- A page of numbers. -/
-abbrev words : List Ty := List.replicate 512 .int
+/-- A page of plain bytes. -/
+abbrev words : Shape := .raw 4096
 
 /-- `double` called with exactly `p` in `rdi` takes the page at `p` and gives
-it back, still a page of numbers. It uses no stack. -/
+it back, still a page of plain bytes. It uses no stack. -/
 def doubleSig (p : BitVec 64) : FnSig where
   args := fun r => if r = .rdi then .eq p else .int
   results := fun _ => .int

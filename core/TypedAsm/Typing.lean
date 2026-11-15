@@ -75,7 +75,7 @@ theorem Sub.trans {τ υ φ : Ty} (h₁ : Sub τ υ) (h₂ : Sub υ φ) : Sub τ
 /-- A caller ready for each chosen value is ready for each sequence, read as
 the value it stands for. -/
 theorem FnSigEx.CallerOk.toRaw {ι : Type} [Chosen ι] {sig : FnSigEx ι} {saved : Reg → Ty}
-    {ret : ι → Ctx} {rest : List Ty} {room : Nat} {frame : List (BitVec 64 × List Ty)}
+    {ret : ι → Ctx} {rest : List Ty} {room : Nat} {frame : List (BitVec 64 × Shape)}
     (h : sig.CallerOk saved ret rest room frame) :
     sig.raw.CallerOk saved (fun s => ret (Chosen.dec s)) rest room frame :=
   ⟨fun s => h.each (Chosen.dec s), fun s => h.frame (Chosen.dec s)⟩
@@ -84,7 +84,7 @@ theorem FnSigEx.CallerOk.toRaw {ι : Type} [Chosen ι] {sig : FnSigEx ι} {saved
 as a sequence. -/
 theorem FnSigEx.CallerOk.ofRaw {ι : Type} [Chosen ι] {sig : FnSigEx ι} {saved : Reg → Ty}
     {ret : (Nat → BitVec 64) → Ctx} {rest : List Ty} {room : Nat}
-    {frame : List (BitVec 64 × List Ty)} (h : sig.raw.CallerOk saved ret rest room frame) :
+    {frame : List (BitVec 64 × Shape)} (h : sig.raw.CallerOk saved ret rest room frame) :
     sig.CallerOk saved (fun x => ret (Chosen.enc x)) rest room frame := by
   refine ⟨fun x => ?_, fun x => ?_⟩
   · have := h.each (Chosen.enc x)
@@ -189,11 +189,11 @@ block reached through a pointer, and a stack slot. They let one rule serve
 every instruction that takes such an operand. `n` is the access size in bytes. -/
 
 /-- Address `p` is `off` bytes into the owned block listed at place `k`,
-which is at `a` and has fields `F`. (A structure, so that finding the block
+which is at `a` and has shape `S`. (A structure, so that finding the block
 and checking the address are settled together.) -/
-structure OwnedAt (owned : List (BitVec 64 × List Ty)) (k : Nat) (a : BitVec 64) (F : List Ty)
+structure OwnedAt (owned : List (BitVec 64 × Shape)) (k : Nat) (a : BitVec 64) (S : Shape)
     (p off : BitVec 64) : Prop where
-  entry : owned[k]? = some (a, F)
+  entry : owned[k]? = some (a, S)
   addr : p = a + off
 
 /-- `EaIs Γ m p`: the address the memory operand `m` names is exactly `p`,
@@ -208,9 +208,9 @@ inductive EaIs (Γ : Ctx) : Mem → BitVec 64 → Prop
 /-- As `OwnedAt.mk`, for a search among several blocks: the offset is also
 shown to fall inside the block, so that a block the address is not in is
 passed over. -/
-theorem OwnedAt.of_inside {owned : List (BitVec 64 × List Ty)} {k : Nat} {a : BitVec 64}
-    {F : List Ty} {p off : BitVec 64} (entry : owned[k]? = some (a, F)) (addr : p = a + off)
-    (_inside : off.toNat < 8 * F.length) : OwnedAt owned k a F p off :=
+theorem OwnedAt.of_inside {owned : List (BitVec 64 × Shape)} {k : Nat} {a : BitVec 64}
+    {S : Shape} {p off : BitVec 64} (entry : owned[k]? = some (a, S)) (addr : p = a + off)
+    (_inside : off.toNat < S.size) : OwnedAt owned k a S p off :=
   ⟨entry, addr⟩
 
 /-- An address written from one place, seen from a block that starts at another. -/
@@ -247,8 +247,8 @@ inductive ReadOk (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) (n : Nat) : RM → P
     ReadOk Ψ next Γ n (.mem (.sib (some b) none 0))
   /-- Bytes of an owned block: the base register holds an exactly known
   value that, with the displacement, lands `off` bytes into the block. -/
-  | owned {m : Mem} {k : Nat} {a p off : BitVec 64} {F : List Ty} :
-    EaIs Γ m p → OwnedAt Γ.owned k a F p off → off.toNat + n ≤ 8 * F.length →
+  | owned {m : Mem} {k : Nat} {a p off : BitVec 64} {S : Shape} :
+    EaIs Γ m p → OwnedAt Γ.owned k a S p off → off.toNat + n ≤ S.size →
     ReadOk Ψ next Γ n (.mem m)
 
 /-- `WriteIntOk Ψ next Γ n rm Γ'`: overwriting `n` bytes of `rm` with an arbitrary
@@ -274,10 +274,17 @@ inductive WriteIntOk (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) (n : Nat) : RM �
     Ψ base = some l → l.writable = true →
     next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i + k) →
     l.fields[i]? = some .int → k + n ≤ 8 → WriteIntOk Ψ next Γ n (.mem (.rip disp)) Γ
-  /-- Bytes within one integer field of an owned block. -/
-  | owned {m : Mem} {k : Nat} {a p off : BitVec 64} {F : List Ty} :
-    EaIs Γ m p → OwnedAt Γ.owned k a F p off → F[off.toNat / 8]? = some .int →
-    off.toNat % 8 + n ≤ 8 → WriteIntOk Ψ next Γ n (.mem m) Γ
+  /-- Plain bytes of an owned block: no typed value reaches into them. -/
+  | owned {m : Mem} {k : Nat} {a p off : BitVec 64} {S : Shape} :
+    EaIs Γ m p → OwnedAt Γ.owned k a S p off → off.toNat + n ≤ S.size →
+    S.free off.toNat n = true → WriteIntOk Ψ next Γ n (.mem m) Γ
+  /-- Any bytes of an owned block. Whatever typed value reached into them is
+  forgotten: nothing else looks at an owned block, so its bytes may be given
+  up as plain ones. -/
+  | ownedClear {m : Mem} {k : Nat} {a p off : BitVec 64} {S : Shape} :
+    EaIs Γ m p → OwnedAt Γ.owned k a S p off → off.toNat + n ≤ S.size →
+    WriteIntOk Ψ next Γ n (.mem m)
+      { Γ with owned := Γ.owned.set k (a, S.clear off.toNat n) }
 
 /-- `Holds Ψ next Γ rm τ`: `rm` is a register, a whole field or a whole stack
 slot that holds a value of type `τ`. -/
@@ -391,25 +398,23 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
     fields[off + i]? = some τ → Sub (Γ.regs s) τ →
     Straight Ψ next Γ (.mov .w64 (.rm_r (.mem (.sib (some b) none disp)) s)) Γ
   /-- Load a whole field of an owned block, keeping its type. -/
-  | loadOwned {Γ : Ctx} {d : Reg} {m : Mem} {k : Nat} {a p off : BitVec 64} {F : List Ty}
+  | loadOwned {Γ : Ctx} {d : Reg} {m : Mem} {k : Nat} {a p off : BitVec 64} {S : Shape}
       {τ : Ty} :
-    d ≠ .rsp → EaIs Γ m p → OwnedAt Γ.owned k a F p off → off.toNat % 8 = 0 →
-    F[off.toNat / 8]? = some τ →
+    d ≠ .rsp → EaIs Γ m p → OwnedAt Γ.owned k a S p off → S.valAt off.toNat = some τ →
     Straight Ψ next Γ (.mov .w64 (.r_m d m)) (Γ.setReg d τ)
-  /-- Store into a whole field of an owned block. The field takes the type of
-  what is stored, whatever it held before: nothing else looks at it. -/
-  | storeOwned {Γ : Ctx} {s : Reg} {m : Mem} {k : Nat} {a p off : BitVec 64} {F : List Ty} :
-    s ≠ .rsp → EaIs Γ m p → OwnedAt Γ.owned k a F p off → off.toNat % 8 = 0 →
-    off.toNat / 8 < F.length →
+  /-- Store eight bytes into an owned block. They take the type of what is
+  stored, whatever was there before: nothing else looks at them. -/
+  | storeOwned {Γ : Ctx} {s : Reg} {m : Mem} {k : Nat} {a p off : BitVec 64} {S : Shape} :
+    s ≠ .rsp → EaIs Γ m p → OwnedAt Γ.owned k a S p off → off.toNat + 8 ≤ S.size →
     Straight Ψ next Γ (.mov .w64 (.rm_r (.mem m) s))
-      { Γ with owned := Γ.owned.set k (a, F.set (off.toNat / 8) (Γ.regs s)) }
-  /-- Store into a whole field of an owned block a value of the type the
-  field has already: the context stays as it is. This is the store to use
-  where the field is not known exactly, as in a loop over an array. -/
-  | storeOwnedKeep {Γ : Ctx} {s : Reg} {m : Mem} {k : Nat} {a p off : BitVec 64} {F : List Ty}
+      { Γ with owned := Γ.owned.set k (a, S.set off.toNat (Γ.regs s)) }
+  /-- Store over a typed value of an owned block a value of the type it has
+  already: the context stays as it is. This is the store to use where the
+  place is not known exactly, as in a loop over an array of addresses. -/
+  | storeOwnedKeep {Γ : Ctx} {s : Reg} {m : Mem} {k : Nat} {a p off : BitVec 64} {S : Shape}
       {τ : Ty} :
-    s ≠ .rsp → EaIs Γ m p → OwnedAt Γ.owned k a F p off → off.toNat % 8 = 0 →
-    F[off.toNat / 8]? = some τ → Sub (Γ.regs s) τ →
+    s ≠ .rsp → EaIs Γ m p → OwnedAt Γ.owned k a S p off → S.valAt off.toNat = some τ →
+    S.sole off.toNat = true → Sub (Γ.regs s) τ →
     Straight Ψ next Γ (.mov .w64 (.rm_r (.mem m) s)) Γ
   /-- Load a whole field through an index, keeping its type. -/
   | loadIndexed {Γ : Ctx} {d b : Reg} {x : IndexReg} {sc : Scale} {fields : List Ty}
@@ -731,6 +736,7 @@ theorem WriteIntOk.ext {Ψ Ψ' : MemTy} {next : BitVec 64} {Γ Γ' : Ctx} {n : N
     | (apply WriteIntOk.slot <;> assumption)
     | (apply WriteIntOk.indexed <;> assumption)
     | (apply WriteIntOk.owned <;> assumption)
+    | (apply WriteIntOk.ownedClear <;> assumption)
 
 theorem Holds.ext {Ψ Ψ' : MemTy} {next : BitVec 64} {Γ : Ctx} {rm : RM} {τ : Ty}
     (h : Holds Ψ next Γ rm τ) (he : Ψ.Ext Ψ') : Holds Ψ' next Γ rm τ := by
@@ -946,7 +952,7 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
   a function. The instruction after the call must be typed for every value
   the function may choose. -/
   | callFnAll {ι : Type} [Chosen ι] {Γ : Ctx} {ret : ι → Ctx} {rm : RM} {sig : FnSigEx ι}
-      {m : Nat} {frame : List (BitVec 64 × List Ty)} :
+      {m : Nat} {frame : List (BitVec 64 × Shape)} :
     Holds Ψ next Γ rm sig.ty → Γ.room = m + 1 → (∀ x, Φ next (ret x)) →
     (∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn (Γ.moveSp (-8)).regs r)) →
     Sub ((Γ.regs .rsp).shift (-8)) (sig.regsIn (Γ.moveSp (-8)).regs .rsp) →
@@ -958,7 +964,7 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
   /-- Jump to such a function through a pointer to it: a tail call, made on
   behalf of a caller that is ready for whatever value is chosen. -/
   | jmpFnAll {ι : Type} [Chosen ι] {Γ : Ctx} {ret : ι → Ctx} {rm : RM} {sig : FnSigEx ι}
-      {saved : Reg → Ty} {rest : List Ty} {room : Nat} {frame : List (BitVec 64 × List Ty)} :
+      {saved : Reg → Ty} {rest : List Ty} {room : Nat} {frame : List (BitVec 64 × Shape)} :
     Holds Ψ next Γ rm sig.ty → sig.CallerOk saved ret rest room frame →
     CtxSub Γ (sig.entry saved ret rest room frame) → HasType Φ fetch sys Ψ next Γ (.jmp (.ind rm))
   /-- Jump to a function through a pointer to it: a tail call, made on
@@ -1023,70 +1029,44 @@ its `rip`, at every step count. -/
 def StateOk (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (s : State) : Prop :=
   ∃ Γ, Φ s.rip Γ ∧ ∀ n, WellTyped fetch sys Ψ n Γ s
 
-/-- Where an address falls in an owned block, by the number of the field:
-the block at place `k` is at `a` with fields `F`, and the address is that of
-field `i`. For an index that is not known exactly, where the offset cannot
-be worked out as a number. -/
-structure OwnedIdx (owned : List (BitVec 64 × List Ty)) (k : Nat) (a : BitVec 64) (F : List Ty)
-    (p : BitVec 64) (i : Nat) : Prop where
-  entry : owned[k]? = some (a, F)
-  addr : p = a + BitVec.ofNat 64 (8 * i)
-  fit : 8 * F.length ≤ 2 ^ 64
+/-- The store that gives owned bytes a type, kept for values that have one:
+a plain number is better stored as plain bytes, which stay plain. -/
+theorem Straight.storeOwnedTyped {Ψ : MemTy} {next : BitVec 64} {Γ : Ctx} {s : Reg} {m : Mem}
+    {k : Nat} {a p off : BitVec 64} {S : Shape} (hs : s ≠ .rsp) (he : EaIs Γ m p)
+    (hat : OwnedAt Γ.owned k a S p off) (hin : off.toNat + 8 ≤ S.size)
+    (_typed : (Γ.regs s).isInt = false) :
+    Straight Ψ next Γ (.mov .w64 (.rm_r (.mem m) s))
+      { Γ with owned := Γ.owned.set k (a, S.set off.toNat (Γ.regs s)) } :=
+  .storeOwned hs he hat hin
 
-theorem OwnedIdx.toNat {owned : List (BitVec 64 × List Ty)} {k : Nat} {a p : BitVec 64}
-    {F : List Ty} {i : Nat} (h : OwnedIdx owned k a F p i) (hi : i < F.length) :
-    (BitVec.ofNat 64 (8 * i)).toNat = 8 * i := by
-  have := h.fit
-  rw [BitVec.toNat_ofNat, Nat.mod_eq_of_lt (by omega)]
-
-/-- Load a whole field of an owned block, the field given by its number. -/
-theorem Straight.loadOwnedAt {Ψ : MemTy} {next : BitVec 64} {Γ : Ctx} {d : Reg} {m : Mem}
-    {k i : Nat} {a p : BitVec 64} {F : List Ty} {τ : Ty} (hd : d ≠ .rsp) (he : EaIs Γ m p)
-    (hat : OwnedIdx Γ.owned k a F p i) (hi : F[i]? = some τ) :
-    Straight Ψ next Γ (.mov .w64 (.r_m d m)) (Γ.setReg d τ) := by
-  have e := hat.toNat (List.getElem?_eq_some_iff.mp hi).1
-  exact .loadOwned hd he ⟨hat.entry, hat.addr⟩ (by rw [e]; omega)
-    (by rw [e, Nat.mul_div_cancel_left _ (by decide)]; exact hi)
-
-/-- Store into a whole field of an owned block a value of the type the field
-has, the field given by its number. -/
-theorem Straight.storeOwnedKeepAt {Ψ : MemTy} {next : BitVec 64} {Γ : Ctx} {s : Reg} {m : Mem}
-    {k i : Nat} {a p : BitVec 64} {F : List Ty} {τ : Ty} (hs : s ≠ .rsp) (he : EaIs Γ m p)
-    (hat : OwnedIdx Γ.owned k a F p i) (hi : F[i]? = some τ) (hsub : Sub (Γ.regs s) τ) :
-    Straight Ψ next Γ (.mov .w64 (.rm_r (.mem m) s)) Γ := by
-  have e := hat.toNat (List.getElem?_eq_some_iff.mp hi).1
-  exact .storeOwnedKeep hs he ⟨hat.entry, hat.addr⟩ (by rw [e]; omega)
-    (by rw [e, Nat.mul_div_cancel_left _ (by decide)]; exact hi) hsub
-
-/-- Where an address falls in an owned block, by the number of the byte: the
-block at place `k` is at `a` with fields `F`, and the address is `j` bytes
-into it. For an index that counts bytes and is not known exactly. -/
-structure OwnedByte (owned : List (BitVec 64 × List Ty)) (k : Nat) (a : BitVec 64) (F : List Ty)
+/-- Where an address falls in an owned block, as a number of bytes: the
+block at place `k` is at `a` with shape `S`, and the address is `j` bytes
+into it. For an index that is not known exactly, where the offset cannot be
+worked out as a number. -/
+structure OwnedByte (owned : List (BitVec 64 × Shape)) (k : Nat) (a : BitVec 64) (S : Shape)
     (p : BitVec 64) (j : Nat) : Prop where
-  entry : owned[k]? = some (a, F)
+  entry : owned[k]? = some (a, S)
   addr : p = a + BitVec.ofNat 64 j
-  fit : 8 * F.length ≤ 2 ^ 64
+  fit : S.size ≤ 2 ^ 64
 
-theorem OwnedByte.toNat {owned : List (BitVec 64 × List Ty)} {k : Nat} {a p : BitVec 64}
-    {F : List Ty} {j : Nat} (h : OwnedByte owned k a F p j) (hj : j < 8 * F.length) :
+theorem OwnedByte.toNat {owned : List (BitVec 64 × Shape)} {k : Nat} {a p : BitVec 64}
+    {S : Shape} {j : Nat} (h : OwnedByte owned k a S p j) (hj : j < S.size) :
     (BitVec.ofNat 64 j).toNat = j := by
   have := h.fit
   rw [BitVec.toNat_ofNat, Nat.mod_eq_of_lt (by omega)]
 
 /-- Reading bytes of an owned block, the first given by its number. -/
 theorem ReadOk.ownedAt {Ψ : MemTy} {next : BitVec 64} {Γ : Ctx} {n : Nat} {m : Mem} {k j : Nat}
-    {a p : BitVec 64} {F : List Ty} (he : EaIs Γ m p) (hat : OwnedByte Γ.owned k a F p j)
-    (hn : 0 < n) (hin : j + n ≤ 8 * F.length) : ReadOk Ψ next Γ n (.mem m) :=
+    {a p : BitVec 64} {S : Shape} (he : EaIs Γ m p) (hat : OwnedByte Γ.owned k a S p j)
+    (hn : 0 < n) (hin : j + n ≤ S.size) : ReadOk Ψ next Γ n (.mem m) :=
   .owned he ⟨hat.entry, hat.addr⟩ (by rw [hat.toNat (by omega)]; exact hin)
 
-/-- Overwriting bytes within one integer field of an owned block, the first
-byte given by its number. -/
+/-- Overwriting plain bytes of an owned block, the first given by its number. -/
 theorem WriteIntOk.ownedAt {Ψ : MemTy} {next : BitVec 64} {Γ : Ctx} {n : Nat} {m : Mem}
-    {k j : Nat} {a p : BitVec 64} {F : List Ty} (he : EaIs Γ m p)
-    (hat : OwnedByte Γ.owned k a F p j) (hi : F[j / 8]? = some .int) (hk : j % 8 + n ≤ 8) :
-    WriteIntOk Ψ next Γ n (.mem m) Γ := by
-  have hlt := (List.getElem?_eq_some_iff.mp hi).1
+    {k j : Nat} {a p : BitVec 64} {S : Shape} (he : EaIs Γ m p)
+    (hat : OwnedByte Γ.owned k a S p j) (hn : 0 < n) (hin : j + n ≤ S.size)
+    (hfree : S.free j n = true) : WriteIntOk Ψ next Γ n (.mem m) Γ := by
   have e := hat.toNat (j := j) (by omega)
-  exact .owned he ⟨hat.entry, hat.addr⟩ (by rw [e]; exact hi) (by rw [e]; exact hk)
+  exact .owned he ⟨hat.entry, hat.addr⟩ (by rw [e]; exact hin) (by rw [e]; exact hfree)
 
 end TypedAsm

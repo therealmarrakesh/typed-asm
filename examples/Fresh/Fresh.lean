@@ -15,11 +15,11 @@ namespace Fresh
 
 /-! ## The typing -/
 
-/-- A page of numbers. -/
-abbrev words : List Ty := List.replicate 512 .int
+/-- A page of plain bytes. -/
+abbrev words : Shape := .raw 4096
 
 /-- `page` takes nothing and uses no stack. Whatever address `x` it returns
-in `rax`, it hands its caller a page of numbers there. -/
+in `rax`, it hands its caller a page of plain bytes there. -/
 def pageSig : FnSigEx (BitVec 64) where
   args := fun _ => .int
   preserved := calleeSaved
@@ -43,7 +43,7 @@ inductive At : Label → Ctx → Prop
   | loop (p : BitVec 64) : At .loop (loopCtx p)
   | done (p : BitVec 64) : At .done (loopCtx p)
   | page (saved : Reg → Ty) (ret : BitVec 64 → Ctx) (rest : List Ty) (room : Nat)
-      (frame : List (BitVec 64 × List Ty)) :
+      (frame : List (BitVec 64 × Shape)) :
     pageSig.CallerOk saved ret rest room frame →
     At .page (pageSig.entry saved ret rest room frame)
   | fail (Γ : Ctx) : At .fail Γ
