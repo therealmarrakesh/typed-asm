@@ -1201,7 +1201,8 @@ private partial def ppTy (e : Expr) : MetaM String := do
   if e.isConstOf ``Ty.int then return "int"
   if e.isAppOfArity ``Ty.eq 1 then return s!"exactly {← ppClean e.appArg!}"
   if e.isAppOfArity ``Ty.code 1 then return "code pointer"
-  if e.isAppOf ``Ty.fn || e.isAppOf ``FnSig.ty then return "function pointer"
+  if e.isAppOf ``Ty.fn || e.isAppOf ``FnSig.ty || e.isAppOf ``Ty.fnAll || e.isAppOf ``FnSigEx.ty then
+    return "function pointer"
   if e.isAppOfArity ``Ty.nullable 1 then return s!"{← ppTy e.appArg!} or null"
   if e.isAppOfArity ``Ty.orErr 1 then return s!"{← ppTy e.appArg!} or an error number"
   if e.isAppOfArity ``Ty.str 1 then
@@ -1258,7 +1259,8 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
           if rhs.getAppArgs[1]!.isConstOf ``Bool.true then "a writable pointer" else "a pointer"
         else if rhs.isAppOf ``Ty.eq then "an exactly known value"
         else if rhs.isAppOf ``Ty.code then "a code pointer"
-        else if rhs.isAppOf ``Ty.fn || rhs.isAppOf ``FnSig.ty then "a function pointer"
+        else if rhs.isAppOf ``Ty.fn || rhs.isAppOf ``FnSig.ty || rhs.isAppOf ``Ty.fnAll ||
+            rhs.isAppOf ``FnSigEx.ty then "a function pointer"
         else "a value of another type"
       let held ← reduce lhs
       let hint :=
@@ -2060,8 +2062,9 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
           try
             let t := (← instantiateMVars (← goal.getType)).consumeMData
             let stack ← whnf (← mkAppM ``CtxOf.stack #[t.appArg!])
-            pure (stack.isAppOfArity ``List.cons 3 &&
-              (← whnf stack.appFn!.appArg!).isAppOf ``Ty.codeAll)
+            if stack.isAppOfArity ``List.cons 3 then
+              pure ((← whnf stack.appFn!.appArg!).isAppOf ``Ty.codeAll)
+            else pure false
           catch _ => pure false
         if family then
           throwError "`ret`: the return address here is ready for a family of contexts, one \
@@ -2354,7 +2357,8 @@ elab "ty_call " sig:term : tactic => do
       left := left ++ after
   setGoals (left ++ others)
 
-/-- `ty_call sig returning ret` types a direct `call` that ends a block, to
+/-- `ty_call sig returning ret` types a `call` that ends a block, direct or
+through a pointer, to
 a function whose signature `sig : FnSigEx` has results that depend on a
 value the function chooses as it returns: typically the address of a block
 it made. `ret` gives the context at the instruction after the call for each
@@ -2362,18 +2366,33 @@ such value, and the label there must allow all of them. -/
 elab "ty_call " sig:term " returning " ret:term : tactic => do
   let goal ← getMainGoal
   let others := (← getGoals).drop 1
-  let gs ← try
-      runOn goal (do evalTactic (← `(tactic|
+  -- directly, or through an operand that holds a pointer to the function
+  let (gs, direct) ← try
+      pure (← runOn goal (do evalTactic (← `(tactic|
         refine BlockOk.last (by ty_fetch)
           (FnSigEx.call_ok (sig := $sig) (ret := $ret) (frame := ?_) ?callee rfl ?retpoint ?args
-            ?sp ?back ?need ?own ?gives ?frame))))
+            ?sp ?back ?need ?own ?gives ?frame)))), true)
     catch _ =>
-      throwError "ty_call: the instruction here must be a direct call, with room on the stack \
-        for the return address"
+      try
+        pure (← runOn goal (do evalTactic (← `(tactic|
+          refine BlockOk.last (by ty_fetch)
+            (HasType.callFnAll (sig := $sig) (ret := $ret) (frame := ?_) ?callee rfl ?retpoint
+              ?args ?sp ?back ?need ?gives ?frame ?own)))), false)
+      catch _ =>
+        throwError "ty_call: the instruction here must be a call, with room on the stack for \
+          the return address"
   let mut left : List MVarId := []
-  let [entry] ← runOn (← goalNamed gs `callee) (do evalTactic (← `(tactic| intro _ _ _ _ _ hK)))
-    | throwError "ty_call: unexpected goals"
-  left := left ++ (← proveAtLabel entry (pure []))
+  if direct then
+    let [entry] ← runOn (← goalNamed gs `callee) (do evalTactic (← `(tactic| intro _ _ _ _ _ hK)))
+      | throwError "ty_call: unexpected goals"
+    left := left ++ (← proveAtLabel entry (pure []))
+  else
+    try
+      discard <| runOn (← goalNamed gs `callee) (do evalTactic (← `(tactic| ty_operand)))
+    catch _ =>
+      throwError "ty_call: the operand does not hold a pointer to a function with this \
+        signature. A register holding the exact address of a function becomes a pointer to \
+        it with `ty_fn_ptr`"
   let [back] ← runOn (← goalNamed gs `retpoint) (do evalTactic (← `(tactic| intro x)))
     | throwError "ty_call: unexpected goals"
   left := left ++ (← proveAtLabel back (pure []))
@@ -2447,13 +2466,20 @@ which can be stored, passed on, and called by any caller. -/
 elab "ty_fn_ptr " r:term " to " sig:term : tactic => do
   let goal ← getMainGoal
   let others := (← getGoals).drop 1
-  let gs ← try
-      runOn goal (do evalTactic (← `(tactic|
-        refine BlockOk.fnPtr (r := $r) (sig := $sig) ?ne rfl ?here ?rest)))
+  -- a signature of either kind: plain, or with results chosen at the return
+  let (gs, chosen) ← try
+      pure (← runOn goal (do evalTactic (← `(tactic|
+        refine BlockOk.fnPtr (r := $r) (sig := $sig) ?ne rfl ?here ?rest))), false)
     catch _ =>
-      throwError "ty_fn_ptr: the register does not hold an exactly known address here"
+      try
+        pure (← runOn goal (do evalTactic (← `(tactic|
+          refine BlockOk.fnPtrAll (r := $r) (sig := $sig) ?ne rfl ?here ?rest))), true)
+      catch _ =>
+        throwError "ty_fn_ptr: the register does not hold an exactly known address here"
   discard <| runOn (← goalNamed gs `ne) (do evalTactic (← `(tactic| decide)))
-  let [entry] ← runOn (← goalNamed gs `here) (do evalTactic (← `(tactic| intro _ _ _ _ hK)))
+  let [entry] ← runOn (← goalNamed gs `here) (do
+      if chosen then evalTactic (← `(tactic| intro _ _ _ _ _ hK))
+      else evalTactic (← `(tactic| intro _ _ _ _ hK)))
     | throwError "ty_fn_ptr: unexpected goals"
   let left ← try
       proveAtLabel entry (pure [])

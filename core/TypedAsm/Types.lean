@@ -49,8 +49,15 @@ inductive Ty
   /-- The address of code that is safe to enter when the machine matches
   `pre x`, whichever `x` that is. A function that hands back something it
   made, at an address not known until it runs, returns through one of
-  these: the place it returns to is ready for any address. -/
-  | codeAll (pre : BitVec 64 → CtxOf Ty)
+  these: the place it returns to is ready for any address. The family is
+  indexed by sequences of 64-bit values, which is enough to stand for
+  whatever a function may choose as it returns (see `Chosen`). -/
+  | codeAll (pre : (Nat → BitVec 64) → CtxOf Ty)
+  /-- The address of a function whose results, and the blocks it gives,
+  depend on values it chooses as it returns (see `FnSigEx`). -/
+  | fnAll (args : Reg → Ty) (preserved : Reg → Bool) (need : Nat)
+      (takes : List (BitVec 64 × List Ty)) (results : (Nat → BitVec 64) → Reg → Ty)
+      (gives : (Nat → BitVec 64) → List (BitVec 64 × List Ty))
   /-- The address of a function with this signature (see `FnSig`): it may be
   called by any caller that meets the signature, whatever that caller's own
   stack and whatever it keeps in the preserved registers. -/
@@ -174,7 +181,11 @@ inductive Sub : Ty → Ty → Prop
   /-- An address known not to be a text's last may be used as any address in it. -/
   | strLess (more : Bool) : Sub (.str true) (.str more)
   /-- Code ready for every one of a family of contexts is ready for each. -/
-  | codeAll (pre : BitVec 64 → CtxOf Ty) (x : BitVec 64) : Sub (.codeAll pre) (.code (pre x))
+  | codeAll (pre : (Nat → BitVec 64) → CtxOf Ty) (x : Nat → BitVec 64) :
+    Sub (.codeAll pre) (.code (pre x))
+  /-- And for any part of the family, however the part is picked out. -/
+  | codeAllMap (pre : (Nat → BitVec 64) → CtxOf Ty) (f : (Nat → BitVec 64) → Nat → BitVec 64) :
+    Sub (.codeAll pre) (.codeAll fun s => pre (f s))
 
 /-- Subtyping slot by slot, for two stacks of the same length. -/
 inductive SubList : List Ty → List Ty → Prop
@@ -285,6 +296,104 @@ def ty (sig : FnSig) : Ty :=
 
 end FnSig
 
+/-! ## Signatures with results chosen at the return -/
+
+/-- A kind of value a function may choose as it returns, for its results to
+depend on: the address of a block it made, two such addresses, and so on.
+What is asked is that the value can be written as a sequence of 64-bit
+values and read back, which is how it is carried in types. -/
+class Chosen (ι : Type) where
+  enc : ι → Nat → BitVec 64
+  dec : (Nat → BitVec 64) → ι
+  dec_enc : ∀ x, dec (enc x) = x
+
+instance : Chosen (Nat → BitVec 64) := ⟨id, id, fun _ => rfl⟩
+
+instance : Chosen (BitVec 64) := ⟨fun x _ => x, fun s => s 0, fun _ => rfl⟩
+
+instance : Chosen Unit := ⟨fun _ _ => 0, fun _ => (), fun _ => rfl⟩
+
+/-- Two chosen values: one in the even places of the sequence, the other in
+the odd ones. -/
+instance {α β : Type} [Chosen α] [Chosen β] : Chosen (α × β) where
+  enc x := fun n => if n % 2 = 0 then Chosen.enc x.1 (n / 2) else Chosen.enc x.2 (n / 2)
+  dec s := (Chosen.dec fun n => s (2 * n), Chosen.dec fun n => s (2 * n + 1))
+  dec_enc x := by
+    have h₁ : (fun n => if 2 * n % 2 = 0 then Chosen.enc x.1 (2 * n / 2)
+        else Chosen.enc x.2 (2 * n / 2)) = Chosen.enc x.1 := by
+      funext n
+      simp only [show 2 * n % 2 = 0 by omega, ↓reduceIte, show 2 * n / 2 = n by omega]
+    have h₂ : (fun n => if (2 * n + 1) % 2 = 0 then Chosen.enc x.1 ((2 * n + 1) / 2)
+        else Chosen.enc x.2 ((2 * n + 1) / 2)) = Chosen.enc x.2 := by
+      funext n
+      simp only [show (2 * n + 1) % 2 = 1 by omega, Nat.reduceEqDiff, ↓reduceIte,
+        show (2 * n + 1) / 2 = n by omega]
+    show (Chosen.dec _, Chosen.dec _) = x
+    rw [h₁, h₂, Chosen.dec_enc, Chosen.dec_enc]
+
+/-- A function signature whose results depend on a value of type `ι` chosen
+at the return: typically the address of something the function made. -/
+structure FnSigEx (ι : Type) where
+  /-- The types expected in the registers on entry. -/
+  args : Reg → Ty
+  /-- The registers whose types are the same on return as on entry. -/
+  preserved : Reg → Bool
+  /-- The number of stack slots the function uses below its return address. -/
+  need : Nat
+  /-- The blocks the function is handed to own. -/
+  takes : List (BitVec 64 × List Ty) := []
+  /-- The types left in the registers on return, for the value chosen. -/
+  results : ι → Reg → Ty
+  /-- The blocks the function hands back, for the value chosen. -/
+  gives : ι → List (BitVec 64 × List Ty)
+
+namespace FnSigEx
+
+variable {ι : Type}
+
+/-- The ordinary signature the function meets once the value is chosen. -/
+def pick (sig : FnSigEx ι) (x : ι) : FnSig :=
+  ⟨sig.args, sig.results x, sig.preserved, sig.need, sig.takes, sig.gives x⟩
+
+/-- Register types on entry, when the preserved registers have types `saved`. -/
+def regsIn (sig : FnSigEx ι) (saved : Reg → Ty) : Reg → Ty :=
+  fun r => if sig.preserved r then saved r else sig.args r
+
+/-- The context at the function's first instruction, for a caller that
+expects `ret x` on return, whichever `x` the function chooses, has `rest` on
+its stack and owns `frame` besides what the function takes. -/
+def entry [Chosen ι] (sig : FnSigEx ι) (saved : Reg → Ty) (ret : ι → Ctx) (rest : List Ty)
+    (room : Nat) (frame : List (BitVec 64 × List Ty)) : Ctx :=
+  ⟨sig.regsIn saved, .codeAll (fun s => ret (Chosen.dec s)) :: rest, room, Flags.Any,
+    sig.takes ++ frame⟩
+
+/-- What the function needs of its caller: what an ordinary function with
+each of the signatures would need, and that what the caller owns besides is
+the same whichever value is chosen. -/
+structure CallerOk (sig : FnSigEx ι) (saved : Reg → Ty) (ret : ι → Ctx) (rest : List Ty)
+    (room : Nat) (frame : List (BitVec 64 × List Ty)) : Prop where
+  each : ∀ x, (sig.pick x).CallerOk saved (ret x) rest room
+  frame : ∀ x, (ret x).owned.drop (sig.gives x).length = frame
+
+/-- `sig.At Φ a`: the code typing lets address `a` be entered as a function
+with signature `sig`, by any caller. -/
+def At [Chosen ι] (sig : FnSigEx ι) (Φ : CodeTy) (a : BitVec 64) : Prop :=
+  ∀ saved ret rest room frame, sig.CallerOk saved ret rest room frame →
+    Φ a (sig.entry saved ret rest room frame)
+
+/-- The signature with its chosen value written as a sequence, which is the
+form a type carries it in. -/
+def raw [Chosen ι] (sig : FnSigEx ι) : FnSigEx (Nat → BitVec 64) :=
+  ⟨sig.args, sig.preserved, sig.need, sig.takes, fun s => sig.results (Chosen.dec s),
+    fun s => sig.gives (Chosen.dec s)⟩
+
+/-- The type of a pointer to a function with this signature. -/
+def ty [Chosen ι] (sig : FnSigEx ι) : Ty :=
+  .fnAll sig.args sig.preserved sig.need sig.takes (fun s => sig.results (Chosen.dec s))
+    (fun s => sig.gives (Chosen.dec s))
+
+end FnSigEx
+
 /-- Two byte ranges, given by start and length, do not overlap. Stated so that
 it also covers ranges that wrap around the end of the address space. An
 empty range overlaps nothing, wherever it starts. -/
@@ -378,8 +487,18 @@ def HasTy (fetch : Fetch) (sys : Syscall) : MemTy → Nat → Ty → BitVec 64 �
   | Ψ, n, .code pre, v =>
     ∀ k, (hk : k < n) → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, s.rip = v →
       Matches (fun τ w => HasTy fetch sys Ψ' k τ w) Ψ' pre s → SafeN fetch sys k s
+  | Ψ, n, .fnAll args preserved need takes results gives, v =>
+    ∀ k, (hk : k < n) → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF →
+      ∀ (saved : Reg → Ty) (ret : (Nat → BitVec 64) → Ctx) (rest : List Ty) (room : Nat)
+        (frame : List (BitVec 64 × List Ty)),
+      FnSigEx.CallerOk ⟨args, preserved, need, takes, results, gives⟩ saved ret rest room frame →
+      ∀ s : State, s.rip = v →
+      Matches (fun τ w => HasTy fetch sys Ψ' k τ w) Ψ'
+        (FnSigEx.entry ⟨args, preserved, need, takes, results, gives⟩ saved ret rest room
+          frame) s →
+      SafeN fetch sys k s
   | Ψ, n, .codeAll pre, v =>
-    ∀ x : BitVec 64, ∀ k, (hk : k < n) → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State,
+    ∀ x : Nat → BitVec 64, ∀ k, (hk : k < n) → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State,
       s.rip = v → Matches (fun τ w => HasTy fetch sys Ψ' k τ w) Ψ' (pre x) s →
       SafeN fetch sys k s
   | Ψ, _, .ref tag writable index, v =>
@@ -429,7 +548,7 @@ theorem hasTy_code {pre : Ctx} {v : BitVec 64} :
   rw [HasTy]
 
 /-- Code ready for a family of contexts is code ready for each of them. -/
-theorem hasTy_codeAll {pre : BitVec 64 → Ctx} {v : BitVec 64} :
+theorem hasTy_codeAll {pre : (Nat → BitVec 64) → Ctx} {v : BitVec 64} :
     HasTy fetch sys Ψ n (.codeAll pre) v ↔ ∀ x, HasTy fetch sys Ψ n (.code (pre x)) v := by
   simp only [hasTy_code]
   rw [HasTy]
@@ -464,6 +583,20 @@ theorem hasTy_fn {sig : FnSig} {v : BitVec 64} :
         SafeN fetch sys k s := by
   rw [FnSig.ty, HasTy]
 
+/-- A value is a pointer to a function with a chosen result if entering it,
+from any caller that meets the signature, is safe for any smaller number of
+steps. The caller's return contexts are taken over sequences, as the type
+carries them. -/
+theorem hasTy_fnAll {ι : Type} [Chosen ι] {sig : FnSigEx ι} {v : BitVec 64} :
+    HasTy fetch sys Ψ n sig.ty v ↔
+      ∀ k, k < n → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF →
+        ∀ saved ret rest room frame, sig.raw.CallerOk saved ret rest room frame →
+        ∀ s : State, s.rip = v →
+        WellTyped fetch sys Ψ' k (sig.raw.entry saved ret rest room frame) s →
+        SafeN fetch sys k s := by
+  rw [FnSigEx.ty, HasTy]
+  rfl
+
 /-- A type's meaning at a step count implies its meaning at every smaller one. -/
 theorem HasTy.mono {m : Nat} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys Ψ n τ v)
     (hle : m ≤ n) : HasTy fetch sys Ψ m τ v := by
@@ -485,6 +618,9 @@ theorem HasTy.mono {m : Nat} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys Ψ n
   | codeAll pre =>
     simp only [hasTy_codeAll, hasTy_code] at h ⊢
     exact fun x k hk => h x k (by omega)
+  | fnAll args preserved need takes results gives =>
+    rw [HasTy] at h ⊢
+    exact fun k hk => h k (by omega)
   | fn args results preserved need takes gives =>
     have e : Ty.fn args results preserved need takes gives = FnSig.ty ⟨args, results, preserved, need, takes, gives⟩ := rfl
     rw [e, hasTy_fn] at h ⊢
@@ -518,6 +654,9 @@ theorem HasTy.ext {Ψ' : MemTy} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys �
   | codeAll pre =>
     simp only [hasTy_codeAll, hasTy_code] at h ⊢
     exact fun x k hk Ψ'' he' => h x k hk Ψ'' (he.trans he')
+  | fnAll args preserved need takes results gives =>
+    rw [HasTy] at h ⊢
+    exact fun k hk Ψ'' he' => h k hk Ψ'' (he.trans he')
   | fn args results preserved need takes gives =>
     have e : Ty.fn args results preserved need takes gives = FnSig.ty ⟨args, results, preserved, need, takes, gives⟩ := rfl
     rw [e, hasTy_fn] at h ⊢

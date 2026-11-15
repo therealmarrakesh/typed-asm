@@ -65,6 +65,11 @@ inductive BlockOk (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) :
   | fnPtr {a : BitVec 64} {Γ : Ctx} {r : Reg} {v : BitVec 64} {sig : FnSig} :
     r ≠ .rsp → Γ.regs r = .eq v → sig.At Φ v → BlockOk Φ fetch sys Ψ a (Γ.setReg r sig.ty) →
     BlockOk Φ fetch sys Ψ a Γ
+  /-- The same for a function whose results depend on a value it chooses. -/
+  | fnPtrAll {ι : Type} [Chosen ι] {a : BitVec 64} {Γ : Ctx} {r : Reg} {v : BitVec 64}
+      {sig : FnSigEx ι} :
+    r ≠ .rsp → Γ.regs r = .eq v → sig.At Φ v → BlockOk Φ fetch sys Ψ a (Γ.setReg r sig.ty) →
+    BlockOk Φ fetch sys Ψ a Γ
   /-- An instruction shown, by an argument about states, to continue at the
   next one in one of a family of contexts, followed by the rest of the block
   in each of them. -/
@@ -106,6 +111,11 @@ theorem HasType.mono (h : ∀ a Γ, Φ a Γ → Φ' a Γ) {next : BitVec 64} {Γ
   | callFn hh hroom hret hargs hsp hback hneed hgives hown =>
     exact .callFn hh hroom (h _ _ hret) hargs hsp hback hneed hgives hown
   | jmpFn hh hK hsub => exact .jmpFn hh hK hsub
+  | fnPtrAll hr hΓ hat _ ih =>
+    exact .fnPtrAll hr hΓ (fun sv rt rs rm fr hK => h _ _ (hat sv rt rs rm fr hK)) ih
+  | callFnAll hh hroom hret hargs hsp hback hneed hgives hframe hown =>
+    exact .callFnAll hh hroom (fun x => h _ _ (hret x)) hargs hsp hback hneed hgives hframe hown
+  | jmpFnAll hh hK hsub => exact .jmpFnAll hh hK hsub
   | cover hsem _ ih => exact .cover hsem ih
   | grow hsem _ ih => exact .grow hsem ih
   | codePtr hr hΓ hΦ _ ih => exact .codePtr hr hΓ (h _ _ hΦ) ih
@@ -146,6 +156,10 @@ theorem BlocksOk.programOk (h : BlocksOk Φ fetch sys Ψ) :
   | fnPtr hr hΓ hat _ ih =>
     obtain ⟨i, len, hf, ht⟩ := ih
     exact ⟨i, len, hf, .fnPtr hr hΓ (fun sv rt rs rm hK => h _ _ (hat sv rt rs rm hK)) ht⟩
+  | fnPtrAll hr hΓ hat _ ih =>
+    obtain ⟨i, len, hf, ht⟩ := ih
+    exact ⟨i, len, hf,
+      .fnPtrAll hr hΓ (fun sv rt rs rm fr hK => h _ _ (hat sv rt rs rm fr hK)) ht⟩
   | last hf ht => exact ⟨_, _, hf, ht.mono h⟩
 
 /-- A register holding exactly the address of a field of a memory block may
@@ -384,6 +398,13 @@ theorem FnSig.at_label {sig : FnSig} {l : L}
     sig.At (CodeTy.ofLabels prog base T) (Asm.addr prog base l) :=
   fun saved ret rest room hK => .intro (h saved ret rest room hK)
 
+/-- The same for a function whose results depend on a value it chooses. -/
+theorem FnSigEx.at_label {ι : Type} [Chosen ι] {sig : FnSigEx ι} {l : L}
+    (h : ∀ saved ret rest room frame, sig.CallerOk saved ret rest room frame →
+      T l (sig.entry saved ret rest room frame)) :
+    sig.At (CodeTy.ofLabels prog base T) (Asm.addr prog base l) :=
+  fun saved ret rest room frame hK => .intro (h saved ret rest room frame hK)
+
 end Labels
 
 /-- In a program typed block by block, the address of a function is a
@@ -395,6 +416,18 @@ theorem BlocksOk.hasTy_fn (hB : BlocksOk Φ fetch sys Ψ) {sig : FnSig} {v : Bit
   intro k hk Ψ' he hΨ' saved ret rest room hK s hs hw
   exact safeUpTo hB.programOk k k (Nat.le_refl k) Ψ' he hΨ' v _
     (hB _ _ (hat saved ret rest room hK)) s hs hw
+
+/-- The same for a function whose results depend on a value it chooses. -/
+theorem BlocksOk.hasTy_fnAll (hB : BlocksOk Φ fetch sys Ψ) {ι : Type} [Chosen ι]
+    {sig : FnSigEx ι} {v : BitVec 64} (hat : sig.At Φ v) (n : Nat) :
+    HasTy fetch sys Ψ n sig.ty v := by
+  rw [TypedAsm.hasTy_fnAll]
+  intro k hk Ψ' he hΨ' saved ret rest room frame hK s hs hw
+  refine safeUpTo hB.programOk k k (Nat.le_refl k) Ψ' he hΨ' v _
+    (hB _ _ (hat saved (fun x => ret (Chosen.enc x)) rest room frame hK.ofRaw)) s hs ?_
+  exact hw.sub ⟨fun _ _ => .refl _,
+    .cons (.codeAllMap ret fun q => Chosen.enc (Chosen.dec (ι := ι) q)) (.refl _), rfl,
+    fun _ hf => hf, .refl _, rfl⟩
 
 /-- **Soundness, block by block.** -/
 theorem soundness_blocks {s : State} (hB : BlocksOk Φ fetch sys Ψ)

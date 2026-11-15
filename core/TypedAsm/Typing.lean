@@ -60,12 +60,37 @@ theorem Sub.trans {τ υ φ : Ty} (h₁ : Sub τ υ) (h₂ : Sub υ φ) : Sub τ
   | codeAll pre x =>
     cases h₁ with
     | refl => exact .codeAll pre x
+    | codeAllMap pre' g => exact .codeAll pre' (g x)
+  | codeAllMap pre f =>
+    cases h₁ with
+    | refl => exact .codeAllMap pre f
+    | codeAllMap pre' g => exact .codeAllMap pre' (fun s => g (f s))
   | orErr _ ih => exact .orErr (ih h₁)
   | orErrMono h ih =>
     cases h₁ with
     | refl => exact .orErrMono h
     | orErr h' => exact .orErr (ih h')
     | orErrMono h' => exact .orErrMono (ih h')
+
+/-- A caller ready for each chosen value is ready for each sequence, read as
+the value it stands for. -/
+theorem FnSigEx.CallerOk.toRaw {ι : Type} [Chosen ι] {sig : FnSigEx ι} {saved : Reg → Ty}
+    {ret : ι → Ctx} {rest : List Ty} {room : Nat} {frame : List (BitVec 64 × List Ty)}
+    (h : sig.CallerOk saved ret rest room frame) :
+    sig.raw.CallerOk saved (fun s => ret (Chosen.dec s)) rest room frame :=
+  ⟨fun s => h.each (Chosen.dec s), fun s => h.frame (Chosen.dec s)⟩
+
+/-- A caller ready for each sequence is ready for each chosen value, written
+as a sequence. -/
+theorem FnSigEx.CallerOk.ofRaw {ι : Type} [Chosen ι] {sig : FnSigEx ι} {saved : Reg → Ty}
+    {ret : (Nat → BitVec 64) → Ctx} {rest : List Ty} {room : Nat}
+    {frame : List (BitVec 64 × List Ty)} (h : sig.raw.CallerOk saved ret rest room frame) :
+    sig.CallerOk saved (fun x => ret (Chosen.enc x)) rest room frame := by
+  refine ⟨fun x => ?_, fun x => ?_⟩
+  · have := h.each (Chosen.enc x)
+    simpa only [FnSigEx.raw, FnSigEx.pick, Chosen.dec_enc] using this
+  · have := h.frame (Chosen.enc x)
+    simpa only [FnSigEx.raw, Chosen.dec_enc] using this
 
 theorem SubList.refl : ∀ σ : List Ty, SubList σ σ
   | [] => .nil
@@ -870,7 +895,8 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
   /-- A call whose return address is typed as code ready for any of a family
   of contexts: the instruction after the call must be typed for each. The
   callee chooses which one it returns into, once it knows. -/
-  | callAll {Γ : Ctx} {ret : BitVec 64 → Ctx} {d : BitVec 32} {n : Nat} : Γ.room = n + 1 →
+  | callAll {Γ : Ctx} {ret : (Nat → BitVec 64) → Ctx} {d : BitVec 32} {n : Nat} :
+    Γ.room = n + 1 →
     (∀ x, Φ next (ret x)) →
     Accepts Φ (next + d.signExtend 64)
       { Γ.moveSp (-8) with stack := .codeAll ret :: Γ.stack, room := n } →
@@ -910,6 +936,31 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
     ret.owned.take sig.gives.length = sig.gives →
     Γ.owned = sig.takes ++ ret.owned.drop sig.gives.length →
     HasType Φ fetch sys Ψ next Γ (.call (.ind rm))
+  /-- A register holding exactly the address of a function whose results
+  depend on a value it chooses may be treated as a pointer to that function. -/
+  | fnPtrAll {ι : Type} [Chosen ι] {Γ : Ctx} {i : Instr} {r : Reg} {a : BitVec 64}
+      {sig : FnSigEx ι} :
+    r ≠ .rsp → Γ.regs r = .eq a → sig.At Φ a →
+    HasType Φ fetch sys Ψ next (Γ.setReg r sig.ty) i → HasType Φ fetch sys Ψ next Γ i
+  /-- Call through a register, field or stack slot holding a pointer to such
+  a function. The instruction after the call must be typed for every value
+  the function may choose. -/
+  | callFnAll {ι : Type} [Chosen ι] {Γ : Ctx} {ret : ι → Ctx} {rm : RM} {sig : FnSigEx ι}
+      {m : Nat} {frame : List (BitVec 64 × List Ty)} :
+    Holds Ψ next Γ rm sig.ty → Γ.room = m + 1 → (∀ x, Φ next (ret x)) →
+    (∀ r, r ≠ .rsp → Sub (Γ.regs r) (sig.regsIn (Γ.moveSp (-8)).regs r)) →
+    Sub ((Γ.regs .rsp).shift (-8)) (sig.regsIn (Γ.moveSp (-8)).regs .rsp) →
+    (∀ x, CtxSub ((sig.pick x).returned (Γ.moveSp (-8)).regs Γ.stack m (ret x).owned) (ret x)) →
+    sig.need ≤ m → (∀ x, (ret x).owned.take (sig.gives x).length = sig.gives x) →
+    (∀ x, (ret x).owned.drop (sig.gives x).length = frame) →
+    Γ.owned = sig.takes ++ frame →
+    HasType Φ fetch sys Ψ next Γ (.call (.ind rm))
+  /-- Jump to such a function through a pointer to it: a tail call, made on
+  behalf of a caller that is ready for whatever value is chosen. -/
+  | jmpFnAll {ι : Type} [Chosen ι] {Γ : Ctx} {ret : ι → Ctx} {rm : RM} {sig : FnSigEx ι}
+      {saved : Reg → Ty} {rest : List Ty} {room : Nat} {frame : List (BitVec 64 × List Ty)} :
+    Holds Ψ next Γ rm sig.ty → sig.CallerOk saved ret rest room frame →
+    CtxSub Γ (sig.entry saved ret rest room frame) → HasType Φ fetch sys Ψ next Γ (.jmp (.ind rm))
   /-- Jump to a function through a pointer to it: a tail call, made on
   behalf of the caller the current function would have returned to. -/
   | jmpFn {Γ ret : Ctx} {rm : RM} {sig : FnSig} {saved : Reg → Ty} {rest : List Ty}

@@ -32,6 +32,7 @@ theorem HasTy.sub {τ υ : Ty} {v : BitVec 64} (h : Sub τ υ) (hv : HasTy fetch
       simp only [↓reduceIte] at hoff
       cases more <;> simp only [Bool.false_eq_true, ↓reduceIte] <;> omega, hva⟩
   | codeAll pre x => exact hasTy_codeAll.mp hv x
+  | codeAllMap pre f => exact hasTy_codeAll.mpr fun x => hasTy_codeAll.mp hv (f x)
   | orErr _ ih => exact hasTy_orErr.mpr (.inr (ih hv))
   | orErrMono _ ih => exact hasTy_orErr.mpr ((hasTy_orErr.mp hv).imp id ih)
 
@@ -2855,6 +2856,69 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
     refine ⟨rfl, fun s' heq => ?_⟩
     cases heq
     exact hp n (Nat.lt_succ_self n) Ψ' (.refl _) hΨ saved ret rest room hK _ rfl
+      (((h.sub hsub).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
+  | @fnPtrAll ι inst Γ i r a sig hr hΓ hat _ ihc =>
+    have hp := h.eqReg hr hΓ
+    -- By the induction hypothesis the function is safe to enter for any
+    -- caller; a caller that speaks of sequences is one that speaks of the
+    -- values they stand for.
+    have hv : HasTy fetch sys Ψ' (n + 1) sig.ty (s.getReg r) := by
+      rw [hasTy_fnAll]
+      intro k hk Ψ'' he' hΨ'' saved ret rest room frame hK t ht hwt
+      refine ih k (by omega) Ψ'' (he.trans he') hΨ'' a _
+        (hat saved (fun x => ret (Chosen.enc x)) rest room frame hK.ofRaw) t (ht.trans hp) ?_
+      exact hwt.sub ⟨fun _ _ => .refl _,
+        .cons (.codeAllMap ret fun s => Chosen.enc (Chosen.dec (ι := ι) s)) (.refl _), rfl,
+        fun _ hf => hf, .refl _, rfl⟩
+    exact ihc he hΨ (h.retype hr hv) hrip
+  | @callFnAll ι inst Γ ret rm sig m frame hholds hroom hret hargs hsp hback hneed hgives hframe
+      hown =>
+    obtain ⟨v, hv, hp⟩ := (hholds.ext he).sound h hrip
+    rw [hasTy_fnAll] at hp
+    have hw : (s.setReg .rsp (s.getReg .rsp - 8)).canWrite (s.getReg .rsp - 8) 8 = true :=
+      h.canWrite_push hroom
+    have hra : HasTy fetch sys Ψ' (n + 1) (.codeAll fun q => ret (Chosen.dec q)) s.rip := by
+      rw [hasTy_codeAll]
+      intro q
+      rw [hasTy_code]
+      intro k hk Ψ'' he' hΨ'' t ht hwt
+      exact ih k (by omega) Ψ'' (he.trans he') hΨ'' next _ (hret (Chosen.dec q)) t
+        (ht.trans hrip) hwt
+    have hex : exec sys (.call (.ind rm)) s
+        = .next { (s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip with
+            rip := v } := by
+      have hpush : s.push64 s.rip
+          = .next ((s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip) := by
+        simp only [State.push64, State.write64, hw, ite_true]
+      simp [exec, hv, hpush]
+    have hw' := h.push hΨ hroom hra
+    generalize (s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip = s₁
+      at hex hw'
+    rw [hex]
+    refine ⟨rfl, fun s' heq => ?_⟩
+    cases heq
+    have hK : sig.CallerOk (Γ.moveSp (-8)).regs ret Γ.stack m frame :=
+      ⟨fun x => ⟨hgives x, hback x, hneed⟩, hframe⟩
+    exact hp n (Nat.lt_succ_self n) Ψ' (.refl _) hΨ (Γ.moveSp (-8)).regs _ Γ.stack m frame
+      hK.toRaw _ rfl
+      (((hw'.sub (Δ := sig.entry (Γ.moveSp (-8)).regs ret Γ.stack m frame)
+        ⟨fun r hr => by
+            show Sub ((Γ.moveSp (-8)).regs r) _
+            rw [CtxOf.moveSp_regs hr]
+            exact hargs r hr,
+          .refl _, rfl, fun _ _ => trivial, by
+            show Sub ((Γ.moveSp (-8)).regs .rsp) _
+            rw [CtxOf.moveSp_sp]
+            exact hsp, hown⟩).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
+  | @jmpFnAll ι inst Γ ret rm sig saved rest room frame hholds hK hsub =>
+    obtain ⟨v, hv, hp⟩ := (hholds.ext he).sound h hrip
+    rw [hasTy_fnAll] at hp
+    have hex : exec sys (.jmp (.ind rm)) s = .next { s with rip := v } := by
+      simp [exec, hv]
+    rw [hex]
+    refine ⟨rfl, fun s' heq => ?_⟩
+    cases heq
+    exact hp n (Nat.lt_succ_self n) Ψ' (.refl _) hΨ saved _ rest room frame hK.toRaw _ rfl
       (((h.sub hsub).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
   | @cover ι Γ Γ' i hsem _ ihc =>
     obtain ⟨x, hx⟩ := hsem Ψ' he hΨ _ _ h
