@@ -15,8 +15,8 @@ it runs.
 
 What exists and is checked today:
 
-- A model of an x86-64 subset: about thirty instruction forms, with an encoder
-  and a decoder proved to round-trip.
+- A model of an x86-64 subset: 79 instructions, in thirty forms, with an
+  encoder and a decoder proved to round-trip.
 - A type system for that model, with its soundness proof. A typed program
   never gets stuck and never faults, on the machine that decodes its
   instructions from memory.
