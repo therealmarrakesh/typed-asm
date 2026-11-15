@@ -18,6 +18,7 @@ import ArgsProgram
 import OwnProgram
 import DoubleProgram
 import FreshProgram
+import PairProgram
 
 /-!
 # Whole programs, against a real machine
@@ -96,7 +97,8 @@ def cases : List Case := [
   -- where the kernel put its page, which no two runs agree on
   { label := "fresh-short", program := Fresh.program, input := pattern 100 },
   { label := "fresh-page", program := Fresh.program, input := pattern 4096 },
-  { label := "fresh-more", program := Fresh.program, input := pattern 5000 }]
+  { label := "fresh-more", program := Fresh.program, input := pattern 5000 },
+  { label := "pair", program := Pair.program }]
 
 /-- A run as it is recorded: the exit status as Linux reports it, then what
 was written to standard output. -/
