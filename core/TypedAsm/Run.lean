@@ -81,6 +81,10 @@ structure Runnable where
   start : State
   /-- Whether its data is to be loaded writable. -/
   writable : Bool := false
+  /-- Its data segments, for a program that names them: where each is loaded,
+  whether it is writable, and its bytes. When there are any, the executable
+  file is made of these, and `data` and `writable` are not looked at. -/
+  segments : List (Nat × Bool × List Byte) := []
   /-- Whether it reads standard input. -/
   readsInput : Bool := false
   /-- The state it starts in with given arguments, its own name first, if it
@@ -91,7 +95,8 @@ namespace Runnable
 
 /-- The program as a Linux executable. -/
 def elf (p : Runnable) : List Byte :=
-  Elf.file p.entry p.image p.data (writable := p.writable)
+  if p.segments.isEmpty then Elf.file p.entry p.image p.data (writable := p.writable)
+  else Elf.fileOf p.entry p.image p.segments
 
 /-- The state the program starts in, given its arguments, what there is to
 read on standard input, the files there are, the random bytes it will be

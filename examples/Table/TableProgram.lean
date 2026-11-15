@@ -15,7 +15,9 @@ _start:
      mov   eax, 60              ; `exit`
      syscall
 
-table:   dq record              ; one page after the load address
+segment readable writeable
+
+table:   dq record
 record:  dq 3, 5
 ```
 
@@ -24,9 +26,13 @@ what the data segment contains. So the proof that the starting state is well
 typed uses the entry contract's statement of the data, where the other
 examples need only that their blocks hold integers.
 
-The program is laid out for the addresses of the ELF file it can be written
-to: code at `0x4000b0`, the data at `0x401000`. `lake exe table` runs it in
-the model; `lake exe table --elf FILE` writes an executable that Linux can run.
+The table and the record are named by labels, in the data segment as in
+the code: the load's distance to the table, and the address the table holds,
+are worked out from where the lines end up. The program is laid out for the
+addresses of the ELF file it can be written to: its instructions straight
+after the file's headers, its data segment on the page after them.
+`lake exe table` runs it in the model; `lake exe table --elf FILE` writes an
+executable that Linux can run.
 -/
 
 open TypedAsm
@@ -35,27 +41,30 @@ namespace Table
 
 /-! ## The program -/
 
-/-- Labels mark where control can arrive from elsewhere. -/
+/-- Labels mark where control can arrive from elsewhere, and where the data is. -/
 inductive Label
-  | start
+  | start | table | record
   deriving DecidableEq
 
 def code : List (Asm Label) := [
   .label .start,
-  .ins (.mov .w64 (.r_m .rdi (.rip 0xf49))),
+  .ref (.mov .w64 (.r_m .rdi (.rip 0))) .table,
   .ins (.mov .w64 (.r_m .rax (.sib (some .rdi) none 8))),
   .ins (.mov .w32 (.rm_r (.reg .rdi) .rax)),
   .ins (.mov .w32 (.rm_i (.reg .rax) 60)),
-  .ins .syscall]
+  .ins .syscall,
+  .segment true,
+  .label .table, .quad .record,
+  .label .record, .bytes (le64 3 ++ le64 5)]
 
 /-- Where the code is loaded. -/
-def base : BitVec 64 := BitVec.ofNat 64 Elf.codeBase
+def base : BitVec 64 := Asm.base code
 
 /-- Where the data is loaded: the table first, then the record. -/
-def dataBase : BitVec 64 := BitVec.ofNat 64 Elf.dataBase
+def dataBase : BitVec 64 := Asm.addr code base .table
 
 /-- Where the record is. -/
-def recordAddr : BitVec 64 := dataBase + 8
+def recordAddr : BitVec 64 := Asm.addr code base .record
 
 def fetch : Fetch := Asm.fetch base code
 
@@ -65,11 +74,11 @@ def image : List Byte := Asm.image base code
 /-- The address execution starts at. -/
 def entry : BitVec 64 := Asm.addr code base .start
 
--- The load reaches the table.
-#guard base + 7 + 0xf49 == dataBase
+-- The instructions come first and the data after, and the load reaches the table.
+#guard Asm.wellFormed code && Asm.offsetsFit base code
 
 /-- The data's bytes: the address of the record, then its two fields. -/
-def dataBytes : List Byte := le64 recordAddr ++ le64 3 ++ le64 5
+def dataBytes : List Byte := Asm.dataImage base code
 
 /-- Everything in the starting state except the program itself: the data. -/
 def prepared : State :=
@@ -90,6 +99,5 @@ def Table.program : Runnable where
   name := "table"
   entry := Table.entry.toNat
   image := Table.image
-  data := Table.dataBytes
+  segments := (Asm.segments Table.base Table.code).map fun (b, w, bs) => (b.toNat, w, bs)
   start := Table.start
-  writable := true

@@ -101,6 +101,16 @@ theorem Asm.resolve_lengthsOk {L : Type} [DecidableEq L] (target : L → BitVec 
       rcases hp with rfl | hp
       · rfl
       · exact ih _ p hp
+    | ref i l =>
+      simp only [Asm.resolve, List.mem_cons] at hp
+      rcases hp with rfl | hp
+      · show BitVec.ofNat 64 i.length = BitVec.ofNat 64 (i.aim _).length
+        rw [Instr.length_aim]
+      · exact ih _ p hp
+    | segment w => simp [Asm.resolve] at hp
+    | bytes bs => simp [Asm.resolve] at hp
+    | quad l => simp [Asm.resolve] at hp
+    | space n => simp [Asm.resolve] at hp
 
 /-- **A labelled program whose bytes are in executable memory is loaded.** -/
 theorem Asm.loaded {L : Type} [DecidableEq L] {base : BitVec 64} {prog : List (Asm L)} {s : State}

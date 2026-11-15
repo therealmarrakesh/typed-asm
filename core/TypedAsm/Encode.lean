@@ -200,4 +200,152 @@ def Instr.encode : Instr → List Byte
 def Instr.length (i : Instr) : Nat :=
   i.encode.length
 
+/-! ## Aiming an instruction at a place
+
+An instruction that reaches memory relative to `rip` names the place by its
+distance from the next instruction. `aim` sets that distance, leaving the
+instruction otherwise as it is; an instruction with no such operand is left
+alone. A program names the place by a label, and the distance is worked out
+from where the instruction and the label end up. -/
+
+/-- The address expression with its distance from `rip` set, if it is one
+relative to `rip`. -/
+def Mem.aim (d : BitVec 32) : Mem → Mem
+  | .rip _ => .rip d
+  | m => m
+
+def RM.aim (d : BitVec 32) : RM → RM
+  | .mem m => .mem (m.aim d)
+  | rm => rm
+
+def Operands.aim (d : BitVec 32) : Operands → Operands
+  | .rm_r dst src => .rm_r (dst.aim d) src
+  | .r_m dst src => .r_m dst (src.aim d)
+  | .rm_i dst imm => .rm_i (dst.aim d) imm
+
+def Target.aim (d : BitVec 32) : Target → Target
+  | .ind rm => .ind (rm.aim d)
+  | t => t
+
+/-- The instruction with the distance of its `rip`-relative operand set. -/
+def Instr.aim (d : BitVec 32) : Instr → Instr
+  | .alu op w ops => .alu op w (ops.aim d)
+  | .test w dst src => .test w (dst.aim d) src
+  | .unary op w dst => .unary op w (dst.aim d)
+  | .shift op w dst c => .shift op w (dst.aim d) c
+  | .mulDiv op w src => .mulDiv op w (src.aim d)
+  | .imul2 w dst src => .imul2 w dst (src.aim d)
+  | .imul3 w dst src imm => .imul3 w dst (src.aim d) imm
+  | .popcnt w dst src => .popcnt w dst (src.aim d)
+  | .mov w ops => .mov w (ops.aim d)
+  | .store8 dst src => .store8 (dst.aim d) src
+  | .store16 dst src => .store16 (dst.aim d) src
+  | .movzx w dst sw src => .movzx w dst sw (src.aim d)
+  | .movsx w dst sw src => .movsx w dst sw (src.aim d)
+  | .movsxd dst src => .movsxd dst (src.aim d)
+  | .lea w dst addr => .lea w dst (addr.aim d)
+  | .cmov c w dst src => .cmov c w dst (src.aim d)
+  | .setcc c dst => .setcc c (dst.aim d)
+  | .jmp t => .jmp (t.aim d)
+  | .call t => .call (t.aim d)
+  | i => i
+
+theorem Mem.encode_aim (reg : Nat) (m : Mem) (d : BitVec 32) :
+    ((m.aim d).encode reg).x = (m.encode reg).x ∧ ((m.aim d).encode reg).b = (m.encode reg).b ∧
+      ((m.aim d).encode reg).bytes.length = (m.encode reg).bytes.length := by
+  cases m with
+  | rip e => exact ⟨rfl, rfl, rfl⟩
+  | sib b i e => exact ⟨rfl, rfl, rfl⟩
+
+theorem RM.encode_aim (reg : Nat) (rm : RM) (d : BitVec 32) :
+    ((rm.aim d).encode reg).x = (rm.encode reg).x ∧ ((rm.aim d).encode reg).b = (rm.encode reg).b ∧
+      ((rm.aim d).encode reg).bytes.length = (rm.encode reg).bytes.length := by
+  cases rm with
+  | reg r => exact ⟨rfl, rfl, rfl⟩
+  | mem m => exact Mem.encode_aim reg m d
+
+theorem encodeOp_aim (w : Bool) (opcode : List Byte) (reg : Nat) (regExt : Bool) (rm : RM)
+    (force : Bool) (pre : List Byte) (d : BitVec 32) :
+    (encodeOp w opcode reg regExt (rm.aim d) force pre).length
+      = (encodeOp w opcode reg regExt rm force pre).length := by
+  obtain ⟨hx, hb, hl⟩ := RM.encode_aim reg rm d
+  simp only [encodeOp, List.length_append, hx, hb, hl]
+
+theorem RM.aim_eq_reg (rm : RM) (d : BitVec 32) (r : Reg) : rm.aim d = .reg r ↔ rm = .reg r := by
+  cases rm <;> simp [RM.aim]
+
+theorem RM.byteNeedsRex_aim (rm : RM) (d : BitVec 32) : (rm.aim d).byteNeedsRex = rm.byteNeedsRex := by
+  cases rm <;> rfl
+
+/-- **Aiming an instruction does not change how many bytes it takes.** So
+where everything after it lands does not depend on where it is aimed. -/
+theorem Instr.length_aim (i : Instr) (d : BitVec 32) : (i.aim d).length = i.length := by
+  have eo := fun w op reg ext rm force pre => encodeOp_aim w op reg ext rm force pre d
+  have er : ∀ rm : RM, (rm.aim d = RM.reg .rax) = (rm = RM.reg .rax) :=
+    fun rm => propext (RM.aim_eq_reg rm d .rax)
+  cases i with
+  | alu op w ops =>
+    cases ops with
+    | rm_r dst src => simp only [Instr.aim, Operands.aim, Instr.length, Instr.encode, eo]
+    | r_m dst src =>
+      have := eo w.rexW [byte (op.code * 8 + 3)] dst.num dst.ext (.mem src) false []
+      simpa only [Instr.aim, Operands.aim, Instr.length, Instr.encode, RM.aim] using this
+    | rm_i dst imm =>
+      simp only [Instr.aim, Operands.aim, Instr.length, Instr.encode, er]
+      split
+      · simp only [List.length_append, eo]
+      · split <;> simp only [List.length_append, eo]
+  | test w dst src =>
+    cases src with
+    | reg r => simp only [Instr.aim, Instr.length, Instr.encode, eo]
+    | imm v =>
+      simp only [Instr.aim, Instr.length, Instr.encode, er]
+      split <;> simp only [List.length_append, eo]
+  | unary op w dst => cases op <;> simp only [Instr.aim, Instr.length, Instr.encode, eo]
+  | shift op w dst c =>
+    cases c with
+    | imm n =>
+      simp only [Instr.aim, Instr.length, Instr.encode]
+      split <;> simp only [List.length_append, eo]
+    | cl => simp only [Instr.aim, Instr.length, Instr.encode, eo]
+  | mulDiv op w src => simp only [Instr.aim, Instr.length, Instr.encode, eo]
+  | imul2 w dst src => simp only [Instr.aim, Instr.length, Instr.encode, eo]
+  | imul3 w dst src imm =>
+    simp only [Instr.aim, Instr.length, Instr.encode]
+    split <;> simp only [List.length_append, eo]
+  | popcnt w dst src => simp only [Instr.aim, Instr.length, Instr.encode, eo]
+  | mov w ops =>
+    cases ops with
+    | rm_r dst src => simp only [Instr.aim, Operands.aim, Instr.length, Instr.encode, eo]
+    | r_m dst src =>
+      have := eo w.rexW [0x8B] dst.num dst.ext (.mem src) false []
+      simpa only [Instr.aim, Operands.aim, Instr.length, Instr.encode, RM.aim] using this
+    | rm_i dst imm =>
+      cases dst with
+      | reg r => rfl
+      | mem m =>
+        have := eo w.rexW [0xC7] 0 false (.mem m) false []
+        cases w <;>
+          simpa only [Instr.aim, Operands.aim, RM.aim, Instr.length, Instr.encode,
+            List.length_append, Nat.add_right_cancel_iff] using this
+  | store8 dst src =>
+    have := eo false [0x88] src.num src.ext (.mem dst) src.byteNeedsRex []
+    simpa only [Instr.aim, Instr.length, Instr.encode, RM.aim] using this
+  | store16 dst src =>
+    have := eo false [0x89] src.num src.ext (.mem dst) false [0x66]
+    simpa only [Instr.aim, Instr.length, Instr.encode, RM.aim] using this
+  | movzx w dst sw src =>
+    cases sw <;> simp only [Instr.aim, Instr.length, Instr.encode, eo, RM.byteNeedsRex_aim]
+  | movsx w dst sw src =>
+    cases sw <;> simp only [Instr.aim, Instr.length, Instr.encode, eo, RM.byteNeedsRex_aim]
+  | movsxd dst src => simp only [Instr.aim, Instr.length, Instr.encode, eo]
+  | lea w dst addr =>
+    have := eo w.rexW [0x8D] dst.num dst.ext (.mem addr) false []
+    simpa only [Instr.aim, Instr.length, Instr.encode, RM.aim] using this
+  | cmov c w dst src => simp only [Instr.aim, Instr.length, Instr.encode, eo]
+  | setcc c dst => simp only [Instr.aim, Instr.length, Instr.encode, eo, RM.byteNeedsRex_aim]
+  | jmp t => cases t <;> simp only [Instr.aim, Target.aim, Instr.length, Instr.encode, eo]
+  | call t => cases t <;> simp only [Instr.aim, Target.aim, Instr.length, Instr.encode, eo]
+  | _ => rfl
+
 end TypedAsm
