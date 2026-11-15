@@ -42,6 +42,10 @@ What exists and is checked today:
 - A type system for that model, with its soundness proof. A typed program
   never gets stuck and never faults, on the machine that decodes its
   instructions from memory.
+- Memory described to the byte. A block has a size in bytes and typed values
+  at byte offsets; everything else in it is plain bytes, which can be read
+  and written at any offset and any width that stays inside the block. The
+  stack is the exception: it is still described in eight-byte slots.
 - A model of the Linux calls a program needs (`read`, `write`, `openat`,
   `close`, `fstat`, `lseek`, `mmap`, `munmap`, `exit`, `exit_group`,
   `clock_gettime`, `getrandom`).
