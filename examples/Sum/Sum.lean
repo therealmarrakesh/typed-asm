@@ -15,7 +15,7 @@ namespace Sum
 /-! ## The typing -/
 
 /-- A pointer to element `i` of a read-only array of `n` integers. -/
-def elem (n i : Nat) : Ty := .ptr (List.replicate n .int) false i
+def elem (n i : Nat) : Ty := .ptr (.raw (8 * n)) false (8 * i)
 
 /-- The counter after `i` of `n` elements have been consumed. -/
 def left (n i : Nat) : BitVec 64 := BitVec.ofNat 64 (n - i)
@@ -54,7 +54,7 @@ inductive At : Label → Ctx → Prop
 /-- The code typing: those contexts, at the addresses of their labels. -/
 def Φ : CodeTy := .ofLabels code base At
 
-def arrayLayout : Layout := ⟨List.replicate 5 .int, false, none, 0⟩
+def arrayLayout : Layout := ⟨.raw 40, false, none, 0⟩
 
 /-- One memory block: the array. -/
 def blocks : List (BitVec 64 × Layout) := [(dataBase, arrayLayout)]
@@ -123,7 +123,7 @@ abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase arrayB
 machine that fetches instructions by decoding memory.** It never gets stuck,
 never faults: no page fault, no invalid opcode and no divide error. -/
 theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  h.safeMem blocksOk memOk At.start (Entry.fieldsInt (by simp [blocks, arrayLayout]))
+  h.safeMem blocksOk memOk At.start (Entry.plain (by simp [blocks, arrayLayout]))
 
 /-- The starting state used by the simulator meets the entry contract. -/
 theorem start_entry : Entry start := by ty_loaded
@@ -134,7 +134,7 @@ theorem safeMem : SafeMem linux start :=
 
 /-- It is also safe on the table machine, which is what the type system reasons about. -/
 theorem safe : Safe fetch linux start :=
-  start_entry.safe blocksOk memOk At.start (Entry.fieldsInt (by simp [blocks, arrayLayout]))
+  start_entry.safe blocksOk memOk At.start (Entry.plain (by simp [blocks, arrayLayout]))
 
 end Sum
 

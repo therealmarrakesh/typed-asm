@@ -28,6 +28,10 @@ variable {τ : Type}
 /-- A block of plain bytes. -/
 def raw (n : Nat) : ShapeOf τ := ⟨n, []⟩
 
+@[simp] theorem raw_size (n : Nat) : (raw n : ShapeOf τ).size = n := rfl
+
+@[simp] theorem raw_vals (n : Nat) : (raw n : ShapeOf τ).vals = [] := rfl
+
 /-- Whether the typed value at `p` keeps clear of the `n` bytes from `o`. -/
 def clearOf (o n : Nat) (p : Nat × τ) : Bool :=
   p.1 + 8 ≤ o || o + n ≤ p.1
@@ -139,11 +143,10 @@ inductive Ty
   contexts at one address, this is how types depend on values: the family is
   indexed by the values, and the registers are typed as exactly those. -/
   | eq (v : BitVec 64)
-  /-- The address of field `index` of a memory block whose fields have these
-  types. A value of this type with `writable` set may be stored through.
-  `index` may equal the number of fields (one past the end); such a pointer
-  cannot be dereferenced. -/
-  | ptr (fields : List Ty) (writable : Bool) (index : Nat)
+  /-- The address of byte `off` of a memory block of this shape. A value of
+  this type with `writable` set may be stored through. `off` may be the
+  block's size or more; such a pointer cannot be dereferenced. -/
+  | ptr (shape : ShapeOf Ty) (writable : Bool) (off : Nat)
   /-- The address of code that is safe to enter when the machine matches `pre`. -/
   | code (pre : CtxOf Ty)
   /-- The address of code that is safe to enter when the machine matches
@@ -163,12 +166,12 @@ inductive Ty
   stack and whatever it keeps in the preserved registers. -/
   | fn (args results : Reg → Ty) (preserved : Reg → Bool) (need : Nat)
       (takes gives : List (BitVec 64 × ShapeOf Ty))
-  /-- The address of field `index` of a memory block of the kind named
-  `tag`. The type does not spell out the block's fields, so a field of a
-  block may have this type with the block's own tag: that is how a record
-  points to another of its kind. To use the pointer it is first opened into
-  a `ptr`, with the fields that blocks of that kind have. -/
-  | ref (tag : Nat) (writable : Bool) (index : Nat)
+  /-- The address of byte `off` of a memory block of the kind named `tag`.
+  The type does not spell out the block's shape, so a value in a block may
+  have this type with the block's own tag: that is how a record points to
+  another of its kind. To use the pointer it is first opened into a `ptr`,
+  with the shape that blocks of that kind have. -/
+  | ref (tag : Nat) (writable : Bool) (off : Nat)
   /-- Zero, or a value of type `τ`. -/
   | nullable (τ : Ty)
   /-- What a system call hands back when success gives a value of type `τ`:
@@ -200,33 +203,10 @@ def Shape.cellsFrom (o : Nat) : List Ty → List (Nat × Ty)
   | [] => []
   | τ :: rest => if τ.isInt then cellsFrom (o + 8) rest else (o, τ) :: cellsFrom (o + 8) rest
 
-/-- A block laid out as eight-byte cells with the given types. -/
+/-- A block laid out as eight-byte cells with the given types: the way to
+write an array of typed values, which an index known only by a bound can
+then reach into. A cell of type `int` is plain bytes. -/
 def Shape.cells (F : List Ty) : Shape := ⟨8 * F.length, Shape.cellsFrom 0 F⟩
-
-theorem Shape.mem_cellsFrom {F : List Ty} {o i : Nat} {τ : Ty} (h : F[i]? = some τ) :
-    τ = .int ∨ (o + 8 * i, τ) ∈ Shape.cellsFrom o F := by
-  induction F generalizing o i with
-  | nil => cases h
-  | cons υ rest ih =>
-    cases i with
-    | zero =>
-      simp only [List.getElem?_cons_zero, Option.some.injEq] at h
-      subst h
-      simp only [Shape.cellsFrom]
-      split
-      · next hi => exact .inl (Ty.eq_int_of_isInt hi)
-      · exact .inr (by simp)
-    | succ i =>
-      simp only [List.getElem?_cons_succ] at h
-      rcases ih (o := o + 8) h with hτ | hm
-      · exact .inl hτ
-      · right
-        simp only [Shape.cellsFrom]
-        have e : o + 8 * (i + 1) = o + 8 + 8 * i := by omega
-        rw [e]
-        split
-        · exact hm
-        · exact List.mem_cons_of_mem _ hm
 
 theorem Shape.fits_cellsFrom {F : List Ty} {o : Nat} {p : Nat × Ty}
     (h : p ∈ Shape.cellsFrom o F) : o ≤ p.1 ∧ p.1 + 8 ≤ o + 8 * F.length := by
@@ -241,30 +221,115 @@ theorem Shape.fits_cellsFrom {F : List Ty} {o : Nat} {p : Nat × Ty}
       · simp only; omega
       · have := ih h; omega
 
+/-- In a run of cells, the typed value of a cell is the one found at its offset. -/
+theorem Shape.find_cellsFrom {F : List Ty} {o i : Nat} {τ : Ty} (h : F[i]? = some τ)
+    (hn : τ.isInt = false) :
+    (Shape.cellsFrom o F).find? (fun p => p.1 == o + 8 * i) = some (o + 8 * i, τ) := by
+  induction F generalizing o i with
+  | nil => simp at h
+  | cons υ rest ih =>
+    cases i with
+    | zero =>
+      simp only [List.getElem?_cons_zero, Option.some.injEq] at h
+      subst h
+      simp [Shape.cellsFrom, hn]
+    | succ j =>
+      simp only [List.getElem?_cons_succ] at h
+      have e : o + 8 * (j + 1) = (o + 8) + 8 * j := by omega
+      simp only [Shape.cellsFrom]
+      split
+      · rw [e]; exact ih h
+      · rw [List.find?_cons_of_neg (by simp), e]; exact ih h
+
+/-- The typed value of a cell of a block laid out as cells. -/
+theorem Shape.valAt_cells {F : List Ty} {off i : Nat} {τ : Ty} (h8 : off % 8 = 0)
+    (h : F[off / 8 + i]? = some τ) (hn : τ.isInt = false) :
+    (Shape.cells F).valAt (off + 8 * i) = some τ := by
+  have e : off + 8 * i = 0 + 8 * (off / 8 + i) := by omega
+  simp only [ShapeOf.valAt, Shape.cells]
+  rw [e, Shape.find_cellsFrom h hn]
+  rfl
+
+theorem Shape.clear_cellsFrom {F : List Ty} {o x : Nat} (hx : x + 8 ≤ o) :
+    ∀ p ∈ Shape.cellsFrom o F, ShapeOf.clearOf x 8 p = true := by
+  induction F generalizing o with
+  | nil => intro p hp; simp [Shape.cellsFrom] at hp
+  | cons υ rest ih =>
+    intro p hp
+    simp only [Shape.cellsFrom] at hp
+    split at hp
+    · exact ih (by omega) p hp
+    · rcases List.mem_cons.mp hp with rfl | hp
+      · simp [ShapeOf.clearOf]; omega
+      · exact ih (by omega) p hp
+
+theorem Shape.filter_cellsFrom {F : List Ty} {o i : Nat} {τ : Ty} (h : F[i]? = some τ)
+    (hn : τ.isInt = false) :
+    ((Shape.cellsFrom o F).filter fun p => !ShapeOf.clearOf (o + 8 * i) 8 p).length = 1 := by
+  induction F generalizing o i with
+  | nil => simp at h
+  | cons υ rest ih =>
+    cases i with
+    | zero =>
+      simp only [List.getElem?_cons_zero, Option.some.injEq] at h
+      subst h
+      have hrest : (Shape.cellsFrom (o + 8) rest).filter
+          (fun p => !ShapeOf.clearOf (o + 8 * 0) 8 p) = [] :=
+        List.filter_eq_nil_iff.mpr (fun p hp => by
+          have := Shape.clear_cellsFrom (x := o + 8 * 0) (by omega) p hp
+          rw [this]; decide)
+      simp only [Shape.cellsFrom, hn, Bool.false_eq_true, ↓reduceIte]
+      rw [List.filter_cons_of_pos (by simp [ShapeOf.clearOf]), hrest]
+      rfl
+    | succ j =>
+      simp only [List.getElem?_cons_succ] at h
+      have e : o + 8 * (j + 1) = (o + 8) + 8 * j := by omega
+      simp only [Shape.cellsFrom]
+      split
+      · rw [e]; exact ih h
+      · rw [List.filter_cons_of_neg (by simp [ShapeOf.clearOf]; omega), e]; exact ih h
+
+/-- A cell's typed value is the only one in its eight bytes. -/
+theorem Shape.sole_cells {F : List Ty} {off i : Nat} {τ : Ty} (h8 : off % 8 = 0)
+    (h : F[off / 8 + i]? = some τ) (hn : τ.isInt = false) :
+    (Shape.cells F).sole (off + 8 * i) = true := by
+  have e : off + 8 * i = 0 + 8 * (off / 8 + i) := by omega
+  simp only [ShapeOf.sole, Shape.cells, beq_iff_eq]
+  rw [e]
+  exact Shape.filter_cellsFrom h hn
+
+/-- Every typed value of a block laid out as cells lies inside it. -/
+theorem Shape.fits_cells (F : List Ty) : (Shape.cells F).fits = true := by
+  refine List.all_eq_true.mpr fun p hp => decide_eq_true ?_
+  have := Shape.fits_cellsFrom (o := 0) (F := F) hp
+  show p.1 + 8 ≤ 8 * F.length
+  omega
+
 /-- The layout of one memory block. -/
 structure Layout where
-  fields : List Ty
+  /-- What the block holds, byte for byte, before any text. -/
+  shape : Shape
   writable : Bool
   /-- The kind of block this is, for blocks that `Ty.ref` pointers refer to. -/
   tag : Option Nat
-  /-- How many bytes of text follow the fields. Text is bytes a program may
-  read but never writes, and its last byte is zero: a name, a message, an
-  argument the program was given. A block that is only text has no fields. -/
+  /-- How many bytes of text follow those. Text is bytes a program may read
+  but never writes, and its last byte is zero: a name, a message, an argument
+  the program was given. A block that is only text has a shape of no bytes. -/
   text : Nat
 
-/-- The size of a block in bytes: its fields, then its text. -/
+/-- The size of a block in bytes: what its shape describes, then its text. -/
 def Layout.size (l : Layout) : Nat :=
-  8 * l.fields.length + l.text
+  l.shape.size + l.text
 
 /-- Memory typing: the layout of the block starting at each address, for the
-addresses where a block starts, and the fields that blocks of each kind
+addresses where a block starts, and the shape that blocks of each kind
 have. Blocks are never removed or changed during a run, but new ones may
 appear (see `MemTy.Ext`); the kinds are fixed. -/
 structure MemTy where
   blocks : BitVec 64 → Option Layout
-  /-- The fields of each kind of block that `Ty.ref` pointers may refer to.
+  /-- The shape of each kind of block that `Ty.ref` pointers may refer to.
   A kind is declared here whether or not a block of it exists yet. -/
-  kinds : Nat → Option (List Ty)
+  kinds : Nat → Option Shape
 
 /-- `Ψ a` is the layout of the block starting at `a`, if one does. -/
 instance : CoeFun MemTy (fun _ => BitVec 64 → Option Layout) := ⟨MemTy.blocks⟩
@@ -324,8 +389,8 @@ inductive Sub : Ty → Ty → Prop
   /-- Any value may be treated as an integer. -/
   | int (τ : Ty) : Sub τ .int
   /-- A writable pointer may be used as a read-only one. -/
-  | readOnly (fields : List Ty) (writable : Bool) (index : Nat) :
-    Sub (.ptr fields true index) (.ptr fields writable index)
+  | readOnly (shape : Shape) (writable : Bool) (off : Nat) :
+    Sub (.ptr shape true off) (.ptr shape writable off)
   | refReadOnly (tag : Nat) (writable : Bool) (index : Nat) :
     Sub (.ref tag true index) (.ref tag writable index)
   /-- A value may be used where it or zero is expected. -/
@@ -564,12 +629,14 @@ theorem Disjoint.of_pos {a b : BitVec 64} {n m : Nat} (h : Disjoint a n b m) (hn
   ⟨h.1 hm, h.2 hn⟩
 
 /-- A memory typing makes sense: blocks fit in the address space, none is
-empty, no two overlap, and a block of a kind has that kind's fields. -/
+empty, no two overlap, each typed value lies inside its block, and a block of
+a kind has that kind's shape. -/
 structure MemTy.WF (Ψ : MemTy) : Prop where
   size_lt : ∀ a l, Ψ a = some l → l.size < 2 ^ 64
   disjoint : ∀ a b la lb, Ψ a = some la → Ψ b = some lb → a ≠ b → Disjoint a la.size b lb.size
   nonempty : ∀ a l, Ψ a = some l → 0 < l.size
-  kinds : ∀ a l, Ψ a = some l → ∀ tag, l.tag = some tag → Ψ.kinds tag = some l.fields
+  fits : ∀ a l, Ψ a = some l → ∀ p ∈ l.shape.vals, p.1 + 8 ≤ l.shape.size
+  kinds : ∀ a l, Ψ a = some l → ∀ tag, l.tag = some tag → Ψ.kinds tag = some l.shape
 
 /-! ## What the types mean
 
@@ -623,9 +690,9 @@ structure Matches (H : Ty → BitVec 64 → Prop) (Ψ : MemTy) (Γ : Ctx) (s : S
   /-- Each memory block is readable, and writable if its layout says so. -/
   heapPerm : ∀ a l, Ψ a = some l →
     s.canRead a l.size = true ∧ (l.writable = true → s.canWrite a l.size = true)
-  /-- Each field of each memory block holds a value of its type. -/
-  heap : ∀ a l, Ψ a = some l → ∀ i τ, l.fields[i]? = some τ →
-    H τ (s.load64 (a + BitVec.ofNat 64 (8 * i)))
+  /-- Each typed value of each memory block is of its type. -/
+  heap : ∀ a l, Ψ a = some l → ∀ p ∈ l.shape.vals,
+    H p.2 (s.load64 (a + BitVec.ofNat 64 p.1))
   /-- No memory block overlaps the stack region. -/
   stackHeap : ∀ a l, Ψ a = some l → Disjoint (stackBase Γ s) (stackSize Γ) a l.size
   /-- The stack pointer holds a value of its type. -/
@@ -640,9 +707,9 @@ This does not depend on the machine state. -/
 def HasTy (fetch : Fetch) (sys : Syscall) : MemTy → Nat → Ty → BitVec 64 → Prop
   | _, _, .int, _ => True
   | _, _, .eq x, v => v = x
-  | Ψ, _, .ptr fields writable index, v =>
-    ∃ a l, Ψ a = some l ∧ l.fields = fields ∧ (writable = true → l.writable = true) ∧
-      v = a + BitVec.ofNat 64 (8 * index)
+  | Ψ, _, .ptr shape writable off, v =>
+    ∃ a l, Ψ a = some l ∧ l.shape = shape ∧ (writable = true → l.writable = true) ∧
+      v = a + BitVec.ofNat 64 off
   | Ψ, n, .code pre, v =>
     ∀ k, (hk : k < n) → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, s.rip = v →
       Matches (fun τ w => HasTy fetch sys Ψ' k τ w) Ψ' pre s → SafeN fetch sys k s
@@ -660,14 +727,14 @@ def HasTy (fetch : Fetch) (sys : Syscall) : MemTy → Nat → Ty → BitVec 64 �
     ∀ x : Nat → BitVec 64, ∀ k, (hk : k < n) → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State,
       s.rip = v → Matches (fun τ w => HasTy fetch sys Ψ' k τ w) Ψ' (pre x) s →
       SafeN fetch sys k s
-  | Ψ, _, .ref tag writable index, v =>
+  | Ψ, _, .ref tag writable off, v =>
     ∃ a l, Ψ a = some l ∧ l.tag = some tag ∧ (writable = true → l.writable = true) ∧
-      v = a + BitVec.ofNat 64 (8 * index)
+      v = a + BitVec.ofNat 64 off
   | Ψ, n, .nullable τ, v => v = 0 ∨ HasTy fetch sys Ψ n τ v
   | Ψ, n, .orErr τ, v => SysErr v ∨ HasTy fetch sys Ψ n τ v
   | Ψ, _, .str more, v =>
     ∃ a l off, Ψ a = some l ∧ off + (if more then 1 else 0) < l.text ∧
-      v = a + BitVec.ofNat 64 (8 * l.fields.length + off)
+      v = a + BitVec.ofNat 64 (l.shape.size + off)
   | Ψ, n, .fn args results preserved need takes gives, v =>
     ∀ k, (hk : k < n) → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF →
       ∀ (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat),
@@ -691,10 +758,10 @@ theorem HasTy.int (v : BitVec 64) : HasTy fetch sys Ψ n .int v := by
 theorem hasTy_eq {x v : BitVec 64} : HasTy fetch sys Ψ n (.eq x) v ↔ v = x := by
   simp [HasTy]
 
-theorem hasTy_ptr {fields : List Ty} {writable : Bool} {index : Nat} {v : BitVec 64} :
-    HasTy fetch sys Ψ n (.ptr fields writable index) v ↔
-      ∃ a l, Ψ a = some l ∧ l.fields = fields ∧ (writable = true → l.writable = true) ∧
-        v = a + BitVec.ofNat 64 (8 * index) := by
+theorem hasTy_ptr {shape : Shape} {writable : Bool} {off : Nat} {v : BitVec 64} :
+    HasTy fetch sys Ψ n (.ptr shape writable off) v ↔
+      ∃ a l, Ψ a = some l ∧ l.shape = shape ∧ (writable = true → l.writable = true) ∧
+        v = a + BitVec.ofNat 64 off := by
   simp [HasTy]
 
 /-- A value is a code pointer if jumping to it, in any state matching the
@@ -712,10 +779,10 @@ theorem hasTy_codeAll {pre : (Nat → BitVec 64) → Ctx} {v : BitVec 64} :
   simp only [hasTy_code]
   rw [HasTy]
 
-theorem hasTy_ref {tag : Nat} {writable : Bool} {index : Nat} {v : BitVec 64} :
-    HasTy fetch sys Ψ n (.ref tag writable index) v ↔
+theorem hasTy_ref {tag : Nat} {writable : Bool} {off : Nat} {v : BitVec 64} :
+    HasTy fetch sys Ψ n (.ref tag writable off) v ↔
       ∃ a l, Ψ a = some l ∧ l.tag = some tag ∧ (writable = true → l.writable = true) ∧
-        v = a + BitVec.ofNat 64 (8 * index) := by
+        v = a + BitVec.ofNat 64 off := by
   simp [HasTy]
 
 theorem hasTy_nullable {τ : Ty} {v : BitVec 64} :
@@ -729,7 +796,7 @@ theorem hasTy_orErr {τ : Ty} {v : BitVec 64} :
 theorem hasTy_str {more : Bool} {v : BitVec 64} :
     HasTy fetch sys Ψ n (.str more) v ↔
       ∃ a l off, Ψ a = some l ∧ off + (if more then 1 else 0) < l.text ∧
-        v = a + BitVec.ofNat 64 (8 * l.fields.length + off) := by
+        v = a + BitVec.ofNat 64 (l.shape.size + off) := by
   simp [HasTy]
 
 /-- A value is a pointer to a function if entering it, from any caller that
@@ -831,7 +898,7 @@ theorem Matches.imp {H H' : Ty → BitVec 64 → Prop} {Γ : Ctx} {s : State}
     stackSize_lt := h.stackSize_lt
     stack := fun i τ hi => himp _ _ (h.stack i τ hi)
     heapPerm := h.heapPerm
-    heap := fun a l hl i τ hi => himp _ _ (h.heap a l hl i τ hi)
+    heap := fun a l hl p hp => himp _ _ (h.heap a l hl p hp)
     stackHeap := h.stackHeap
     sp := himp _ _ h.sp
     text := h.text

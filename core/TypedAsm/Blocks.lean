@@ -6,7 +6,7 @@ import TypedAsm.Types
 A memory typing given as a list of blocks, with the checks that can be
 decided by computation packaged so that a concrete starting state needs a
 proof only for the parts that cannot: what the registers, stack slots and
-fields hold.
+blocks hold.
 -/
 
 namespace TypedAsm
@@ -16,11 +16,11 @@ instance (a : BitVec 64) (n : Nat) (b : BitVec 64) (m : Nat) : Decidable (Disjoi
   infer_instance
 
 /-- The memory typing with a block at each listed address, and the listed
-kinds of block. A kind is a number and the fields its blocks have. -/
-def MemTy.ofList (bs : List (BitVec 64 × Layout)) (kinds : List (Nat × List Ty)) : MemTy :=
+kinds of block. A kind is a number and the shape its blocks have. -/
+def MemTy.ofList (bs : List (BitVec 64 × Layout)) (kinds : List (Nat × Shape)) : MemTy :=
   ⟨fun a => (bs.find? (·.1 = a)).map (·.2), fun tag => kinds.lookup tag⟩
 
-variable {kinds : List (Nat × List Ty)}
+variable {kinds : List (Nat × Shape)}
 
 theorem MemTy.mem_of_ofList {bs : List (BitVec 64 × Layout)} {a : BitVec 64} {l : Layout}
     (h : MemTy.ofList bs kinds a = some l) : (a, l) ∈ bs := by
@@ -32,25 +32,26 @@ theorem MemTy.mem_of_ofList {bs : List (BitVec 64 × Layout)} {a : BitVec 64} {l
   subst ha
   exact hmem
 
-/-- Whether the blocks fit in the address space, none is empty, and no two
-with different addresses overlap. -/
+/-- Whether the blocks fit in the address space, none is empty, each typed
+value lies inside its block, and no two blocks with different addresses
+overlap. -/
 def MemTy.check (bs : List (BitVec 64 × Layout)) : Bool :=
-  bs.all (fun x => decide (x.2.size < 2 ^ 64) && decide (0 < x.2.size)) &&
+  bs.all (fun x => decide (x.2.size < 2 ^ 64) && decide (0 < x.2.size) && x.2.shape.fits) &&
   bs.all (fun x => bs.all (fun y =>
     decide (x.1 = y.1) || decide (Disjoint x.1 x.2.size y.1 y.2.size)))
 
-/-- What the listed kinds say the fields of each block of a kind are. -/
-def MemTy.declared (kinds : List (Nat × List Ty)) (bs : List (BitVec 64 × Layout)) :
-    List (Option (List Ty)) :=
+/-- What the listed kinds say the shape of each block of a kind is. -/
+def MemTy.declared (kinds : List (Nat × Shape)) (bs : List (BitVec 64 × Layout)) :
+    List (Option Shape) :=
   bs.filterMap (fun x => x.2.tag.map (fun tag => kinds.lookup tag))
 
-/-- The fields each block of a kind actually has. -/
-def MemTy.actual (bs : List (BitVec 64 × Layout)) : List (Option (List Ty)) :=
-  bs.filterMap (fun x => x.2.tag.map (fun _ => some x.2.fields))
+/-- The shape each block of a kind actually has. -/
+def MemTy.actual (bs : List (BitVec 64 × Layout)) : List (Option Shape) :=
+  bs.filterMap (fun x => x.2.tag.map (fun _ => some x.2.shape))
 
 theorem MemTy.kinds_of_eq : ∀ {bs : List (BitVec 64 × Layout)},
     MemTy.declared kinds bs = MemTy.actual bs →
-    ∀ x ∈ bs, ∀ tag, x.2.tag = some tag → kinds.lookup tag = some x.2.fields := by
+    ∀ x ∈ bs, ∀ tag, x.2.tag = some tag → kinds.lookup tag = some x.2.shape := by
   intro bs
   induction bs with
   | nil => intro _ x hx; cases hx
@@ -71,7 +72,7 @@ theorem MemTy.kinds_of_eq : ∀ {bs : List (BitVec 64 × Layout)},
       · exact ih h.2 x hx' tag ht
 
 /-- A list of blocks that passes the check is a well-formed memory typing,
-provided each block of a kind has the fields listed for that kind. For
+provided each block of a kind has the shape listed for that kind. For
 concrete lists that is true by computation, and is proved without being asked. -/
 theorem MemTy.wf_of_check {bs : List (BitVec 64 × Layout)} (h : MemTy.check bs = true)
     (hk : MemTy.declared kinds bs = MemTy.actual bs := by rfl) :
@@ -80,11 +81,13 @@ theorem MemTy.wf_of_check {bs : List (BitVec 64 × Layout)} (h : MemTy.check bs 
     Bool.or_eq_true] at h
   constructor
   · intro a l hl
-    exact (h.1 _ (MemTy.mem_of_ofList hl)).1
+    exact (h.1 _ (MemTy.mem_of_ofList hl)).1.1
   · intro a b la lb ha hb hne
     exact (h.2 _ (MemTy.mem_of_ofList ha) _ (MemTy.mem_of_ofList hb)).resolve_left hne
   · intro a l hl
-    exact (h.1 _ (MemTy.mem_of_ofList hl)).2
+    exact (h.1 _ (MemTy.mem_of_ofList hl)).1.2
+  · intro a l hl p hp
+    exact ShapeOf.fits_mem (h.1 _ (MemTy.mem_of_ofList hl)).2 p hp
   · intro a l hl tag ht
     exact MemTy.kinds_of_eq hk _ (MemTy.mem_of_ofList hl) tag ht
 
@@ -97,14 +100,14 @@ def stateCheck (bs : List (BitVec 64 × Layout)) (Γ : Ctx) (s : State) : Bool :
     decide (Disjoint (stackBase Γ s) (stackSize Γ) x.1 x.2.size))
 
 /-- A state matches a context if the computed checks pass and the registers,
-flags, stack slots and block fields hold what the context says. -/
+flags, stack slots and the blocks' typed values hold what the context says. -/
 theorem Matches.ofCheck {H : Ty → BitVec 64 → Prop} {bs : List (BitVec 64 × Layout)} {Γ : Ctx}
     {s : State} (hc : stateCheck bs Γ s = true)
     (hregs : ∀ r, r ≠ .rsp → H (Γ.regs r) (s.getReg r)) (hflags : Γ.flags s.flags)
     (hstack : ∀ i τ, Γ.stack[i]? = some τ →
       H τ (s.load64 (s.getReg .rsp + BitVec.ofNat 64 (8 * i))))
-    (hheap : ∀ x ∈ bs, ∀ i τ, x.2.fields[i]? = some τ →
-      H τ (s.load64 (x.1 + BitVec.ofNat 64 (8 * i))))
+    (hheap : ∀ x ∈ bs, ∀ p ∈ x.2.shape.vals,
+      H p.2 (s.load64 (x.1 + BitVec.ofNat 64 p.1)))
     (hrsp : H (Γ.regs .rsp) (s.getReg .rsp))
     (htext : ∀ x ∈ bs, x.2.text ≠ 0 → s.mem (x.1 + BitVec.ofNat 64 (x.2.size - 1)) = 0)
     (howned : Γ.owned = []) :

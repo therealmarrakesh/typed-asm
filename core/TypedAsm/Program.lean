@@ -162,13 +162,13 @@ theorem BlocksOk.programOk (h : BlocksOk Φ fetch sys Ψ) :
       .fnPtrAll hr hΓ (fun sv rt rs rm fr hK => h _ _ (hat sv rt rs rm fr hK)) ht⟩
   | last hf ht => exact ⟨_, _, hf, ht.mono h⟩
 
-/-- A register holding exactly the address of a field of a memory block may
-be treated as a pointer to that field. This is how a computed address
+/-- A register holding exactly the address of a byte of a memory block may
+be treated as a pointer to that byte. This is how a computed address
 becomes a typed pointer. -/
 theorem BlockOk.castPtr {a : BitVec 64} {Γ : Ctx} {r : Reg} {v base : BitVec 64} {l : Layout}
     {i : Nat} {w : Bool} (hr : r ≠ .rsp) (hΓ : Γ.regs r = .eq v) (hl : Ψ base = some l)
-    (hv : v = base + BitVec.ofNat 64 (8 * i)) (hw : w = true → l.writable = true)
-    (hrest : BlockOk Φ fetch sys Ψ a (Γ.setReg r (.ptr l.fields w i))) :
+    (hv : v = base + BitVec.ofNat 64 i) (hw : w = true → l.writable = true)
+    (hrest : BlockOk Φ fetch sys Ψ a (Γ.setReg r (.ptr l.shape w i))) :
     BlockOk Φ fetch sys Ψ a Γ :=
   .weaken (fun _ he _ n s h => h.retype hr (hasTy_ptr.mpr ⟨base, l, he.blocks _ _ hl, rfl, hw, by
     have := h.regs r hr
@@ -232,13 +232,13 @@ theorem BlockOk.nameSlot {a : BitVec 64} {Γ : Ctx} {i : Nat} (hi : i < Γ.stack
 /-! ## Blocks of a kind, and values that may be null -/
 
 /-- A pointer to a block of a kind may be used as a pointer to a block with
-that kind's fields. A pointer of type `Ty.ref` says only which kind of block
+that kind's shape. A pointer of type `Ty.ref` says only which kind of block
 it points to; the memory typing's list of kinds says what such a block
 contains, for blocks there from the start and blocks allocated later alike. -/
 theorem BlockOk.openRef {a : BitVec 64} {Γ : Ctx} {r : Reg} {tag : Nat} {w : Bool} {i : Nat}
-    {fields : List Ty} (hr : r ≠ .rsp) (hΓ : Γ.regs r = .ref tag w i)
-    (ht : Ψ.kinds tag = some fields)
-    (hrest : BlockOk Φ fetch sys Ψ a (Γ.setReg r (.ptr fields w i))) : BlockOk Φ fetch sys Ψ a Γ :=
+    {S : Shape} (hr : r ≠ .rsp) (hΓ : Γ.regs r = .ref tag w i)
+    (ht : Ψ.kinds tag = some S)
+    (hrest : BlockOk Φ fetch sys Ψ a (Γ.setReg r (.ptr S w i))) : BlockOk Φ fetch sys Ψ a Γ :=
   .weaken (fun Ψ₁ he hΨ₁ n s h => h.retype hr (by
     have hp := h.regs r hr
     rw [hΓ] at hp
@@ -247,11 +247,11 @@ theorem BlockOk.openRef {a : BitVec 64} {Γ : Ctx} {r : Reg} {tag : Nat} {w : Bo
     rw [he.kinds, ht] at hk
     exact hasTy_ptr.mpr ⟨b, l, hl, (Option.some.inj hk).symm, hw, hv⟩)) hrest
 
-/-- A register holding exactly the address of a field of a block of a kind
+/-- A register holding exactly the address of a byte of a block of a kind
 may be treated as a pointer to a block of that kind. -/
 theorem BlockOk.castRef {a : BitVec 64} {Γ : Ctx} {r : Reg} {v base : BitVec 64} {l : Layout}
     {tag i : Nat} {w : Bool} (hr : r ≠ .rsp) (hΓ : Γ.regs r = .eq v) (hl : Ψ base = some l)
-    (htag : l.tag = some tag) (hv : v = base + BitVec.ofNat 64 (8 * i))
+    (htag : l.tag = some tag) (hv : v = base + BitVec.ofNat 64 i)
     (hw : w = true → l.writable = true)
     (hrest : BlockOk Φ fetch sys Ψ a (Γ.setReg r (.ref tag w i))) : BlockOk Φ fetch sys Ψ a Γ :=
   .weaken (fun _ he _ n s h => h.retype hr (hasTy_ref.mpr ⟨base, l, he.blocks _ _ hl, htag, hw, by

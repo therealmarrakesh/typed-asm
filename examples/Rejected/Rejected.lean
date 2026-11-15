@@ -28,7 +28,7 @@ def code : List (Asm Label) := [
   .label .i4, .ins (.mov .w32 (.rm_r (.mem (.sib (some .rdx) none 8)) .rcx)),
   .label .i5, .ins (.mulDiv .div .w64 (.reg .rcx)),
   .label .i6, .ins (.alu .adc .w64 (.rm_r (.reg .rax) .rcx)),
-  .label .i7, .ins (.mov .w64 (.r_m .rax (.sib (some .rdi) none 4))),
+  .label .i7, .ins (.mov .w64 (.r_m .rax (.sib (some .rdi) none 12))),
   .label .i8, .ins (.mov .w64 (.rm_r (.reg .rsp) .rax)),
   .label .i9, .ins (.mov .w64 (.rm_r (.mem (.sib (some .rdx) none 8)) .rdi)),
   .label .i10, .ins .ret,
@@ -36,7 +36,7 @@ def code : List (Asm Label) := [
   .label .i12, .ins (.cmov .g .w32 .rax (.reg .rcx)),
   .label .i13, .ins (.alu .add .w32 (.rm_r (.mem (.sib (some .rsp) none 8)) .rax)),
   .label .i14, .ins (.shift .shl .w32 (.mem (.sib (some .rsi) none 0)) (.imm 1)),
-  .label .i15, .ins (.imul2 .w32 .rax (.mem (.sib (some .rdi) none 6))),
+  .label .i15, .ins (.imul2 .w32 .rax (.mem (.sib (some .rdi) none 14))),
   .label .i16, .ins (.unary .not .w64 (.mem (.sib (some .rdx) none 8))),
   .label .i17, .ins (.unary .neg .w64 (.mem (.sib (some .rdi) (some (.rcx, .s8)) 0))),
   .label .i18, .ins (.jmp (.ind (.reg .rax))),
@@ -53,28 +53,27 @@ def Ψ : MemTy := .ofList [] []
 is an integer. The stack is full. -/
 def Γ : Ctx where
   regs := fun r =>
-    if r = .rdi then .ptr [.int, .int] true 0
-    else if r = .rsi then .ptr [.int, .int] false 0
-    else if r = .rdx then .ptr [.int, .ptr [.int] false 0] true 0
+    if r = .rdi then .ptr (.raw 16) true 0
+    else if r = .rsi then .ptr (.raw 16) false 0
+    else if r = .rdx then .ptr ⟨16, [(8, .ptr (.raw 8) false 0)]⟩ true 0
     else .int
   stack := []
   room := 0
   flags := Flags.Any
 
 /-- error: at address 0: cannot type `mov qword ptr [rax], rcx` in the current context
-• storeField: `rax` must hold a writable pointer, but its type is `int`
-• storeInt: `rax` must hold a writable pointer, but its type is `int` -/
+• storeField: `rax` must hold a writable pointer, but its type is `int` -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i0) Γ := by ty_step
 
 /-- error: at address 3: cannot type `mov rax, qword ptr [rdi+16]` in the current context
-• loadField: there is no field or stack slot at that offset -/
+• loadField: no typed value of the block starts at that offset
+• loadInt: the access would reach past the end of the block -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i1) Γ := by ty_step
 
 /-- error: at address 7: cannot type `mov qword ptr [rsi], rcx` in the current context
-• storeField: `rsi` must hold a writable pointer, but its type is `read-only pointer to [int, int]`
-• storeInt: `rsi` must hold a writable pointer, but its type is `read-only pointer to [int, int]` -/
+• storeField: `rsi` must hold a writable pointer, but its type is `read-only pointer to 16 bytes` -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i2) Γ := by ty_step
 
@@ -84,7 +83,7 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i2) Γ := by ty_step
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i3) Γ := by ty_step
 
 /-- error: at address 11: cannot type `mov dword ptr [rdx+8], ecx` in the current context
-• storeInt: the field must have type `int`, but has type `read-only pointer to [int]` -/
+• storeInt: a typed value of the block reaches into those bytes, and plain bytes may not be stored over it -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i4) Γ := by ty_step
 
@@ -99,8 +98,9 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i5) Γ := by ty_step
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i6) Γ := by ty_step
 
-/-- error: at address 20: cannot type `mov rax, qword ptr [rdi+4]` in the current context
-• loadField: the displacement must be a non-negative multiple of 8 -/
+/-- error: at address 20: cannot type `mov rax, qword ptr [rdi+12]` in the current context
+• loadField: no typed value of the block starts at that offset
+• loadInt: the access would reach past the end of the block -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i7) Γ := by ty_step
 
@@ -110,8 +110,8 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i7) Γ := by ty_step
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i8) Γ := by ty_step
 
 /-- error: at address 27: cannot type `mov qword ptr [rdx+8], rdi` in the current context
-• storeField: a value of type `pointer to [int, int]` cannot be stored where `read-only pointer to [int]` is required
-• storeInt: the field must have type `int`, but has type `read-only pointer to [int]` -/
+• storeField: a value of type `pointer to 16 bytes` cannot be stored where `read-only pointer to 8 bytes` is required
+• storeInt: a typed value of the block reaches into those bytes, and plain bytes may not be stored over it -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i9) Γ := by ty_step
 
@@ -120,8 +120,7 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i9) Γ := by ty_step
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i10) Γ := by ty_step
 
 /-- error: at address 32: cannot type `mov rax, qword ptr [rdi+rcx*8]` in the current context
-• loadIndexed: the index register `rcx` must hold an exactly known value, but its type is `int`; `ty_name` gives an integer a name
-• loadInt: the index register `rcx` must hold an exactly known value, but its type is `int`; `ty_name` gives an integer a name -/
+• loadIndexed: the index register `rcx` must hold an exactly known value, but its type is `int`; `ty_name` gives an integer a name -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i11) Γ := by ty_step
 
@@ -131,22 +130,22 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i11) Γ := by ty_step
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i12) Γ := by ty_step
 
 /-- error: at address 39: cannot type `add dword ptr [rsp+8], eax` in the current context
-• aluStoreR: there is no field or stack slot at that offset -/
+• aluStoreR: there is no stack slot at that offset -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i13) Γ := by ty_step
 
 /-- error: at address 43: cannot type `shl dword ptr [rsi], 1` in the current context
-• shiftImm: `rsi` must hold a writable pointer, but its type is `read-only pointer to [int, int]` -/
+• shiftImm: `rsi` must hold a writable pointer, but its type is `read-only pointer to 16 bytes` -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i14) Γ := by ty_step
 
-/-- error: at address 45: cannot type `imul eax, dword ptr [rdi+6]` in the current context
-• imul2RM: the access would cross the end of an 8-byte field -/
+/-- error: at address 45: cannot type `imul eax, dword ptr [rdi+14]` in the current context
+• imul2RM: the access would reach past the end of the block -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i15) Γ := by ty_step
 
 /-- error: at address 49: cannot type `not qword ptr [rdx+8]` in the current context
-• notRM: the field must have type `int`, but has type `read-only pointer to [int]` -/
+• notRM: a typed value of the block reaches into those bytes, and plain bytes may not be stored over it -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i16) Γ := by ty_step
 
@@ -166,17 +165,17 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i19) Γ := by ty_step
 
 /-- `rdi` holds a pointer to three integers, or null. -/
 def maybe : Ctx :=
-  ⟨fun r => if r = .rdi then .nullable (.ptr [.int, .int, .int] false 0) else .int, [], 0, Flags.Any, []⟩
+  ⟨fun r => if r = .rdi then .nullable (.ptr (.raw 24) false 0) else .int, [], 0, Flags.Any, []⟩
 
 /-- error: at address 3: cannot type `mov rax, qword ptr [rdi+16]` in the current context
-• loadField: `rdi` must hold a pointer, but its type is `read-only pointer to [int, int, int] or null`: it must be tested for null first, and `ty_null` then gives the two cases -/
+• loadField: `rdi` must hold a pointer, but its type is `read-only pointer to 24 bytes or null`: it must be tested for null first, and `ty_null` then gives the two cases -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i1) maybe := by ty_step
 
-/-- error: cannot type `mov word ptr [rdi+7], ax` in the current context
-• store16RM: the access would cross the end of an 8-byte field -/
+/-- error: cannot type `mov word ptr [rdx+7], ax` in the current context
+• store16RM: a typed value of the block reaches into those bytes, and plain bytes may not be stored over it -/
 #guard_msgs in
-example : ∃ Γ', Straight Ψ 10 Γ (.store16 (.sib (some .rdi) none 7) .rax) Γ' :=
+example : ∃ Γ', Straight Ψ 10 Γ (.store16 (.sib (some .rdx) none 7) .rax) Γ' :=
   ⟨_, by ty_straight⟩
 
 /-! ## Control transfers
@@ -206,7 +205,7 @@ inductive AtTarget : Target → Ctx → Prop
   | far : AtTarget .far bare
   | needsSlot : AtTarget .needsSlot oneSlot
   | needsPtr :
-    AtTarget .needsPtr ⟨fun r => if r = .rdi then .ptr [.int] true 0 else .int, [], 0, Flags.Any, []⟩
+    AtTarget .needsPtr ⟨fun r => if r = .rdi then .ptr (.raw 8) true 0 else .int, [], 0, Flags.Any, []⟩
 
 def Φj : CodeTy := .ofLabels jumps 0 AtTarget
 
@@ -216,7 +215,7 @@ def Φj : CodeTy := .ofLabels jumps 0 AtTarget
 example : BlockOk Φj jumpFetch linux Ψ (Asm.addr jumps 0 .start) bare := by ty_block
 
 /-- error: no context allowed at label `needsPtr` accepts the current one
-• needsPtr: `rdi` has type `int`, but `pointer to [int]` is required -/
+• needsPtr: `rdi` has type `int`, but `pointer to 8 bytes` is required -/
 #guard_msgs in
 example : BlockOk Φj jumpFetch linux Ψ (Asm.addr jumps 0 .far) bare := by ty_block
 
@@ -298,8 +297,8 @@ example : BlockOk Φf flaggedFetch linux Ψ (Asm.addr flagged 0 .carry) bare := 
 /-! ## System calls
 
 A `syscall` is typed only for a call the model covers, with the number in
-`rax` exactly known. A `read` also needs its buffer to lie in integer fields
-of a writable block, for as many bytes as it asks for. -/
+`rax` exactly known. A `read` also needs its buffer to lie in plain bytes of
+a writable block, for as many bytes as it asks for. -/
 
 inductive Sys
   | unknown | unmodelled | noBuffer | tooLong | overPointer
@@ -319,9 +318,9 @@ def sysFetch : Fetch := Asm.fetch 0 sys
 
 def Φy : CodeTy := fun _ _ => False
 
-/-- `rsi` points to a writable block whose fields have the given types. -/
-def buffer (fields : List Ty) : Ctx :=
-  ⟨fun r => if r = .rsi then .ptr fields true 0 else .int, [], 0, Flags.Any, []⟩
+/-- `rsi` points to a writable block of the given shape. -/
+def buffer (S : Shape) : Ctx :=
+  ⟨fun r => if r = .rsi then .ptr S true 0 else .int, [], 0, Flags.Any, []⟩
 
 /-- error: `syscall`: the call number in `rax` must be exactly known, but its type is `int` -/
 #guard_msgs in
@@ -335,15 +334,15 @@ example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .unmodelled) bare := by 
 #guard_msgs in
 example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .noBuffer) bare := by ty_block
 
-/-- error: `read` could overwrite something that is not an integer: the buffer in `rsi` does not have room for the count in `rdx` in integer fields -/
+/-- error: `read` could overwrite something that is not plain bytes: the buffer in `rsi` does not have room for the count in `rdx` in plain bytes of its block -/
 #guard_msgs in
-example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .tooLong) (buffer [.int, .int]) := by
+example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .tooLong) (buffer (.raw 16)) := by
   ty_block
 
-/-- error: `read` could overwrite something that is not an integer: the buffer in `rsi` does not have room for the count in `rdx` in integer fields -/
+/-- error: `read` could overwrite something that is not plain bytes: the buffer in `rsi` does not have room for the count in `rdx` in plain bytes of its block -/
 #guard_msgs in
 example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .overPointer)
-    (buffer [.int, .ptr [.int] false 0]) := by
+    (buffer ⟨16, [(8, .ptr (.raw 8) false 0)]⟩) := by
   ty_block
 
 /-! ## Arguments
@@ -369,10 +368,8 @@ error: at address 0: cannot type `mov rsi, qword ptr [rsp+rax*8+8]` in the curre
 #guard_msgs in
 example : BlockOk Φy argFetch linux Ψ (Asm.addr argLoads 0 .unknown) (argsCtx 0 2) := by ty_block
 
-/--
-error: at address 12: cannot type `mov rsi, qword ptr [rsp+rax*8+8]` in the current context
-• loadStackIndexed: there is no field or stack slot at that offset
--/
+/-- error: at address 12: cannot type `mov rsi, qword ptr [rsp+rax*8+8]` in the current context
+• loadStackIndexed: there is no stack slot at that offset -/
 #guard_msgs in
 example : BlockOk Φy argFetch linux Ψ (Asm.addr argLoads 0 .beyond) (argsCtx 0 2) := by ty_block
 
@@ -413,8 +410,8 @@ example : BlockOk Φy textFetch linux Ψ (Asm.addr texts 0 .store) atText := by 
 /-! ## Other calls that store into a buffer
 
 `fstat`, `clock_gettime` and `getrandom` are typed by the condition of a
-`read`: the bytes the kernel stores must all land in integer fields. How
-many that is depends on the call. -/
+`read`: the bytes the kernel stores must all land in plain bytes of a block.
+How many that is depends on the call. -/
 
 inductive Fill
   | statSmall | clockInt | randomUnknown | randomLong
@@ -431,9 +428,9 @@ def fillFetch : Fetch := Asm.fetch 0 fills
 
 /-- Register `r` points to a writable block of two integers. -/
 def twoAt (r : Reg) : Ctx :=
-  ⟨fun r' => if r' = r then .ptr [.int, .int] true 0 else .int, [], 0, Flags.Any, []⟩
+  ⟨fun r' => if r' = r then .ptr (.raw 16) true 0 else .int, [], 0, Flags.Any, []⟩
 
-/-- error: `fstat` could overwrite something that is not an integer: the buffer in `rsi` does not have room in integer fields for the 144 bytes the kernel stores -/
+/-- error: `fstat` could overwrite something that is not plain bytes: the buffer in `rsi` does not have room in plain bytes of its block for the 144 bytes the kernel stores -/
 #guard_msgs in
 example : BlockOk Φy fillFetch linux Ψ (Asm.addr fills 0 .statSmall) (twoAt .rsi) := by ty_block
 
@@ -446,7 +443,7 @@ example : BlockOk Φy fillFetch linux Ψ (Asm.addr fills 0 .clockInt) bare := by
 example : BlockOk Φy fillFetch linux Ψ (Asm.addr fills 0 .randomUnknown) (twoAt .rdi) := by
   ty_block
 
-/-- error: `getrandom` could overwrite something that is not an integer: the buffer in `rdi` does not have room for the count in `rsi` in integer fields -/
+/-- error: `getrandom` could overwrite something that is not plain bytes: the buffer in `rdi` does not have room for the count in `rsi` in plain bytes of its block -/
 #guard_msgs in
 example : BlockOk Φy fillFetch linux Ψ (Asm.addr fills 0 .randomLong) (twoAt .rdi) := by
   ty_block
@@ -454,7 +451,8 @@ example : BlockOk Φy fillFetch linux Ψ (Asm.addr fills 0 .randomLong) (twoAt .
 /-! ## Asking for memory
 
 An `mmap` is typed only in the form that gives fresh private memory, for a
-block whose fields fit in the length asked for and all admit zero. What it
+block that fits in the length asked for and whose typed values all admit
+zero. What it
 hands back may be an error number, so it cannot be used as a pointer before
 it has been tested. -/
 
@@ -478,33 +476,31 @@ def maps : List (Asm Map) :=
 
 def mapFetch : Fetch := Asm.fetch 0 maps
 
-/--
-error: at address 23: cannot type `mov rdx, qword ptr [rax]` in the current context
-• loadField: `rax` must hold a pointer, but its type is `pointer to [int, int] or an error number`: it must be tested for an error first, and `ty_err` then gives the two cases
--/
+/-- error: at address 23: cannot type `mov rdx, qword ptr [rax]` in the current context
+• loadField: `rax` must hold a pointer, but its type is `pointer to 16 bytes or an error number`: it must be tested for an error first, and `ty_err` then gives the two cases -/
 #guard_msgs in
 example : BlockOk Φy mapFetch linux Ψ (Asm.addr maps 0 .unchecked) bare := by
   ty_steps
-  ty_mmap [.int, .int]
+  ty_mmap (.raw 16)
   ty_block
 
-/-- error: `mmap`: every field of the new block must admit zero, since that is what fresh memory holds: an integer, or a value that may be null -/
+/-- error: `mmap`: every typed value of the new block must admit zero, since that is what fresh memory holds: a value that may be null -/
 #guard_msgs in
 example : BlockOk Φy mapFetch linux Ψ (Asm.addr maps 0 .notZero) bare := by
   ty_steps
-  ty_mmap [.int, .ptr [.int] true 0]
+  ty_mmap ⟨16, [(8, .ptr (.raw 8) true 0)]⟩
 
-/-- error: `mmap`: the block's fields do not fit in the length in `rsi` -/
+/-- error: `mmap`: the block does not fit in the length in `rsi` -/
 #guard_msgs in
 example : BlockOk Φy mapFetch linux Ψ (Asm.addr maps 0 .tooShort) bare := by
   ty_steps
-  ty_mmap [.int, .int]
+  ty_mmap (.raw 16)
 
 /-- error: `mmap` is typed only for private memory that is not a file: `r10` must hold exactly 0x22, but its type is `exactly 0x21` -/
 #guard_msgs in
 example : BlockOk Φy mapFetch linux Ψ (Asm.addr maps 0 .shared) bare := by
   ty_steps
-  ty_mmap [.int, .int]
+  ty_mmap (.raw 16)
 
 /-- error: `mmap`: the memory typing declares no kind 7 -/
 #guard_msgs in
@@ -547,10 +543,9 @@ inductive AtMem : Mem → Ctx → Prop
 
 def Φm : CodeTy := .ofLabels owning 0 AtMem
 
-/--
-error: at address 50: cannot type `mov rcx, qword ptr [rbx]` in the current context
+/-- error: at address 50: cannot type `mov rcx, qword ptr [rbx]` in the current context
 • loadField: `rbx` must hold a pointer, but its type is `exactly p`
--/
+• loadInt: the address is not known to be inside a block the context owns -/
 #guard_msgs in
 example : BlockOk Φm ownFetch linux Ψ (Asm.addr owning 0 .afterFree) bare := by
   ty_steps
@@ -747,8 +742,8 @@ allowed: a writable pointer may be used as a read-only one. -/
 
 def Γ₂ : Ctx where
   regs := fun r =>
-    if r = .rdx then .ptr [.int, .ptr [.int] false 0] true 0
-    else if r = .rdi then .ptr [.int] true 0
+    if r = .rdx then .ptr ⟨16, [(8, .ptr (.raw 8) false 0)]⟩ true 0
+    else if r = .rdi then .ptr (.raw 8) true 0
     else .int
   stack := []
   room := 0
@@ -759,7 +754,7 @@ example : ∃ Γ', Straight Ψ 10 Γ₂ (.mov .w64 (.rm_r (.mem (.sib (some .rdx
 
 /-- One integer on the stack; `rdi` a writable record of two integers. -/
 def Γ₃ : Ctx where
-  regs := fun r => if r = .rdi then .ptr [.int, .int] true 0 else .int
+  regs := fun r => if r = .rdi then .ptr (.raw 16) true 0 else .int
   stack := [.int]
   room := 0
   flags := Flags.Any
@@ -790,12 +785,12 @@ example : ∃ Γ', Straight Ψ 10 Γ₃ (.store16 (.sib (some .rsp) none 2) .rax
 /-! Through an index: a store into an array of integers, and a load from
 an array of pointers, which keeps the pointer's type. -/
 
-/-- `rdi`: four integers, writable. `rsi`: four pointers to a pair. The
-index in `rcx` is exactly 2. -/
+/-- `rdi`: 32 plain bytes, writable. `rsi`: four pointers to sixteen bytes
+each. The index in `rcx` is exactly 2. -/
 def Γ₄ : Ctx where
   regs := fun r =>
-    if r = .rdi then .ptr (List.replicate 4 .int) true 0
-    else if r = .rsi then .ptr (List.replicate 4 (.ptr [.int, .int] true 0)) false 0
+    if r = .rdi then .ptr (.raw 32) true 0
+    else if r = .rsi then .ptr (Shape.cells (List.replicate 4 (.ptr (.raw 16) true 0))) false 0
     else if r = .rcx then .eq 2
     else .int
   stack := [.int]
@@ -807,7 +802,7 @@ example : ∃ Γ', Straight Ψ 10 Γ₄
   ⟨_, by ty_straight⟩
 
 example : Straight Ψ 10 Γ₄ (.mov .w64 (.r_m .rax (.sib (some .rsi) (some (.rcx, .s8)) 8)))
-    (Γ₄.setReg .rax (.ptr [.int, .int] true 0)) := by
+    (Γ₄.setReg .rax (.ptr (.raw 16) true 0)) := by
   ty_straight
 
 /-! A stack slot holding an integer can be given a name, like a register. -/
@@ -847,21 +842,35 @@ example (a b c d e f : BitVec 64) :
 
 /-! A record used as a shorter one, and a stack deeper than a label cares
 about, need no rule of their own: the context is stated for every tail.
-Here `rdi` points to a record that starts with two integers and goes on in
-any way at all, and the stack holds one integer above anything at all. -/
+Here `rdi` points to a record that starts with sixteen plain bytes and goes
+on in any way at all, and the stack holds one integer above anything at all. -/
 
-example (more rest : List Ty) :
+example (more : Shape) (rest : List Ty) :
     ∃ Γ', Straight Ψ 10
-      ⟨fun r => if r = .rdi then .ptr ([.int, .int] ++ more) true 0 else .int, .int :: rest, 0,
+      ⟨fun r => if r = .rdi then .ptr ((ShapeOf.raw 16).append more) true 0 else .int, .int :: rest, 0,
         Flags.Any, []⟩
       (.mov .w64 (.r_m .rax (.sib (some .rdi) none 8))) Γ' :=
   ⟨_, by ty_straight⟩
 
-example (more rest : List Ty) :
+example (more : Shape) (rest : List Ty) :
     ∃ Γ', Straight Ψ 10
-      ⟨fun r => if r = .rdi then .ptr ([.int, .int] ++ more) true 0 else .int, .int :: rest, 0,
+      ⟨fun r => if r = .rdi then .ptr ((ShapeOf.raw 16).append more) true 0 else .int, .int :: rest, 0,
         Flags.Any, []⟩
       (.mov .w64 (.rm_r (.mem (.sib (some .rsp) none 0)) .rdi)) Γ' :=
+  ⟨_, by ty_straight⟩
+
+/-! Layouts are exact to the byte. Eight bytes may be read from any offset
+that leaves room for them, and plain bytes may be stored wherever no typed
+value reaches: here at byte 7 of sixteen plain bytes, and at byte 6 of a
+block whose pointer starts at byte 8. -/
+
+example : ∃ Γ', Straight Ψ 10 Γ (.mov .w64 (.r_m .rax (.sib (some .rdi) none 4))) Γ' :=
+  ⟨_, by ty_straight⟩
+
+example : ∃ Γ', Straight Ψ 10 Γ (.store16 (.sib (some .rdi) none 7) .rax) Γ' :=
+  ⟨_, by ty_straight⟩
+
+example : ∃ Γ', Straight Ψ 10 Γ (.store16 (.sib (some .rdx) none 6) .rax) Γ' :=
   ⟨_, by ty_straight⟩
 
 /-! ## Exactly known values
@@ -921,7 +930,7 @@ def divideFetch : Fetch := Asm.fetch 0 divide
 
 inductive AtDivide : Divide → Ctx → Prop
   | check : AtDivide .check
-      ⟨fun r => if r = .rdi then .ptr [.int] false 0 else .int, [], 0, Flags.Any, []⟩
+      ⟨fun r => if r = .rdi then .ptr (.raw 8) false 0 else .int, [], 0, Flags.Any, []⟩
   | start (a v : BitVec 64) : v ≠ 0 →
     AtDivide .start ⟨fun r => if r = .rax then .eq a else if r = .rcx then .eq v else .int,
       [], 0, Flags.Any, []⟩

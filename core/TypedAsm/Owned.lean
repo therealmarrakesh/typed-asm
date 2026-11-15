@@ -44,7 +44,8 @@ theorem add_ext (hN : Ψ a = none) : Ψ.Ext (Ψ.add a L) :=
 
 theorem add_wf (hΨ : Ψ.WF) (hpos : 0 < L.size) (hlt : L.size < 2 ^ 64)
     (hdis : ∀ b lb, Ψ b = some lb → Disjoint a L.size b lb.size)
-    (hkind : ∀ t, L.tag = some t → Ψ.kinds t = some L.fields) : (Ψ.add a L).WF := by
+    (hin : ∀ p ∈ L.shape.vals, p.1 + 8 ≤ L.shape.size)
+    (hkind : ∀ t, L.tag = some t → Ψ.kinds t = some L.shape) : (Ψ.add a L).WF := by
   constructor
   · intro x l hl
     rcases add_cases hl with ⟨-, rfl⟩ | ⟨-, hl'⟩
@@ -62,6 +63,10 @@ theorem add_wf (hΨ : Ψ.WF) (hpos : 0 < L.size) (hlt : L.size < 2 ^ 64)
     rcases add_cases hl with ⟨-, rfl⟩ | ⟨-, hl'⟩
     · exact hpos
     · exact hΨ.nonempty x l hl'
+  · intro x l hl p hp
+    rcases add_cases hl with ⟨-, rfl⟩ | ⟨-, hl'⟩
+    · exact hin p hp
+    · exact hΨ.fits x l hl' p hp
   · intro x l hl t ht
     rcases add_cases hl with ⟨-, rfl⟩ | ⟨-, hl'⟩
     · exact hkind t ht
@@ -76,8 +81,8 @@ the context describes may join the memory typing. -/
 theorem WellTyped.addBlock {a : BitVec 64} {L : Layout} (h : WellTyped fetch sys Ψ n Γ s)
     (hN : Ψ a = none)
     (hperm : s.canRead a L.size = true ∧ (L.writable = true → s.canWrite a L.size = true))
-    (hvals : ∀ i τ, L.fields[i]? = some τ →
-      HasTy fetch sys Ψ n τ (s.load64 (a + BitVec.ofNat 64 (8 * i))))
+    (hvals : ∀ p ∈ L.shape.vals,
+      HasTy fetch sys Ψ n p.2 (s.load64 (a + BitVec.ofNat 64 p.1)))
     (hstack : Disjoint (stackBase Γ s) (stackSize Γ) a L.size) (htext : L.text = 0)
     (howned : ∀ c ∈ Γ.owned, Disjoint c.1 c.2.size a L.size) :
     WellTyped fetch sys (Ψ.add a L) n Γ s :=
@@ -91,10 +96,10 @@ theorem WellTyped.addBlock {a : BitVec 64} {L : Layout} (h : WellTyped fetch sys
       rcases MemTy.add_cases hl with ⟨rfl, rfl⟩ | ⟨-, hl'⟩
       · exact hperm
       · exact h.heapPerm x l hl'
-    heap := fun x l hl i τ hi => by
+    heap := fun x l hl p hp => by
       rcases MemTy.add_cases hl with ⟨rfl, rfl⟩ | ⟨-, hl'⟩
-      · exact (hvals i τ hi).ext he
-      · exact (h.heap x l hl' i τ hi).ext he
+      · exact (hvals p hp).ext he
+      · exact (h.heap x l hl' p hp).ext he
     stackHeap := fun x l hl => by
       rcases MemTy.add_cases hl with ⟨rfl, rfl⟩ | ⟨-, hl'⟩
       · exact hstack
@@ -117,25 +122,22 @@ theorem WellTyped.addBlock {a : BitVec 64} {L : Layout} (h : WellTyped fetch sys
         apart := h.owned.apart } }
 
 /-- **An owned block may be frozen.** It leaves the context and joins the
-memory typing as a block with the fields it has, and the register holding
-its address becomes a pointer to it. The block must be laid out as
-eight-byte cells, which is what a block of the memory typing is. -/
-theorem freeze_ok {r : Reg} {k : Nat} {base : BitVec 64} {F : List Ty} {tag : Option Nat}
+memory typing as a block of the shape it has, byte for byte, and the register
+holding its address becomes a pointer to it. -/
+theorem freeze_ok {r : Reg} {k : Nat} {base : BitVec 64} {S : Shape} {tag : Option Nat}
     {τ : Ty} (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF) (hr : r ≠ .rsp)
-    (hΓ : Γ.regs r = .eq base) (hk : Γ.owned[k]? = some (base, Shape.cells F)) (hne : F ≠ [])
-    (hkind : ∀ t, tag = some t → Ψ.kinds t = some F)
-    (hτ : ∀ Ψ₂ : MemTy, Ψ₂ base = some ⟨F, true, tag, 0⟩ → HasTy fetch sys Ψ₂ n τ base) :
+    (hΓ : Γ.regs r = .eq base) (hk : Γ.owned[k]? = some (base, S)) (hne : 0 < S.size)
+    (hkind : ∀ t, tag = some t → Ψ.kinds t = some S)
+    (hτ : ∀ Ψ₂ : MemTy, Ψ₂ base = some ⟨S, true, tag, 0⟩ → HasTy fetch sys Ψ₂ n τ base) :
     ∃ Ψ₂ : MemTy, Ψ.Ext Ψ₂ ∧ Ψ₂.WF ∧
       WellTyped fetch sys Ψ₂ n (({ Γ with owned := Γ.owned.eraseIdx k } : Ctx).setReg r τ) s := by
   obtain ⟨hklt, hkeq⟩ := List.getElem?_eq_some_iff.mp hk
-  have hin : (base, Shape.cells F) ∈ Γ.owned := hkeq ▸ List.getElem_mem hklt
-  have hS : (Shape.cells F).size = 8 * F.length := rfl
+  have hin : (base, S) ∈ Γ.owned := hkeq ▸ List.getElem_mem hklt
   have hsz := h.owned.size_lt _ hin
   have hpm := h.owned.perm _ hin
   have hst := h.owned.stack _ hin
   have hhp := h.owned.heap _ hin
-  simp only [hS] at hsz hpm hst hhp
-  have hlen : 0 < F.length := List.length_pos_iff.mpr hne
+  simp only at hsz hpm hst hhp
   -- no block of the memory typing starts where this one does
   have hN : Ψ base = none := by
     cases hl : Ψ base with
@@ -143,15 +145,11 @@ theorem freeze_ok {r : Reg} {k : Nat} {base : BitVec 64} {F : List Ty} {tag : Op
     | some l =>
       have hd := (hhp base l hl).1 (by have := hΨ.nonempty base l hl; omega)
       exact absurd hd (by bv_omega)
-  have hsize : (⟨F, true, tag, 0⟩ : Layout).size = 8 * F.length := by simp [Layout.size]
+  have hsize : (⟨S, true, tag, 0⟩ : Layout).size = S.size := by simp [Layout.size]
   have h₀ := h.eraseOwned hΨ hk (s' := s) rfl rfl rfl (fun _ => .inl rfl)
-  have hB := h₀.addBlock (a := base) (L := ⟨F, true, tag, 0⟩) hN
+  have hB := h₀.addBlock (a := base) (L := ⟨S, true, tag, 0⟩) hN
     (by rw [hsize]; exact ⟨State.canRead_of_canWrite hpm, fun _ => hpm⟩)
-    (fun i τ hi => by
-      rcases Shape.mem_cellsFrom (o := 0) hi with rfl | hm
-      · exact HasTy.int _
-      · have := h.owned.vals _ hin _ hm
-        simpa using this)
+    (fun p hp => h.owned.vals _ hin p hp)
     (by rw [hsize]; exact hst) rfl
     (fun c hc => by
       obtain ⟨m, hm, hmk, rfl⟩ := List.mem_eraseIdx_iff_getElem.mp hc
@@ -159,34 +157,34 @@ theorem freeze_ok {r : Reg} {k : Nat} {base : BitVec 64} {F : List Ty} {tag : Op
       rw [hkeq] at hd
       rw [hsize]
       exact hd.symm)
-  refine ⟨Ψ.add base ⟨F, true, tag, 0⟩, MemTy.add_ext hN,
+  refine ⟨Ψ.add base ⟨S, true, tag, 0⟩, MemTy.add_ext hN,
     MemTy.add_wf hΨ (by rw [hsize]; omega) (by rw [hsize]; exact hsz)
-      (fun b lb hl => by rw [hsize]; exact hhp b lb hl) hkind, ?_⟩
+      (fun b lb hl => by rw [hsize]; exact hhp b lb hl) (h.owned.fits _ hin) hkind, ?_⟩
   refine hB.retype hr ?_
   rw [h.eqReg hr hΓ]
   exact hτ _ MemTy.add_self
 
 /-- Freezing between instructions: from here on the block is an ordinary
-one, and the register is a pointer to its fields. -/
+one of the same shape, and the register is a pointer to it. -/
 theorem BlockOk.freeze {a : BitVec 64} {Γ : Ctx} {r : Reg} {k : Nat} {base : BitVec 64}
-    {F : List Ty} {w : Bool} (hr : r ≠ .rsp) (hΓ : Γ.regs r = .eq base)
-    (hk : Γ.owned[k]? = some (base, Shape.cells F)) (hne : F ≠ [])
+    {S : Shape} {w : Bool} (hr : r ≠ .rsp) (hΓ : Γ.regs r = .eq base)
+    (hk : Γ.owned[k]? = some (base, S)) (hne : 0 < S.size)
     (hrest : BlockOk Φ fetch sys Ψ a
-      (({ Γ with owned := Γ.owned.eraseIdx k } : Ctx).setReg r (.ptr F w 0))) :
+      (({ Γ with owned := Γ.owned.eraseIdx k } : Ctx).setReg r (.ptr S w 0))) :
     BlockOk Φ fetch sys Ψ a Γ :=
   .grow (ι := Unit) (fun _ _ hΨ₁ _ _ h =>
     let ⟨Ψ₂, he, hwf, hw⟩ := freeze_ok (tag := none) h hΨ₁ hr hΓ hk hne (fun _ ht => nomatch ht)
       (fun Ψ₂ hl => hasTy_ptr.mpr ⟨base, _, hl, rfl, fun _ => rfl, by
-        show base = base + BitVec.ofNat 64 (8 * 0)
+        show base = base + BitVec.ofNat 64 0
         simp⟩)
     ⟨Ψ₂, he, hwf, (), hw⟩) (fun _ => hrest)
 
 /-- Freezing as a block of a declared kind: the register becomes a pointer
 to a block of that kind, which other blocks of the kind may then point to. -/
 theorem BlockOk.freezeKind {a : BitVec 64} {Γ : Ctx} {r : Reg} {k : Nat} {base : BitVec 64}
-    {F : List Ty} {tag : Nat} {w : Bool} (hr : r ≠ .rsp) (hΓ : Γ.regs r = .eq base)
-    (hk : Γ.owned[k]? = some (base, Shape.cells F)) (hne : F ≠ [])
-    (hkind : Ψ.kinds tag = some F)
+    {S : Shape} {tag : Nat} {w : Bool} (hr : r ≠ .rsp) (hΓ : Γ.regs r = .eq base)
+    (hk : Γ.owned[k]? = some (base, S)) (hne : 0 < S.size)
+    (hkind : Ψ.kinds tag = some S)
     (hrest : BlockOk Φ fetch sys Ψ a
       (({ Γ with owned := Γ.owned.eraseIdx k } : Ctx).setReg r (.ref tag w 0))) :
     BlockOk Φ fetch sys Ψ a Γ :=
@@ -194,7 +192,7 @@ theorem BlockOk.freezeKind {a : BitVec 64} {Γ : Ctx} {r : Reg} {k : Nat} {base 
     let ⟨Ψ₂, he, hwf, hw⟩ := freeze_ok (tag := some tag) h hΨ₁ hr hΓ hk hne
       (fun t ht => by cases ht; rw [he₁.kinds]; exact hkind)
       (fun Ψ₂ hl => hasTy_ref.mpr ⟨base, _, hl, rfl, fun _ => rfl, by
-        show base = base + BitVec.ofNat 64 (8 * 0)
+        show base = base + BitVec.ofNat 64 0
         simp⟩)
     ⟨Ψ₂, he, hwf, (), hw⟩) (fun _ => hrest)
 

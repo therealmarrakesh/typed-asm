@@ -63,7 +63,7 @@ fail:
 Three calls here store into the program's memory, each a different amount:
 `fstat` 144 bytes, `clock_gettime` 16, `getrandom` as many as it is asked
 for. Each is typed by the same condition as a `read`: that many bytes from
-the buffer are integer fields of a writable block. The buffer is 144 bytes,
+the buffer are plain bytes of a writable block. The buffer is 144 bytes,
 so all three fit.
 
 `lake exe stat --file input.txt` runs it in the model on that file;

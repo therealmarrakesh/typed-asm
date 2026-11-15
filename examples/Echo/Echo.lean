@@ -23,8 +23,8 @@ inductive At : Label → Ctx → Prop
 /-- The code typing: those contexts, at the addresses of their labels. -/
 def Φ : CodeTy := .ofLabels code base At
 
-/-- The buffer: two integer fields, sixteen bytes, writable. -/
-def bufferLayout : Layout := ⟨[.int, .int], true, none, 0⟩
+/-- The buffer: sixteen plain bytes, writable. -/
+def bufferLayout : Layout := ⟨.raw 16, true, none, 0⟩
 
 def blocks : List (BitVec 64 × Layout) := [(dataBase, bufferLayout)]
 
@@ -63,7 +63,7 @@ abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase buffer
 read, the program is safe on the machine that fetches instructions by
 decoding memory.** It never gets stuck and never faults. -/
 theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  h.safeMem blocksOk memOk At.start (Entry.fieldsInt (by simp [blocks, bufferLayout]))
+  h.safeMem blocksOk memOk At.start (Entry.plain (by simp [blocks, bufferLayout]))
 
 /-- The starting state used by the simulator meets the entry contract. -/
 theorem start_entry : Entry start := by ty_loaded

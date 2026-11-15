@@ -79,7 +79,7 @@ abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase [] blo
 read, the program is safe on the machine that fetches instructions by
 decoding memory.** It never gets stuck and never faults. -/
 theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  h.safeMem blocksOk memOk At.start (Entry.fieldsInt (by simp [blocks]))
+  h.safeMem blocksOk memOk At.start (Entry.plain (by simp [blocks]))
 
 /-- The starting state used by the simulator meets the entry contract. -/
 theorem start_entry : Entry start := by ty_loaded

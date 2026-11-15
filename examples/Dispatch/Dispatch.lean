@@ -23,7 +23,7 @@ def unary : FnSig where
   need := 0
 
 /-- A pointer to the table: two pointers to functions of that kind. -/
-def tablePtr : Ty := .ptr [unary.ty, unary.ty] false 0
+def tablePtr : Ty := .ptr ⟨16, [(0, unary.ty), (8, unary.ty)]⟩ false 0
 
 /-- After the first call: `rbx` still points to the table. -/
 def withTable : Ctx := ⟨fun r => if r = .rbx then tablePtr else .int, [], 1, Flags.Any, []⟩
@@ -47,7 +47,7 @@ inductive At : Label → Ctx → Prop
 /-- The code typing: those contexts, at the addresses of their labels. -/
 def Φ : CodeTy := .ofLabels code base At
 
-def tableLayout : Layout := ⟨[unary.ty, unary.ty], false, none, 0⟩
+def tableLayout : Layout := ⟨⟨16, [(0, unary.ty), (8, unary.ty)]⟩, false, none, 0⟩
 
 /-- One memory block: the table. -/
 def blocks : List (BitVec 64 × Layout) := [(dataBase, tableLayout)]
@@ -93,24 +93,20 @@ abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase tableB
 /-- The data has the types the blocks claim. The table's entries are
 function pointers because the data holds the addresses of two functions,
 and those functions are well typed. -/
-theorem Entry.fieldsOk {s : State} (h : Entry s) (n : Nat) :
-    ∀ x ∈ blocks, ∀ i τ, x.2.fields[i]? = some τ →
-      HasTy fetch linux Ψ n τ (s.load64 (x.1 + BitVec.ofNat 64 (8 * i))) := by
-  intro x hx i τ hi
+theorem Entry.valuesOk {s : State} (h : Entry s) (n : Nat) :
+    ∀ x ∈ blocks, ∀ p ∈ x.2.shape.vals,
+      HasTy fetch linux Ψ n p.2 (s.load64 (x.1 + BitVec.ofNat 64 p.1)) := by
+  intro x hx p hp
   simp only [blocks, List.mem_cons, List.not_mem_nil, or_false] at hx
   subst hx
-  match i, hi with
-  | 0, hi =>
-    cases hi
-    have e : word64 tableBytes (8 * 0) = Asm.addr code base .double := by decide +kernel
-    rw [h.data.load64 (i := 8 * 0) (by decide), e]
+  simp only [tableLayout, List.mem_cons, List.not_mem_nil, or_false] at hp
+  rcases hp with rfl | rfl
+  · have e : word64 tableBytes 0 = Asm.addr code base .double := by decide +kernel
+    rw [h.data.load64 (i := 0) (by decide), e]
     exact blocksOk.hasTy_fn (FnSig.at_label At.double) n
-  | 1, hi =>
-    cases hi
-    have e : word64 tableBytes (8 * 1) = Asm.addr code base .square := by decide +kernel
-    rw [h.data.load64 (i := 8 * 1) (by decide), e]
+  · have e : word64 tableBytes 8 = Asm.addr code base .square := by decide +kernel
+    rw [h.data.load64 (i := 8) (by decide), e]
     exact blocksOk.hasTy_fn (FnSig.at_label At.square) n
-  | i + 2, hi => simp [tableLayout] at hi
 
 /-! ## Safety -/
 
@@ -118,7 +114,7 @@ theorem Entry.fieldsOk {s : State} (h : Entry s) (n : Nat) :
 machine that fetches instructions by decoding memory.** It never gets stuck
 and never faults. -/
 theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  h.safeMem blocksOk memOk At.start h.fieldsOk
+  h.safeMem blocksOk memOk At.start h.valuesOk
 
 /-- The starting state used by the simulator meets the entry contract. -/
 theorem start_entry : Entry start := by ty_loaded

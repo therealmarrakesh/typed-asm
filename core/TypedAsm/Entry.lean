@@ -104,11 +104,11 @@ variable {entry base dataBase : BitVec 64} {image data : List Byte}
 
 /-- A state meeting the entry contract matches the entry context with any
 types for the slots at and above `rsp` that those slots have, provided each
-field of each block holds a value of its type to begin with. -/
+typed value of each block is of its type to begin with. -/
 theorem Entry.matchesStack {H : Ty → BitVec 64 → Prop} {s : State} {σ : List Ty}
     (h : Entry entry base image dataBase data blocks room above s) (hint : ∀ v, H .int v)
-    (hfields : ∀ x ∈ blocks, ∀ i τ, x.2.fields[i]? = some τ →
-      H τ (s.load64 (x.1 + BitVec.ofNat 64 (8 * i))))
+    (hfields : ∀ x ∈ blocks, ∀ p ∈ x.2.shape.vals,
+      H p.2 (s.load64 (x.1 + BitVec.ofNat 64 p.1)))
     (hσ : σ.length = above)
     (hslots : ∀ i τ, σ[i]? = some τ → H τ (s.load64 (s.getReg .rsp + BitVec.ofNat 64 (8 * i)))) :
     Matches H (MemTy.ofList blocks kinds) (entryCtx room σ) s where
@@ -122,7 +122,7 @@ theorem Entry.matchesStack {H : Ty → BitVec 64 → Prop} {s : State} {σ : Lis
     simpa only [stackSize, entryCtx, hσ] using this
   stack := hslots
   heapPerm := fun a l hl => h.perms (a, l) (MemTy.mem_of_ofList hl)
-  heap := fun a l hl i τ hi => hfields (a, l) (MemTy.mem_of_ofList hl) i τ hi
+  heap := fun a l hl p hp => hfields (a, l) (MemTy.mem_of_ofList hl) p hp
   stackHeap := fun a l hl => by
     have := h.apart (a, l) (MemTy.mem_of_ofList hl)
     simpa only [stackBase, stackSize, entryCtx, hσ] using this
@@ -131,35 +131,34 @@ theorem Entry.matchesStack {H : Ty → BitVec 64 → Prop} {s : State} {σ : Lis
   owned := OwnedOk.nil rfl
 
 /-- A state meeting the entry contract matches the entry context, provided
-each field of each block holds a value of its type to begin with. For a
-field that is not an integer, that is a fact about the program's data. -/
+each typed value of each block is of its type to begin with: a fact about the
+program's data. -/
 theorem Entry.matches {H : Ty → BitVec 64 → Prop} {s : State}
     (h : Entry entry base image dataBase data blocks room 0 s) (hint : ∀ v, H .int v)
-    (hfields : ∀ x ∈ blocks, ∀ i τ, x.2.fields[i]? = some τ →
-      H τ (s.load64 (x.1 + BitVec.ofNat 64 (8 * i)))) :
+    (hfields : ∀ x ∈ blocks, ∀ p ∈ x.2.shape.vals,
+      H p.2 (s.load64 (x.1 + BitVec.ofNat 64 p.1))) :
     Matches H (MemTy.ofList blocks kinds) (entryCtx room) s :=
   h.matchesStack hint hfields rfl (fun i τ hi => by simp at hi)
 
-/-- The same when every field of every block is an integer, which needs
-nothing of the data. -/
+/-- The same when the blocks are all plain bytes, which needs nothing of the
+data. -/
 theorem Entry.matchesInt {H : Ty → BitVec 64 → Prop} {s : State}
     (h : Entry entry base image dataBase data blocks room 0 s) (hint : ∀ v, H .int v)
-    (hfields : ∀ x ∈ blocks, ∀ τ ∈ x.2.fields, τ = .int) :
+    (hfields : ∀ x ∈ blocks, x.2.shape.vals = []) :
     Matches H (MemTy.ofList blocks kinds) (entryCtx room) s :=
-  h.matches hint (fun x hx i τ hi => by
-    rw [hfields x hx τ (List.mem_of_getElem? hi)]
-    exact hint _)
+  h.matches hint (fun x hx p hp => by
+    rw [hfields x hx] at hp
+    cases hp)
 
 /-- For a program that looks at its arguments: the state matches the context
-with `above` slots holding numbers, when every field of every block is an
-integer. -/
+with `above` slots holding numbers, when the blocks are all plain bytes. -/
 theorem Entry.matchesArgs {H : Ty → BitVec 64 → Prop} {s : State}
     (h : Entry entry base image dataBase data blocks room above s) (hint : ∀ v, H .int v)
-    (hfields : ∀ x ∈ blocks, ∀ τ ∈ x.2.fields, τ = .int) :
+    (hfields : ∀ x ∈ blocks, x.2.shape.vals = []) :
     Matches H (MemTy.ofList blocks kinds) (entryCtxArgs room above) s :=
-  h.matchesStack hint (fun x hx i τ hi => by
-      rw [hfields x hx τ (List.mem_of_getElem? hi)]
-      exact hint _)
+  h.matchesStack hint (fun x hx p hp => by
+      rw [hfields x hx] at hp
+      cases hp)
     List.length_replicate (fun i τ hi => by
       have hτ : τ = .int := by
         rw [List.getElem?_replicate] at hi
@@ -477,15 +476,15 @@ def EntryArgs (entry base : BitVec 64) (image : List Byte) (dataBase : BitVec 64
     s.load64 (s.getReg .rsp) = c
 
 /-- A state meeting the contract matches the context for the number of
-arguments it holds, when every field of every block is an integer. -/
+arguments it holds, when the blocks are all plain bytes. -/
 theorem Entry.matchesCount {H : Ty → BitVec 64 → Prop} {s : State} {c : BitVec 64}
     (h : Entry entry base image dataBase data blocks room (c.toNat + 5) s)
     (hc : s.load64 (s.getReg .rsp) = c) (hint : ∀ v, H .int v) (heq : ∀ v, H (.eq v) v)
-    (hfields : ∀ x ∈ blocks, ∀ τ ∈ x.2.fields, τ = .int) :
+    (hfields : ∀ x ∈ blocks, x.2.shape.vals = []) :
     Matches H (MemTy.ofList blocks kinds) (argsCtx room c) s :=
-  h.matchesStack hint (fun x hx i τ hi => by
-      rw [hfields x hx τ (List.mem_of_getElem? hi)]
-      exact hint _)
+  h.matchesStack hint (fun x hx p hp => by
+      rw [hfields x hx] at hp
+      cases hp)
     (by simp only [List.length_cons, List.length_replicate])
     (fun i τ hi => by
       cases i with

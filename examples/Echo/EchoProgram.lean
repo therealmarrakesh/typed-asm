@@ -27,8 +27,8 @@ done:
 ```
 
 The typing of the `read` is what makes this safe: the kernel stores up to 16
-bytes at the buffer, and the type of `rsi` says those 16 bytes are two
-integer fields of a writable block, so nothing typed is overwritten. The
+bytes at the buffer, and the type of `rsi` says those 16 bytes are plain
+bytes of a writable block, so nothing typed is overwritten. The
 `write` needs no such condition, since the kernel only reads.
 
 The program is laid out for the addresses of the ELF file it can be written

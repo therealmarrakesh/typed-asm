@@ -21,25 +21,25 @@ that the data the program is loaded with has the types the blocks claim.
 namespace TypedAsm
 
 variable {L : Type} [DecidableEq L] {code : List (Asm L)} {base dataBase : BitVec 64}
-  {data : List Byte} {blocks : List (BitVec 64 × Layout)} {kinds : List (Nat × List Ty)}
+  {data : List Byte} {blocks : List (BitVec 64 × Layout)} {kinds : List (Nat × Shape)}
   {At : L → Ctx → Prop} {start : L} {room : Nat} {s : State}
 
-/-- When every field of every block is an integer, the data has the types the
-blocks claim, whatever it is. -/
-theorem Entry.fieldsInt {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
-    (h : ∀ x ∈ blocks, ∀ τ ∈ x.2.fields, τ = .int) :
-    ∀ n, ∀ x ∈ blocks, ∀ i τ, x.2.fields[i]? = some τ →
-      HasTy fetch sys Ψ n τ (s.load64 (x.1 + BitVec.ofNat 64 (8 * i))) :=
-  fun _ x hx _ τ hi => by
-    rw [h x hx τ (List.mem_of_getElem? hi)]
-    exact HasTy.int _
+/-- When the blocks are all plain bytes, the data has the types the blocks
+claim, whatever it is. -/
+theorem Entry.plain {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
+    (h : ∀ x ∈ blocks, x.2.shape.vals = []) :
+    ∀ n, ∀ x ∈ blocks, ∀ p ∈ x.2.shape.vals,
+      HasTy fetch sys Ψ n p.2 (s.load64 (x.1 + BitVec.ofNat 64 p.1)) :=
+  fun _ x hx p hp => by
+    rw [h x hx] at hp
+    cases hp
 
 /-- A state meeting the entry contract is well typed, at the entry label. -/
 theorem Entry.stateOk {image : List Byte} {sys : Syscall}
     (hstart : At start (entryCtx room))
-    (hfields : ∀ n, ∀ x ∈ blocks, ∀ i τ, x.2.fields[i]? = some τ →
-      HasTy (Asm.fetch base code) sys (.ofList blocks kinds) n τ
-        (s.load64 (x.1 + BitVec.ofNat 64 (8 * i))))
+    (hfields : ∀ n, ∀ x ∈ blocks, ∀ p ∈ x.2.shape.vals,
+      HasTy (Asm.fetch base code) sys (.ofList blocks kinds) n p.2
+        (s.load64 (x.1 + BitVec.ofNat 64 p.1)))
     (h : Entry (Asm.addr code base start) base image dataBase data blocks room 0 s) :
     StateOk (.ofLabels code base At) (Asm.fetch base code) sys (.ofList blocks kinds) s :=
   ⟨entryCtx room, by rw [h.rip]; exact .intro hstart, fun n => h.matches HasTy.int (hfields n)⟩
@@ -50,9 +50,9 @@ theorem Entry.safe {image : List Byte} {sys : Syscall}
     (h : Entry (Asm.addr code base start) base image dataBase data blocks room 0 s)
     (hty : BlocksOk (.ofLabels code base At) (Asm.fetch base code) sys (.ofList blocks kinds))
     (hwf : (MemTy.ofList blocks kinds).WF) (hstart : At start (entryCtx room))
-    (hfields : ∀ n, ∀ x ∈ blocks, ∀ i τ, x.2.fields[i]? = some τ →
-      HasTy (Asm.fetch base code) sys (.ofList blocks kinds) n τ
-        (s.load64 (x.1 + BitVec.ofNat 64 (8 * i)))) :
+    (hfields : ∀ n, ∀ x ∈ blocks, ∀ p ∈ x.2.shape.vals,
+      HasTy (Asm.fetch base code) sys (.ofList blocks kinds) n p.2
+        (s.load64 (x.1 + BitVec.ofNat 64 p.1))) :
     Safe (Asm.fetch base code) sys s :=
   soundness_blocks hty hwf (h.stateOk hstart hfields)
 
@@ -62,9 +62,9 @@ theorem Entry.safeMem
     (h : Entry (Asm.addr code base start) base (Asm.image base code) dataBase data blocks room 0 s)
     (hty : BlocksOk (.ofLabels code base At) (Asm.fetch base code) linux (.ofList blocks kinds))
     (hwf : (MemTy.ofList blocks kinds).WF) (hstart : At start (entryCtx room))
-    (hfields : ∀ n, ∀ x ∈ blocks, ∀ i τ, x.2.fields[i]? = some τ →
-      HasTy (Asm.fetch base code) linux (.ofList blocks kinds) n τ
-        (s.load64 (x.1 + BitVec.ofNat 64 (8 * i)))) :
+    (hfields : ∀ n, ∀ x ∈ blocks, ∀ p ∈ x.2.shape.vals,
+      HasTy (Asm.fetch base code) linux (.ofList blocks kinds) n p.2
+        (s.load64 (x.1 + BitVec.ofNat 64 p.1))) :
     SafeMem linux s :=
   .of_safe linux_frame (Asm.loaded h.code) (h.safe hty hwf hstart hfields)
 
@@ -74,7 +74,7 @@ theorem EntryArgs.safe {image : List Byte} {sys : Syscall}
     (h : EntryArgs (Asm.addr code base start) base image dataBase data blocks room s)
     (hty : BlocksOk (.ofLabels code base At) (Asm.fetch base code) sys (.ofList blocks kinds))
     (hwf : (MemTy.ofList blocks kinds).WF) (hstart : ∀ c, At start (argsCtx room c))
-    (hfields : ∀ x ∈ blocks, ∀ τ ∈ x.2.fields, τ = .int) :
+    (hfields : ∀ x ∈ blocks, x.2.shape.vals = []) :
     Safe (Asm.fetch base code) sys s :=
   let ⟨c, hE, hc⟩ := h
   soundness_blocks hty hwf
@@ -86,7 +86,7 @@ theorem EntryArgs.safeMem
       room s)
     (hty : BlocksOk (.ofLabels code base At) (Asm.fetch base code) linux (.ofList blocks kinds))
     (hwf : (MemTy.ofList blocks kinds).WF) (hstart : ∀ c, At start (argsCtx room c))
-    (hfields : ∀ x ∈ blocks, ∀ τ ∈ x.2.fields, τ = .int) :
+    (hfields : ∀ x ∈ blocks, x.2.shape.vals = []) :
     SafeMem linux s :=
   .of_safe linux_frame (Asm.loaded h.choose_spec.1.code) (h.safe hty hwf hstart hfields)
 
@@ -98,7 +98,7 @@ theorem EntryTexts.safe {image : List Byte} {sys : Syscall}
     (hty : BlocksOk (.ofLabels code base At) (Asm.fetch base code) sys (.ofList blocks kinds))
     (hkinds : MemTy.declared kinds blocks = MemTy.actual blocks)
     (hstart : ∀ c, At start (textsCtx room c))
-    (hfields : ∀ x ∈ blocks, ∀ τ ∈ x.2.fields, τ = .int) :
+    (hfields : ∀ x ∈ blocks, x.2.shape.vals = []) :
     Safe (Asm.fetch base code) sys s := by
   obtain ⟨c, Ψ', he, hΨ', hrip, -, hw⟩ :=
     h.wellTyped (kinds := kinds) (fetch := Asm.fetch base code) (sys := sys) hkinds hfields
@@ -111,7 +111,7 @@ theorem EntryTexts.safeMem
     (hty : BlocksOk (.ofLabels code base At) (Asm.fetch base code) linux (.ofList blocks kinds))
     (hkinds : MemTy.declared kinds blocks = MemTy.actual blocks)
     (hstart : ∀ c, At start (textsCtx room c))
-    (hfields : ∀ x ∈ blocks, ∀ τ ∈ x.2.fields, τ = .int) :
+    (hfields : ∀ x ∈ blocks, x.2.shape.vals = []) :
     SafeMem linux s :=
   .of_safe linux_frame (Asm.loaded h.choose_spec.1.code) (h.safe hty hkinds hstart hfields)
 

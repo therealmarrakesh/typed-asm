@@ -320,7 +320,7 @@ def linux : Syscall := fun s =>
   else .next (Linux.ret s (-38))
 
 /-- Whether zero is a value of the type, whatever the memory typing. Fresh
-memory is all zero, so these are the types its fields may be given. -/
+memory is all zero, so these are the types its values may be given. -/
 def Ty.zeroOk : Ty → Bool
   | .int => true
   | .eq v => decide (v = 0)
@@ -378,17 +378,18 @@ theorem perm_of_unmapped {a : BitVec 64} {size : Nat} (hal : a.toNat % 4096 = 0)
 
 /-- **Fresh memory is a new block.** An `mmap` in the modelled form returns
 an error number, or the address of memory that was not accessible before.
-Nothing typed could point into such memory, so it may be given any layout
-whose fields all admit zero, and the memory typing grows by that block; what
+Nothing typed could point into such memory, so it may be given any shape
+whose typed values all admit zero, and the memory typing grows by that block; what
 was well typed before still is. -/
-theorem mmap_ok {sys : Syscall} {len : BitVec 64} {fields : List Ty} {tag : Option Nat} {τ : Ty}
+theorem mmap_ok {sys : Syscall} {len : BitVec 64} {S : Shape} {tag : Option Nat} {τ : Ty}
     (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF)
     (hlen : Γ.regs .rsi = .eq len) (hprot : Γ.regs .rdx = .eq 3)
     (hflags : Γ.regs .r10 = .eq 0x22)
-    (hfit : 8 * fields.length ≤ len.toNat) (hne : fields ≠ [])
-    (hzero : ∀ υ ∈ fields, υ.zeroOk = true)
-    (hkind : ∀ t, tag = some t → Ψ.kinds t = some fields)
-    (hτ : ∀ (Ψ₂ : MemTy) (a : BitVec 64), Ψ₂ a = some ⟨fields, true, tag, 0⟩ →
+    (hfit : S.size ≤ len.toNat) (hne : 0 < S.size)
+    (hin : ∀ p ∈ S.vals, p.1 + 8 ≤ S.size)
+    (hzero : ∀ p ∈ S.vals, p.2.zeroOk = true)
+    (hkind : ∀ t, tag = some t → Ψ.kinds t = some S)
+    (hτ : ∀ (Ψ₂ : MemTy) (a : BitVec 64), Ψ₂ a = some ⟨S, true, tag, 0⟩ →
       HasTy fetch sys Ψ₂ n τ a) :
     ∃ Ψ₂ : MemTy, Ψ.Ext Ψ₂ ∧ Ψ₂.WF ∧
       WellTyped fetch sys Ψ₂ n (Γ.afterSyscall.setReg .rax (.orErr τ)) (mmap s) := by
@@ -415,12 +416,11 @@ theorem mmap_ok {sys : Syscall} {len : BitVec 64} {fields : List Ty} {tag : Opti
         have hsz : len.toNat ≤ size := by omega
         have hpos : 0 < size := by omega
         have hsz64 : size < 2 ^ 64 := by omega
-        have hk0 : 0 < fields.length := List.length_pos_iff.mpr hne
         have hU : ∀ x : BitVec 64, (x - a).toNat < size → s.perm x = .none :=
           fun x hx => perm_of_unmapped hal hfit64 hun hx
         -- nothing readable overlaps the new block
         have hR : ∀ (b : BitVec 64) (m : Nat), m < 2 ^ 64 → s.canRead b m = true →
-            Disjoint a (8 * fields.length) b m := by
+            Disjoint a S.size b m := by
           intro b m hm hr
           rw [State.canRead_iff] at hr
           refine ⟨fun hm0 => ?_, fun _ => ?_⟩
@@ -442,7 +442,7 @@ theorem mmap_ok {sys : Syscall} {len : BitVec 64} {fields : List Ty} {tag : Opti
             have hr := State.canRead_iff.mp (h.heapPerm a l hl).1 0 (hΨ.nonempty a l hl)
             rw [show a + BitVec.ofNat 64 0 = a by simp, hU a (by simpa using hpos)] at hr
             exact absurd hr (by decide)
-        let L : Layout := ⟨fields, true, tag, 0⟩
+        let L : Layout := ⟨S, true, tag, 0⟩
         let Ψ₂ : MemTy := ⟨fun x => if x = a then some L else Ψ x, Ψ.kinds⟩
         have hcases : ∀ x l, Ψ₂ x = some l → (x = a ∧ l = L) ∨ (x ≠ a ∧ Ψ x = some l) := by
           intro x l hl
@@ -462,7 +462,7 @@ theorem mmap_ok {sys : Syscall} {len : BitVec 64} {fields : List Ty} {tag : Opti
           constructor
           · intro x l hl
             rcases hcases x l hl with ⟨-, rfl⟩ | ⟨-, hl'⟩
-            · show 8 * fields.length < 2 ^ 64
+            · show S.size < 2 ^ 64
               omega
             · exact hΨ.size_lt x l hl'
           · intro x y lx ly hx hy hxy
@@ -475,9 +475,13 @@ theorem mmap_ok {sys : Syscall} {len : BitVec 64} {fields : List Ty} {tag : Opti
               · exact hΨ.disjoint x y lx ly hx' hy' hxy
           · intro x l hl
             rcases hcases x l hl with ⟨-, rfl⟩ | ⟨-, hl'⟩
-            · show 0 < 8 * fields.length + 0
+            · show 0 < S.size + 0
               omega
             · exact hΨ.nonempty x l hl'
+          · intro x l hl p hp
+            rcases hcases x l hl with ⟨-, rfl⟩ | ⟨-, hl'⟩
+            · exact hin p hp
+            · exact hΨ.fits x l hl' p hp
           · intro x l hl t ht
             rcases hcases x l hl with ⟨-, rfl⟩ | ⟨-, hl'⟩
             · exact hkind t ht
@@ -507,7 +511,7 @@ theorem mmap_ok {sys : Syscall} {len : BitVec 64} {fields : List Ty} {tag : Opti
           split
           · rfl
           · exact hy i hi
-        have hnew : (s.mapZero a size).canWrite a (8 * fields.length) = true := by
+        have hnew : (s.mapZero a size).canWrite a S.size = true := by
           rw [State.canWrite_iff]
           intro i hi
           rw [State.perm_mapZero s hal hsz4 hfit64]
@@ -530,19 +534,19 @@ theorem mmap_ok {sys : Syscall} {len : BitVec 64} {fields : List Ty} {tag : Opti
               · rw [hx, hlL]
                 exact ⟨State.canRead_of_canWrite hnew, fun _ => hnew⟩
               · exact ⟨hrd _ _ (h.heapPerm x l hl').1, fun hw => hwr _ _ ((h.heapPerm x l hl').2 hw)⟩
-            heap := fun x l hl i υ hi => by
+            heap := fun x l hl p hp => by
               rcases hcases x l hl with ⟨hx, hlL⟩ | ⟨-, hl'⟩
-              · rw [hlL] at hi
-                have hi' : i < fields.length := (List.getElem?_eq_some_iff.mp hi).1
-                have hin : ∀ j : BitVec 64, j < 8 →
-                    ((a + BitVec.ofNat 64 (8 * i) + j) - a).toNat < size := by
+              · rw [hlL] at hp
+                have hpf : p.1 + 8 ≤ S.size := hin p hp
+                have hin' : ∀ j : BitVec 64, j < 8 →
+                    ((a + BitVec.ofNat 64 p.1 + j) - a).toNat < size := by
                   intro j hj
                   bv_omega
-                rw [hx, State.load64_mapZero_in s hal hsz4 hfit64 hin]
-                exact HasTy.zero (hzero υ (List.mem_of_getElem? hi))
-              · have hr := h.canRead_field hl' (List.getElem?_eq_some_iff.mp hi).1
+                rw [hx, State.load64_mapZero_in s hal hsz4 hfit64 hin']
+                exact HasTy.zero (hzero p hp)
+              · have hr := h.canRead_bytes hl' (hΨ.fits x l hl' p hp)
                 rw [State.load64_mapZero_out s hal hsz4 hfit64 (hout _ hr)]
-                exact (h.heap x l hl' i υ hi).ext hext
+                exact (h.heap x l hl' p hp).ext hext
             stackHeap := fun x l hl => by
               rw [hb]
               rcases hcases x l hl with ⟨hx, hlL⟩ | ⟨-, hl'⟩
@@ -564,7 +568,7 @@ theorem mmap_ok {sys : Syscall} {len : BitVec 64} {fields : List Ty} {tag : Opti
                 heap := fun b hb' x l hl => by
                   rcases hcases x l hl with ⟨hx, hlL⟩ | ⟨-, hl'⟩
                   · rw [hx, hlL]
-                    show Disjoint _ _ _ (8 * fields.length + 0)
+                    show Disjoint _ _ _ (S.size + 0)
                     exact (hR b.1 b.2.size (h.owned.size_lt b hb')
                       (State.canRead_of_canWrite (h.owned.perm b hb'))).symm
                   · exact h.owned.heap b hb' x l hl'
@@ -649,40 +653,34 @@ theorem fills_give {buf : BitVec 64} {room : Nat} {data : List (BitVec 8)} {v : 
     Fills s buf room (give s buf data v w) :=
   .inr ⟨data, v, w, hlen, canWrite_le hw hlen, rfl⟩
 
-/-- Bytes stored in integer fields of a writable block leave the state well
+/-- Bytes stored in plain bytes of a writable block leave the state well
 typed, whatever they are. -/
-theorem storeBytes_ok {sys : Syscall} {r : Reg} {fields : List Ty} {off cnt : Nat}
+theorem storeBytes_ok {sys : Syscall} {r : Reg} {S : Shape} {off cnt : Nat}
     {data : List (BitVec 8)} (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF) (hr : r ≠ .rsp)
-    (hbuf : Γ.regs r = .ptr fields true off)
-    (hints : ∀ j, j < cnt → fields[off + j]? = some .int) (hlen : data.length ≤ 8 * cnt) :
+    (hbuf : Γ.regs r = .ptr S true off) (hle : off + cnt ≤ S.size)
+    (hfree : S.free off cnt = true) (hlen : data.length ≤ cnt) :
     WellTyped fetch sys Ψ n Γ (s.storeBytes (s.getReg r) data) := by
   have hp := h.regs r hr
   rw [hbuf] at hp
   obtain ⟨a, l, hl, rfl, -, hva⟩ := hasTy_ptr.mp hp
+  have hsz := hΨ.size_lt a l hl
+  simp only [Layout.size] at hsz
   rw [hva]
-  by_cases hc : cnt = 0
-  · -- nothing can be stored
-    have hz : data = [] := List.length_eq_zero_iff.mp (by omega)
-    rw [hz, State.storeBytes_nil]
-    exact h.congr rfl rfl rfl rfl
-  · have hlast := hints (cnt - 1) (by omega)
-    have hle : off + cnt ≤ l.fields.length := by
-      have := (List.getElem?_eq_some_iff.mp hlast).1
-      omega
-    have hsz := hΨ.size_lt a l hl
-    simp only [Layout.size] at hsz
-    refine h.writeInts hΨ hl (lo := off) (cnt := cnt) (by omega) hle
-      (fun j hj hj' => by
-        have := hints (j - off) (by omega)
-        rwa [show off + (j - off) = j by omega] at this)
-      rfl rfl rfl (fun y hd => ?_) (fun x hx => by
-        show (s.storeBytes _ data).mem x = s.mem x
-        rw [State.mem_storeBytes s _ x _ (by omega), List.getElem?_eq_none (by bv_omega)]
-        rfl)
-    refine (State.load64_congr (s := s.storeBytes _ _) rfl y).trans
-      (State.load64_storeBytes_disjoint s _ (by omega) ?_ (hd.2 (by omega)))
-    have h1 := hd.1 (by decide)
-    bv_omega
+  refine h.writeHeapFree hΨ hl (lo := off) (cnt := cnt) hle hfree rfl rfl rfl
+    (fun y hd => ?_) (fun x hx => ?_)
+  · by_cases hc : cnt = 0
+    · have hz : data = [] := List.length_eq_zero_iff.mp (by omega)
+      rw [hz, State.storeBytes_nil]
+    · refine (State.load64_congr (s := s.storeBytes _ _) rfl y).trans
+        (State.load64_storeBytes_disjoint s _ (by omega) ?_ (hd.2 (by omega)))
+      have h1 := hd.1 (by decide)
+      bv_omega
+  · show (s.storeBytes _ data).mem x = s.mem x
+    by_cases hc : cnt = 0
+    · have hz : data = [] := List.length_eq_zero_iff.mp (by omega)
+      rw [hz, State.storeBytes_nil]
+    · rw [State.mem_storeBytes s _ x _ (by omega), List.getElem?_eq_none (by bv_omega)]
+      rfl
 
 /-- Bytes stored in integer stack slots leave the state well typed, whatever
 they are. -/
@@ -758,16 +756,16 @@ namespace Fills
 
 variable {t : State} {r : Reg} {room : Nat}
 
-/-- A call that fills a buffer lying in integer fields of a writable block
+/-- A call that fills a buffer lying in plain bytes of a writable block
 keeps the state well typed. -/
-theorem ok {sys : Syscall} {fields : List Ty} {off cnt : Nat}
+theorem ok {sys : Syscall} {S : Shape} {off : Nat}
     (hf : Fills s (s.getReg r) room t) (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF)
-    (hr : r ≠ .rsp) (hbuf : Γ.regs r = .ptr fields true off)
-    (hints : ∀ j, j < cnt → fields[off + j]? = some .int) (hroom : room ≤ 8 * cnt) :
+    (hr : r ≠ .rsp) (hbuf : Γ.regs r = .ptr S true off)
+    (hle : off + room ≤ S.size) (hfree : S.free off room = true) :
     WellTyped fetch sys Ψ n Γ.afterSyscall t := by
   rcases hf with hf | ⟨data, v, w, hlen, -, rfl⟩
   · exact hf.ok h
-  · exact ret_ok ((storeBytes_ok (data := data) h hΨ hr hbuf hints (by omega)).congr
+  · exact ret_ok ((storeBytes_ok (data := data) h hΨ hr hbuf hle hfree (by omega)).congr
       (t := { s.storeBytes (s.getReg r) data with world := w }) rfl rfl rfl rfl) v
 
 /-- A call that fills a buffer lying in integer stack slots keeps the state
@@ -935,7 +933,8 @@ theorem mapZero_ok {sys : Syscall} {a : BitVec 64} {size : Nat}
     (h : WellTyped fetch sys Ψ n Γ s) (hal : a.toNat % 4096 = 0) (hsz4 : size % 4096 = 0)
     (hfit : a.toNat + size ≤ 2 ^ 64)
     (hU : ∀ x : BitVec 64, (x - a).toNat < size → s.perm x = .none)
-    (hpos : ∀ x l, Ψ x = some l → 0 < l.size) :
+    (hpos : ∀ x l, Ψ x = some l → 0 < l.size)
+    (hin : ∀ x l, Ψ x = some l → ∀ p ∈ l.shape.vals, p.1 + 8 ≤ l.shape.size) :
     WellTyped fetch sys Ψ n Γ (s.mapZero a size) := by
   have hout : ∀ y : BitVec 64, s.canRead y 8 = true →
       ∀ j : BitVec 64, j < 8 → ¬ ((y + j) - a).toNat < size := by
@@ -974,10 +973,10 @@ theorem mapZero_ok {sys : Syscall} {a : BitVec 64} {size : Nat}
       exact h.stack i υ hi
     heapPerm := fun x l hl =>
       ⟨hrd _ _ (h.heapPerm x l hl).1, fun hw => hwr _ _ ((h.heapPerm x l hl).2 hw)⟩
-    heap := fun x l hl i υ hi => by
-      have hr := h.canRead_field hl (List.getElem?_eq_some_iff.mp hi).1
+    heap := fun x l hl p hp => by
+      have hr := h.canRead_bytes hl (hin x l hl p hp)
       rw [State.load64_mapZero_out s hal hsz4 hfit (hout _ hr)]
-      exact h.heap x l hl i υ hi
+      exact h.heap x l hl p hp
     stackHeap := fun x l hl => by rw [hb]; exact h.stackHeap x l hl
     sp := by rw [hg]; exact h.sp
     owned :=
@@ -1013,7 +1012,7 @@ theorem mapZero_owned {sys : Syscall} {a : BitVec 64} {size : Nat}
       (s.mapZero a size) := by
   have hU : ∀ x : BitVec 64, (x - a).toNat < size → s.perm x = .none :=
     fun x hx => perm_of_unmapped hal hfit64 hun hx
-  have hZ := mapZero_ok h hal hsz4 hfit64 hU hΨ.nonempty
+  have hZ := mapZero_ok h hal hsz4 hfit64 hU hΨ.nonempty hΨ.fits
   have hnew : (s.mapZero a size).canWrite a size = true := by
     rw [State.canWrite_iff]
     intro i hi
@@ -1184,20 +1183,20 @@ theorem linux_lseek (hΓ : Γ.regs .rax = .eq 8) :
     (Linux.lseek_only s).ok h⟩
 
 /-- `read`: with 0 in `rax`, the call returns, provided the buffer in `rsi`
-points into a writable block and the `rdx` bytes from there are all in
-integer fields. Without that the kernel could overwrite a typed pointer. -/
-theorem linux_read {fields : List Ty} {off : Nat} {len : BitVec 64} (hΓ : Γ.regs .rax = .eq 0)
-    (hbuf : Γ.regs .rsi = .ptr fields true off) (hlen : Γ.regs .rdx = .eq len)
-    (hints : ∀ j, j < (len.toNat + 7) / 8 → fields[off + j]? = some .int) :
+points into a writable block and the `rdx` bytes from there are plain bytes
+of it. Without that the kernel could overwrite a typed pointer. -/
+theorem linux_read {S : Shape} {off : Nat} {len : BitVec 64} (hΓ : Γ.regs .rax = .eq 0)
+    (hbuf : Γ.regs .rsi = .ptr S true off) (hlen : Γ.regs .rdx = .eq len)
+    (hle : off + len.toNat ≤ S.size) (hfree : S.free off len.toNat = true) :
     SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.read_fills s
   rw [h.eqReg (by decide) hlen] at hf
   exact ⟨Linux.read s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
-    hf.ok h hΨ (by decide) hbuf hints (by omega)⟩
+    hf.ok h hΨ (by decide) hbuf hle hfree⟩
 
-/-- Whether the `k` fields from number `off` on are there and are all
+/-- Whether the `k` slots from number `off` on are there and are all
 integers. One pass along the list. -/
 def intsFrom : List Ty → Nat → Nat → Bool
   | _, _, 0 => true
@@ -1205,8 +1204,8 @@ def intsFrom : List Ty → Nat → Nat → Bool
   | τ :: rest, 0, k + 1 => τ.isInt && intsFrom rest 0 k
   | _ :: rest, off + 1, k + 1 => intsFrom rest off (k + 1)
 
-/-- The condition of `linux_read` on the fields, from a check that can be
-computed when the fields and the count are known. -/
+/-- The condition of `linux_read_stack` on the slots, from a check that can
+be computed when the slots and the count are known. -/
 theorem ints_of_check {fields : List Ty} {off k : Nat} (h : intsFrom fields off k = true) :
     ∀ j, j < k → fields[off + j]? = some .int := by
   induction fields generalizing off k with
@@ -1254,16 +1253,16 @@ theorem linux_read_stack {v d len : BitVec 64} (hΓ : Γ.regs .rax = .eq 0)
 
 /-- `fstat`: with 5 in `rax`, the call returns, provided the buffer in `rsi`
 points into a writable block and the 144 bytes from there, which is what the
-kernel stores, are all in integer fields. -/
-theorem linux_fstat {fields : List Ty} {off : Nat} (hΓ : Γ.regs .rax = .eq 5)
-    (hbuf : Γ.regs .rsi = .ptr fields true off)
-    (hints : ∀ j, j < 18 → fields[off + j]? = some .int) :
+kernel stores, are plain bytes of it. -/
+theorem linux_fstat {S : Shape} {off : Nat} (hΓ : Γ.regs .rax = .eq 5)
+    (hbuf : Γ.regs .rsi = .ptr S true off)
+    (hle : off + 144 ≤ S.size) (hfree : S.free off 144 = true) :
     SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.fstat_fills s
   exact ⟨Linux.fstat s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
-    hf.ok h hΨ (by decide) hbuf hints (by omega)⟩
+    hf.ok h hΨ (by decide) hbuf hle hfree⟩
 
 /-- `fstat` into the stack: as `linux_fstat`, with the buffer a known
 distance above the stack pointer and its 144 bytes in integer stack slots. -/
@@ -1278,17 +1277,17 @@ theorem linux_fstat_stack {v d : BitVec 64} (hΓ : Γ.regs .rax = .eq 5)
     hf.ok_stack h hΨ (by decide) hsp hbuf h8 hints (by omega)⟩
 
 /-- `clock_gettime`: with 228 in `rax`, the call returns, provided the buffer
-in `rsi` points into a writable block and the 16 bytes from there are in
-integer fields. -/
-theorem linux_clock_gettime {fields : List Ty} {off : Nat} (hΓ : Γ.regs .rax = .eq 228)
-    (hbuf : Γ.regs .rsi = .ptr fields true off)
-    (hints : ∀ j, j < 2 → fields[off + j]? = some .int) :
+in `rsi` points into a writable block and the 16 bytes from there are plain
+bytes of it. -/
+theorem linux_clock_gettime {S : Shape} {off : Nat} (hΓ : Γ.regs .rax = .eq 228)
+    (hbuf : Γ.regs .rsi = .ptr S true off)
+    (hle : off + 16 ≤ S.size) (hfree : S.free off 16 = true) :
     SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.clockGettime_fills s
   exact ⟨Linux.clockGettime s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
-    hf.ok h hΨ (by decide) hbuf hints (by omega)⟩
+    hf.ok h hΨ (by decide) hbuf hle hfree⟩
 
 /-- `clock_gettime` into the stack. -/
 theorem linux_clock_gettime_stack {v d : BitVec 64} (hΓ : Γ.regs .rax = .eq 228)
@@ -1302,19 +1301,19 @@ theorem linux_clock_gettime_stack {v d : BitVec 64} (hΓ : Γ.regs .rax = .eq 22
     hf.ok_stack h hΨ (by decide) hsp hbuf h8 hints (by omega)⟩
 
 /-- `getrandom`: with 318 in `rax`, the call returns, provided the buffer in
-`rdi` points into a writable block and the `rsi` bytes from there are all in
-integer fields. -/
-theorem linux_getrandom {fields : List Ty} {off : Nat} {len : BitVec 64}
-    (hΓ : Γ.regs .rax = .eq 318) (hbuf : Γ.regs .rdi = .ptr fields true off)
+`rdi` points into a writable block and the `rsi` bytes from there are plain
+bytes of it. -/
+theorem linux_getrandom {S : Shape} {off : Nat} {len : BitVec 64}
+    (hΓ : Γ.regs .rax = .eq 318) (hbuf : Γ.regs .rdi = .ptr S true off)
     (hlen : Γ.regs .rsi = .eq len)
-    (hints : ∀ j, j < (len.toNat + 7) / 8 → fields[off + j]? = some .int) :
+    (hle : off + len.toNat ≤ S.size) (hfree : S.free off len.toNat = true) :
     SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.getrandom_fills s
   rw [h.eqReg (by decide) hlen] at hf
   exact ⟨Linux.getrandom s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
-    hf.ok h hΨ (by decide) hbuf hints (by omega)⟩
+    hf.ok h hΨ (by decide) hbuf hle hfree⟩
 
 /-- `getrandom` into the stack. -/
 theorem linux_getrandom_stack {v d len : BitVec 64} (hΓ : Γ.regs .rax = .eq 318)
@@ -1389,40 +1388,44 @@ theorem linux_getrandom_owned {k lo : Nat} {a v : BitVec 64} {S : Shape} {len : 
   exact ⟨Linux.getrandom s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok_owned h hΨ (by decide) hbuf hat hle⟩
 
-/-- `mmap` for a block of plain fields: with 9 in `rax`, the length in `rsi`,
-3 in `rdx` and 0x22 in `r10`, the call returns an error number or a writable
-pointer to a new block with the fields asked for. The fields must fit in the
-length and each must admit zero, since that is what fresh memory holds. -/
-theorem linux_mmap {len : BitVec 64} {fields : List Ty} (hΓ : Γ.regs .rax = .eq 9)
+/-- `mmap` for a block of a given shape: with 9 in `rax`, the length in
+`rsi`, 3 in `rdx` and 0x22 in `r10`, the call returns an error number or a
+writable pointer to a new block of that shape. The shape must fit in the
+length and each of its typed values must admit zero, since that is what fresh
+memory holds. -/
+theorem linux_mmap {len : BitVec 64} {S : Shape} (hΓ : Γ.regs .rax = .eq 9)
     (hlen : Γ.regs .rsi = .eq len) (hprot : Γ.regs .rdx = .eq 3)
-    (hflags : Γ.regs .r10 = .eq 0x22) (hfit : 8 * fields.length ≤ len.toNat)
-    (hne : fields ≠ []) (hzero : fields.all Ty.zeroOk = true) :
-    SysReturns fetch linux Ψ Γ (Γ.afterSyscall.setReg .rax (.orErr (.ptr fields true 0))) := by
+    (hflags : Γ.regs .r10 = .eq 0x22) (hfit : S.size ≤ len.toNat)
+    (hne : 0 < S.size) (hin : S.fits = true)
+    (hzero : S.vals.all (fun p => p.2.zeroOk) = true) :
+    SysReturns fetch linux Ψ Γ (Γ.afterSyscall.setReg .rax (.orErr (.ptr S true 0))) := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   obtain ⟨Ψ₂, he₂, hΨ₂, hw⟩ := Linux.mmap_ok (tag := none) h hΨ hlen hprot hflags hfit hne
-    (List.all_eq_true.mp hzero) (fun _ ht => nomatch ht)
+    (ShapeOf.fits_mem hin) (List.all_eq_true.mp hzero) (fun _ ht => nomatch ht)
     (fun Ψ₂ a hl => hasTy_ptr.mpr ⟨a, _, hl, rfl, fun _ => rfl, by
-      show a = a + BitVec.ofNat 64 (8 * 0)
+      show a = a + BitVec.ofNat 64 0
       simp⟩)
   exact ⟨Linux.mmap s, by simp [linux, hax], Linux.mmap_rip s, Ψ₂, he₂, hΨ₂, hw⟩
 
 /-- `mmap` for a block of a declared kind: as `linux_mmap`, but the new
-block is of kind `tag`, has that kind's fields, and the result is a pointer
+block is of kind `tag`, has that kind's shape, and the result is a pointer
 to a block of that kind. This is how a record that points to others of its
 kind is allocated. -/
-theorem linux_mmap_kind {len : BitVec 64} {tag : Nat} {fields : List Ty}
-    (hΓ : Γ.regs .rax = .eq 9) (hkind : Ψ.kinds tag = some fields)
+theorem linux_mmap_kind {len : BitVec 64} {tag : Nat} {S : Shape}
+    (hΓ : Γ.regs .rax = .eq 9) (hkind : Ψ.kinds tag = some S)
     (hlen : Γ.regs .rsi = .eq len) (hprot : Γ.regs .rdx = .eq 3)
-    (hflags : Γ.regs .r10 = .eq 0x22) (hfit : 8 * fields.length ≤ len.toNat)
-    (hne : fields ≠ []) (hzero : fields.all Ty.zeroOk = true) :
+    (hflags : Γ.regs .r10 = .eq 0x22) (hfit : S.size ≤ len.toNat)
+    (hne : 0 < S.size) (hin : S.fits = true)
+    (hzero : S.vals.all (fun p => p.2.zeroOk) = true) :
     SysReturns fetch linux Ψ Γ (Γ.afterSyscall.setReg .rax (.orErr (.ref tag true 0))) := by
   intro Ψ₁ he hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   obtain ⟨Ψ₂, he₂, hΨ₂, hw⟩ := Linux.mmap_ok (tag := some tag) h hΨ hlen hprot hflags hfit hne
-    (List.all_eq_true.mp hzero) (fun t ht => by cases ht; rw [he.kinds]; exact hkind)
+    (ShapeOf.fits_mem hin) (List.all_eq_true.mp hzero)
+    (fun t ht => by cases ht; rw [he.kinds]; exact hkind)
     (fun Ψ₂ a hl => hasTy_ref.mpr ⟨a, _, hl, rfl, fun _ => rfl, by
-      show a = a + BitVec.ofNat 64 (8 * 0)
+      show a = a + BitVec.ofNat 64 0
       simp⟩)
   exact ⟨Linux.mmap s, by simp [linux, hax], Linux.mmap_rip s, Ψ₂, he₂, hΨ₂, hw⟩
 

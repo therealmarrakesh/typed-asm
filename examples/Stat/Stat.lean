@@ -22,9 +22,9 @@ inductive At : Label → Ctx → Prop
 /-- The code typing: those contexts, at the addresses of their labels. -/
 def Φ : CodeTy := .ofLabels code base At
 
-/-- The buffer: eighteen integer fields, 144 bytes, writable. That is the
+/-- The buffer: 144 plain bytes, writable. That is the
 size of what `fstat` stores, the largest of the three things stored here. -/
-def bufferLayout : Layout := ⟨List.replicate 18 .int, true, none, 0⟩
+def bufferLayout : Layout := ⟨.raw 144, true, none, 0⟩
 
 /-- One memory block, the buffer. The file's name before it needs no type. -/
 def blocks : List (BitVec 64 × Layout) := [(bufferAt, bufferLayout)]
@@ -66,7 +66,7 @@ abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase dataBy
 is like, the program is safe on the machine that fetches instructions by
 decoding memory.** It never gets stuck and never faults. -/
 theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  h.safeMem blocksOk memOk At.start (Entry.fieldsInt (by simp [blocks, bufferLayout]))
+  h.safeMem blocksOk memOk At.start (Entry.plain (by simp [blocks, bufferLayout]))
 
 /-- The starting state used by the simulator meets the entry contract. -/
 theorem start_entry : Entry start := by ty_loaded

@@ -17,9 +17,10 @@ namespace Alloc
 /-- A link: null, or a writable pointer to a node. -/
 def link : Ty := .nullable (.ref 1 true 0)
 
-/-- A node: the link to the node before it, how many bytes it holds, and
-room for 64 of them. Every field admits zero, so fresh memory is a node. -/
-def nodeFields : List Ty := [link, .int, .int, .int, .int, .int, .int, .int, .int, .int]
+/-- A node, 80 bytes: the link to the node before it, how many bytes it
+holds, and room for 64 of them. The link admits zero, so fresh memory is a
+node. -/
+def nodeShape : Shape := ⟨80, [(0, link)]⟩
 
 /-- The list so far is in `rbx`; nothing is known about the other registers. -/
 def listCtx : Ctx := ⟨fun r => if r = .rbx then link else .int, [], 0, Flags.Any, []⟩
@@ -38,7 +39,7 @@ def Φ : CodeTy := .ofLabels code base At
 def blocks : List (BitVec 64 × Layout) := []
 
 /-- No blocks, and one kind of block there will be: kind 1 is a node. -/
-def Ψ : MemTy := .ofList blocks [(1, nodeFields)]
+def Ψ : MemTy := .ofList blocks [(1, nodeShape)]
 
 /-! ## The program is well typed -/
 
@@ -87,7 +88,7 @@ read and wherever the kernel puts the memory it asks for, the program is
 safe on the machine that fetches instructions by decoding memory.** It never
 gets stuck and never faults. -/
 theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  h.safeMem blocksOk memOk At.start (Entry.fieldsInt (by simp [blocks]))
+  h.safeMem blocksOk memOk At.start (Entry.plain (by simp [blocks]))
 
 /-- The starting state used by the simulator meets the entry contract. -/
 theorem start_entry : Entry start := by ty_loaded

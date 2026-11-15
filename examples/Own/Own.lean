@@ -25,7 +25,7 @@ inductive At : Label → Ctx → Prop
 def Φ : CodeTy := .ofLabels code base At
 
 /-- The record: one number, read-only. -/
-def recordLayout : Layout := ⟨[.int], false, none, 0⟩
+def recordLayout : Layout := ⟨.raw 8, false, none, 0⟩
 
 def blocks : List (BitVec 64 × Layout) := [(dataBase, recordLayout)]
 
@@ -96,7 +96,7 @@ the memory it asks for, the program is safe on the machine that fetches
 instructions by decoding memory.** It never gets stuck and never faults:
 in particular it never touches the page it gave back. -/
 theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  h.safeMem blocksOk memOk At.start (Entry.fieldsInt (by simp [blocks, recordLayout]))
+  h.safeMem blocksOk memOk At.start (Entry.plain (by simp [blocks, recordLayout]))
 
 /-- The starting state used by the simulator meets the entry contract. -/
 theorem start_entry : Entry start := by ty_loaded

@@ -14,8 +14,8 @@ namespace Frame
 
 /-! ## The typing -/
 
-/-- A pointer to a writable record of two integers. -/
-def pair : Ty := .ptr [.int, .int] true 0
+/-- A pointer to a writable record of sixteen plain bytes: two numbers. -/
+def pair : Ty := .ptr (.raw 16) true 0
 
 /-- `pick` takes the pointer in `rdi`, uses two stack slots, and preserves
 the callee-saved registers. -/
@@ -44,7 +44,7 @@ inductive At : Label → Ctx → Prop
 /-- The code typing: those contexts, at the addresses of their labels. -/
 def Φ : CodeTy := .ofLabels code base At
 
-def recordLayout : Layout := ⟨[.int, .int], true, none, 0⟩
+def recordLayout : Layout := ⟨.raw 16, true, none, 0⟩
 
 def blocks : List (BitVec 64 × Layout) := [(dataBase, recordLayout)]
 
@@ -88,7 +88,7 @@ abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase record
 machine that fetches instructions by decoding memory.** It never gets stuck,
 never faults: no page fault, no invalid opcode and no divide error. -/
 theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  h.safeMem blocksOk memOk At.start (Entry.fieldsInt (by simp [blocks, recordLayout]))
+  h.safeMem blocksOk memOk At.start (Entry.plain (by simp [blocks, recordLayout]))
 
 /-- The starting state used by the simulator meets the entry contract. -/
 theorem start_entry : Entry start := by ty_loaded
@@ -99,7 +99,7 @@ theorem safeMem : SafeMem linux start :=
 
 /-- It is also safe on the table machine, which is what the type system reasons about. -/
 theorem safe : Safe fetch linux start :=
-  start_entry.safe blocksOk memOk At.start (Entry.fieldsInt (by simp [blocks, recordLayout]))
+  start_entry.safe blocksOk memOk At.start (Entry.plain (by simp [blocks, recordLayout]))
 
 end Frame
 

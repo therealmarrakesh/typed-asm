@@ -35,8 +35,8 @@ inductive At : Label → Ctx → Prop
 /-- The code typing: those contexts, at the addresses of their labels. -/
 def Φ : CodeTy := .ofLabels code base At
 
-/-- The buffer: eight integer fields, 64 bytes, writable. -/
-def bufferLayout : Layout := ⟨[.int, .int, .int, .int, .int, .int, .int, .int], true, none, 0⟩
+/-- The buffer: 64 plain bytes, writable. -/
+def bufferLayout : Layout := ⟨.raw 64, true, none, 0⟩
 
 /-- One memory block, the buffer. -/
 def blocks : List (BitVec 64 × Layout) := [(dataBase, bufferLayout)]

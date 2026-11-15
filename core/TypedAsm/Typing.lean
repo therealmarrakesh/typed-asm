@@ -35,10 +35,10 @@ theorem Sub.trans {τ υ φ : Ty} (h₁ : Sub τ υ) (h₂ : Sub υ φ) : Sub τ
   induction h₂ generalizing τ with
   | refl => exact h₁
   | int => exact .int _
-  | readOnly fields w index =>
+  | readOnly shape w index =>
     cases h₁ with
-    | refl => exact .readOnly fields w index
-    | readOnly => exact .readOnly fields w index
+    | refl => exact .readOnly shape w index
+    | readOnly => exact .readOnly shape w index
   | refReadOnly tag w index =>
     cases h₁ with
     | refl => exact .refReadOnly tag w index
@@ -177,6 +177,11 @@ structure innerDisp (i k : Nat) (disp : BitVec 32) : Prop where
   eq : disp = BitVec.ofNat 32 (8 * i + k)
   lt : 8 * i + k < 2 ^ 31
 
+/-- The displacement `disp` reaches byte `d` from where a pointer points. -/
+structure byteDisp (d : Nat) (disp : BitVec 32) : Prop where
+  eq : disp = BitVec.ofNat 32 d
+  lt : d < 2 ^ 31
+
 /-- The number of bytes in a narrow value. -/
 def NarrowW.bytes : NarrowW → Nat
   | .w8 => 1
@@ -219,29 +224,28 @@ theorem OwnedAt.addr_sub (v c d : BitVec 64) : v + c = v + d + (c - d) := by bv_
 theorem OwnedAt.addr_sub' (v e c d : BitVec 64) : v + e + c = v + d + (e + c - d) := by bv_omega
 
 /-- `ReadOk Ψ next Γ n rm`: reading `n` bytes from `rm` is safe. For memory, the
-bytes must lie inside one field or one stack slot. -/
+bytes must lie inside one block or one stack slot. -/
 inductive ReadOk (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) (n : Nat) : RM → Prop
   | reg (r : Reg) : ReadOk Ψ next Γ n (.reg r)
-  | field {b : Reg} {fields : List Ty} {writable : Bool} {off i k : Nat} {disp : BitVec 32}
-      {τ : Ty} :
-    b ≠ .rsp → Γ.regs b = .ptr fields writable off → innerDisp i k disp →
-    fields[off + i]? = some τ → k + n ≤ 8 → ReadOk Ψ next Γ n (.mem (.sib (some b) none disp))
+  | field {b : Reg} {S : Shape} {writable : Bool} {off d : Nat} {disp : BitVec 32} :
+    b ≠ .rsp → Γ.regs b = .ptr S writable off → byteDisp d disp →
+    off + d + n ≤ S.size → ReadOk Ψ next Γ n (.mem (.sib (some b) none disp))
   | slot {i k : Nat} {disp : BitVec 32} {τ : Ty} :
     innerDisp i k disp → Γ.stack[i]? = some τ → k + n ≤ 8 →
     ReadOk Ψ next Γ n (.mem (.sib (some .rsp) none disp))
   /-- An indexed access: the index register holds an exactly known value,
-  and scaled and added to the displacement it lands inside a field. -/
-  | indexed {b : Reg} {x : IndexReg} {sc : Scale} {fields : List Ty} {writable : Bool}
-      {off i k : Nat} {disp : BitVec 32} {c : BitVec 64} {τ : Ty} :
-    b ≠ .rsp → Γ.regs b = .ptr fields writable off → Γ.regs x.toReg = .eq c →
-    (c <<< sc.shift) + disp.signExtend 64 = BitVec.ofNat 64 (8 * i + k) →
-    fields[off + i]? = some τ → k + n ≤ 8 →
+  and scaled and added to the displacement it lands inside the block. -/
+  | indexed {b : Reg} {x : IndexReg} {sc : Scale} {S : Shape} {writable : Bool}
+      {off d : Nat} {disp : BitVec 32} {c : BitVec 64} :
+    b ≠ .rsp → Γ.regs b = .ptr S writable off → Γ.regs x.toReg = .eq c →
+    (c <<< sc.shift) + disp.signExtend 64 = BitVec.ofNat 64 d →
+    off + d + n ≤ S.size →
     ReadOk Ψ next Γ n (.mem (.sib (some b) (some (x, sc)) disp))
-  /-- A global: bytes inside one field of a block, at a fixed distance from
-  the next instruction. -/
-  | global {base : BitVec 64} {l : Layout} {i k : Nat} {disp : BitVec 32} {τ : Ty} :
-    Ψ base = some l → next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i + k) →
-    l.fields[i]? = some τ → k + n ≤ 8 → ReadOk Ψ next Γ n (.mem (.rip disp))
+  /-- A global: bytes of a block, at a fixed distance from the next
+  instruction. -/
+  | global {base : BitVec 64} {l : Layout} {d : Nat} {disp : BitVec 32} :
+    Ψ base = some l → next + disp.signExtend 64 = base + BitVec.ofNat 64 d →
+    d + n ≤ l.shape.size → ReadOk Ψ next Γ n (.mem (.rip disp))
   /-- The byte of text a register points at. -/
   | text {b : Reg} {more : Bool} : b ≠ .rsp → Γ.regs b = .str more → n = 1 →
     ReadOk Ψ next Γ n (.mem (.sib (some b) none 0))
@@ -257,23 +261,24 @@ becomes an integer. A field must already be an integer field of a writable
 block, since a field's type cannot change. -/
 inductive WriteIntOk (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) (n : Nat) : RM → Ctx → Prop
   | reg {d : Reg} : d ≠ .rsp → WriteIntOk Ψ next Γ n (.reg d) (Γ.setReg d .int)
-  | field {b : Reg} {fields : List Ty} {off i k : Nat} {disp : BitVec 32} :
-    b ≠ .rsp → Γ.regs b = .ptr fields true off → innerDisp i k disp →
-    fields[off + i]? = some .int → k + n ≤ 8 →
+  | field {b : Reg} {S : Shape} {off d : Nat} {disp : BitVec 32} :
+    b ≠ .rsp → Γ.regs b = .ptr S true off → byteDisp d disp →
+    off + d + n ≤ S.size → S.free (off + d) n = true →
     WriteIntOk Ψ next Γ n (.mem (.sib (some b) none disp)) Γ
   | slot {i k : Nat} {disp : BitVec 32} {τ : Ty} :
     innerDisp i k disp → Γ.stack[i]? = some τ → k + n ≤ 8 →
     WriteIntOk Ψ next Γ n (.mem (.sib (some .rsp) none disp)) { Γ with stack := Γ.stack.set i .int }
-  | indexed {b : Reg} {x : IndexReg} {sc : Scale} {fields : List Ty} {off i k : Nat}
+  | indexed {b : Reg} {x : IndexReg} {sc : Scale} {S : Shape} {off d : Nat}
       {disp : BitVec 32} {c : BitVec 64} :
-    b ≠ .rsp → Γ.regs b = .ptr fields true off → Γ.regs x.toReg = .eq c →
-    (c <<< sc.shift) + disp.signExtend 64 = BitVec.ofNat 64 (8 * i + k) →
-    fields[off + i]? = some .int → k + n ≤ 8 →
+    b ≠ .rsp → Γ.regs b = .ptr S true off → Γ.regs x.toReg = .eq c →
+    (c <<< sc.shift) + disp.signExtend 64 = BitVec.ofNat 64 d →
+    off + d + n ≤ S.size → S.free (off + d) n = true →
     WriteIntOk Ψ next Γ n (.mem (.sib (some b) (some (x, sc)) disp)) Γ
-  | global {base : BitVec 64} {l : Layout} {i k : Nat} {disp : BitVec 32} :
+  | global {base : BitVec 64} {l : Layout} {d : Nat} {disp : BitVec 32} :
     Ψ base = some l → l.writable = true →
-    next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i + k) →
-    l.fields[i]? = some .int → k + n ≤ 8 → WriteIntOk Ψ next Γ n (.mem (.rip disp)) Γ
+    next + disp.signExtend 64 = base + BitVec.ofNat 64 d →
+    d + n ≤ l.shape.size → l.shape.free d n = true →
+    WriteIntOk Ψ next Γ n (.mem (.rip disp)) Γ
   /-- Plain bytes of an owned block: no typed value reaches into them. -/
   | owned {m : Mem} {k : Nat} {a p off : BitVec 64} {S : Shape} :
     EaIs Γ m p → OwnedAt Γ.owned k a S p off → off.toNat + n ≤ S.size →
@@ -286,23 +291,23 @@ inductive WriteIntOk (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) (n : Nat) : RM �
     WriteIntOk Ψ next Γ n (.mem m)
       { Γ with owned := Γ.owned.set k (a, S.clear off.toNat n) }
 
-/-- `Holds Ψ next Γ rm τ`: `rm` is a register, a whole field or a whole stack
-slot that holds a value of type `τ`. -/
+/-- `Holds Ψ next Γ rm τ`: `rm` is a register, a typed value of a block or a
+whole stack slot, holding a value of type `τ`. -/
 inductive Holds (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) : RM → Ty → Prop
-  | indexed {b : Reg} {x : IndexReg} {sc : Scale} {fields : List Ty} {writable : Bool}
-      {off i : Nat} {disp : BitVec 32} {c : BitVec 64} {τ : Ty} :
-    b ≠ .rsp → Γ.regs b = .ptr fields writable off → Γ.regs x.toReg = .eq c →
-    (c <<< sc.shift) + disp.signExtend 64 = BitVec.ofNat 64 (8 * i) →
-    fields[off + i]? = some τ →
+  | indexed {b : Reg} {x : IndexReg} {sc : Scale} {S : Shape} {writable : Bool}
+      {off d : Nat} {disp : BitVec 32} {c : BitVec 64} {τ : Ty} :
+    b ≠ .rsp → Γ.regs b = .ptr S writable off → Γ.regs x.toReg = .eq c →
+    (c <<< sc.shift) + disp.signExtend 64 = BitVec.ofNat 64 d →
+    S.valAt (off + d) = some τ →
     Holds Ψ next Γ (.mem (.sib (some b) (some (x, sc)) disp)) τ
-  | global {base : BitVec 64} {l : Layout} {i : Nat} {disp : BitVec 32} {τ : Ty} :
-    Ψ base = some l → next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i) →
-    l.fields[i]? = some τ → Holds Ψ next Γ (.mem (.rip disp)) τ
+  | global {base : BitVec 64} {l : Layout} {d : Nat} {disp : BitVec 32} {τ : Ty} :
+    Ψ base = some l → next + disp.signExtend 64 = base + BitVec.ofNat 64 d →
+    l.shape.valAt d = some τ → Holds Ψ next Γ (.mem (.rip disp)) τ
   | reg {r : Reg} {τ : Ty} : r ≠ .rsp → Γ.regs r = τ → Holds Ψ next Γ (.reg r) τ
-  | field {b : Reg} {fields : List Ty} {writable : Bool} {off i : Nat} {disp : BitVec 32}
+  | field {b : Reg} {S : Shape} {writable : Bool} {off d : Nat} {disp : BitVec 32}
       {τ : Ty} :
-    b ≠ .rsp → Γ.regs b = .ptr fields writable off → slotDisp i disp →
-    fields[off + i]? = some τ → Holds Ψ next Γ (.mem (.sib (some b) none disp)) τ
+    b ≠ .rsp → Γ.regs b = .ptr S writable off → byteDisp d disp →
+    S.valAt (off + d) = some τ → Holds Ψ next Γ (.mem (.sib (some b) none disp)) τ
   | slot {i : Nat} {disp : BitVec 32} {τ : Ty} :
     slotDisp i disp → Γ.stack[i]? = some τ →
     Holds Ψ next Γ (.mem (.sib (some .rsp) none disp)) τ
@@ -384,18 +389,18 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
   /-- `lea` only computes an address; the result is an integer. -/
   | lea {Γ : Ctx} {w : Width} {d : Reg} {m : Mem} : d ≠ .rsp →
     Straight Ψ next Γ (.lea w d m) (Γ.setReg d .int)
-  /-- Load the field `i` slots past where a register points. -/
-  | loadField {Γ : Ctx} {d b : Reg} {fields : List Ty} {writable : Bool} {off i : Nat}
+  /-- Load the typed value `k` bytes past where a register points. -/
+  | loadField {Γ : Ctx} {d b : Reg} {S : Shape} {writable : Bool} {off k : Nat}
       {disp : BitVec 32} {τ : Ty} :
-    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .ptr fields writable off → slotDisp i disp →
-    fields[off + i]? = some τ →
+    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .ptr S writable off → byteDisp k disp →
+    S.valAt (off + k) = some τ →
     Straight Ψ next Γ (.mov .w64 (.r_m d (.sib (some b) none disp))) (Γ.setReg d τ)
-  /-- Store into the field `i` slots past where a writable pointer points.
-  The stored value must have the field's type. -/
-  | storeField {Γ : Ctx} {b s : Reg} {fields : List Ty} {off i : Nat} {disp : BitVec 32}
+  /-- Store over the typed value `k` bytes past where a writable pointer
+  points. The stored value must have that value's type. -/
+  | storeField {Γ : Ctx} {b s : Reg} {S : Shape} {off k : Nat} {disp : BitVec 32}
       {τ : Ty} :
-    b ≠ .rsp → s ≠ .rsp → Γ.regs b = .ptr fields true off → slotDisp i disp →
-    fields[off + i]? = some τ → Sub (Γ.regs s) τ →
+    b ≠ .rsp → s ≠ .rsp → Γ.regs b = .ptr S true off → byteDisp k disp →
+    S.valAt (off + k) = some τ → S.sole (off + k) = true → Sub (Γ.regs s) τ →
     Straight Ψ next Γ (.mov .w64 (.rm_r (.mem (.sib (some b) none disp)) s)) Γ
   /-- Load a whole field of an owned block, keeping its type. -/
   | loadOwned {Γ : Ctx} {d : Reg} {m : Mem} {k : Nat} {a p off : BitVec 64} {S : Shape}
@@ -416,33 +421,33 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
     s ≠ .rsp → EaIs Γ m p → OwnedAt Γ.owned k a S p off → S.valAt off.toNat = some τ →
     S.sole off.toNat = true → Sub (Γ.regs s) τ →
     Straight Ψ next Γ (.mov .w64 (.rm_r (.mem m) s)) Γ
-  /-- Load a whole field through an index, keeping its type. -/
-  | loadIndexed {Γ : Ctx} {d b : Reg} {x : IndexReg} {sc : Scale} {fields : List Ty}
-      {writable : Bool} {off i : Nat} {disp : BitVec 32} {c : BitVec 64} {τ : Ty} :
-    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .ptr fields writable off → Γ.regs x.toReg = .eq c →
-    (c <<< sc.shift) + disp.signExtend 64 = BitVec.ofNat 64 (8 * i) →
-    fields[off + i]? = some τ →
+  /-- Load a typed value through an index, keeping its type. -/
+  | loadIndexed {Γ : Ctx} {d b : Reg} {x : IndexReg} {sc : Scale} {S : Shape}
+      {writable : Bool} {off k : Nat} {disp : BitVec 32} {c : BitVec 64} {τ : Ty} :
+    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .ptr S writable off → Γ.regs x.toReg = .eq c →
+    (c <<< sc.shift) + disp.signExtend 64 = BitVec.ofNat 64 k →
+    S.valAt (off + k) = some τ →
     Straight Ψ next Γ (.mov .w64 (.r_m d (.sib (some b) (some (x, sc)) disp))) (Γ.setReg d τ)
-  /-- Store into a whole field through an index. The stored value must have
-  the field's type. -/
-  | storeIndexed {Γ : Ctx} {b s : Reg} {x : IndexReg} {sc : Scale} {fields : List Ty}
-      {off i : Nat} {disp : BitVec 32} {c : BitVec 64} {τ : Ty} :
-    b ≠ .rsp → s ≠ .rsp → Γ.regs b = .ptr fields true off → Γ.regs x.toReg = .eq c →
-    (c <<< sc.shift) + disp.signExtend 64 = BitVec.ofNat 64 (8 * i) →
-    fields[off + i]? = some τ → Sub (Γ.regs s) τ →
+  /-- Store over a typed value through an index. The stored value must have
+  that value's type. -/
+  | storeIndexed {Γ : Ctx} {b s : Reg} {x : IndexReg} {sc : Scale} {S : Shape}
+      {off k : Nat} {disp : BitVec 32} {c : BitVec 64} {τ : Ty} :
+    b ≠ .rsp → s ≠ .rsp → Γ.regs b = .ptr S true off → Γ.regs x.toReg = .eq c →
+    (c <<< sc.shift) + disp.signExtend 64 = BitVec.ofNat 64 k →
+    S.valAt (off + k) = some τ → S.sole (off + k) = true → Sub (Γ.regs s) τ →
     Straight Ψ next Γ (.mov .w64 (.rm_r (.mem (.sib (some b) (some (x, sc)) disp)) s)) Γ
-  /-- Load a whole field of a block at a fixed address, keeping its type. -/
-  | loadGlobal {Γ : Ctx} {d : Reg} {base : BitVec 64} {l : Layout} {i : Nat} {disp : BitVec 32}
+  /-- Load a typed value of a block at a fixed address, keeping its type. -/
+  | loadGlobal {Γ : Ctx} {d : Reg} {base : BitVec 64} {l : Layout} {k : Nat} {disp : BitVec 32}
       {τ : Ty} :
-    d ≠ .rsp → Ψ base = some l → next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i) →
-    l.fields[i]? = some τ → Straight Ψ next Γ (.mov .w64 (.r_m d (.rip disp))) (Γ.setReg d τ)
-  /-- Store into a whole field of a writable block at a fixed address. The
-  stored value must have the field's type. -/
-  | storeGlobal {Γ : Ctx} {s : Reg} {base : BitVec 64} {l : Layout} {i : Nat} {disp : BitVec 32}
+    d ≠ .rsp → Ψ base = some l → next + disp.signExtend 64 = base + BitVec.ofNat 64 k →
+    l.shape.valAt k = some τ → Straight Ψ next Γ (.mov .w64 (.r_m d (.rip disp))) (Γ.setReg d τ)
+  /-- Store over a typed value of a writable block at a fixed address. The
+  stored value must have that value's type. -/
+  | storeGlobal {Γ : Ctx} {s : Reg} {base : BitVec 64} {l : Layout} {k : Nat} {disp : BitVec 32}
       {τ : Ty} :
     s ≠ .rsp → Ψ base = some l → l.writable = true →
-    next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i) → l.fields[i]? = some τ →
-    Sub (Γ.regs s) τ → Straight Ψ next Γ (.mov .w64 (.rm_r (.mem (.rip disp)) s)) Γ
+    next + disp.signExtend 64 = base + BitVec.ofNat 64 k → l.shape.valAt k = some τ →
+    l.shape.sole k = true → Sub (Γ.regs s) τ → Straight Ψ next Γ (.mov .w64 (.rm_r (.mem (.rip disp)) s)) Γ
   /-- Load stack slot `i`. -/
   | loadStack {Γ : Ctx} {d : Reg} {i : Nat} {disp : BitVec 32} {τ : Ty} :
     d ≠ .rsp → slotDisp i disp → Γ.stack[i]? = some τ →
@@ -499,12 +504,13 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
     Straight Ψ next Γ (.alu .add .w64 (.rm_i (.reg .rsp) imm))
       { Γ.moveSp (BitVec.ofNat 64 (8 * k)) with
         stack := rest, room := Γ.room + k, flags := Flags.Known }
-  /-- Advancing a pointer by whole slots keeps it a pointer into the same block. -/
-  | addPtr {Γ : Ctx} {d : Reg} {fields : List Ty} {writable : Bool} {off k : Nat}
+  /-- Advancing a pointer keeps it a pointer into the same block, that many
+  bytes on. -/
+  | addPtr {Γ : Ctx} {d : Reg} {S : Shape} {writable : Bool} {off k : Nat}
       {imm : BitVec 32} :
-    d ≠ .rsp → Γ.regs d = .ptr fields writable off → slotDisp k imm →
+    d ≠ .rsp → Γ.regs d = .ptr S writable off → byteDisp k imm →
     Straight Ψ next Γ (.alu .add .w64 (.rm_i (.reg d) imm))
-      { Γ.setReg d (.ptr fields writable (off + k)) with flags := Flags.Known }
+      { Γ.setReg d (.ptr S writable (off + k)) with flags := Flags.Known }
   /-- Step to the next byte of a text, from one known not to be its last. -/
   | strNext {Γ : Ctx} {d : Reg} :
     d ≠ .rsp → Γ.regs d = .str true →
@@ -842,7 +848,8 @@ theorem Straight.ext {Ψ Ψ' : MemTy} {next : BitVec 64} {Γ Γ' : Ctx} {i : Ins
     (h : Straight Ψ next Γ i Γ') (he : Ψ.Ext Ψ') : Straight Ψ' next Γ i Γ' := by
   cases h with
   | loadGlobal hd hl haddr hi => exact .loadGlobal hd (he.blocks _ _ hl) haddr hi
-  | storeGlobal hs hl hwr haddr hi hsub => exact .storeGlobal hs (he.blocks _ _ hl) hwr haddr hi hsub
+  | storeGlobal hs hl hwr haddr hi hso hsub =>
+    exact .storeGlobal hs (he.blocks _ _ hl) hwr haddr hi hso hsub
   | _ => ext_rule
 
 /-! ## System calls

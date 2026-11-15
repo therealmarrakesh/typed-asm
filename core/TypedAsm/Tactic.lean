@@ -28,7 +28,7 @@ needs an argument, typically a fact about values at a branch.
   does the same for a stack slot.
 * `ty_open r` and `ty_null r` open a pointer to a kind of block and
   split a value that may be null.
-* `ty_mmap fields` and `ty_mmap_kind tag` type an `mmap` for fresh memory;
+* `ty_mmap shape` and `ty_mmap_kind tag` type an `mmap` for fresh memory;
   `ty_err r as e` then splits what it handed back into an error number and
   a pointer.
 * `ty_fn_ptr r to sig` turns a register holding a function's address into a
@@ -78,6 +78,14 @@ theorem innerDisp_of (disp : BitVec 32) (hlt : disp.toNat < 2 ^ 31) :
   simp only [BitVec.toNat_ofNat]
   omega
 
+/-- The byte a displacement reaches, computed from the displacement. -/
+theorem byteDisp_of (disp : BitVec 32) (hlt : disp.toNat < 2 ^ 31) :
+    byteDisp disp.toNat disp := by
+  refine ⟨?_, hlt⟩
+  apply BitVec.eq_of_toNat_eq
+  simp only [BitVec.toNat_ofNat]
+  omega
+
 /-- Releasing the top `k` stack slots, with the remaining stack computed. -/
 theorem Straight.freeFrame' {Ψ : MemTy} {next : BitVec 64} {Γ : Ctx} {k : Nat} {imm : BitVec 32}
     (hk : slotDisp k imm) (hlen : (Γ.stack.take k).length = k) :
@@ -88,74 +96,73 @@ theorem Straight.freeFrame' {Ψ : MemTy} {next : BitVec 64} {Γ : Ctx} {k : Nat}
 
 /-! Operands at a fixed address. Which block the address falls in, and where,
 is found by computation: the first premise of each lemma below is there only
-to be solved by `rfl`, which determines the block, the field and the byte. -/
+to be solved by `rfl`, which determines the block and the byte. -/
 
-/-- The block among `bs` that contains address `a`, with the field and the
-byte within the field that `a` is at. -/
+/-- The block among `bs` that contains address `a`, with the byte of it that
+`a` is at. -/
 def MemTy.locate (bs : List (BitVec 64 × Layout)) (a : BitVec 64) :
-    Option (BitVec 64 × Nat × Nat) :=
+    Option (BitVec 64 × Nat) :=
   bs.findSome? fun x =>
-    if (a - x.1).toNat < x.2.size then some (x.1, (a - x.1).toNat / 8, (a - x.1).toNat % 8)
-    else none
+    if (a - x.1).toNat < x.2.size then some (x.1, (a - x.1).toNat) else none
 
 section Globals
 
-variable {bs : List (BitVec 64 × Layout)} {kinds : List (Nat × List Ty)} {next base : BitVec 64}
-  {Γ : Ctx} {l : Layout} {i k n : Nat} {disp : BitVec 32} {τ : Ty}
+variable {bs : List (BitVec 64 × Layout)} {kinds : List (Nat × Shape)} {next base : BitVec 64}
+  {Γ : Ctx} {l : Layout} {d n : Nat} {disp : BitVec 32} {τ : Ty}
 
 theorem ReadOk.global_of
-    (_ : MemTy.locate bs (next + disp.signExtend 64) = some (base, i, k))
+    (_ : MemTy.locate bs (next + disp.signExtend 64) = some (base, d))
     (hl : MemTy.ofList bs kinds base = some l)
-    (haddr : next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i + k))
-    (hi : l.fields[i]? = some τ) (hk : k + n ≤ 8) :
+    (haddr : next + disp.signExtend 64 = base + BitVec.ofNat 64 d)
+    (hin : d + n ≤ l.shape.size) :
     ReadOk (MemTy.ofList bs kinds) next Γ n (.mem (.rip disp)) :=
-  .global hl haddr hi hk
+  .global hl haddr hin
 
 theorem WriteIntOk.global_of
-    (_ : MemTy.locate bs (next + disp.signExtend 64) = some (base, i, k))
+    (_ : MemTy.locate bs (next + disp.signExtend 64) = some (base, d))
     (hl : MemTy.ofList bs kinds base = some l) (hw : l.writable = true)
-    (haddr : next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i + k))
-    (hi : l.fields[i]? = some .int) (hk : k + n ≤ 8) :
+    (haddr : next + disp.signExtend 64 = base + BitVec.ofNat 64 d)
+    (hin : d + n ≤ l.shape.size) (hfree : l.shape.free d n = true) :
     WriteIntOk (MemTy.ofList bs kinds) next Γ n (.mem (.rip disp)) Γ :=
-  .global hl hw haddr hi hk
+  .global hl hw haddr hin hfree
 
 theorem Holds.global_of
-    (_ : MemTy.locate bs (next + disp.signExtend 64) = some (base, i, 0))
+    (_ : MemTy.locate bs (next + disp.signExtend 64) = some (base, d))
     (hl : MemTy.ofList bs kinds base = some l)
-    (haddr : next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i))
-    (hi : l.fields[i]? = some τ) :
+    (haddr : next + disp.signExtend 64 = base + BitVec.ofNat 64 d)
+    (hi : l.shape.valAt d = some τ) :
     Holds (MemTy.ofList bs kinds) next Γ (.mem (.rip disp)) τ :=
   .global hl haddr hi
 
-theorem Straight.loadGlobal_of {d : Reg} (hd : d ≠ .rsp)
-    (_ : MemTy.locate bs (next + disp.signExtend 64) = some (base, i, 0))
+theorem Straight.loadGlobal_of {r : Reg} (hd : r ≠ .rsp)
+    (_ : MemTy.locate bs (next + disp.signExtend 64) = some (base, d))
     (hl : MemTy.ofList bs kinds base = some l)
-    (haddr : next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i))
-    (hi : l.fields[i]? = some τ) :
-    Straight (MemTy.ofList bs kinds) next Γ (.mov .w64 (.r_m d (.rip disp))) (Γ.setReg d τ) :=
+    (haddr : next + disp.signExtend 64 = base + BitVec.ofNat 64 d)
+    (hi : l.shape.valAt d = some τ) :
+    Straight (MemTy.ofList bs kinds) next Γ (.mov .w64 (.r_m r (.rip disp))) (Γ.setReg r τ) :=
   .loadGlobal hd hl haddr hi
 
 theorem Straight.storeGlobal_of {s : Reg} (hs : s ≠ .rsp)
-    (_ : MemTy.locate bs (next + disp.signExtend 64) = some (base, i, 0))
+    (_ : MemTy.locate bs (next + disp.signExtend 64) = some (base, d))
     (hl : MemTy.ofList bs kinds base = some l) (hw : l.writable = true)
-    (haddr : next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i))
-    (hi : l.fields[i]? = some τ) (hsub : Sub (Γ.regs s) τ) :
+    (haddr : next + disp.signExtend 64 = base + BitVec.ofNat 64 d)
+    (hi : l.shape.valAt d = some τ) (hso : l.shape.sole d = true) (hsub : Sub (Γ.regs s) τ) :
     Straight (MemTy.ofList bs kinds) next Γ (.mov .w64 (.rm_r (.mem (.rip disp)) s)) Γ :=
-  .storeGlobal hs hl hw haddr hi hsub
+  .storeGlobal hs hl hw haddr hi hso hsub
 
 end Globals
 
-/-! Indexed operands: which field and byte a scaled index lands on. These
-hold for any index, since addresses wrap; what needs a bound on the index is
-the field being inside the block. -/
+/-! Indexed operands: which byte a scaled index lands on. These hold for any
+index, since addresses wrap; what needs a bound on the index is the byte
+being inside the block. -/
 
 theorem sext_toNat {disp : BitVec 32} (hd : disp.toNat < 2 ^ 31) :
     disp.signExtend 64 = BitVec.ofNat 64 disp.toNat := by
   have h := sext_small hd
   rwa [BitVec.ofNat_toNat, BitVec.setWidth_eq] at h
 
-/-- An index scaled by 8 with a displacement that is a multiple of 8
-addresses a whole field. -/
+/-- An index scaled by 8 with a displacement that is a multiple of 8 lands
+on a whole eight-byte cell. -/
 theorem index8_slot (c : BitVec 64) (disp : BitVec 32)
     (h8 : disp.toNat % 8 = 0) (hd : disp.toNat < 2 ^ 31) :
     (c <<< Scale.s8.shift) + disp.signExtend 64
@@ -166,21 +173,10 @@ theorem index8_slot (c : BitVec 64) (disp : BitVec 32)
     Scale.shift]
   omega
 
-/-- An index scaled by 8, with any displacement. -/
-theorem index8 (c : BitVec 64) (disp : BitVec 32) (hd : disp.toNat < 2 ^ 31) :
-    (c <<< Scale.s8.shift) + disp.signExtend 64
-      = BitVec.ofNat 64 (8 * (c.toNat + disp.toNat / 8) + disp.toNat % 8) := by
-  apply BitVec.eq_of_toNat_eq
-  rw [sext_toNat hd]
-  simp only [BitVec.toNat_add, BitVec.toNat_shiftLeft, BitVec.toNat_ofNat, Nat.shiftLeft_eq,
-    Scale.shift]
-  omega
-
-/-- An index with any scale: the field and byte are those of the byte offset. -/
-theorem index_any (c : BitVec 64) (sc : Scale) (disp : BitVec 32) (hd : disp.toNat < 2 ^ 31) :
+/-- An index with any scale and displacement, as a number of bytes. -/
+theorem index_bytes (c : BitVec 64) (sc : Scale) (disp : BitVec 32) (hd : disp.toNat < 2 ^ 31) :
     (c <<< sc.shift) + disp.signExtend 64
-      = BitVec.ofNat 64 (8 * ((c.toNat * 2 ^ sc.shift + disp.toNat) / 8)
-          + (c.toNat * 2 ^ sc.shift + disp.toNat) % 8) := by
+      = BitVec.ofNat 64 (c.toNat * 2 ^ sc.shift + disp.toNat) := by
   apply BitVec.eq_of_toNat_eq
   rw [sext_toNat hd]
   simp only [BitVec.toNat_add, BitVec.toNat_shiftLeft, BitVec.toNat_ofNat, Nat.shiftLeft_eq]
@@ -458,12 +454,24 @@ macro "ty_cond_value" : tactic => do
   let subst := Lean.mkIdent `rfl
   `(tactic| (rintro f $subst:ident; rfl))
 
-/-- Proves which field and byte a scaled index lands on. -/
+/-- Proves which byte a scaled index lands on. -/
 macro "ty_index" : tactic =>
   `(tactic| first
     | (refine index8_slot _ _ ?_ ?_ <;> decide)
-    | (refine index8 _ _ ?_; decide)
-    | (refine index_any _ _ _ ?_; decide))
+    | (refine index_bytes _ _ _ ?_; decide))
+
+/-- Proves which typed value a block laid out as eight-byte cells has at a
+cell reached through an index, and that it is the only one there. -/
+macro "ty_val" : tactic =>
+  `(tactic| first
+    | (refine Shape.valAt_cells (by decide) ?_ ?_
+       · (try simp only [Nat.reduceDiv, Nat.zero_add, Nat.add_zero, BitVec.reduceToNat])
+         ty_field
+       · exact rfl)
+    | (refine Shape.sole_cells (τ := ?_) (by decide) ?_ ?_
+       · (try simp only [Nat.reduceDiv, Nat.zero_add, Nat.add_zero, BitVec.reduceToNat])
+         ty_field
+       · exact rfl))
 
 /-- Proves a fact with no unknowns in it from the hypotheses: the fact
 itself, or one side of an "or". A goal with unknowns is refused, since a
@@ -551,6 +559,9 @@ elab "ty_prop_only" : tactic => do
 macro_rules
   | `(tactic| ty_side) =>
     `(tactic| ty_prop_only; first
+      -- which byte an index lands on, before anything else: left to `rfl`,
+      -- the byte would be found as an unevaluated sum of the two addresses
+      | ty_index
       -- not the `rfl` tactic: on an inequality it would compare the two sides
       -- as if for equality, working both out in full, before giving up
       | exact rfl
@@ -574,18 +585,23 @@ macro_rules
          omega)
       | (refine slotDisp_of _ ?_ ?_ <;> decide)
       | (refine innerDisp_of _ ?_ <;> decide)
+      | (refine byteDisp_of _ ?_; decide)
+      | ty_val
       | ty_field
       | ty_sub
       | ty_carry
       | ty_decided
       | ty_cond_value
-      | ty_index
       | ty_known
       | ty_operand)
 
 macro_rules
   | `(tactic| ty_rule $r) =>
     `(tactic| (((refine' $r .. <;> try ty_side) <;> try ty_side); done))
+
+/-- A pointer stepped one element past element `b` of elements `a` bytes
+long is at element `b + 1`: the form a loop's invariant is stated in. -/
+theorem elem_succ (a b : Nat) : a * b + a = a * (b + 1) := rfl
 
 open Lean Meta Simp in
 /-- Decides a test of whether one named register is another, and takes the
@@ -612,6 +628,7 @@ macro "ty_dsimp_ctx" : tactic =>
       List.eraseIdx_cons_succ, List.cons_append, List.nil_append, List.length_cons,
       List.length_nil, List.drop_zero,
       Bool.cond_true, Bool.cond_false, Nat.add_zero, Nat.zero_add, BitVec.reduceToNat, Nat.reduceDiv,
+      elem_succ,
       Nat.reduceMod, Nat.reduceAdd, Nat.reduceMul, Nat.reduceSub,
       BitVec.reduceSetWidth, BitVec.reduceSignExtend, BitVec.reduceAdd, BitVec.reduceSub,
       BitVec.reduceNeg, BitVec.reduceOfNat])
@@ -748,8 +765,8 @@ elab_rules : tactic
     setGoals ((← getGoals) ++ others)
 
 /-- `ty_open r`: register `r` holds a pointer to a block of some kind. From
-here on `r` is an ordinary pointer to the fields the memory typing lists for
-that kind, which can be loaded from and stored to. -/
+here on `r` is an ordinary pointer to a block of the shape the memory typing
+lists for that kind, which can be loaded from and stored to. -/
 elab_rules : tactic
   | `(tactic| ty_open $r) => do
     refineBlocks (← `(tactic| refine BlockOk.openRef (r := $r) ?_ rfl rfl ?_))
@@ -813,7 +830,7 @@ def Instr.rules : Instr → List Name
   | .mov .w64 (.r_m _ (.sib (some .rsp) none _)) => [``Straight.loadStack]
   | .mov .w64 (.r_m _ (.sib (some _) none _)) =>
     [``Straight.loadField, ``Straight.loadOwned, ``Straight.loadInt]
-  | .mov .w64 (.r_m _ (.rip _)) => [``Straight.loadGlobal_of]
+  | .mov .w64 (.r_m _ (.rip _)) => [``Straight.loadGlobal_of, ``Straight.loadInt]
   | .mov .w64 (.r_m _ (.sib (some .rsp) (some _) _)) => [``Straight.loadStackIndexed]
   | .mov .w64 (.r_m _ (.sib (some _) (some _) _)) =>
     [``Straight.loadIndexed, ``Straight.loadOwned, ``Straight.loadInt]
@@ -1130,43 +1147,6 @@ private partial def normOwned (e : Expr) : MetaM Expr := do
     return mkApp3 e.appFn!.appFn!.appFn! e.appFn!.appFn!.appArg! hd'' (← normOwned e.appArg!)
   normList e
 
-/-- The shape of the owned block at place `k` in the block goal's context. -/
-private def ownedShapeAt (k : Nat) : TacticM Expr := withMainContext do
-  let t := (← instantiateMVars (← (← getMainGoal).getType)).consumeMData
-  unless t.isAppOfArity ``BlockOk 6 do throwError "not a block goal"
-  let (elems, _) ← consElems (← mkAppM ``CtxOf.owned #[t.appArg!])
-  let some b := elems[k]? | throwError "the context owns no block at that place"
-  let b ← whnf b
-  unless b.isAppOfArity ``Prod.mk 4 do throwError "the owned block is not known"
-  return b.appArg!
-
-/-- The eight-byte cells a block's shape comes to, for freezing it into an
-ordinary block: a plain number in each cell that holds no typed value. -/
-private def cellsOf (S : Expr) : MetaM Expr := do
-  let S ← whnf S
-  unless S.isAppOfArity ``ShapeOf.mk 3 do throwError "ty_freeze: the block's shape is not known"
-  let some size ← natOf S.appFn!.appArg! | throwError "ty_freeze: the block's size is not known"
-  unless size % 8 = 0 do
-    throwError "ty_freeze: an ordinary block is laid out in eight-byte cells, and this \
-      block's size, {size} bytes, is not a multiple of eight"
-  let (elems, whole) ← consElems S.appArg!
-  unless whole do throwError "ty_freeze: the block's typed values are not all known"
-  -- Written as so many plain numbers with the typed values set among them,
-  -- which stays small however long the block is.
-  let ty := mkConst ``Ty
-  let mut cells := mkApp3 (mkConst ``List.replicate [levelZero]) ty (mkNatLit (size / 8))
-    (mkConst ``Ty.int)
-  for p in elems do
-    let p ← whnf p
-    unless p.isAppOfArity ``Prod.mk 4 do throwError "ty_freeze: the block's shape is not known"
-    let some o ← natOf p.appFn!.appArg!
-      | throwError "ty_freeze: where a typed value sits is not known"
-    unless o % 8 = 0 && o / 8 < size / 8 do
-      throwError "ty_freeze: an ordinary block is laid out in eight-byte cells, and a typed \
-        value of this block sits at byte {o}"
-    cells := mkApp4 (mkConst ``List.set [levelZero]) ty cells (mkNatLit (o / 8)) p.appArg!
-  return cells
-
 /-- A context written as its five parts, with each register's type and the
 list of owned blocks worked out where a definition stood in for them: a
 signature's field, say. Returns nothing if there was nothing to do. -/
@@ -1242,8 +1222,8 @@ private def knownInstr (e : Expr) : MetaM (Option Instr) := do
   if e.hasExprMVar || e.hasFVar then return none
   try return some (← evalInstr e) catch _ => return none
 
-/-- Runs a tactic with room for long lists. A block frozen from a page has
-512 fields, and walking such a list takes more nested calls than Lean allows
+/-- Runs a tactic with room for long lists. A stack described slot by slot
+can be long, and walking such a list takes more nested calls than Lean allows
 by default. -/
 def deep {α : Type} (x : TacticM α) : TacticM α :=
   withTheReader Core.Context (fun c => { c with maxRecDepth := max c.maxRecDepth 16384 }) x
@@ -1274,10 +1254,44 @@ private partial def listElems? (e : Expr) : Option (List Expr) :=
     (listElems? e.appArg!).map (e.appFn!.appArg! :: ·)
   else none
 
+mutual
+
+/-- A block's shape in the notation used in messages: `[int, int]` for one
+laid out as eight-byte cells, `16 bytes` for plain bytes, and the typed
+values with where they start otherwise. -/
+private partial def ppShape (S : Expr) : MetaM String := do
+  let S ← instantiateMVars S
+  if S.isAppOfArity ``Shape.cells 1 then
+    match listElems? S.appArg! with
+    | some elems =>
+      let parts ← elems.mapM ppTy
+      return s!"[{", ".intercalate parts}]"
+    | none =>
+      if S.appArg!.isAppOfArity ``List.replicate 3 then
+        let n ← ppClean S.appArg!.appFn!.appArg!
+        return s!"{n} × {← ppTy S.appArg!.appArg!}"
+      else return ← ppClean S
+  if S.isAppOfArity ``ShapeOf.raw 2 then
+    return s!"{← ppClean S.appArg!} bytes"
+  if S.isAppOfArity ``ShapeOf.mk 3 then
+    let size ← ppClean S.appFn!.appArg!
+    match listElems? S.appArg! with
+    | some [] => return s!"{size} bytes"
+    | some elems =>
+      let mut parts : List String := []
+      for p in elems do
+        if p.isAppOfArity ``Prod.mk 4 then
+          parts := parts ++ [s!"{← ppTy p.appArg!} at byte {← ppClean p.appFn!.appArg!}"]
+        else parts := parts ++ [← ppClean p]
+      return s!"{size} bytes with {", ".intercalate parts}"
+    | none => return ← ppClean S
+  ppClean S
+
 /-- A type in the notation used in messages: `int`, `exactly 5`,
 `pointer to [int, int]`. Falls back to the Lean term for anything else. -/
 private partial def ppTy (e : Expr) : MetaM String := do
-  let e ← instantiateMVars e
+  -- a type read out of a block's shape arrives as a projection to be worked out
+  let e ← whnfR (← instantiateMVars e)
   if e.isConstOf ``Ty.int then return "int"
   if e.isAppOfArity ``Ty.eq 1 then return s!"exactly {← ppClean e.appArg!}"
   if e.isAppOfArity ``Ty.code 1 then return "code pointer"
@@ -1293,22 +1307,16 @@ private partial def ppTy (e : Expr) : MetaM String := do
     let kind := if args[1]!.isConstOf ``Bool.true then "pointer" else "read-only pointer"
     let index ← ppClean args[2]!
     return s!"{kind} to a block of kind {← ppClean args[0]!}" ++
-      (if index == "0" then "" else s!", at field {index}")
+      (if index == "0" then "" else s!", at byte {index}")
   if e.isAppOfArity ``Ty.ptr 3 then
     let args := e.getAppArgs
     let kind := if args[1]!.isConstOf ``Bool.true then "pointer" else "read-only pointer"
-    let fields ← match listElems? args[0]! with
-      | some elems => do
-        let parts ← elems.mapM ppTy
-        pure s!"[{", ".intercalate parts}]"
-      | none =>
-        if args[0]!.isAppOfArity ``List.replicate 3 then
-          let n ← ppClean args[0]!.appFn!.appArg!
-          pure s!"{n} × {← ppTy args[0]!.appArg!}"
-        else ppClean args[0]!
     let index ← ppClean args[2]!
-    return s!"{kind} to {fields}" ++ (if index == "0" then "" else s!", at field {index}")
+    return s!"{kind} to {← ppShape args[0]!}" ++
+      (if index == "0" then "" else s!", at byte {index}")
   ppClean e
+
+end
 
 /-- The name of a register, if the term is one. -/
 private def regName? (e : Expr) : Option String :=
@@ -1349,7 +1357,7 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
         else if held.isAppOf ``Ty.orErr then
           ": it must be tested for an error first, and `ty_err` then gives the two cases"
         else if held.isAppOf ``Ty.ref && rhs.isAppOf ``Ty.ptr then
-          ": `ty_open` turns it into a pointer to that kind's fields"
+          ": `ty_open` turns it into a pointer to a block of that kind's shape"
         else ""
       return m!"`{reg}` must hold {wanted}, but its type is `{actual}`{hint}"
     if lhs.isAppOf ``MemTy.locate then
@@ -1358,10 +1366,22 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
       return m!"this rule does not cover operations that read the carry flag"
     if lhs.isAppOfArity ``CtxOf.room 2 then
       return m!"there is not enough free stack: the context has room for {← ppClean (← reduce lhs)}"
-    -- a field or stack slot lookup
+    if lhs.isAppOf ``ShapeOf.free then
+      if ty.hasFVar then
+        return m!"the bytes are not known to be clear of the typed values the block holds"
+      return m!"a typed value of the block reaches into those bytes, and plain bytes may not \
+        be stored over it"
+    if lhs.isAppOf ``ShapeOf.sole then
+      return m!"another typed value of the block reaches into those eight bytes"
+    -- a typed value or stack slot lookup
     let actual ← reduce lhs
     if actual.isAppOf ``Option.none then
-      return m!"there is no field or stack slot at that offset"
+      if lhs.isAppOf ``ShapeOf.valAt then
+        return m!"no typed value of the block starts at that offset"
+      return m!"there is no stack slot at that offset"
+    if lhs.isAppOf ``ShapeOf.valAt && !actual.isAppOf ``Option.some then
+      return m!"the block is not known to hold a typed value there: a bound on the index is \
+        needed among the hypotheses"
     if rhs.isAppOf ``Option.some && actual.isAppOf ``Option.some then
       return m!"the field must have type `{← ppTy rhs.appArg!}`, but has type \
         `{← ppTy actual.appArg!}`"
@@ -1371,7 +1391,7 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
     return m!"needs `{← ppClean ty}`, but the left side is `{← ppClean actual}`"
   if ty.isAppOf ``slotDisp then
     return m!"the displacement must be a non-negative multiple of 8"
-  if ty.isAppOf ``innerDisp then
+  if ty.isAppOf ``innerDisp || ty.isAppOf ``byteDisp then
     return m!"the displacement must be non-negative"
   if ty.isAppOfArity ``Sub 2 then
     return m!"a value of type `{← ppTy (← reduce ty.appFn!.appArg!)}` cannot be stored \
@@ -1387,12 +1407,12 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
     return m!"neither `{← ppClean ty.appFn!.appArg!}` nor `{← ppClean ty.appArg!}` is known: \
       one is needed among the hypotheses"
   if ty.isAppOf ``LE.le && ty.appArg!.isAppOf ``ShapeOf.size then
-    return m!"the bytes are not known to be inside the block: a bound on the index is needed \
-      among the hypotheses"
-  if ty.isAppOf ``Eq && ty.appFn!.appArg!.isAppOf ``ShapeOf.free then
-    return m!"the bytes are not known to be clear of the typed values the block holds"
+    if ty.hasFVar then
+      return m!"the bytes are not known to be inside the block: a bound on the index is \
+        needed among the hypotheses"
+    return m!"the access would reach past the end of the block"
   if ty.isAppOf ``LE.le then
-    return m!"the access would cross the end of an 8-byte field"
+    return m!"the access would cross the end of an 8-byte stack slot"
   if ty.isForall && ty.getForallBody.isAppOf ``Exists then
     return m!"the flags are not known here, so they do not decide the condition"
   if ty.isForall then
@@ -1457,7 +1477,8 @@ private partial def explainPremises (rule : Name) : TacticM (Option MessageData)
     if stop then break
   -- A premise about the displacement is reported first: the others cannot
   -- be judged until it holds. After that, prefer a premise with no unknowns.
-  let isDisp (e : MVarId × Expr) : Bool := e.2.isAppOf ``slotDisp || e.2.isAppOf ``innerDisp
+  let isDisp (e : MVarId × Expr) : Bool :=
+    e.2.isAppOf ``slotDisp || e.2.isAppOf ``innerDisp || e.2.isAppOf ``byteDisp
   let chosen := (failed.find? isDisp <|> failed.find? (!·.2.hasExprMVar) <|> failed[0]?)
   match chosen with
   | some (g, ty) =>
@@ -1531,11 +1552,16 @@ def typeStraight : TacticM Unit := deep <| withMainContext do
   let general := rules.filter fun r =>
     !sharpeningRules.contains r &&
       !(ownsNothing && [``Straight.loadOwned, ``Straight.storeOwnedTyped,
-        ``Straight.storeOwnedKeep].contains r) &&
-      -- with nothing owned, a whole field is all the plain load could read
-      !(ownsNothing && r == ``Straight.loadInt && rules.contains ``Straight.loadField)
+        ``Straight.storeOwnedKeep].contains r)
+  -- rules that fail for the same reason are listed once, under the first
+  let mut said : List String := []
   for rule in (if general.isEmpty then rules else general) do
-    msg := msg ++ m!"\n• {← explainRule rule}"
+    let why ← explainRule rule
+    let text ← why.toString
+    let reason := (text.splitOn ": ").drop 1 |> String.intercalate ": "
+    if said.contains reason then continue
+    said := reason :: said
+    msg := msg ++ m!"\n• {why}"
   throwError msg
 
 /-- Types the instruction in a `Straight` goal, choosing the rule from the
@@ -1609,9 +1635,10 @@ private def applySysRule (goal : MVarId) (rule : Name) (shape : SysShape) :
   let tac ← match shape with
     | .plain => `(tactic| refine BlockOk.sys (by ty_fetch) ($r ?_) ?_)
     | .block true =>
-      `(tactic| refine BlockOk.sys (by ty_fetch) ($r (fields := ?_) (off := ?_) (len := ?_) ?_ ?_ ?_ ?_) ?_)
+      `(tactic| refine BlockOk.sys (by ty_fetch)
+          ($r (S := ?_) (off := ?_) (len := ?_) ?_ ?_ ?_ ?_ ?_) ?_)
     | .block false =>
-      `(tactic| refine BlockOk.sys (by ty_fetch) ($r (fields := ?_) (off := ?_) ?_ ?_ ?_) ?_)
+      `(tactic| refine BlockOk.sys (by ty_fetch) ($r (S := ?_) (off := ?_) ?_ ?_ ?_ ?_) ?_)
     | .stack true =>
       `(tactic| refine BlockOk.sys (by ty_fetch)
           ($r (v := ?_) (d := ?_) (len := ?_) ?_ ?_ ?_ ?_ ?_ ?_) ?_)
@@ -1676,14 +1703,6 @@ private def typeBufferOwned (goal : MVarId) (rule : Name) (sized : Bool) : Tacti
     if ← g.isAssigned then continue
     let t ← instantiateMVars (← g.getType)
     if t.isAppOf ``BlockOk then rest? := some g
-    else if t.isForall then
-      discard <| deep <| runOn g (do evalTactic (← `(tactic| first
-        | (intro j hj
-           refine getElem?_replicate_of_lt ?_
-           try simp only [BitVec.toNat_ofNat, Nat.reduceMod, Nat.reduceAdd, Nat.reduceDiv,
-             Nat.reducePow] at hj
-           omega)
-        | (refine ints_of_check ?_; first | decide +kernel | rfl))))
     else if (← isProp t) then
       discard <| deep <| runOn g (do evalTactic (← `(tactic| ty_inside)))
   let some rest := rest? | throwError "unexpected goals"
@@ -1730,6 +1749,7 @@ private def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
     let t ← instantiateMVars (← g.getType)
     if t.isAppOf ``BlockOk then rest? := some g
     else if let some (_, lhs, rhs) := t.eq? then
+      unless lhs.isAppOf ``CtxOf.regs do continue
       try
         discard <| runOn g (do evalTactic (← `(tactic| rfl)))
       catch _ =>
@@ -1742,25 +1762,28 @@ private def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
         else
           throwError "`{name}` needs the count in `{reg}` to be exactly known, but its type is \
             `{actual}`"
-  -- then that every field the buffer covers is an integer
+  -- then that the bytes the buffer covers are inside the block and plain
   for g in gs do
     if ← g.isAssigned then continue
     let t ← instantiateMVars (← g.getType)
-    if t.isForall then
-      let after ← try
-          runOn g (do evalTactic (← `(tactic| first
-            | (refine ints_of_check ?_; first | ((try dsimp only); decide) | rfl)
-            | (intro j hj; refine getElem?_replicate_of_lt ?_; omega))))
-        catch _ =>
-          match size with
-          | .inl cntReg =>
-            throwError "`{name}` could overwrite something that is not an integer: the buffer \
-              in `{bufReg}` does not have room for the count in `{cntReg}` in integer fields"
-          | .inr bytes =>
-            throwError "`{name}` could overwrite something that is not an integer: the buffer \
-              in `{bufReg}` does not have room in integer fields for the {bytes} bytes the \
-              kernel stores"
-      left := left ++ after
+    if t.isAppOf ``BlockOk then continue
+    unless ← isProp t do continue
+    let after ← try
+        runOn g (do evalTactic (← `(tactic| first
+          | decide
+          | exact rfl
+          | ty_inside)))
+      catch _ =>
+        match size with
+        | .inl cntReg =>
+          throwError "`{name}` could overwrite something that is not plain bytes: the buffer \
+            in `{bufReg}` does not have room for the count in `{cntReg}` in plain bytes of \
+            its block"
+        | .inr bytes =>
+          throwError "`{name}` could overwrite something that is not plain bytes: the buffer \
+            in `{bufReg}` does not have room in plain bytes of its block for the {bytes} \
+            bytes the kernel stores"
+    left := left ++ after
   let some rest := rest? | throwError "ty_block: unexpected goals at `syscall`"
   setGoals [rest]
   evalTactic (← `(tactic| ty_normalize))
@@ -2149,7 +2172,7 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
       return .done gs
     | some 9 =>
       return .needsHelp m!"`syscall`: an `mmap` needs the layout of the new block; use \
-        `ty_mmap <fields>` or `ty_mmap_kind <kind>`"
+        `ty_mmap <shape>` or `ty_mmap_kind <kind>`"
     | some nr =>
       throwError "`syscall`: call number {nr} has no rule. The calls that can be typed are \
         {typedCalls}"
@@ -2657,36 +2680,39 @@ private def typeMmap (rule : TSyntax `term) : TacticM Unit := do
           evalTactic (← `(tactic| first
             | decide
             | rfl
-            | exact List.cons_ne_nil _ _
-            | (simp only [List.length_cons, List.length_nil]; omega)
+            | exact Shape.fits_cells _
+            | (simp only [ShapeOf.raw, Shape.cells, List.length_cons, List.length_nil,
+                List.length_replicate]; omega)
             | (simp; done)))
       catch _ =>
         if t.isAppOf ``LE.le then
-          throwError "`mmap`: the block's fields do not fit in the length in `rsi`"
-        else if t.isAppOf ``Ne then
-          throwError "`mmap`: a block needs at least one field"
+          throwError "`mmap`: the block does not fit in the length in `rsi`"
+        else if t.isAppOf ``LT.lt then
+          throwError "`mmap`: a block needs at least one byte"
+        else if t.isAppOf ``Eq && t.appFn!.appArg!.isAppOf ``ShapeOf.fits then
+          throwError "`mmap`: a typed value of the new block does not lie inside it"
         else
-          throwError "`mmap`: every field of the new block must admit zero, since that is \
-            what fresh memory holds: an integer, or a value that may be null"
+          throwError "`mmap`: every typed value of the new block must admit zero, since \
+            that is what fresh memory holds: a value that may be null"
   let some rest := rest? | throwError "ty_mmap: unexpected goals"
   setGoals [rest]
   evalTactic (← `(tactic| ty_normalize))
   setGoals ((← getGoals) ++ others)
 
-/-- `ty_mmap fields`: the `syscall` here is an `mmap` for fresh memory, to be
-used as a block with these fields. Afterwards `rax` holds an error number or
-a writable pointer to the new block; `ty_err` tells them apart. -/
+/-- `ty_mmap shape`: the `syscall` here is an `mmap` for fresh memory, to be
+used as a block of this shape. Afterwards `rax` holds an error number or a
+writable pointer to the new block; `ty_err` tells them apart. -/
 elab_rules : tactic
-  | `(tactic| ty_mmap $fields) => do
-    typeMmap (← `(linux_mmap (fields := $fields) (len := ?_) rfl ?_ ?_ ?_ ?_ ?_ ?_))
+  | `(tactic| ty_mmap $shape) => do
+    typeMmap (← `(linux_mmap (S := $shape) (len := ?_) rfl ?_ ?_ ?_ ?_ ?_ ?_ ?_))
 
 /-- `ty_mmap_kind tag`: as `ty_mmap`, for a block of the declared kind
 `tag`. Afterwards `rax` holds an error number or a writable pointer to a
 block of that kind. -/
 elab_rules : tactic
   | `(tactic| ty_mmap_kind $tag) => do
-    typeMmap (← `(linux_mmap_kind (tag := $tag) (fields := ?_) (len := ?_) rfl ?_ ?_ ?_ ?_
-      ?_ ?_ ?_))
+    typeMmap (← `(linux_mmap_kind (tag := $tag) (S := ?_) (len := ?_) rfl ?_ ?_ ?_ ?_
+      ?_ ?_ ?_ ?_))
 
 /-- `ty_byte as b`: the instruction here loads the byte of text a register
 points at. Two goals follow: the rest of the block with the byte exactly
@@ -2929,7 +2955,6 @@ private def freezeWith (mk : Nat → TacticM (TSyntax `tactic)) (name : String :
           evalTactic (← `(tactic| first
             | decide
             | exact List.cons_ne_nil _ _
-            -- the block's shape against the cells it is frozen as
             | exact rfl
             | (simp only [ShapeOf.raw, ShapeOf.clear, ShapeOf.set, ShapeOf.take, ShapeOf.drop,
                 ShapeOf.append, List.length_replicate, List.length_set, List.length_cons,
@@ -2950,26 +2975,24 @@ private def freezeWith (mk : Nat → TacticM (TSyntax `tactic)) (name : String :
 
 /-- `ty_freeze r`: register `r` holds exactly the address of a block the
 context owns. From here on the block is an ordinary one that anything may
-point to, with the fields it has now, and `r` is a writable pointer to it.
-It can no longer be given back, nor its fields change type. -/
+point to, of the shape it has now, and `r` is a writable pointer to it. It
+can no longer be given back, nor its typed values change type. -/
 elab_rules : tactic
   | `(tactic| ty_freeze $r) => do
     freezeWith fun k => do
       let kq := Syntax.mkNumLit (toString k)
-      let F ← Term.exprToSyntax (← cellsOf (← ownedShapeAt k))
-      `(tactic| refine BlockOk.freeze (r := $r) (k := $kq) (w := true) (base := ?_) (F := $F)
+      `(tactic| refine BlockOk.freeze (r := $r) (k := $kq) (w := true) (base := ?_) (S := ?_)
           ?_ ?_ ?_ ?_ ?_)
 
 /-- `ty_freeze_kind r as tag`: as `ty_freeze`, but the block joins the
-declared kind `tag`, whose fields it must have, and `r` becomes a pointer to
+declared kind `tag`, whose shape it must have, and `r` becomes a pointer to
 a block of that kind. -/
 elab_rules : tactic
   | `(tactic| ty_freeze_kind $r as $tag) => do
     freezeWith fun k => do
       let kq := Syntax.mkNumLit (toString k)
-      let F ← Term.exprToSyntax (← cellsOf (← ownedShapeAt k))
       `(tactic| refine BlockOk.freezeKind (r := $r) (k := $kq) (tag := $tag) (w := true)
-          (base := ?_) (F := $F) ?_ ?_ ?_ ?_ ?_ ?_)
+          (base := ?_) (S := ?_) ?_ ?_ ?_ ?_ ?_ ?_)
 
 /-- `ty_split r at m`: register `r` holds exactly the address of a block the
 context owns, of at least `m` bytes. From here on the context owns two

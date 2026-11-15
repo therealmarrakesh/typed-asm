@@ -15,7 +15,7 @@ namespace Index
 /-! ## The typing -/
 
 /-- A pointer to a read-only array of `n` integers. -/
-def arr (n : Nat) : Ty := .ptr (List.replicate n .int) false 0
+def arr (n : Nat) : Ty := .ptr (.raw (8 * n)) false 0
 
 /-- `get` takes the array in `rdi`, exactly its length in `rsi`, and any
 integer at all as the index in `rdx`. -/
@@ -47,7 +47,7 @@ inductive At : Label → Ctx → Prop
 /-- The code typing: those contexts, at the addresses of their labels. -/
 def Φ : CodeTy := .ofLabels code base At
 
-def arrayLayout : Layout := ⟨List.replicate 5 .int, false, none, 0⟩
+def arrayLayout : Layout := ⟨.raw 40, false, none, 0⟩
 
 /-- One memory block: the array. -/
 def blocks : List (BitVec 64 × Layout) := [(dataBase, arrayLayout)]
@@ -93,7 +93,7 @@ machine that fetches instructions by decoding memory.** It never gets stuck,
 never faults: no page fault, no invalid opcode and no divide error. In particular the
 indexed load never reads outside the array, whatever index `get` is given. -/
 theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  h.safeMem blocksOk memOk At.start (Entry.fieldsInt (by simp [blocks, arrayLayout]))
+  h.safeMem blocksOk memOk At.start (Entry.plain (by simp [blocks, arrayLayout]))
 
 /-- The starting state used by the simulator meets the entry contract. -/
 theorem start_entry : Entry start := by ty_loaded
@@ -104,7 +104,7 @@ theorem safeMem : SafeMem linux start :=
 
 /-- It is also safe on the table machine, which is what the type system reasons about. -/
 theorem safe : Safe fetch linux start :=
-  start_entry.safe blocksOk memOk At.start (Entry.fieldsInt (by simp [blocks, arrayLayout]))
+  start_entry.safe blocksOk memOk At.start (Entry.plain (by simp [blocks, arrayLayout]))
 
 end Index
 

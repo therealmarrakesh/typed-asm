@@ -34,7 +34,7 @@ theorem soundness_blocks_ext {Ψ Ψ' : MemTy} {s : State} (hB : BlocksOk Φ fetc
 /-- A block of text for each argument: where it is and how long, counting
 the zero that ends it. -/
 def argLayouts (texts : List (BitVec 64 × Nat)) : List (BitVec 64 × Layout) :=
-  texts.map fun t => (t.1, ⟨[], false, none, t.2⟩)
+  texts.map fun t => (t.1, ⟨.raw 0, false, none, t.2⟩)
 
 /-- What a program that reads its arguments needs of its starting state: the
 entry contract, with the number of arguments at `[rsp]`, the address of each
@@ -56,7 +56,7 @@ address of the start of a text, and four more slots hold numbers. -/
 def textsCtx (room : Nat) (c : BitVec 64) : Ctx :=
   entryCtx room (.eq c :: (List.replicate c.toNat (.str false) ++ List.replicate 4 .int))
 
-variable {kinds : List (Nat × List Ty)}
+variable {kinds : List (Nat × Shape)}
 
 /-- Listing more blocks after the ones there are grows the memory typing. -/
 theorem MemTy.ofList_ext (bs extra : List (BitVec 64 × Layout)) :
@@ -78,7 +78,7 @@ theorem MemTy.declared_argLayouts (texts : List (BitVec 64 × Nat)) :
 /-- The address of a text is where the memory typing has a block of text. -/
 theorem MemTy.ofList_text {blocks : List (BitVec 64 × Layout)} {texts : List (BitVec 64 × Nat)}
     {t : BitVec 64 × Nat} (ht : t ∈ texts) (hno : ∀ x ∈ blocks, x.1 ≠ t.1) :
-    ∃ n, MemTy.ofList (blocks ++ argLayouts texts) kinds t.1 = some ⟨[], false, none, n⟩ := by
+    ∃ n, MemTy.ofList (blocks ++ argLayouts texts) kinds t.1 = some ⟨.raw 0, false, none, n⟩ := by
   show ∃ n, ((blocks ++ argLayouts texts).find? (·.1 = t.1)).map (·.2) = some _
   have hnone : blocks.find? (·.1 = t.1) = none := by
     rw [List.find?_eq_none]
@@ -87,7 +87,7 @@ theorem MemTy.ofList_text {blocks : List (BitVec 64 × Layout)} {texts : List (B
   rw [List.find?_append, hnone, Option.none_or]
   have hsome : ((argLayouts texts).find? (·.1 = t.1)).isSome = true := by
     rw [List.find?_isSome]
-    exact ⟨(t.1, ⟨[], false, none, t.2⟩), List.mem_map.mpr ⟨t, ht, rfl⟩, by simp⟩
+    exact ⟨(t.1, ⟨.raw 0, false, none, t.2⟩), List.mem_map.mpr ⟨t, ht, rfl⟩, by simp⟩
   obtain ⟨y, hy⟩ := Option.isSome_iff_exists.mp hsome
   obtain ⟨u, -, rfl⟩ := List.mem_map.mp (List.mem_of_find?_eq_some hy)
   exact ⟨u.2, by rw [hy]; rfl⟩
@@ -101,7 +101,7 @@ for the number of arguments it holds. -/
 theorem EntryTexts.wellTyped {s : State}
     (h : EntryTexts entry base image dataBase data blocks room s)
     (hk : MemTy.declared kinds blocks = MemTy.actual blocks)
-    (hfields : ∀ x ∈ blocks, ∀ τ ∈ x.2.fields, τ = .int) :
+    (hfields : ∀ x ∈ blocks, x.2.shape.vals = []) :
     ∃ (c : BitVec 64) (Ψ' : MemTy), (MemTy.ofList blocks kinds).Ext Ψ' ∧ Ψ'.WF ∧
       s.rip = entry ∧ s.HasCode base image ∧
       ∀ n, WellTyped fetch sys Ψ' n (textsCtx room c) s := by
@@ -118,14 +118,14 @@ theorem EntryTexts.wellTyped {s : State}
       rw [this.1, this.2, hk])
   refine ⟨BitVec.ofNat 64 texts.length, _, MemTy.ofList_ext blocks _, hWF, hE.rip, hE.code,
     fun n => ?_⟩
-  refine hE.matchesStack HasTy.int (fun x hx i τ hi => ?_) (by
+  refine hE.matchesStack HasTy.int (fun x hx p hp => ?_) (by
     simp only [List.length_cons, List.length_append, List.length_replicate, hn]) ?_
-  · -- the program's own blocks hold integers; a block of text has no fields
+  · -- the program's own blocks are plain bytes; a block of text has no typed values
     rcases List.mem_append.mp hx with hx | hx
-    · rw [hfields x hx τ (List.mem_of_getElem? hi)]
-      exact HasTy.int _
+    · rw [hfields x hx] at hp
+      cases hp
     · obtain ⟨t, -, rfl⟩ := List.mem_map.mp hx
-      simp at hi
+      cases hp
   · intro i τ hi
     cases i with
     | zero =>
@@ -360,7 +360,7 @@ theorem EntryTexts.ofLoad {p : State} (args : List (List Byte)) (hroom : 8 * roo
     show (T.map _).length = _
     rw [List.length_map, hTlen]
   have hmem : ∀ x ∈ argLayouts texts,
-      ∃ t ∈ T, x = (BitVec.ofNat 64 t.1, ⟨[], false, none, t.2⟩) := by
+      ∃ t ∈ T, x = (BitVec.ofNat 64 t.1, ⟨.raw 0, false, none, t.2⟩) := by
     intro x hx
     obtain ⟨u, hu, rfl⟩ := List.mem_map.mp hx
     obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hu
@@ -419,7 +419,8 @@ theorem EntryTexts.ofLoad {p : State} (args : List (List Byte)) (hroom : 8 * roo
       · exact hcheck.1 x hx
       · obtain ⟨t, ht, rfl⟩ := hmem x hx
         obtain ⟨h1, h2, h3⟩ := hT t ht
-        simp only [Layout.size, List.length_nil]
+        refine ⟨?_, rfl⟩
+        simp only [Layout.size, ShapeOf.raw_size]
         omega
     · rcases List.mem_append.mp hx with hx | hx <;> rcases List.mem_append.mp hy with hy | hy
       · exact hcheck.2 x hx y hy

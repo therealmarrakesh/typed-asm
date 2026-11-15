@@ -18,10 +18,10 @@ namespace List3
 blocks of kind 1. -/
 def link : Ty := .nullable (.ref 1 false 0)
 
-/-- A node: a value and a link. -/
-def nodeFields : List Ty := [.int, link]
+/-- A node: sixteen bytes, a value and then a link. -/
+def nodeShape : Shape := ⟨16, [(8, link)]⟩
 
-def nodeLayout : Layout := ⟨nodeFields, false, some 1, 0⟩
+def nodeLayout : Layout := ⟨nodeShape, false, some 1, 0⟩
 
 /-- In the loop `rdi` holds a link. -/
 def walking : Ctx := ⟨fun r => if r = .rdi then link else .int, [], 0, Flags.Any, []⟩
@@ -40,7 +40,7 @@ def blocks : List (BitVec 64 × Layout) :=
   [(dataBase, nodeLayout), (dataBase + 16, nodeLayout), (dataBase + 32, nodeLayout)]
 
 /-- The blocks, and the one kind of block there is: kind 1 is a node. -/
-def Ψ : MemTy := .ofList blocks [(1, nodeFields)]
+def Ψ : MemTy := .ofList blocks [(1, nodeShape)]
 
 /-! ## The program is well typed -/
 
@@ -83,48 +83,31 @@ theorem link_node {n : Nat} {a : BitVec 64} (h : Ψ a = some nodeLayout) :
 
 /-- The data has the types the blocks claim: each node's link holds what the
 data says, the address of the next node or zero. -/
-theorem Entry.fieldsOk {s : State} (h : Entry s) (n : Nat) :
-    ∀ x ∈ blocks, ∀ i τ, x.2.fields[i]? = some τ →
-      HasTy fetch linux Ψ n τ (s.load64 (x.1 + BitVec.ofNat 64 (8 * i))) := by
-  intro x hx i τ hi
+theorem Entry.valuesOk {s : State} (h : Entry s) (n : Nat) :
+    ∀ x ∈ blocks, ∀ p ∈ x.2.shape.vals,
+      HasTy fetch linux Ψ n p.2 (s.load64 (x.1 + BitVec.ofNat 64 p.1)) := by
+  intro x hx p hp
   simp only [blocks, List.mem_cons, List.not_mem_nil, or_false] at hx
   have hlen : listBytes.length = 48 := by decide
   have hval : ∀ k, k + 8 ≤ 48 →
       s.load64 (dataBase + BitVec.ofNat 64 k) = word64 listBytes k :=
     fun k hk => h.data.load64 (by rw [hlen]; exact hk)
-  rcases hx with rfl | rfl | rfl
-  · match i, hi with
-    | 0, hi => cases hi; exact HasTy.int _
-    | 1, hi =>
-      cases hi
-      -- the first node's link is the second node
-      show HasTy fetch linux Ψ n link (s.load64 (dataBase + BitVec.ofNat 64 (8 * 1)))
-      rw [hval (8 * 1) (by omega),
-        show word64 listBytes (8 * 1) = dataBase + 16 from by decide +kernel]
-      exact link_node rfl
-    | i + 2, hi => simp [nodeLayout, nodeFields] at hi
-  · match i, hi with
-    | 0, hi => cases hi; exact HasTy.int _
-    | 1, hi =>
-      cases hi
-      -- the second node's link is the third
-      show HasTy fetch linux Ψ n link (s.load64 (dataBase + 16 + BitVec.ofNat 64 (8 * 1)))
-      rw [show dataBase + 16 + BitVec.ofNat 64 (8 * 1) = dataBase + BitVec.ofNat 64 24 from by decide,
-        hval 24 (by omega),
-        show word64 listBytes 24 = dataBase + 32 from by decide +kernel]
-      exact link_node rfl
-    | i + 2, hi => simp [nodeLayout, nodeFields] at hi
-  · match i, hi with
-    | 0, hi => cases hi; exact HasTy.int _
-    | 1, hi =>
-      cases hi
-      -- the third node's link is zero
-      show HasTy fetch linux Ψ n link (s.load64 (dataBase + 32 + BitVec.ofNat 64 (8 * 1)))
-      rw [show dataBase + 32 + BitVec.ofNat 64 (8 * 1) = dataBase + BitVec.ofNat 64 40 from by decide,
-        hval 40 (by omega),
-        show word64 listBytes 40 = 0 from by decide +kernel]
-      exact hasTy_nullable.mpr (.inl rfl)
-    | i + 2, hi => simp [nodeLayout, nodeFields] at hi
+  rcases hx with rfl | rfl | rfl <;>
+    (simp only [nodeLayout, nodeShape, List.mem_singleton] at hp; subst hp)
+  · -- the first node's link is the second node
+    show HasTy fetch linux Ψ n link (s.load64 (dataBase + BitVec.ofNat 64 8))
+    rw [hval 8 (by omega), show word64 listBytes 8 = dataBase + 16 from by decide +kernel]
+    exact link_node rfl
+  · -- the second node's link is the third
+    show HasTy fetch linux Ψ n link (s.load64 (dataBase + 16 + BitVec.ofNat 64 8))
+    rw [show dataBase + 16 + BitVec.ofNat 64 8 = dataBase + BitVec.ofNat 64 24 from by decide,
+      hval 24 (by omega), show word64 listBytes 24 = dataBase + 32 from by decide +kernel]
+    exact link_node rfl
+  · -- the third node's link is zero
+    show HasTy fetch linux Ψ n link (s.load64 (dataBase + 32 + BitVec.ofNat 64 8))
+    rw [show dataBase + 32 + BitVec.ofNat 64 8 = dataBase + BitVec.ofNat 64 40 from by decide,
+      hval 40 (by omega), show word64 listBytes 40 = 0 from by decide +kernel]
+    exact hasTy_nullable.mpr (.inl rfl)
 
 /-! ## Safety -/
 
@@ -133,7 +116,7 @@ machine that fetches instructions by decoding memory.** It never gets stuck
 and never faults: in particular it never loads through the zero that ends
 the list. -/
 theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  h.safeMem blocksOk memOk At.start h.fieldsOk
+  h.safeMem blocksOk memOk At.start h.valuesOk
 
 /-- The starting state used by the simulator meets the entry contract. -/
 theorem start_entry : Entry start := by ty_loaded
