@@ -450,6 +450,7 @@ of a block at a fixed address. -/
 macro "ty_operand" : tactic =>
   `(tactic| first
     | ty_rule_ordered ReadOk.reg | ty_rule_ordered ReadOk.slot | ty_rule_ordered ReadOk.field
+    | ty_rule_ordered ReadOk.owned | ty_rule_ordered WriteIntOk.owned
     | ty_rule_ordered ReadOk.indexed | ty_rule_ordered ReadOk.global_of
     | ty_rule_ordered WriteIntOk.reg | ty_rule_ordered WriteIntOk.slot
     | ty_rule_ordered WriteIntOk.field | ty_rule_ordered WriteIntOk.indexed
@@ -457,11 +458,26 @@ macro "ty_operand" : tactic =>
     | ty_rule_ordered Holds.reg | ty_rule_ordered Holds.slot | ty_rule_ordered Holds.field
     | ty_rule_ordered Holds.indexed | ty_rule_ordered Holds.global_of)
 
+/-- Proves that an address is some bytes into an owned block: the block is
+looked for among the first few the context lists, and the address must be
+the block's own, written as it is or with a known amount added. -/
+macro "ty_owned_at" : tactic =>
+  `(tactic| first
+    | (refine OwnedAt.mk (k := 0) rfl ?_
+       first | rfl | exact BitVec.add_assoc _ _ _)
+    | (refine OwnedAt.mk (k := 1) rfl ?_
+       first | rfl | exact BitVec.add_assoc _ _ _)
+    | (refine OwnedAt.mk (k := 2) rfl ?_
+       first | rfl | exact BitVec.add_assoc _ _ _)
+    | (refine OwnedAt.mk (k := 3) rfl ?_
+       first | rfl | exact BitVec.add_assoc _ _ _))
+
 macro_rules
   | `(tactic| ty_side) =>
     `(tactic| first
       | rfl
       | decide
+      | ty_owned_at
       | (refine slotDisp_of _ ?_ ?_ <;> decide)
       | (refine innerDisp_of _ ?_ <;> decide)
       | ty_field
@@ -650,6 +666,7 @@ elab_rules : tactic
 fails: those for operands, whose premises each depend on the ones before. -/
 def orderedRules : List Name := [``Straight.loadGlobal_of, ``Straight.storeGlobal_of,
   ``ReadOk.reg, ``ReadOk.slot, ``ReadOk.field, ``ReadOk.indexed, ``ReadOk.global_of, ``ReadOk.text,
+  ``ReadOk.owned, ``WriteIntOk.owned,
   ``WriteIntOk.reg, ``WriteIntOk.slot, ``WriteIntOk.field, ``WriteIntOk.indexed,
   ``WriteIntOk.global_of, ``Holds.reg, ``Holds.slot, ``Holds.field, ``Holds.indexed,
   ``Holds.global_of]
@@ -670,7 +687,7 @@ def Instr.rules : Instr → List Name
   | .lea _ _ _ => [``Straight.lea]
   -- loads: a whole slot or field keeps its type, anything else is an integer
   | .mov .w64 (.r_m _ (.sib (some .rsp) none _)) => [``Straight.loadStack]
-  | .mov .w64 (.r_m _ (.sib (some _) none _)) => [``Straight.loadField]
+  | .mov .w64 (.r_m _ (.sib (some _) none _)) => [``Straight.loadField, ``Straight.loadOwned]
   | .mov .w64 (.r_m _ (.rip _)) => [``Straight.loadGlobal_of]
   | .mov .w64 (.r_m _ (.sib (some .rsp) (some _) _)) => [``Straight.loadStackIndexed]
   | .mov .w64 (.r_m _ (.sib (some _) (some _) _)) => [``Straight.loadIndexed, ``Straight.loadInt]
@@ -684,7 +701,7 @@ def Instr.rules : Instr → List Name
   -- stores
   | .mov .w64 (.rm_r (.mem (.sib (some .rsp) none _)) _) => [``Straight.storeStack]
   | .mov .w64 (.rm_r (.mem (.sib (some _) none _)) _) =>
-    [``Straight.storeField, ``Straight.storeInt]
+    [``Straight.storeField, ``Straight.storeOwned, ``Straight.storeInt]
   | .mov .w64 (.rm_r (.mem (.rip _)) _) => [``Straight.storeGlobal_of, ``Straight.storeInt]
   | .mov .w64 (.rm_r (.mem (.sib (some _) (some _) _)) _) =>
     [``Straight.storeIndexed, ``Straight.storeInt]
@@ -780,7 +797,8 @@ def Instr.endsBlock : Instr → Bool
 
 /-- Every straight-line rule, for instructions whose shape is not known. -/
 def allStraightRules : List Name := sharpeningRules ++ [``Straight.movRR64, ``Straight.movRR32, ``Straight.movRI, ``Straight.movAbs, ``Straight.leaRip, ``Straight.lea, ``Straight.loadStack, ``Straight.loadField, ``Straight.storeStack, ``Straight.storeField, ``Straight.push, ``Straight.pop, ``Straight.allocFrame, ``Straight.freeFrame', ``Straight.aluExact, ``Straight.aluExactRR, ``Straight.addPtr, ``Straight.aluRR, ``Straight.aluRI, ``Straight.testExact, ``Straight.nop, ``Straight.aluStoreR, ``Straight.aluStoreI, ``Straight.cmpR, ``Straight.cmpI, ``Straight.aluLoad, ``Straight.testRM, ``Straight.negRM, ``Straight.notRM, ``Straight.shiftImm, ``Straight.shiftCl, ``Straight.mulRM, ``Straight.imulRM, ``Straight.divSafe, ``Straight.idivSafe, ``Straight.imul2RM, ``Straight.imul3RM, ``Straight.popcntRM, ``Straight.bswap, ``Straight.cdq, ``Straight.cqo, ``Straight.movsxdRM, ``Straight.cmovRM, ``Straight.setccRM, ``Straight.movzxRM, ``Straight.movsxRM, ``Straight.loadInt, ``Straight.storeInt, ``Straight.storeImm, ``Straight.store8RM, ``Straight.store16RM, ``Straight.loadGlobal_of, ``Straight.storeGlobal_of, ``Straight.xorSelf,
-  ``Straight.loadIndexed, ``Straight.storeIndexed, ``Straight.loadStackIndexed]
+  ``Straight.loadIndexed, ``Straight.storeIndexed, ``Straight.loadStackIndexed,
+  ``Straight.loadOwned, ``Straight.storeOwned]
 
 private unsafe def evalInstrUnsafe (e : Expr) : MetaM Instr :=
   evalExpr Instr (mkConst ``Instr) e
@@ -950,7 +968,8 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
 /-- The rules for an operand judgment, in the order to try them. -/
 private def operandRules (ty : Expr) : List Name :=
   if ty.isAppOf ``ReadOk then
-    [``ReadOk.reg, ``ReadOk.slot, ``ReadOk.field, ``ReadOk.indexed, ``ReadOk.global_of, ``ReadOk.text]
+    [``ReadOk.reg, ``ReadOk.slot, ``ReadOk.field, ``ReadOk.indexed, ``ReadOk.global_of, ``ReadOk.text,
+      ``ReadOk.owned]
   else if ty.isAppOf ``WriteIntOk then [``WriteIntOk.reg, ``WriteIntOk.slot, ``WriteIntOk.field, ``WriteIntOk.indexed,
     ``WriteIntOk.global_of]
   else if ty.isAppOf ``Holds then [``Holds.reg, ``Holds.slot, ``Holds.field, ``Holds.indexed, ``Holds.global_of]
@@ -1038,7 +1057,16 @@ def typeStraight : TacticM Unit := withMainContext do
     | some why => throwError "cannot type {shown}: {why}"
     | none => throwError "the type system has no rule for {shown}"
   let mut msg := m!"cannot type {shown} in the current context"
-  let general := rules.filter (!sharpeningRules.contains ·)
+  -- Why a rule for owned blocks did not apply is of no interest where
+  -- nothing is owned.
+  let ownsNothing ← try
+      let goalTy ← instantiateMVars (← (← getMainGoal).getType)
+      let owned ← whnf (← mkAppM ``CtxOf.owned #[goalTy.getAppArgs[2]!])
+      pure (owned.isAppOf ``List.nil)
+    catch _ => pure false
+  let general := rules.filter fun r =>
+    !sharpeningRules.contains r &&
+      !(ownsNothing && (r == ``Straight.loadOwned || r == ``Straight.storeOwned))
   for rule in (if general.isEmpty then rules else general) do
     msg := msg ++ m!"\n• {← explainRule rule}"
   throwError msg

@@ -160,6 +160,14 @@ Three judgments about an operand, each covering a register, a field of a
 block reached through a pointer, and a stack slot. They let one rule serve
 every instruction that takes such an operand. `n` is the access size in bytes. -/
 
+/-- Address `p` is `off` bytes into the owned block listed at place `k`,
+which is at `a` and has fields `F`. (A structure, so that finding the block
+and checking the address are settled together.) -/
+structure OwnedAt (owned : List (BitVec 64 × List Ty)) (k : Nat) (a : BitVec 64) (F : List Ty)
+    (p off : BitVec 64) : Prop where
+  entry : owned[k]? = some (a, F)
+  addr : p = a + off
+
 /-- `ReadOk Ψ next Γ n rm`: reading `n` bytes from `rm` is safe. For memory, the
 bytes must lie inside one field or one stack slot. -/
 inductive ReadOk (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) (n : Nat) : RM → Prop
@@ -187,6 +195,11 @@ inductive ReadOk (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) (n : Nat) : RM → P
   /-- The byte of text a register points at. -/
   | text {b : Reg} {more : Bool} : b ≠ .rsp → Γ.regs b = .str more → n = 1 →
     ReadOk Ψ next Γ n (.mem (.sib (some b) none 0))
+  /-- Bytes of an owned block: the base register holds an exactly known
+  value that, with the displacement, lands `off` bytes into the block. -/
+  | owned {b : Reg} {k : Nat} {a v off : BitVec 64} {F : List Ty} {disp : BitVec 32} :
+    b ≠ .rsp → Γ.regs b = .eq v → OwnedAt Γ.owned k a F (v + disp.signExtend 64) off → off.toNat + n ≤ 8 * F.length →
+    ReadOk Ψ next Γ n (.mem (.sib (some b) none disp))
 
 /-- `WriteIntOk Ψ next Γ n rm Γ'`: overwriting `n` bytes of `rm` with an arbitrary
 value is safe and leaves a state matching `Γ'`. A register or stack slot
@@ -211,6 +224,10 @@ inductive WriteIntOk (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) (n : Nat) : RM �
     Ψ base = some l → l.writable = true →
     next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i + k) →
     l.fields[i]? = some .int → k + n ≤ 8 → WriteIntOk Ψ next Γ n (.mem (.rip disp)) Γ
+  /-- Bytes within one integer field of an owned block. -/
+  | owned {b : Reg} {k : Nat} {a v off : BitVec 64} {F : List Ty} {disp : BitVec 32} :
+    b ≠ .rsp → Γ.regs b = .eq v → OwnedAt Γ.owned k a F (v + disp.signExtend 64) off → F[off.toNat / 8]? = some .int →
+    off.toNat % 8 + n ≤ 8 → WriteIntOk Ψ next Γ n (.mem (.sib (some b) none disp)) Γ
 
 /-- `Holds Ψ next Γ rm τ`: `rm` is a register, a whole field or a whole stack
 slot that holds a value of type `τ`. -/
@@ -323,6 +340,18 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
     b ≠ .rsp → s ≠ .rsp → Γ.regs b = .ptr fields true off → slotDisp i disp →
     fields[off + i]? = some τ → Sub (Γ.regs s) τ →
     Straight Ψ next Γ (.mov .w64 (.rm_r (.mem (.sib (some b) none disp)) s)) Γ
+  /-- Load a whole field of an owned block, keeping its type. -/
+  | loadOwned {Γ : Ctx} {d b : Reg} {k : Nat} {a v off : BitVec 64} {F : List Ty}
+      {disp : BitVec 32} {τ : Ty} :
+    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .eq v → OwnedAt Γ.owned k a F (v + disp.signExtend 64) off → off.toNat % 8 = 0 → F[off.toNat / 8]? = some τ →
+    Straight Ψ next Γ (.mov .w64 (.r_m d (.sib (some b) none disp))) (Γ.setReg d τ)
+  /-- Store into a whole field of an owned block. The field takes the type of
+  what is stored, whatever it held before: nothing else looks at it. -/
+  | storeOwned {Γ : Ctx} {b s : Reg} {k : Nat} {a v off : BitVec 64} {F : List Ty}
+      {disp : BitVec 32} :
+    b ≠ .rsp → s ≠ .rsp → Γ.regs b = .eq v → OwnedAt Γ.owned k a F (v + disp.signExtend 64) off → off.toNat % 8 = 0 → off.toNat / 8 < F.length →
+    Straight Ψ next Γ (.mov .w64 (.rm_r (.mem (.sib (some b) none disp)) s))
+      { Γ with owned := Γ.owned.set k (a, F.set (off.toNat / 8) (Γ.regs s)) }
   /-- Load a whole field through an index, keeping its type. -/
   | loadIndexed {Γ : Ctx} {d b : Reg} {x : IndexReg} {sc : Scale} {fields : List Ty}
       {writable : Bool} {off i : Nat} {disp : BitVec 32} {c : BitVec 64} {τ : Ty} :
@@ -630,6 +659,7 @@ theorem ReadOk.ext {Ψ Ψ' : MemTy} {next : BitVec 64} {Γ : Ctx} {n : Nat} {rm 
     | (apply ReadOk.slot <;> assumption)
     | (apply ReadOk.indexed <;> assumption)
     | (apply ReadOk.text <;> assumption)
+    | (apply ReadOk.owned <;> assumption)
 
 theorem WriteIntOk.ext {Ψ Ψ' : MemTy} {next : BitVec 64} {Γ Γ' : Ctx} {n : Nat} {rm : RM}
     (h : WriteIntOk Ψ next Γ n rm Γ') (he : Ψ.Ext Ψ') : WriteIntOk Ψ' next Γ n rm Γ' := by
@@ -641,6 +671,7 @@ theorem WriteIntOk.ext {Ψ Ψ' : MemTy} {next : BitVec 64} {Γ Γ' : Ctx} {n : N
     | (apply WriteIntOk.field <;> assumption)
     | (apply WriteIntOk.slot <;> assumption)
     | (apply WriteIntOk.indexed <;> assumption)
+    | (apply WriteIntOk.owned <;> assumption)
 
 theorem Holds.ext {Ψ Ψ' : MemTy} {next : BitVec 64} {Γ : Ctx} {rm : RM} {τ : Ty}
     (h : Holds Ψ next Γ rm τ) (he : Ψ.Ext Ψ') : Holds Ψ' next Γ rm τ := by
@@ -678,6 +709,8 @@ local macro "ext_rule" : tactic =>
     | (apply Straight.loadStack <;> ext_premise)
     | (apply Straight.loadStackIndexed <;> ext_premise)
     | (apply Straight.strNext <;> ext_premise)
+    | (apply Straight.loadOwned <;> ext_premise)
+    | (apply Straight.storeOwned <;> ext_premise)
     | (apply Straight.storeStack <;> ext_premise)
     | (apply Straight.push <;> ext_premise)
     | (apply Straight.pop <;> ext_premise)

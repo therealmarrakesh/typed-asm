@@ -906,6 +906,145 @@ theorem writeInts {a : BitVec 64} {l : Layout} {lo cnt : Nat} {s' : State}
       exact h.text b l' hl' ht
     sp := by rw [hg]; exact h.sp }
 
+/-- Two different owned blocks do not overlap. -/
+theorem owned_apart {m k : Nat} (h : WellTyped fetch sys Ψ ix Γ s) (hm : m < Γ.owned.length)
+    (hk : k < Γ.owned.length) (hne : m ≠ k) :
+    Disjoint Γ.owned[k].1 (8 * Γ.owned[k].2.length) Γ.owned[m].1 (8 * Γ.owned[m].2.length) := by
+  have hp := List.pairwise_iff_getElem.mp h.owned.apart
+  rcases Nat.lt_or_gt_of_ne hne with hlt | hgt
+  · exact (hp m k hm hk hlt).symm
+  · exact hp k m hk hm hgt
+
+/-- **A change confined to a run of fields of an owned block keeps the state
+well typed**, with those fields given whatever types their new contents
+have. Nothing else can be looking at them: this is what owning a block buys. -/
+theorem writeOwned {s' : State} {k : Nat} {a : BitVec 64} {F F' : List Ty} {lo cnt : Nat}
+    (h : WellTyped fetch sys Ψ ix Γ s) (hΨ : Ψ.WF) (hk : Γ.owned[k]? = some (a, F))
+    (hc : 0 < cnt) (hle : lo + cnt ≤ F.length) (hF' : F'.length = F.length)
+    (hsame : ∀ j, j < lo ∨ lo + cnt ≤ j → F'[j]? = F[j]?)
+    (hregs : s'.regs = s.regs) (hflags : s'.flags = s.flags) (hperm : s'.perm = s.perm)
+    (hframe : ∀ y, Disjoint (a + BitVec.ofNat 64 (8 * lo)) (8 * cnt) y 8 →
+      s'.load64 y = s.load64 y)
+    (hmem : ∀ x, BitVec.ofNat 64 (8 * cnt) ≤ x - (a + BitVec.ofNat 64 (8 * lo)) →
+      s'.mem x = s.mem x)
+    (hnew : ∀ j τ, lo ≤ j → j < lo + cnt → F'[j]? = some τ →
+      HasTy fetch sys Ψ ix τ (s'.load64 (a + BitVec.ofNat 64 (8 * j)))) :
+    WellTyped fetch sys Ψ ix { Γ with owned := Γ.owned.set k (a, F') } s' := by
+  obtain ⟨hklt, hkeq⟩ := List.getElem?_eq_some_iff.mp hk
+  have hin : (a, F) ∈ Γ.owned := hkeq ▸ List.getElem_mem hklt
+  have hsz := h.owned.size_lt _ hin
+  simp only at hsz
+  have hg : ∀ r, s'.getReg r = s.getReg r := fun r => by simp only [State.getReg, hregs]
+  have hb : stackBase { Γ with owned := Γ.owned.set k (a, F') } s' = stackBase Γ s := by
+    simp only [stackBase, hg]
+  -- the block is apart from the stack and from the memory typing's blocks
+  have hst := h.owned.stack _ hin
+  have hhp := h.owned.heap _ hin
+  simp only at hst hhp
+  -- an entry of the new list is the old one at its place, but for the fields of this block
+  have hlen : (Γ.owned.set k (a, F')).length = Γ.owned.length := List.length_set
+  have hentry : ∀ m (hm : m < Γ.owned.length),
+      (Γ.owned.set k (a, F'))[m]'(hlen ▸ hm) = if k = m then (a, F') else Γ.owned[m] :=
+    fun m hm => List.getElem_set _
+  have hkey : ∀ m (hm : m < Γ.owned.length),
+      ((Γ.owned.set k (a, F'))[m]'(hlen ▸ hm)).1 = Γ.owned[m].1 ∧
+      ((Γ.owned.set k (a, F'))[m]'(hlen ▸ hm)).2.length = Γ.owned[m].2.length := by
+    intro m hm
+    rw [hentry m hm]
+    split
+    · next e => subst e; rw [hkeq]; exact ⟨rfl, hF'⟩
+    · exact ⟨rfl, rfl⟩
+  exact {
+    regs := fun r hr => by rw [hg]; exact h.regs r hr
+    flags := by rw [hflags]; exact h.flags
+    stackPerm := by rw [hb, State.canWrite_congr hperm]; exact h.stackPerm
+    stackSize_lt := h.stackSize_lt
+    stack := fun j τ hj => by
+      have hjlt : j < Γ.stack.length := (List.getElem?_eq_some_iff.mp hj).1
+      have hd := hst.symm.mono (o := 8 * lo) (p := 8 * Γ.room + 8 * j) (n' := 8 * cnt) (m' := 8)
+        hsz h.stackSize_lt (by omega) (by simp only [stackSize]; omega) (by omega) (by omega)
+      rw [slot_addr] at hd
+      rw [hg, hframe _ hd]
+      exact h.stack j τ hj
+    heapPerm := fun b l hl => by
+      rw [State.canRead_congr hperm, State.canWrite_congr hperm]; exact h.heapPerm b l hl
+    heap := fun b l hl j τ hj => by
+      have hjlt : j < l.fields.length := (List.getElem?_eq_some_iff.mp hj).1
+      have hd := (hhp b l hl).mono (o := 8 * lo) (p := 8 * j) (n' := 8 * cnt) (m' := 8)
+        hsz (hΨ.size_lt b l hl) (by omega) (by simp only [Layout.size]; omega) (by omega)
+        (by omega)
+      rw [hframe _ hd]
+      exact h.heap b l hl j τ hj
+    stackHeap := fun b l hl => by rw [hb]; exact h.stackHeap b l hl
+    sp := by rw [hg]; exact h.sp
+    text := fun b l hl ht => by
+      have hpos := hΨ.nonempty b l hl
+      have hd := (hhp b l hl).mono (o := 8 * lo) (p := l.size - 1) (n' := 8 * cnt) (m' := 1)
+        hsz (hΨ.size_lt b l hl) (by omega) (by omega) (by omega) (by omega)
+      rw [hmem _ (hd.1 (by decide))]
+      exact h.text b l hl ht
+    owned := {
+      perm := fun c hc' => by
+        obtain ⟨m, hm, rfl⟩ := List.mem_iff_getElem.mp hc'
+        have hm' : m < Γ.owned.length := hlen ▸ hm
+        rw [(hkey m hm').1, (hkey m hm').2, State.canWrite_congr hperm]
+        exact h.owned.perm _ (List.getElem_mem hm')
+      size_lt := fun c hc' => by
+        obtain ⟨m, hm, rfl⟩ := List.mem_iff_getElem.mp hc'
+        have hm' : m < Γ.owned.length := hlen ▸ hm
+        rw [(hkey m hm').2]
+        exact h.owned.size_lt _ (List.getElem_mem hm')
+      vals := fun c hc' j τ hj => by
+        obtain ⟨m, hm, rfl⟩ := List.mem_iff_getElem.mp hc'
+        have hm' : m < Γ.owned.length := hlen ▸ hm
+        have hjlt := (List.getElem?_eq_some_iff.mp hj).1
+        rw [(hkey m hm').2] at hjlt
+        by_cases hmk : k = m
+        · -- this block: fields in the run are new, the others as before
+          subst hmk
+          have he := hentry k hm'
+          simp only [↓reduceIte] at he
+          rw [he] at hj ⊢
+          simp only at hj ⊢
+          by_cases hrun : lo ≤ j ∧ j < lo + cnt
+          · exact hnew j τ hrun.1 hrun.2 hj
+          · have hout : j < lo ∨ lo + cnt ≤ j := by omega
+            rw [hsame j hout] at hj
+            rw [hkeq] at hjlt
+            simp only at hjlt
+            rw [hframe _ (disjoint_range_slot (N := 8 * F.length) hc hout (by omega) (by omega)
+              hsz)]
+            have := h.owned.vals _ hin j τ hj
+            exact this
+        · -- another block: untouched
+          have he := hentry m hm'
+          simp only [hmk, ↓reduceIte] at he
+          rw [he] at hj ⊢
+          have hd := (h.owned_apart hm' hklt (Ne.symm hmk))
+          rw [hkeq] at hd
+          simp only at hd
+          have hd' := hd.mono (o := 8 * lo) (p := 8 * j) (n' := 8 * cnt) (m' := 8) hsz
+            (h.owned.size_lt _ (List.getElem_mem hm')) (by omega) (by omega) (by omega) (by omega)
+          rw [hframe _ hd']
+          exact h.owned.vals _ (List.getElem_mem hm') j τ hj
+      stack := fun c hc' => by
+        obtain ⟨m, hm, rfl⟩ := List.mem_iff_getElem.mp hc'
+        have hm' : m < Γ.owned.length := hlen ▸ hm
+        rw [(hkey m hm').1, (hkey m hm').2, hb]
+        exact h.owned.stack _ (List.getElem_mem hm')
+      heap := fun c hc' b l hl => by
+        obtain ⟨m, hm, rfl⟩ := List.mem_iff_getElem.mp hc'
+        have hm' : m < Γ.owned.length := hlen ▸ hm
+        rw [(hkey m hm').1, (hkey m hm').2]
+        exact h.owned.heap _ (List.getElem_mem hm') b l hl
+      apart := by
+        rw [List.pairwise_iff_getElem]
+        intro i j hi hj hij
+        have hi' : i < Γ.owned.length := hlen ▸ hi
+        have hj' : j < Γ.owned.length := hlen ▸ hj
+        rw [(hkey i hi').1, (hkey i hi').2, (hkey j hj').1, (hkey j hj').2]
+        exact List.pairwise_iff_getElem.mp h.owned.apart i j hi' hj' hij } }
+
 /-- Any `m` bytes inside field `i` of a block are readable. -/
 theorem canRead_inner {a : BitVec 64} {l : Layout} {i k m : Nat} (h : WellTyped fetch sys Ψ ix Γ s)
     (hl : Ψ a = some l) (hi : i < l.fields.length) (hk : k + m ≤ 8) :
@@ -1289,6 +1428,52 @@ theorem subBorrow_defined {n : Nat} (a b : BitVec n) (c : Bool) :
     (subBorrow a b c).2.defined = true :=
   Flags.ofResult_defined _ _ _
 
+/-- An address `off` bytes into a block, as a field and a byte within it. -/
+theorem off_split (a off : BitVec 64) :
+    a + off = a + BitVec.ofNat 64 (8 * (off.toNat / 8) + off.toNat % 8) := by
+  congr 1
+  apply BitVec.eq_of_toNat_eq
+  have := off.isLt
+  simp only [BitVec.toNat_ofNat]
+  omega
+
+theorem State.ea_base (s : State) (b : Reg) (disp : BitVec 32) :
+    s.ea (.sib (some b) none disp) = s.getReg b + disp.signExtend 64 := by
+  simp [State.ea]
+
+/-- Bytes within a field of an owned block may be written. -/
+theorem WellTyped.canWrite_owned {k : Nat} {a off : BitVec 64} {F : List Ty} {m : Nat}
+    (h : WellTyped fetch sys Ψ ix Γ s) (hk : Γ.owned[k]? = some (a, F))
+    (hm : off.toNat + m ≤ 8 * F.length) : s.canWrite (a + off) m = true := by
+  obtain ⟨hklt, hkeq⟩ := List.getElem?_eq_some_iff.mp hk
+  have hin : (a, F) ∈ Γ.owned := hkeq ▸ List.getElem_mem hklt
+  have := State.canWrite_sub (h.owned.perm _ hin) (o := off.toNat) (m := m) hm
+  rwa [BitVec.ofNat_toNat, BitVec.setWidth_eq] at this
+
+/-- A change confined to one integer field of an owned block keeps the
+state well typed as it was. -/
+theorem WellTyped.writeOwnedInner {s' : State} {k : Nat} {a off : BitVec 64} {F : List Ty}
+    (h : WellTyped fetch sys Ψ ix Γ s) (hΨ : Ψ.WF) (hk : Γ.owned[k]? = some (a, F))
+    (hi : F[off.toNat / 8]? = some .int)
+    (hregs : s'.regs = s.regs) (hflags : s'.flags = s.flags) (hperm : s'.perm = s.perm)
+    (hframe : ∀ y, Disjoint (a + BitVec.ofNat 64 (8 * (off.toNat / 8))) (8 * 1) y 8 →
+      s'.load64 y = s.load64 y)
+    (hmem : ∀ x, BitVec.ofNat 64 (8 * 1) ≤ x - (a + BitVec.ofNat 64 (8 * (off.toNat / 8))) →
+      s'.mem x = s.mem x) : WellTyped fetch sys Ψ ix Γ s' := by
+  have hilt := (List.getElem?_eq_some_iff.mp hi).1
+  have hw := h.writeOwned hΨ hk (lo := off.toNat / 8) (cnt := 1) (F' := F) (by omega) (by omega)
+    rfl (fun _ _ => rfl) hregs hflags hperm hframe hmem (fun j τ h1 h2 hj => by
+      have e : j = off.toNat / 8 := by omega
+      subst e
+      rw [hi] at hj
+      cases hj
+      exact HasTy.int _)
+  obtain ⟨hklt, hkeq⟩ := List.getElem?_eq_some_iff.mp hk
+  have hset : Γ.owned.set k (a, F) = Γ.owned := by
+    rw [← hkeq]; exact List.set_getElem_self hklt
+  rw [hset] at hw
+  exact hw
+
 /-- A readable memory operand's bytes are readable. -/
 theorem ReadOk.canRead {n : Nat} {m : Mem} (hr : ReadOk Ψ next Γ n (.mem m))
     (h : WellTyped fetch sys Ψ ix Γ s) (hrip : s.rip = next) : s.canRead (s.ea m) n = true := by
@@ -1321,6 +1506,10 @@ theorem ReadOk.canRead {n : Nat} {m : Mem} (hr : ReadOk Ψ next Γ n (.mem m))
   | @text b more hb hΓ hn =>
     subst hn
     exact h.canRead_text hb hΓ
+  | @owned b k a v off F disp hb hΓ hat hn =>
+    obtain ⟨hk, hoff⟩ := hat
+    rw [State.ea_base, h.eqReg hb hΓ, hoff]
+    exact State.canRead_of_canWrite (h.canWrite_owned hk hn)
 
 /-- Reading a readable operand succeeds. -/
 theorem ReadOk.readRM {w : Width} {rm : RM} (hr : ReadOk Ψ next Γ w.bytes.toNat rm)
@@ -1382,6 +1571,22 @@ theorem WriteIntOk.writeRM {w : Width} {rm : RM} {Γ' : Ctx}
           rw [inner_split]; exact State.load64_store_inner s w _ hk hd)
         (fun x hx => by rw [inner_split]; exact State.mem_store_inner s w _ hk hx)⟩
     simp only [State.writeRM, hea, State.write, hc, ite_true]
+  | @owned b k a v₀ off F disp hb hΓ hat hi hkk =>
+    obtain ⟨hk, hoff⟩ := hat
+    have hilt := (List.getElem?_eq_some_iff.mp hi).1
+    have hea : s.ea (.sib (some b) none disp)
+        = a + BitVec.ofNat 64 (8 * (off.toNat / 8) + off.toNat % 8) := by
+      rw [State.ea_base, h.eqReg hb hΓ, hoff]; exact off_split a off
+    have hc : s.canWrite (a + BitVec.ofNat 64 (8 * (off.toNat / 8) + off.toNat % 8))
+        w.bytes.toNat = true := by
+      rw [← off_split]; exact h.canWrite_owned hk (by omega)
+    refine ⟨s.store w (a + BitVec.ofNat 64 (8 * (off.toNat / 8) + off.toNat % 8)) v, ?_,
+      State.rip_store _ _ _ _,
+      h.writeOwnedInner hΨ hk hi (State.regs_store _ _ _ _) (State.flags_store _ _ _ _)
+        (State.perm_store _ _ _ _) (fun y hd => by
+          rw [inner_split]; exact State.load64_store_inner s w _ hkk hd)
+        (fun x hx => by rw [inner_split]; exact State.mem_store_inner s w _ hkk hx)⟩
+    simp only [State.writeRM, hea, State.write, hc, ite_true]
   | @reg d hd => exact ⟨s.writeReg w d v, rfl, rfl, h.setReg hd (HasTy.int _)⟩
   | @field b fields off i k disp hb hΓ hdisp hi hk =>
     have hp := h.regs b hb
@@ -1438,6 +1643,19 @@ theorem WriteIntOk.writeRM8 {rm : RM} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 1 
         rw [inner_split]; exact State.load64_store8_inner s _ hk hd)
         (fun x hx => by rw [inner_split]; exact State.mem_store8_inner s _ hk hx)⟩
     simp only [State.writeRM8, hea, State.write8, hc, ite_true]
+  | @owned b k a v₀ off F disp hb hΓ hat hi hkk =>
+    obtain ⟨hk, hoff⟩ := hat
+    have hilt := (List.getElem?_eq_some_iff.mp hi).1
+    have hea : s.ea (.sib (some b) none disp)
+        = a + BitVec.ofNat 64 (8 * (off.toNat / 8) + off.toNat % 8) := by
+      rw [State.ea_base, h.eqReg hb hΓ, hoff]; exact off_split a off
+    have hc : s.canWrite (a + BitVec.ofNat 64 (8 * (off.toNat / 8) + off.toNat % 8)) 1 = true := by
+      rw [← off_split]; exact h.canWrite_owned hk (by omega)
+    refine ⟨s.store8 (a + BitVec.ofNat 64 (8 * (off.toNat / 8) + off.toNat % 8)) v, ?_, rfl,
+      h.writeOwnedInner hΨ hk hi rfl rfl rfl (fun y hd => by
+        rw [inner_split]; exact State.load64_store8_inner s _ hkk hd)
+        (fun x hx => by rw [inner_split]; exact State.mem_store8_inner s _ hkk hx)⟩
+    simp only [State.writeRM8, hea, State.write8, hc, ite_true]
   | @reg d hd => exact ⟨_, rfl, rfl, h.setReg hd (HasTy.int _)⟩
   | @field b fields off i k disp hb hΓ hdisp hi hk =>
     have hp := h.regs b hb
@@ -1491,6 +1709,19 @@ theorem WriteIntOk.write16 {m : Mem} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 2 (
       h.writeInt hΨ hl hi rfl rfl rfl (fun y hd => by
         rw [inner_split]; exact State.load64_store16_inner s _ hk hd)
         (fun x hx => by rw [inner_split]; exact State.mem_store16_inner s _ hk hx)⟩
+    simp only [hea, State.write16, hc, ite_true]
+  | @owned b k a v₀ off F disp hb hΓ hat hi hkk =>
+    obtain ⟨hk, hoff⟩ := hat
+    have hilt := (List.getElem?_eq_some_iff.mp hi).1
+    have hea : s.ea (.sib (some b) none disp)
+        = a + BitVec.ofNat 64 (8 * (off.toNat / 8) + off.toNat % 8) := by
+      rw [State.ea_base, h.eqReg hb hΓ, hoff]; exact off_split a off
+    have hc : s.canWrite (a + BitVec.ofNat 64 (8 * (off.toNat / 8) + off.toNat % 8)) 2 = true := by
+      rw [← off_split]; exact h.canWrite_owned hk (by omega)
+    refine ⟨s.store16 (a + BitVec.ofNat 64 (8 * (off.toNat / 8) + off.toNat % 8)) v, ?_, rfl,
+      h.writeOwnedInner hΨ hk hi rfl rfl rfl (fun y hd => by
+        rw [inner_split]; exact State.load64_store16_inner s _ hkk hd)
+        (fun x hx => by rw [inner_split]; exact State.mem_store16_inner s _ hkk hx)⟩
     simp only [hea, State.write16, hc, ite_true]
   | @field b fields off i k disp hb hΓ hdisp hi hk =>
     have hp := h.regs b hb
@@ -2031,6 +2262,44 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
       State.store64_rip _ _ _, h.storeField hΨ hl hi ((h.regs src hs).sub hsub)⟩
     simp [exec, State.writeRM, Operands.src, Operands.dst, hea,
       State.readReg_w64, State.write_w64 _ (h.canWrite_field hl (hw rfl) hilt)]
+  | @loadOwned d b k a v off F disp τ hd hb hΓ hat h8 hi =>
+    obtain ⟨hk, hoff⟩ := hat
+    have hilt := (List.getElem?_eq_some_iff.mp hi).1
+    obtain ⟨hklt, hkeq⟩ := List.getElem?_eq_some_iff.mp hk
+    have hin : (a, F) ∈ Γ.owned := hkeq ▸ List.getElem_mem hklt
+    have hea : s.ea (.sib (some b) none disp) = a + BitVec.ofNat 64 (8 * (off.toNat / 8)) := by
+      rw [State.ea_base, h.eqReg hb hΓ, hoff, off_split a off, h8, Nat.add_zero]
+    have hc : s.canRead (a + BitVec.ofNat 64 (8 * (off.toNat / 8))) 8 = true :=
+      State.canRead_of_canWrite (State.canWrite_sub (n := 8 * F.length)
+        (o := 8 * (off.toNat / 8)) (m := 8) (h.owned.perm _ hin) (by omega))
+    refine ⟨s.setReg d (s.load64 (a + BitVec.ofNat 64 (8 * (off.toNat / 8)))), ?_, rfl,
+      h.setReg hd (h.owned.vals _ hin _ τ hi)⟩
+    simp [exec, State.writeRM, Operands.src, Operands.dst, hea, State.read_w64 hc, State.writeReg]
+  | @storeOwned b src k a v off F disp hb hs hΓ hat h8 hilt =>
+    obtain ⟨hk, hoff⟩ := hat
+    obtain ⟨hklt, hkeq⟩ := List.getElem?_eq_some_iff.mp hk
+    have hin : (a, F) ∈ Γ.owned := hkeq ▸ List.getElem_mem hklt
+    have hea : s.ea (.sib (some b) none disp) = a + BitVec.ofNat 64 (8 * (off.toNat / 8)) := by
+      rw [State.ea_base, h.eqReg hb hΓ, hoff, off_split a off, h8, Nat.add_zero]
+    have hc : s.canWrite (a + BitVec.ofNat 64 (8 * (off.toNat / 8))) 8 = true :=
+      State.canWrite_sub (n := 8 * F.length) (o := 8 * (off.toNat / 8)) (m := 8)
+        (h.owned.perm _ hin) (by omega)
+    refine ⟨s.store64 (a + BitVec.ofNat 64 (8 * (off.toNat / 8))) (s.getReg src), ?_,
+      State.store64_rip _ _ _,
+      h.writeOwned hΨ hk (lo := off.toNat / 8) (cnt := 1) (by omega) (by omega) List.length_set
+        (fun j hj => List.getElem?_set_ne (by omega))
+        (State.store64_regs _ _ _) (State.store64_flags _ _ _) (State.store64_perm _ _ _)
+        (fun y hd => State.load64_store64_disjoint s _ hd)
+        (fun x hx => State.mem_store_of_disjoint s .w64 _ _ _ hx)
+        (fun j τ h1 h2 hj => by
+          have e : j = off.toNat / 8 := by omega
+          subst e
+          rw [List.getElem?_set_self hilt] at hj
+          cases hj
+          rw [State.load64_store64_same]
+          exact h.regs src hs)⟩
+    simp [exec, State.writeRM, Operands.src, Operands.dst, hea,
+      State.readReg_w64, State.write_w64 _ hc]
   | @loadIndexed d b x sc fields writable off i disp c τ hd hb hΓ hΓx hD hi =>
     have hp := h.regs b hb
     rw [hΓ] at hp
