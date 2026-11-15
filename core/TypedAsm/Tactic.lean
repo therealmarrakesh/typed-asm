@@ -7,6 +7,7 @@ import TypedAsm.Linux
 import TypedAsm.Owned
 import TypedAsm.RegMap
 import TypedAsm.Entry
+import TypedAsm.EndToEnd
 
 /-!
 # Tactics for typing programs
@@ -2453,6 +2454,41 @@ elab_rules : tactic
       (do evalTactic (← `(tactic| try simp only [List.replicate_append_replicate,
             List.cons_append, List.nil_append, Nat.reduceAdd, Nat.max_def, Nat.min_def,
             Nat.reduceLeDiff, ↓reduceIte])))
+
+/-- `ty_loaded` proves that a starting state meets an entry contract, when
+the state is a prepared one with the program's bytes loaded and `rip` at the
+entry: the form the simulator's starting states have. What is left to show
+is arithmetic about where things are, and is settled by computing. -/
+elab "ty_loaded" : tactic => withMainContext do
+  let g ← getMainGoal
+  let others := (← getGoals).drop 1
+  let t ← whnfR (← instantiateMVars (← g.getType))
+  let tac ←
+    if t.isAppOf ``TypedAsm.Entry then
+      `(tactic| refine Entry.ofLoad ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_)
+    else if t.isAppOf ``TypedAsm.EntryArgs then
+      `(tactic| refine EntryArgs.ofLoad _ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_)
+    else if t.isAppOf ``TypedAsm.EntryTexts then
+      `(tactic| refine EntryTexts.ofLoad _ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_)
+    else throwError "ty_loaded: the goal is not an entry contract"
+  let gs ← try runOn g (do evalTactic tac)
+    catch _ =>
+      throwError "ty_loaded: the state must be a prepared state with the program's bytes \
+        loaded at its base and `rip` at its entry"
+  for g in gs do
+    if ← g.isAssigned then continue
+    let t ← instantiateMVars (← g.getType)
+    try
+      if t.isAppOf ``State.HasData then
+        discard <| runOn g (do evalTactic (← `(tactic| first
+          | exact (State.hasData_loadData _ _ _ _ (by decide +kernel)).congr rfl
+          | exact State.hasData_loadData _ _ _ _ (by decide +kernel))))
+      else
+        discard <| runOn g (do evalTactic (← `(tactic| decide +kernel)))
+    catch _ =>
+      throwError "ty_loaded: the starting state does not meet the entry contract; this does \
+        not hold:{indentExpr t}"
+  setGoals others
 
 /-- `ty_into h` types the instruction here and ends the block with it. Use it
 when the next instruction is at a label and the block should hand over to
