@@ -255,53 +255,36 @@ theorem allBelow_iff {p : Nat → Bool} {n : Nat} :
       simp only [h n (by omega), ↓reduceIte]
       exact ih.mpr (fun i hi => h i (by omega))
 
-/-- Whether none of the `n` bytes starting at `a` is accessible. It is asked
-page by page of the pages handed out since the start. Of the permissions
-there were to begin with it is asked byte by byte, unless the whole range
-lies where nothing was accessible to begin with. `unmapped_iff` says that
-this is the same as asking every byte. -/
+/-- Whether none of the `n` bytes starting at `a` is accessible. Where the
+whole range lies beyond anything that was accessible to begin with, it is
+enough that no page of it has been made accessible since; otherwise every
+byte is asked. `unmapped_iff` says the two ways agree. -/
 def unmapped (s : State) (a : BitVec 64) (n : Nat) : Bool :=
-  Pages.noneIn s.perms.pages (a.toNat / 4096) ((n + 4095) / 4096) &&
-  (decide (s.perms.clearFrom ≤ a.toNat) ||
-    allBelow (fun i => decide (s.perms.initial (a + BitVec.ofNat 64 i) = .none)) n)
+  (decide (s.perms.clearFrom ≤ a.toNat) &&
+    allBelow (fun j => decide ((s.perms.pages[a.toNat / 4096 + j]?).getD .none = .none))
+      ((n + 4095) / 4096)) ||
+  allBelow (fun i => decide (s.perm (a + BitVec.ofNat 64 i) = .none)) n
 
 theorem unmapped_iff {s : State} {a : BitVec 64} {n : Nat} (hal : a.toNat % 4096 = 0)
     (hfit : a.toNat + n ≤ 2 ^ 64) :
     s.unmapped a n = true ↔ ∀ i, i < n → s.perm (a + BitVec.ofNat 64 i) = .none := by
-  simp only [unmapped, Bool.and_eq_true, Bool.or_eq_true, Pages.noneIn_iff, allBelow_iff,
-    decide_eq_true_eq]
+  simp only [unmapped, Bool.or_eq_true, Bool.and_eq_true, allBelow_iff, decide_eq_true_eq]
   have hnat : ∀ i, i < n → (a + BitVec.ofNat 64 i).toNat = a.toNat + i := by
     intro i hi
     rw [BitVec.toNat_add, BitVec.toNat_ofNat]
     omega
-  have hpg : ∀ i, i < n → (a + BitVec.ofNat 64 i).toNat / 4096 = a.toNat / 4096 + i / 4096 := by
-    intro i hi
-    rw [hnat i hi]
-    omega
   constructor
-  · rintro ⟨hp, hi⟩ i hin
-    show s.perms.get _ = _
-    simp only [Perms.get, hpg i hin, hp (i / 4096) (by omega), Bool.false_eq_true, ↓reduceIte]
-    rcases hi with hclear | hi
-    · exact s.perms.clear _ (by rw [hnat i hin]; omega)
-    · exact hi i hin
-  · intro h
-    constructor
-    · intro j hj
-      have hlt : j * 4096 < n := by omega
-      have hperm : s.perms.get (a + BitVec.ofNat 64 (j * 4096)) = .none := h (j * 4096) hlt
-      simp only [Perms.get, hpg _ hlt] at hperm
-      rw [show a.toNat / 4096 + j * 4096 / 4096 = a.toNat / 4096 + j by omega] at hperm
-      cases hc : s.perms.pages.contains (a.toNat / 4096 + j) with
-      | false => rfl
-      | true => simp [hc] at hperm
-    · right
-      intro i hin
-      have hperm : s.perms.get (a + BitVec.ofNat 64 i) = .none := h i hin
-      simp only [Perms.get] at hperm
-      split at hperm
-      · cases hperm
-      · exact hperm
+  · rintro (⟨hclear, hp⟩ | hall) i hin
+    · show s.perms.get _ = _
+      have hpg : (a + BitVec.ofNat 64 i).toNat / 4096 = a.toNat / 4096 + i / 4096 := by
+        rw [hnat i hin]; omega
+      have hq := hp (i / 4096) (by omega)
+      simp only [Perms.get, hpg]
+      cases hc : s.perms.pages[a.toNat / 4096 + i / 4096]? with
+      | none => exact s.perms.clear _ (by rw [hnat i hin]; omega)
+      | some q => rw [hc] at hq; exact hq
+    · exact hall i hin
+  · exact fun h => .inr h
 
 /-- Make the `size` bytes starting at `a` readable and writable, holding zero.
 This is what the kernel does when it hands a program fresh memory. It is
@@ -377,6 +360,17 @@ theorem load64_mapZero_in {y : BitVec 64}
   rfl
 
 end MapZero
+
+/-- Make the `size` bytes starting at `a` inaccessible again. What they hold
+is of no account: nothing can look. -/
+def unmap (s : State) (a : BitVec 64) (size : Nat) : State :=
+  { s with perms := s.perms.setRange a size .none }
+
+theorem perm_unmap (s : State) {a : BitVec 64} {size : Nat} (hal : a.toNat % 4096 = 0)
+    (hsz : size % 4096 = 0) (hfit : a.toNat + size ≤ 2 ^ 64) (x : BitVec 64) :
+    (s.unmap a size).perm x = if (x - a).toNat < size then .none else s.perm x :=
+  Perms.get_setRange _ .none x hal hsz hfit
+
 
 theorem canRead_of_canWrite {s : State} {a : BitVec 64} {n : Nat} (h : s.canWrite a n = true) :
     s.canRead a n = true := by

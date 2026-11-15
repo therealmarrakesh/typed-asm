@@ -334,6 +334,31 @@ theorem getD_eraseRange (t : Std.TreeMap Nat (BitVec 8)) (first n k : Nat) (d : 
       · have h2 : ¬ (first ≤ k ∧ k < first + (n + 1)) := by omega
         simp only [h1, h2, ↓reduceIte]
 
+/-- Give the pages `first`, …, `first + count - 1` the permission `q`. -/
+def setRange (t : Std.TreeMap Nat Perm) (first : Nat) (q : Perm) : Nat → Std.TreeMap Nat Perm
+  | 0 => t
+  | n + 1 => setRange (t.insert (first + n) q) first q n
+
+theorem getElem?_setRange (t : Std.TreeMap Nat Perm) (first : Nat) (q : Perm) (n k : Nat) :
+    (setRange t first q n)[k]? = if first ≤ k ∧ k < first + n then some q else t[k]? := by
+  induction n generalizing t with
+  | zero =>
+    have h0 : ¬ (first ≤ k ∧ k < first + 0) := by omega
+    show t[k]? = _
+    simp only [h0, ↓reduceIte]
+  | succ n ih =>
+    rw [setRange, ih, Std.TreeMap.getElem?_insert]
+    by_cases h : first + n = k
+    · subst h
+      simp
+    · have hc : ¬ compare (first + n) k = Ordering.eq := by
+        simp [h]
+      simp only [hc, ↓reduceIte]
+      by_cases h1 : first ≤ k ∧ k < first + n
+      · simp only [h1, and_self, ↓reduceIte, show first ≤ k ∧ k < first + (n + 1) from ⟨h1.1, by omega⟩]
+      · have h2 : ¬ (first ≤ k ∧ k < first + (n + 1)) := by omega
+        simp only [h1, h2, ↓reduceIte]
+
 /-- A byte is among the `size` bytes from `a` exactly when its page is among
 the pages from `a`'s, provided the range is whole pages and does not wrap. -/
 theorem in_range_iff {a x : BitVec 64} {size : Nat} (hal : a.toNat % 4096 = 0)
@@ -347,13 +372,14 @@ theorem in_range_iff {a x : BitVec 64} {size : Nat} (hal : a.toNat % 4096 = 0)
 
 end Pages
 
-/-- The permission of every byte: what it was to begin with, and the pages
-made readable and writable since. `clearFrom` is an address from which
-nothing was accessible to begin with; knowing one lets a whole range be
-found free without asking about each of its bytes. -/
+/-- The permission of every byte: what it was to begin with, and what whole
+pages have been given since, when memory was handed to the program or taken
+back. `clearFrom` is an address from which nothing was accessible to begin
+with; knowing one lets a whole range be found free without asking about
+each of its bytes. -/
 structure Perms where
   initial : BitVec 64 → Perm
-  pages : Std.TreeMap Nat Unit := {}
+  pages : Std.TreeMap Nat Perm := {}
   clearFrom : Nat := 2 ^ 64
   clear : ∀ x : BitVec 64, clearFrom ≤ x.toNat → initial x = .none := by
     intro x h; exact absurd x.isLt (by omega)
@@ -361,7 +387,7 @@ structure Perms where
 namespace Perms
 
 @[inline] def get (p : Perms) (x : BitVec 64) : Perm :=
-  if p.pages.contains (x.toNat / 4096) then .rw else p.initial x
+  (p.pages[x.toNat / 4096]?).getD (p.initial x)
 
 /-- The permissions given by a function. -/
 def ofFun (f : BitVec 64 → Perm) : Perms :=
@@ -399,24 +425,34 @@ theorem get_override (p : Perms) (inRange : BitVec 64 → Bool) (q : Perm) (top 
   unfold override
   split
   · next he =>
-    have hc : ∀ k, p.pages.contains k = false := fun k => Std.TreeMap.contains_of_isEmpty he
-    simp only [get, hc, Std.TreeMap.contains_emptyc, Bool.false_eq_true, ↓reduceIte]
+    have hc : ∀ k, p.pages[k]? = Option.none := fun k =>
+      Std.TreeMap.getElem?_eq_none_of_contains_eq_false (Std.TreeMap.contains_of_isEmpty he)
+    simp only [get, hc, Std.TreeMap.getElem?_emptyc, Option.getD_none]
   · exact get_ofFun _ _
+
+/-- Give the pages of the `size` bytes starting at `a` the permission `q`. -/
+def setRange (p : Perms) (a : BitVec 64) (size : Nat) (q : Perm) : Perms :=
+  { p with pages := Pages.setRange p.pages (a.toNat / 4096) q (size / 4096) }
+
+theorem get_setRange (p : Perms) {a : BitVec 64} {size : Nat} (q : Perm) (x : BitVec 64)
+    (hal : a.toNat % 4096 = 0) (hsz : size % 4096 = 0) (hfit : a.toNat + size ≤ 2 ^ 64) :
+    (p.setRange a size q).get x = if (x - a).toNat < size then q else p.get x := by
+  have key := Pages.in_range_iff (x := x) hal hsz hfit
+  simp only [get, setRange, Pages.getElem?_setRange]
+  by_cases h : (x - a).toNat < size
+  · have hp := key.mpr h
+    simp only [hp, and_self, ↓reduceIte, h, Option.getD_some]
+  · have h' := mt key.mp h
+    simp only [h', ↓reduceIte, h]
 
 /-- Make the pages of the `size` bytes starting at `a` readable and writable. -/
 def mapRange (p : Perms) (a : BitVec 64) (size : Nat) : Perms :=
-  { p with pages := Pages.insertRange p.pages (a.toNat / 4096) (size / 4096) }
+  p.setRange a size .rw
 
 theorem get_mapRange (p : Perms) {a : BitVec 64} {size : Nat} (x : BitVec 64)
     (hal : a.toNat % 4096 = 0) (hsz : size % 4096 = 0) (hfit : a.toNat + size ≤ 2 ^ 64) :
-    (p.mapRange a size).get x = if (x - a).toNat < size then .rw else p.get x := by
-  have key := Pages.in_range_iff (x := x) hal hsz hfit
-  simp only [get, mapRange, Pages.contains_insertRange]
-  by_cases h : (x - a).toNat < size
-  · have hp := key.mpr h
-    simp only [hp, and_self, decide_true, Bool.or_true, ↓reduceIte, h]
-  · have h' := mt key.mp h
-    simp only [h', decide_false, Bool.or_false, h, ↓reduceIte]
+    (p.mapRange a size).get x = if (x - a).toNat < size then .rw else p.get x :=
+  get_setRange p .rw x hal hsz hfit
 
 end Perms
 

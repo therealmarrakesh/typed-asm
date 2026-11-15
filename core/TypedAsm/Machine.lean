@@ -79,7 +79,7 @@ theorem Loaded.frame {fetch : Fetch} {s s' : State} (h : Loaded fetch s) (hf : F
   refine ⟨hlen, fun k hk => ?_⟩
   obtain ⟨hm, hp⟩ := hbytes k hk
   have hne : s.perm (a + BitVec.ofNat 64 k) ≠ .none := by rw [hp]; decide
-  refine ⟨?_, by rw [hf.perm _ hne]; exact hp⟩
+  refine ⟨?_, by rw [hf.perm _ hne (by rw [hp]; rfl)]; exact hp⟩
   rw [hf.mem _ hne (by rw [hp]; rfl)]
   exact hm
 

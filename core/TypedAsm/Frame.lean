@@ -3,36 +3,38 @@ import TypedAsm.Step
 /-!
 # What an instruction can change in memory
 
-`Frame s s'` says that going from `s` to `s'` changed the permission of no
-accessible byte, and no accessible byte that was not writable. Every
-instruction satisfies it, so code, which is never writable, is never
-changed. Memory that was not accessible may become so: that is what
-allocating memory does.
+`Frame s s'` says that going from `s` to `s'` changed neither the permission
+nor the contents of any byte that was accessible but not writable. Every
+instruction satisfies it, so code, which is never writable, is never changed
+and stays where it is. Memory that was not accessible may become so, and
+writable memory may be given back: that is what allocating and freeing do.
 -/
 
 namespace TypedAsm
 
-/-- No accessible byte changed permission, and no accessible byte that was
-not writable changed. -/
+/-- No byte that was accessible but not writable changed, in permission or
+in contents. -/
 structure Frame (s s' : State) : Prop where
-  perm : ∀ x, s.perm x ≠ .none → s'.perm x = s.perm x
+  perm : ∀ x, s.perm x ≠ .none → (s.perm x).writable = false → s'.perm x = s.perm x
   mem : ∀ x, s.perm x ≠ .none → (s.perm x).writable = false → s'.mem x = s.mem x
 
 namespace Frame
 
 theorem refl (s : State) : Frame s s :=
-  ⟨fun _ _ => rfl, fun _ _ _ => rfl⟩
+  ⟨fun _ _ _ => rfl, fun _ _ _ => rfl⟩
 
 theorem trans {s t u : State} (h₁ : Frame s t) (h₂ : Frame t u) : Frame s u :=
-  ⟨fun x hx => (h₂.perm x (by rw [h₁.perm x hx]; exact hx)).trans (h₁.perm x hx),
+  ⟨fun x hx hw =>
+      (h₂.perm x (by rw [h₁.perm x hx hw]; exact hx) (by rw [h₁.perm x hx hw]; exact hw)).trans
+        (h₁.perm x hx hw),
     fun x hx hw =>
-      (h₂.mem x (by rw [h₁.perm x hx]; exact hx) (by rw [h₁.perm x hx]; exact hw)).trans
+      (h₂.mem x (by rw [h₁.perm x hx hw]; exact hx) (by rw [h₁.perm x hx hw]; exact hw)).trans
         (h₁.mem x hx hw)⟩
 
 /-- No permission changed at all, and no byte that was not writable changed. -/
 theorem of_perm {s s' : State} (hp : s'.perm = s.perm)
     (hm : ∀ x, (s.perm x).writable = false → s'.mem x = s.mem x) : Frame s s' :=
-  ⟨fun x _ => by rw [hp], fun x _ hw => hm x hw⟩
+  ⟨fun x _ _ => by rw [hp], fun x _ hw => hm x hw⟩
 
 /-- A state with the same memory and permissions. -/
 theorem of_eq {s s' : State} (hm : s'.mem = s.mem) (hp : s'.perm = s.perm) : Frame s s' :=
@@ -143,8 +145,8 @@ macro "frame_steps" : tactic =>
       | split
       | (apply Result.All.of_forall; intro _)))
 
-/-- **No instruction changes the permission of an accessible byte, or an
-accessible byte that is not writable.**
+/-- **No instruction changes a byte that is accessible but not writable, in
+permission or in contents.**
 A system call is covered by the assumption that the operating system does not. -/
 theorem exec_frame {sys : Syscall} (hsys : ∀ s, (sys s).All (Frame s)) (i : Instr) (s : State) :
     (exec sys i s).All (Frame s) := by

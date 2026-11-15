@@ -168,6 +168,19 @@ structure OwnedAt (owned : List (BitVec 64 × List Ty)) (k : Nat) (a : BitVec 64
   entry : owned[k]? = some (a, F)
   addr : p = a + off
 
+/-- As `OwnedAt.mk`, for a search among several blocks: the offset is also
+shown to fall inside the block, so that a block the address is not in is
+passed over. -/
+theorem OwnedAt.of_inside {owned : List (BitVec 64 × List Ty)} {k : Nat} {a : BitVec 64}
+    {F : List Ty} {p off : BitVec 64} (entry : owned[k]? = some (a, F)) (addr : p = a + off)
+    (_inside : off.toNat < 8 * F.length) : OwnedAt owned k a F p off :=
+  ⟨entry, addr⟩
+
+/-- An address written from one place, seen from a block that starts at another. -/
+theorem OwnedAt.addr_sub (v c d : BitVec 64) : v + c = v + d + (c - d) := by bv_omega
+
+theorem OwnedAt.addr_sub' (v e c d : BitVec 64) : v + e + c = v + d + (e + c - d) := by bv_omega
+
 /-- `ReadOk Ψ next Γ n rm`: reading `n` bytes from `rm` is safe. For memory, the
 bytes must lie inside one field or one stack slot. -/
 inductive ReadOk (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) (n : Nat) : RM → Prop
@@ -897,6 +910,15 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
   | cover {ι : Type} {Γ : Ctx} {Γ' : ι → Ctx} {i : Instr} :
     (∀ Ψ₁ : MemTy, Ψ.Ext Ψ₁ → Ψ₁.WF →
       ∀ n s, WellTyped fetch sys Ψ₁ n Γ s → ∃ x, WellTyped fetch sys Ψ₁ n (Γ' x) s) →
+    (∀ x, HasType Φ fetch sys Ψ next (Γ' x) i) → HasType Φ fetch sys Ψ next Γ i
+  /-- The memory typing may be found larger than it was: if every state
+  matching `Γ` matches one of a family of contexts once some blocks are
+  added to the memory typing, and the instruction is typed in each of them,
+  it is typed in `Γ`. This is how memory a program owns becomes memory it
+  shares: the block joins the memory typing, for good. -/
+  | grow {ι : Type} {Γ : Ctx} {Γ' : ι → Ctx} {i : Instr} :
+    (∀ Ψ₁ : MemTy, Ψ.Ext Ψ₁ → Ψ₁.WF → ∀ n s, WellTyped fetch sys Ψ₁ n Γ s →
+      ∃ Ψ₂ : MemTy, Ψ₁.Ext Ψ₂ ∧ Ψ₂.WF ∧ ∃ x, WellTyped fetch sys Ψ₂ n (Γ' x) s) →
     (∀ x, HasType Φ fetch sys Ψ next (Γ' x) i) → HasType Φ fetch sys Ψ next Γ i
   /-- The rule of consequence: an instruction typed in `Γ'` is typed in any
   context whose matching states all match `Γ'`. This is the escape from the

@@ -53,6 +53,13 @@ inductive BlockOk (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) :
     (∀ Ψ₁ : MemTy, Ψ.Ext Ψ₁ → Ψ₁.WF →
       ∀ n s, WellTyped fetch sys Ψ₁ n Γ s → ∃ x, WellTyped fetch sys Ψ₁ n (Γ' x) s) →
     (∀ x, BlockOk Φ fetch sys Ψ a (Γ' x)) → BlockOk Φ fetch sys Ψ a Γ
+  /-- The memory typing may be found larger than it was, between
+  instructions: continue in each of a family of contexts that together cover
+  every state matching `Γ`, once some blocks are added to the memory typing. -/
+  | grow {ι : Type} [Nonempty ι] {a : BitVec 64} {Γ : Ctx} {Γ' : ι → Ctx} :
+    (∀ Ψ₁ : MemTy, Ψ.Ext Ψ₁ → Ψ₁.WF → ∀ n s, WellTyped fetch sys Ψ₁ n Γ s →
+      ∃ Ψ₂ : MemTy, Ψ₁.Ext Ψ₂ ∧ Ψ₂.WF ∧ ∃ x, WellTyped fetch sys Ψ₂ n (Γ' x) s) →
+    (∀ x, BlockOk Φ fetch sys Ψ a (Γ' x)) → BlockOk Φ fetch sys Ψ a Γ
   /-- A register holding exactly the address of a function may be treated as
   a pointer to that function from here on. -/
   | fnPtr {a : BitVec 64} {Γ : Ctx} {r : Reg} {v : BitVec 64} {sig : FnSig} :
@@ -99,6 +106,7 @@ theorem HasType.mono (h : ∀ a Γ, Φ a Γ → Φ' a Γ) {next : BitVec 64} {Γ
     exact .callFn hh hroom (h _ _ hret) hargs hsp hback hneed hown
   | jmpFn hh hK hsub => exact .jmpFn hh hK hsub
   | cover hsem _ ih => exact .cover hsem ih
+  | grow hsem _ ih => exact .grow hsem ih
   | codePtr hr hΓ hΦ _ ih => exact .codePtr hr hΓ (h _ _ hΦ) ih
   | weaken hsem _ ih => exact .weaken hsem ih
 
@@ -124,6 +132,13 @@ theorem BlocksOk.programOk (h : BlocksOk Φ fetch sys Ψ) :
     obtain ⟨x₀⟩ := inst
     obtain ⟨i, len, hf, -⟩ := ih x₀
     refine ⟨i, len, hf, .cover hsem (fun x => ?_)⟩
+    obtain ⟨i', len', hf', ht'⟩ := ih x
+    cases hf.symm.trans hf'
+    exact ht'
+  | @grow ι inst a Γ Γ' hsem _ ih =>
+    obtain ⟨x₀⟩ := inst
+    obtain ⟨i, len, hf, -⟩ := ih x₀
+    refine ⟨i, len, hf, .grow hsem (fun x => ?_)⟩
     obtain ⟨i', len', hf', ht'⟩ := ih x
     cases hf.symm.trans hf'
     exact ht'

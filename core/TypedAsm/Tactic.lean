@@ -4,6 +4,7 @@ import TypedAsm.Fn
 import TypedAsm.Print
 import TypedAsm.Blocks
 import TypedAsm.Linux
+import TypedAsm.Owned
 
 /-!
 # Tactics for typing programs
@@ -33,6 +34,13 @@ needs an argument, typically a fact about values at a branch.
   the fact `h` that the code typing allows some context there.
 * `ty_into h` types one instruction and ends the block there, handing over
   to the label that follows.
+* `ty_mmap_own as p` types an `mmap` whose memory the program then owns, at
+  an address called `p`; `ty_munmap` types giving an owned block back;
+  `ty_freeze r` turns the owned block whose address is in `r` into an
+  ordinary shared block, and `r` into a pointer to it.
+* `ty_split r at m` regards the owned block whose address is in `r` as two,
+  the first `m` fields and the rest; `ty_join r` regards that block and the
+  one that starts where it ends as one.
 * `ty_byte as b` types the load of a byte of text and splits on it: zero, or
   some `b` that is not, after which the pointer may be stepped forward.
 * `ctx_sub` and `sub_regs` compare contexts.
@@ -458,26 +466,74 @@ macro "ty_operand" : tactic =>
     | ty_rule_ordered Holds.reg | ty_rule_ordered Holds.slot | ty_rule_ordered Holds.field
     | ty_rule_ordered Holds.indexed | ty_rule_ordered Holds.global_of)
 
+/-- Shows that a known offset falls inside a block of known length. -/
+macro "ty_inside" : tactic =>
+  `(tactic| first
+    | decide
+    | (simp only [List.length_replicate, List.length_set, List.length_cons, List.length_nil,
+         List.length_take, List.length_drop, List.length_append]
+       first | decide | omega))
+
 /-- Proves that an address is some bytes into an owned block: the block is
-looked for among the first few the context lists, and the address must be
-the block's own, written as it is or with a known amount added. -/
+looked for among the first few the context lists, and is the one the address
+falls inside. The address may be written from the block's own start or from
+that of a block next to it, as it is or with a known amount added. -/
 macro "ty_owned_at" : tactic =>
   `(tactic| first
-    | (refine OwnedAt.mk (k := 0) rfl ?_
-       first | rfl | exact BitVec.add_assoc _ _ _)
-    | (refine OwnedAt.mk (k := 1) rfl ?_
-       first | rfl | exact BitVec.add_assoc _ _ _)
-    | (refine OwnedAt.mk (k := 2) rfl ?_
-       first | rfl | exact BitVec.add_assoc _ _ _)
-    | (refine OwnedAt.mk (k := 3) rfl ?_
-       first | rfl | exact BitVec.add_assoc _ _ _))
+    | (refine' OwnedAt.of_inside (k := 0) ?entry ?addr ?inside
+       case entry => rfl
+       case addr =>
+         first
+         | rfl
+         | exact BitVec.add_assoc _ _ _
+         | exact OwnedAt.addr_sub _ _ _
+         | exact OwnedAt.addr_sub' _ _ _ _
+       case inside => ty_inside)
+    | (refine' OwnedAt.of_inside (k := 1) ?entry ?addr ?inside
+       case entry => rfl
+       case addr =>
+         first
+         | rfl
+         | exact BitVec.add_assoc _ _ _
+         | exact OwnedAt.addr_sub _ _ _
+         | exact OwnedAt.addr_sub' _ _ _ _
+       case inside => ty_inside)
+    | (refine' OwnedAt.of_inside (k := 2) ?entry ?addr ?inside
+       case entry => rfl
+       case addr =>
+         first
+         | rfl
+         | exact BitVec.add_assoc _ _ _
+         | exact OwnedAt.addr_sub _ _ _
+         | exact OwnedAt.addr_sub' _ _ _ _
+       case inside => ty_inside)
+    | (refine' OwnedAt.of_inside (k := 3) ?entry ?addr ?inside
+       case entry => rfl
+       case addr =>
+         first
+         | rfl
+         | exact BitVec.add_assoc _ _ _
+         | exact OwnedAt.addr_sub _ _ _
+         | exact OwnedAt.addr_sub' _ _ _ _
+       case inside => ty_inside))
+
+open Lean Meta Elab Tactic in
+/-- Fails unless the goal is a proposition. A rule's unknowns are goals too,
+and a side-condition tactic let loose on one of them would fill it with
+whatever of the right type lies nearest. -/
+elab "ty_prop_only" : tactic => do
+  unless ← isProp (← getMainTarget) do
+    throwError "not a proposition"
 
 macro_rules
   | `(tactic| ty_side) =>
-    `(tactic| first
+    `(tactic| ty_prop_only; first
       | rfl
       | decide
       | ty_owned_at
+      -- a bound against the length of a long list, without counting it out
+      | (simp only [List.length_replicate, List.length_set, List.length_cons, List.length_nil]
+         first | decide | omega)
       | (refine slotDisp_of _ ?_ ?_ <;> decide)
       | (refine innerDisp_of _ ?_ <;> decide)
       | ty_field
@@ -501,7 +557,8 @@ macro "ty_normalize" : tactic =>
       CtxOf.afterMulDiv,
       ShiftOp.apply, Scale.shift,
       ShiftOp.flagsAfter, Width.bits, Nat.reduceEqDiff, Nat.reduceBEq, ↓reduceIte,
-      AluOp.writesDst, List.set_cons_zero, List.set_cons_succ,
+      AluOp.writesDst, List.set_cons_zero, List.set_cons_succ, List.eraseIdx_cons_zero,
+      List.eraseIdx_cons_succ,
       Bool.cond_true, Bool.cond_false, Nat.add_zero, Nat.zero_add, BitVec.reduceToNat, Nat.reduceDiv,
       Nat.reduceMod, Nat.reduceAdd, Nat.reduceMul])
 
@@ -519,6 +576,12 @@ syntax "ty_mmap " term : tactic
 syntax "ty_mmap_kind " term : tactic
 syntax "ty_into " term : tactic
 syntax "ty_byte " "as " ident : tactic
+syntax "ty_mmap_own " "as " ident : tactic
+syntax "ty_munmap" : tactic
+syntax "ty_freeze " term : tactic
+syntax "ty_freeze_kind " term " as " term : tactic
+syntax "ty_split " term " at " term : tactic
+syntax "ty_join " term : tactic
 
 /-! ## Choosing the rule from the instruction
 
@@ -821,8 +884,14 @@ private def knownInstr (e : Expr) : MetaM (Option Instr) := do
   if e.hasExprMVar || e.hasFVar then return none
   try return some (← evalInstr e) catch _ => return none
 
+/-- Runs a tactic with room for long lists. A context that owns a page lists
+512 fields, and walking such a list takes more nested calls than Lean allows
+by default. -/
+def deep {α : Type} (x : TacticM α) : TacticM α :=
+  withTheReader Core.Context (fun c => { c with maxRecDepth := max c.maxRecDepth 16384 }) x
+
 /-- Tries one rule on the main goal, undoing everything if it does not finish. -/
-private def tryRule (rule : Name) : TacticM Bool := do
+private def tryRule (rule : Name) : TacticM Bool := deep do
   let saved ← saveState
   try
     if orderedRules.contains rule then
@@ -1037,7 +1106,7 @@ private def explainRule (rule : Name) : TacticM MessageData := do
     saved.restore
 
 /-- Types the instruction in a `Straight Ψ next Γ i ?Γ'` goal, or explains why not. -/
-def typeStraight : TacticM Unit := withMainContext do
+def typeStraight : TacticM Unit := deep <| withMainContext do
   let goal ← getMainGoal
   let ty := (← instantiateMVars (← goal.getType)).consumeMData
   unless ty.isAppOfArity ``Straight 5 do
@@ -1089,7 +1158,7 @@ private def runOn (g : MVarId) (tac : TacticM Unit) : TacticM (List MVarId) := d
   -- caller would carry on as if it had succeeded. The fresh scope gives the
   -- named placeholders in `tac` names of their own: without it, a second use
   -- of the same step in one tactic call would be handed the first one's proof.
-  Tactic.withoutRecover (withFreshMacroScope tac)
+  deep (Tactic.withoutRecover (withFreshMacroScope tac))
   getUnsolvedGoals
 
 /-- The system call number a context puts in `rax`, if it is exactly known. -/
@@ -1250,7 +1319,8 @@ private def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
 
 /-- Types the first instruction of a block goal if it is a straight-line
 instruction, leaving the rest of the block as the main goal. -/
-private partial def typeStep (named : Bool := false) : TacticM StepResult := withMainContext do
+private partial def typeStep (named : Bool := false) : TacticM StepResult :=
+    deep <| withMainContext do
   let goal ← getMainGoal
   let ty := (← instantiateMVars (← goal.getType)).consumeMData
   unless ty.isAppOf ``BlockOk do return .notABlock
@@ -1456,6 +1526,17 @@ private def proveAccepts (g : MVarId) : TacticM (List MVarId) := do
     let left ← try
         runOn sub (do evalTactic (← `(tactic| ctx_sub)))
       catch _ =>
+        -- say so when what differs is the blocks owned
+        let sameOwned ← sub.withContext do
+          try
+            let args := (← instantiateMVars (← sub.getType)).getAppArgs
+            let here ← mkAppM ``CtxOf.owned #[args[0]!]
+            let there ← mkAppM ``CtxOf.owned #[args[1]!]
+            withoutModifyingState (isDefEq here there)
+          catch _ => pure true
+        unless sameOwned do
+          throwError "the blocks owned do not match: a block taken here must be given back \
+            or frozen before control goes there"
         throwError "the stack, the free room or the flags do not match"
     rejectImpossible left
     pure left)
@@ -1495,7 +1576,7 @@ private def closeIfImpossible (g : MVarId) : TacticM Bool := do
     let isErr ← g.withContext do
       (← getLCtx).anyM fun d => do
         let t ← instantiateMVars d.type
-        return t.isAppOf ``SysErr || t.isAppOf ``Ne
+        return t.isAppOf ``SysErr || t.isAppOf ``Ne || t.isAppOf ``LT.lt
     unless isErr do return false
     try
       setGoals [g]
@@ -2059,6 +2140,211 @@ elab_rules : tactic
           throwError "ty_byte: the byte must go into a register other than the pointer's, \
             and neither may be `rsp`"
     setGoals (blocks ++ others)
+
+/-- `ty_mmap_own as p`: the `syscall` here is an `mmap` for fresh memory that
+the program is to own. Two goals follow: the rest of the block with an error
+number in `rax`, then with `rax` holding exactly an address `p` and the
+context owning the pages at `p` as a block of integers. `hpage` says `p` is
+the start of a page, and `hlow` that it is not an error number. -/
+elab_rules : tactic
+  | `(tactic| ty_mmap_own as $p) => do
+    let goal ← getMainGoal
+    let others := (← getGoals).drop 1
+    setGoals [goal]
+    try
+      evalTactic (← `(tactic|
+        refine BlockOk.mmapOwn (len := ?_) (cnt := ?_) rfl rfl ?_ ?_ ?_ ?_ ?_ ?_))
+    catch _ =>
+      throwError "`mmap` is system call 9 of the Linux model: `rax` must hold exactly 9"
+    let gs ← getGoals
+    for g in gs do
+      if ← g.isAssigned then continue
+      let t ← instantiateMVars (← g.getType)
+      if let some (_, lhs, _) := t.eq? then
+        if lhs.isAppOf ``CtxOf.regs then
+          setGoals [g]
+          try
+            Tactic.withoutRecover do evalTactic (← `(tactic| rfl))
+          catch _ =>
+            throwError "`mmap` needs an exactly known length in `rsi`, 3 in `rdx` (read and \
+              write) and 0x22 in `r10` (private memory, not a file)"
+    -- how many fields the pages make, worked out as a number
+    for g in gs do
+      if ← g.isAssigned then continue
+      let t ← instantiateMVars (← g.getType)
+      if let some (_, lhs, rhs) := t.eq? then
+        if lhs.isMVar then
+          let v ← g.withContext do reduce (← instantiateMVars rhs)
+          lhs.mvarId!.assign v
+          g.assign (← mkEqRefl v)
+    let mut blocks : List MVarId := []
+    for g in gs do
+      if ← g.isAssigned then continue
+      let t ← instantiateMVars (← g.getType)
+      if t.isForall then
+        setGoals [g]
+        if t.bindingBody!.bindingDomain!.isAppOf ``SysErr then
+          evalTactic (← `(tactic| (intro e herr; ty_normalize)))
+        else
+          evalTactic (← `(tactic| (intro $p:ident hpage hlow; ty_normalize)))
+        blocks := blocks ++ (← getGoals)
+    setGoals (blocks ++ others)
+
+/-- Among the goals a rule about an owned block leaves, settles by
+computation those that say what a register holds, then those that look the
+block up. The order matters: the first fix the address the second look for. -/
+private def closeLookups (gs : List MVarId) : TacticM Unit := do
+  for g in gs do
+    if ← g.isAssigned then continue
+    let t ← instantiateMVars (← g.getType)
+    if let some (_, lhs, _) := t.eq? then
+      if lhs.isAppOf ``CtxOf.regs then
+        setGoals [g]
+        Tactic.withoutRecover do evalTactic (← `(tactic| rfl))
+  for g in gs do
+    if ← g.isAssigned then continue
+    let t ← instantiateMVars (← g.getType)
+    if let some (_, lhs, _) := t.eq? then
+      if lhs.isAppOf ``GetElem?.getElem? || lhs.isAppOf ``MemTy.kinds then
+        setGoals [g]
+        Tactic.withoutRecover do evalTactic (← `(tactic| rfl))
+
+/-- Applies a rule about the owned block at one of the first few places in
+the context's list, whichever fits, and returns the goals it leaves. -/
+private def withOwnedPlace (mk : Nat → TacticM (TSyntax `tactic)) (failure : MessageData)
+    (places : List Nat := [0, 1, 2, 3]) : TacticM (List MVarId) := deep do
+  let goal ← getMainGoal
+  for k in places do
+    let saved ← saveState
+    try
+      setGoals [goal]
+      Tactic.withoutRecover do evalTactic (← mk k)
+      let gs ← getGoals
+      closeLookups gs
+      return gs
+    catch _ => saved.restore
+  throwError failure
+
+/-- `ty_munmap`: the `syscall` here is a `munmap` of a block the context
+owns, whose address is in `rdi` and whose whole size is in `rsi`. Afterwards
+the context no longer owns it. -/
+elab_rules : tactic
+  | `(tactic| ty_munmap) => do
+    let others := (← getGoals).drop 1
+    let gs ← withOwnedPlace (fun k => do
+        let kq := Syntax.mkNumLit (toString k)
+        `(tactic| refine BlockOk.sys rfl
+            (linux_munmap (k := $kq) (a := ?_) (len := ?_) (F := ?_) ?_ ?_ ?_ ?_ ?_) ?_))
+      m!"`munmap` is typed for a block the context owns: `rax` must hold exactly 11, `rdi` \
+        exactly the address of an owned block, and `rsi` an exactly known length"
+    let mut rest? : Option MVarId := none
+    for g in gs do
+      if ← g.isAssigned then continue
+      let t ← instantiateMVars (← g.getType)
+      if t.isAppOf ``BlockOk then rest? := some g
+      else
+        setGoals [g]
+        try
+          deep <| Tactic.withoutRecover do
+            evalTactic (← `(tactic| first
+              | (simp only [List.length_replicate, List.length_set, List.length_cons,
+                  List.length_nil]; decide)
+              | decide
+              | (simp; done)))
+        catch _ =>
+          throwError "`munmap`: the length in `rsi` must cover exactly the owned block; a \
+            block that was split must be joined again first, or its parts given back one by one"
+    let some rest := rest? | throwError "ty_munmap: unexpected goals"
+    setGoals [rest]
+    evalTactic (← `(tactic| ty_normalize))
+    setGoals ((← getGoals) ++ others)
+
+/-- Freezes the owned block whose address is in a register, with the rule given. -/
+private def freezeWith (mk : Nat → TacticM (TSyntax `tactic)) (name : String := "ty_freeze")
+    (after : TacticM Unit := pure ()) (places : List Nat := [0, 1, 2, 3])
+    (failure : MessageData :=
+      m!"{name}: the register must hold exactly the address of a block the context owns") :
+    TacticM Unit := do
+  let others := (← getGoals).drop 1
+  let gs ← withOwnedPlace mk failure places
+  let mut rest? : Option MVarId := none
+  for g in gs do
+    if ← g.isAssigned then continue
+    let t ← instantiateMVars (← g.getType)
+    if t.isAppOf ``BlockOk then rest? := some g
+    else
+      setGoals [g]
+      try
+        deep <| Tactic.withoutRecover do
+          evalTactic (← `(tactic| first
+            | decide
+            | exact List.cons_ne_nil _ _
+            | (simp only [List.length_replicate, List.length_set, List.length_cons,
+                List.length_nil, List.length_take, List.length_drop, List.length_append]
+               first | decide | omega)
+            | (simp; done)))
+      catch _ =>
+        throwError "{name}: could not show{indentExpr t}"
+  let some rest := rest? | throwError "{name}: unexpected goals"
+  setGoals [rest]
+  after
+  evalTactic (← `(tactic| ty_normalize))
+  setGoals ((← getGoals) ++ others)
+
+/-- `ty_freeze r`: register `r` holds exactly the address of a block the
+context owns. From here on the block is an ordinary one that anything may
+point to, with the fields it has now, and `r` is a writable pointer to it.
+It can no longer be given back, nor its fields change type. -/
+elab_rules : tactic
+  | `(tactic| ty_freeze $r) => do
+    freezeWith fun k => do
+      let kq := Syntax.mkNumLit (toString k)
+      `(tactic| refine BlockOk.freeze (r := $r) (k := $kq) (w := true) (base := ?_) (F := ?_)
+          ?_ ?_ ?_ ?_ ?_)
+
+/-- `ty_freeze_kind r as tag`: as `ty_freeze`, but the block joins the
+declared kind `tag`, whose fields it must have, and `r` becomes a pointer to
+a block of that kind. -/
+elab_rules : tactic
+  | `(tactic| ty_freeze_kind $r as $tag) => do
+    freezeWith fun k => do
+      let kq := Syntax.mkNumLit (toString k)
+      `(tactic| refine BlockOk.freezeKind (r := $r) (k := $kq) (tag := $tag) (w := true)
+          (base := ?_) (F := ?_) ?_ ?_ ?_ ?_ ?_ ?_)
+
+/-- `ty_split r at m`: register `r` holds exactly the address of a block the
+context owns, of more than `m` fields. From here on the context owns two
+blocks in its place: the first `m` fields where the block was, and the rest
+`8 * m` bytes on. Each can be stored to, frozen or given back on its own. -/
+elab_rules : tactic
+  | `(tactic| ty_split $r at $m) => do
+    freezeWith (name := "ty_split")
+      (fun k => do
+        let kq := Syntax.mkNumLit (toString k)
+        `(tactic| refine BlockOk.splitOwned (r := $r) (k := $kq) (m := $m) (base := ?_) (F := ?_)
+            ?_ ?_ ?_ ?_ ?_))
+      (do evalTactic (← `(tactic| try simp only [List.take_replicate, List.drop_replicate,
+            List.take_succ_cons, List.drop_succ_cons, List.take_zero, List.drop_zero,
+            Nat.reduceSub, Nat.reduceMul, Nat.min_def, Nat.reduceLeDiff, ↓reduceIte])))
+
+/-- `ty_join r`: register `r` holds exactly the address of a block the
+context owns, and the context also owns the block that starts where that one
+ends. From here on it owns one block in their place, with the fields of the
+first followed by those of the second. -/
+elab_rules : tactic
+  | `(tactic| ty_join $r) => do
+    freezeWith (name := "ty_join")
+      (places := (List.range 16).filter fun c => c / 4 ≠ c % 4)
+      (failure := m!"ty_join: the register must hold exactly the address of a block the \
+        context owns, and the context must own the block that starts where that one ends")
+      (fun c => do
+        let k₁ := Syntax.mkNumLit (toString (c / 4))
+        let k₂ := Syntax.mkNumLit (toString (c % 4))
+        `(tactic| refine BlockOk.joinOwned (r := $r) (k₁ := $k₁) (k₂ := $k₂) (base := ?_)
+            (F₁ := ?_) (F₂ := ?_) ?_ ?_ ?_ ?_ ?_ ?_))
+      (do evalTactic (← `(tactic| try simp only [List.replicate_append_replicate,
+            List.cons_append, List.nil_append, Nat.reduceAdd, Nat.max_def, Nat.min_def,
+            Nat.reduceLeDiff, ↓reduceIte])))
 
 /-- `ty_into h` types the instruction here and ends the block with it. Use it
 when the next instruction is at a label and the block should hand over to

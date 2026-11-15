@@ -512,6 +512,120 @@ example : BlockOk Φy mapFetch linux Ψ (Asm.addr maps 0 .noKind) bare := by
   ty_steps
   ty_mmap_kind 7
 
+/-! ## Memory the program owns
+
+A page the context owns can be used only while it is listed there. Giving it
+back takes it off the list, and a jump may not go where the list is expected
+to be something else: a page cannot be dropped by forgetting it. -/
+
+inductive Mem
+  | afterFree | leak | notOwned | done
+  deriving DecidableEq
+
+/-- The arguments of an `mmap` of one page, the call, and the test that
+sends an error number to `done`. -/
+def ownCall : List (Asm Mem) := [
+  .ins (.mov .w32 (.rm_i (.reg .rax) 9)), .ins (.mov .w32 (.rm_i (.reg .rsi) 4096)),
+  .ins (.mov .w32 (.rm_i (.reg .rdx) 3)), .ins (.mov .w32 (.rm_i (.reg .r10) 0x22)),
+  .ins .syscall, .ins (.test .w64 (.reg .rax) (.reg .rax)), .jcc .s .done]
+
+def owning : List (Asm Mem) :=
+  [.label .afterFree] ++ ownCall ++ [
+    .ins (.mov .w64 (.rm_r (.reg .rbx) .rax)), .ins (.mov .w32 (.rm_i (.reg .rax) 11)),
+    .ins (.mov .w64 (.rm_r (.reg .rdi) .rbx)), .ins (.mov .w32 (.rm_i (.reg .rsi) 4096)),
+    .ins .syscall, .ins (.mov .w64 (.r_m .rcx (.sib (some .rbx) none 0))), .ins .ud2] ++
+  [.label .leak] ++ ownCall ++ [.jmp .done] ++
+  [.label .notOwned, .ins (.mov .w32 (.rm_i (.reg .rax) 11)),
+    .ins (.mov .w32 (.rm_i (.reg .rsi) 4096)), .ins .syscall, .ins .ud2] ++
+  [.label .done, .ins .ud2]
+
+def ownFetch : Fetch := Asm.fetch 0 owning
+
+/-- At `done` nothing is owned. -/
+inductive AtMem : Mem → Ctx → Prop
+  | done : AtMem .done bare
+
+def Φm : CodeTy := .ofLabels owning 0 AtMem
+
+/--
+error: at address 50: cannot type `mov rcx, qword ptr [rbx]` in the current context
+• loadField: `rbx` must hold a pointer, but its type is `exactly p`
+-/
+#guard_msgs in
+example : BlockOk Φm ownFetch linux Ψ (Asm.addr owning 0 .afterFree) bare := by
+  ty_steps
+  ty_mmap_own as p
+  · ty_block
+  · ty_step
+    ty_branch
+    ty_steps
+    ty_munmap
+    ty_block
+
+/--
+error: no context allowed at label `done` accepts the current one
+• done: the blocks owned do not match: a block taken here must be given back or frozen before control goes there
+-/
+#guard_msgs in
+example : BlockOk Φm ownFetch linux Ψ (Asm.addr owning 0 .leak) bare := by
+  ty_steps
+  ty_mmap_own as p
+  · ty_block
+  · ty_step
+    ty_branch
+    ty_block
+
+/-- error: `munmap` is typed for a block the context owns: `rax` must hold exactly 11, `rdi` exactly the address of an owned block, and `rsi` an exactly known length -/
+#guard_msgs in
+example : BlockOk Φm ownFetch linux Ψ (Asm.addr owning 0 .notOwned) bare := by
+  ty_steps
+  ty_munmap
+
+/-! A block that was split is two blocks: the whole page can no longer be
+given back in one call, until the two are joined again. And only blocks that
+lie end to end can be joined. -/
+
+/-- error: `munmap`: the length in `rsi` must cover exactly the owned block; a block that was split must be joined again first, or its parts given back one by one -/
+#guard_msgs in
+example : BlockOk Φm ownFetch linux Ψ (Asm.addr owning 0 .afterFree) bare := by
+  ty_steps
+  ty_mmap_own as p
+  · ty_block
+  · ty_step
+    ty_branch
+    ty_step
+    ty_split .rbx at 8
+    ty_steps
+    ty_munmap
+    ty_block
+
+/-- error: ty_join: the register must hold exactly the address of a block the context owns, and the context must own the block that starts where that one ends -/
+#guard_msgs in
+example : BlockOk Φm ownFetch linux Ψ (Asm.addr owning 0 .afterFree) bare := by
+  ty_steps
+  ty_mmap_own as p
+  · ty_block
+  · ty_step
+    ty_branch
+    ty_step
+    ty_join .rbx
+    ty_block
+
+/--
+error: ty_split: could not show
+  512 < (List.replicate 512 Ty.int).length
+-/
+#guard_msgs in
+example : BlockOk Φm ownFetch linux Ψ (Asm.addr owning 0 .afterFree) bare := by
+  ty_steps
+  ty_mmap_own as p
+  · ty_block
+  · ty_step
+    ty_branch
+    ty_step
+    ty_split .rbx at 512
+    ty_block
+
 /-! ## Accepted, for contrast
 
 Storing a writable pointer into a field typed as a read-only pointer is
