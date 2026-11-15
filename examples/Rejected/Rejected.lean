@@ -685,6 +685,50 @@ example (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room 
   ty_name .rcx as i
   ty_block
 
+/-! A function that hands back a block it made must say which block before
+it returns, and may not name one it does not own. -/
+
+inductive Mk
+  | make
+  deriving DecidableEq
+
+def making : List (Asm Mk) := [.label .make, .ins .ret]
+
+def makingFetch : Fetch := Asm.fetch 0 making
+
+/-- Whatever address `x` is in `rax` at the return, the caller owns a page there. -/
+def makeSig : FnSigEx where
+  args := fun _ => .int
+  preserved := calleeSaved
+  need := 0
+  results := fun x r => if r = .rax then .eq x else .int
+  gives := fun x => [(x, List.replicate 512 .int)]
+
+inductive AtMk : Mk → Ctx → Prop
+  | make (saved : Reg → Ty) (ret : BitVec 64 → Ctx) (rest : List Ty) (room : Nat)
+      (frame : List (BitVec 64 × List Ty)) :
+    makeSig.CallerOk saved ret rest room frame → AtMk .make (makeSig.entry saved ret rest room frame)
+
+def Φk : CodeTy := .ofLabels making 0 AtMk
+
+/-- error: `ret`: the return address here is ready for a family of contexts, one for each value the function may hand back; say which the function returns into with `ty_return_as` -/
+#guard_msgs in
+example (saved : Reg → Ty) (ret : BitVec 64 → Ctx) (rest : List Ty) (room : Nat)
+    (frame : List (BitVec 64 × List Ty)) (hK : makeSig.CallerOk saved ret rest room frame) :
+    BlockOk Φk makingFetch linux Ψ (Asm.addr making 0 .make)
+      (makeSig.entry saved ret rest room frame) := by
+  ty_block
+
+/-- error: `ret`: the blocks owned here are not the ones the function gives back, followed by the caller's own; a function must hand back what its signature says and dispose of anything else it took -/
+#guard_msgs in
+example (saved : Reg → Ty) (ret : BitVec 64 → Ctx) (rest : List Ty) (room : Nat)
+    (frame : List (BitVec 64 × List Ty)) (hK : makeSig.CallerOk saved ret rest room frame) :
+    BlockOk Φk makingFetch linux Ψ (Asm.addr making 0 .make)
+      (makeSig.entry saved ret rest room frame) := by
+  ty_name .rax as v
+  ty_return_as v
+  ty_block
+
 /-! ## Accepted, for contrast
 
 Storing a writable pointer into a field typed as a read-only pointer is
@@ -776,6 +820,19 @@ example (p q : BitVec 64)
     BlockOk Φ fetch linux Ψ 0 (Γo p q) := by
   ty_own_first .rbx
   exact h.asTable
+
+/-! However many blocks a context owns, an address is found in the one it
+falls in: here the sixth. -/
+
+/-- Six owned blocks of one field each; `rbx` holds the address of the last. -/
+def Γ₆ (a b c d e f : BitVec 64) : Ctx :=
+  ⟨fun r => if r = .rbx then .eq f else .int, [], 0, Flags.Any,
+    [(a, [.int]), (b, [.int]), (c, [.int]), (d, [.int]), (e, [.int]), (f, [.eq 7])]⟩
+
+example (a b c d e f : BitVec 64) :
+    Straight Ψ 10 (Γ₆ a b c d e f) (.mov .w64 (.r_m .rax (.sib (some .rbx) none 0)))
+      ((Γ₆ a b c d e f).setReg .rax (.eq 7)) := by
+  ty_straight
 
 /-! A record used as a shorter one, and a stack deeper than a label cares
 about, need no rule of their own: the context is stated for every tail.

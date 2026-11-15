@@ -1,6 +1,6 @@
 name = "typed-assembly"
 version = "0.1.0"
-defaultTargets = ["TypedAsm", "Sum", "Swap", "Frame", "Ops", "Index", "Echo", "Table", "Dispatch", "List", "Fact", "Buffer", "Keep", "Alloc", "Cat", "Stat", "Args", "Own", "Double", "Rejected", "sum", "swap", "frame", "ops", "index", "echo", "table", "dispatch", "list", "fact", "buffer", "keep", "alloc", "cat", "stat", "args", "own", "double"]
+defaultTargets = ["TypedAsm", "Sum", "Swap", "Frame", "Ops", "Index", "Echo", "Table", "Dispatch", "List", "Fact", "Buffer", "Keep", "Alloc", "Cat", "Stat", "Args", "Own", "Double", "Fresh", "Rejected", "sum", "swap", "frame", "ops", "index", "echo", "table", "dispatch", "list", "fact", "buffer", "keep", "alloc", "cat", "stat", "args", "own", "double", "fresh"]
 testDriver = "tests"
 
 # The core library: machine model, instruction set, semantics, type system.
@@ -200,6 +200,16 @@ roots = ["Double", "DoubleProgram"]
 name = "double"
 root = "DoubleMain"
 srcDir = "examples/Double"
+
+[[lean_lib]]
+name = "Fresh"
+srcDir = "examples/Fresh"
+roots = ["Fresh", "FreshProgram"]
+
+[[lean_exe]]
+name = "fresh"
+root = "FreshMain"
+srcDir = "examples/Fresh"
 
 [[lean_lib]]
 name = "Rejected"
