@@ -94,7 +94,7 @@ theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 
 /-- What the program needs of the state it starts in: its bytes in
 executable memory and eleven writable stack slots below `rsp`. -/
-abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase [] blocks 11
+abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase [] blocks 11 0
 
 /-- Any state meeting the entry contract is well typed. -/
 theorem Entry.stateOk {s : State} (h : Entry s) : StateOk Φ fetch linux Ψ s :=

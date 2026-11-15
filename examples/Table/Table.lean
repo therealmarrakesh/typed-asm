@@ -46,7 +46,7 @@ theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 
 /-- What the program needs of the state it starts in: its bytes in
 executable memory, its data in memory, readable, and the record writable. -/
-abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase dataBytes blocks 0
+abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase dataBytes blocks 0 0
 
 /-- Any state meeting the entry contract is well typed. The table's entry
 is a pointer to the record because the data says so. -/

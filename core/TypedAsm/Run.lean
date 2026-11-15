@@ -49,10 +49,17 @@ def defaultPlace : Nat → Option (BitVec 64) :=
 def fileOf (path : String) (bytes : List Byte) : File :=
   { path := bytesOf path, base := bytes.toArray }
 
-/-- The files named after each `--file` on a command line. -/
+/-- The files named after each `--file` on a command line, up to `--`. -/
 private def fileArgs : List String → List String
+  | "--" :: _ => []
   | "--file" :: path :: rest => path :: fileArgs rest
   | _ :: rest => fileArgs rest
+  | [] => []
+
+/-- What follows `--` on a command line: the arguments for the program. -/
+private def programArgs : List String → List String
+  | "--" :: rest => rest
+  | _ :: rest => programArgs rest
   | [] => []
 
 private partial def readAll (h : IO.FS.Stream) (acc : ByteArray) : IO ByteArray := do
@@ -67,15 +74,19 @@ the run ended goes to standard error, and the executable's own exit status
 is the program's. If `readsInput`, standard input is read to its end first
 and given to the program as its input.
 
+What follows `--` is given to the program as its arguments, after its own
+name, if the example says how to start it with arguments (`startArgs`).
 Each `--file NAME` makes that file of this machine visible to the program
-under exactly that name. What the program writes to files stays in the
+under exactly that name, and so does each argument that names a file here.
+What the program writes to files stays in the
 model: nothing on this machine is created or changed. The time the program
 is told is this machine's, and the random bytes it is given are drawn afresh
 on each run.
 
 With `--elf FILE` it writes the program as a Linux executable. -/
 def exeMain (entry : Nat) (image data : List Byte) (start : State) (args : List String)
-    (writable : Bool := false) (readsInput : Bool := false) (fuel : Nat := 1000000000) :
+    (writable : Bool := false) (readsInput : Bool := false) (fuel : Nat := 1000000000)
+    (startArgs : Option (List (List Byte) → State) := none) (name : String := "program") :
     IO UInt32 := do
   match args with
   | ["--elf", path] =>
@@ -84,13 +95,20 @@ def exeMain (entry : Nat) (image data : List Byte) (start : State) (args : List 
     IO.println s!"wrote {bytes.length} bytes to {path}"
     return 0
   | _ =>
+    let given := programArgs args
+    let start := match startArgs with
+      | some f => f ((name :: given).map bytesOf)
+      | none => start
     let start ← if readsInput then do
         let input ← readAll (← IO.getStdin) ByteArray.empty
         let bytes := input.toList.map fun b => BitVec.ofNat 8 b.toNat
         pure { start with world := { start.world with input := [.bytes bytes] } }
       else pure start
     let mut files : Array File := #[]
-    for path in fileArgs args do
+    let named ← given.filterM fun (path : String) => do
+      let file : System.FilePath := path
+      return (← file.pathExists) && !(← file.isDir)
+    for path in (fileArgs args ++ named).eraseDups do
       let bytes ← IO.FS.readBinFile path
       files := files.push (fileOf path (bytes.toList.map fun b => BitVec.ofNat 8 b.toNat))
     let seed ← IO.rand 0 (2 ^ 32)

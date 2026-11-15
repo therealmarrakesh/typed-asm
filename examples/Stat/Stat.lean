@@ -58,7 +58,7 @@ theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 /-- What the program needs of the state it starts in: its bytes in
 executable memory, and its data readable and writable. Nothing is asked of
 the files there are, of the time, or of what the random bytes are. -/
-abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase dataBytes blocks 0
+abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase dataBytes blocks 0 0
 
 /-- Any state meeting the entry contract is well typed. -/
 theorem Entry.stateOk {s : State} (h : Entry s) : StateOk Φ fetch linux Ψ s :=

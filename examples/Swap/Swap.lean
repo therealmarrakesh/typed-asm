@@ -73,7 +73,7 @@ theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 executable memory, the record readable and writable, and two writable stack slots below `rsp` that
 do not overlap it. This is the contract with whatever loads the program;
 for the ELF file, with the Linux kernel. -/
-abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase recordBytes blocks 2
+abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase recordBytes blocks 2 0
 
 /-- Any state meeting the entry contract is well typed. -/
 theorem Entry.stateOk {s : State} (h : Entry s) : StateOk Φ fetch linux Ψ s :=

@@ -88,7 +88,7 @@ theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 
 /-- What the program needs of the state it starts in: its bytes in
 executable memory, the table in readable memory, and one writable stack slot. -/
-abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase tableBytes blocks 1
+abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase tableBytes blocks 1 0
 
 /-- Any state meeting the entry contract is well typed. The table's entries
 are function pointers because the data holds the addresses of two

@@ -73,7 +73,7 @@ theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 
 /-- What the program needs of the state it starts in: its bytes in
 executable memory, and the list in readable memory. -/
-abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase listBytes blocks 0
+abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase listBytes blocks 0 0
 
 /-- A link that holds the address of a node is a link. -/
 theorem link_node {n : Nat} {a : BitVec 64} (h : Ψ a = some nodeLayout) :
