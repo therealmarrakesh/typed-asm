@@ -142,6 +142,37 @@ theorem slot_addr (Γ : Ctx) (s : State) (j : Nat) :
   simp only [stackBase]
   bv_omega
 
+/-- The last byte of a block's text lies outside any run of fields, of its
+own block or of another. -/
+theorem MemTy.WF.text_outside_fields (hΨ : Ψ.WF) {a b : BitVec 64} {l l' : Layout}
+    {lo cnt : Nat} (hl : Ψ a = some l) (hle : lo + cnt ≤ l.fields.length) (hc : 0 < cnt)
+    (hl' : Ψ b = some l') (ht : l'.text ≠ 0) :
+    BitVec.ofNat 64 (8 * cnt) ≤
+      (b + BitVec.ofNat 64 (l'.size - 1)) - (a + BitVec.ofNat 64 (8 * lo)) := by
+  have hsz := hΨ.size_lt a l hl
+  have hsz' := hΨ.size_lt b l' hl'
+  by_cases hab : b = a
+  · subst hab
+    have e : l' = l := Option.some.inj (hl'.symm.trans hl)
+    subst e
+    simp only [Layout.size] at hsz ⊢
+    bv_omega
+  · have hpos := hΨ.nonempty b l' hl'
+    have hd := (hΨ.disjoint a b l l' hl hl' (Ne.symm hab)).mono (o := 8 * lo) (p := l'.size - 1)
+      (n' := 8 * cnt) (m' := 1) hsz hsz' (by simp only [Layout.size]; omega) (by omega)
+      (by omega) (by omega)
+    exact hd.1 (by decide)
+
+/-- Bytes unchanged outside a range leave every 64-bit value disjoint from
+the range unchanged. -/
+theorem State.load64_eq_of_outside {s s' : State} {base y : BitVec 64} {m : Nat}
+    (hm : m < 2 ^ 64) (hm0 : m ≠ 0)
+    (hmem : ∀ x, BitVec.ofNat 64 m ≤ x - base → s'.mem x = s.mem x)
+    (hd : Disjoint base m y 8) : s'.load64 y = s.load64 y := by
+  have hd' := hd.of_pos hm0 (by decide)
+  refine State.load64_congr_bytes (fun j hj => hmem _ ?_)
+  bv_omega
+
 /-! ## Keeping a state well typed -/
 
 namespace WellTyped
@@ -164,6 +195,7 @@ theorem congr {t : State} (h : WellTyped fetch sys Ψ ix Γ s) (hr : t.regs = s.
       rw [State.canRead_congr hp, State.canWrite_congr hp]; exact h.heapPerm a l hl
     heap := fun a l hl i τ hi => by rw [State.load64_congr hm]; exact h.heap a l hl i τ hi
     stackHeap := fun a l hl => by rw [hb]; exact h.stackHeap a l hl
+    text := fun a l hl ht => by rw [hm]; exact h.text a l hl ht
     sp := by rw [hg]; exact h.sp }
 
 /-- A state matching a context matches every weaker context. -/
@@ -182,6 +214,7 @@ theorem sub {Δ : Ctx} (h : WellTyped fetch sys Ψ ix Γ s) (hs : CtxSub Γ Δ) 
     heapPerm := h.heapPerm
     heap := h.heap
     stackHeap := fun a l hl => by rw [hb, hz]; exact h.stackHeap a l hl
+    text := h.text
     sp := h.sp.sub hs.sp }
 
 /-- Writing a value of type `τ` to a register other than `rsp`. -/
@@ -210,6 +243,7 @@ theorem setReg {r : Reg} {τ : Ty} {v : BitVec 64} (h : WellTyped fetch sys Ψ i
       rw [State.canRead_congr hp, State.canWrite_congr hp]; exact h.heapPerm a l hl
     heap := fun a l hl i τ' hi => by rw [State.load64_congr hm]; exact h.heap a l hl i τ' hi
     stackHeap := fun a l hl => by rw [hb]; exact h.stackHeap a l hl
+    text := fun a l hl ht => by rw [hm]; exact h.text a l hl ht
     sp := by
       rw [hsp]
       simp only [CtxOf.setReg, Ne.symm hr, ↓reduceIte]
@@ -220,7 +254,21 @@ theorem setFlags {f : Flags} {P : Flags → Prop} (h : WellTyped fetch sys Ψ ix
     WellTyped fetch sys Ψ ix { Γ with flags := P } { s with flags := f } :=
   { regs := h.regs, flags := hf, stackPerm := h.stackPerm, stackSize_lt := h.stackSize_lt,
     stack := h.stack, heapPerm := h.heapPerm, heap := h.heap, stackHeap := h.stackHeap,
+    text := h.text,
     sp := h.sp }
+
+/-- The last byte of a block's text lies outside any run of slots of the
+stack region. -/
+theorem text_outside_stack {lo cnt : Nat} (h : WellTyped fetch sys Ψ ix Γ s) (hΨ : Ψ.WF)
+    (hle : lo + cnt ≤ Γ.room + Γ.stack.length) (hc : 0 < cnt) {b : BitVec 64} {l' : Layout}
+    (hl' : Ψ b = some l') (ht : l'.text ≠ 0) :
+    BitVec.ofNat 64 (8 * cnt) ≤
+      (b + BitVec.ofNat 64 (l'.size - 1)) - (stackBase Γ s + BitVec.ofNat 64 (8 * lo)) := by
+  have hpos := hΨ.nonempty b l' hl'
+  have hd := (h.stackHeap b l' hl').mono (o := 8 * lo) (p := l'.size - 1) (n' := 8 * cnt)
+    (m' := 1) h.stackSize_lt (hΨ.size_lt b l' hl') (by simp only [stackSize]; omega) (by omega)
+    (by omega) (by omega)
+  exact hd.1 (by decide)
 
 /-- Field `i` of a block is readable. -/
 theorem canRead_field {a : BitVec 64} {l : Layout} {i : Nat} (h : WellTyped fetch sys Ψ ix Γ s)
@@ -298,6 +346,12 @@ theorem storeField {a : BitVec 64} {l : Layout} {i : Nat} {τ : Ty} {v : BitVec 
         rw [State.load64_store64_disjoint s v hd]
         exact h.heap b l' hl' j τ' hj
     stackHeap := fun b l' hl' => by rw [hb]; exact h.stackHeap b l' hl'
+    text := fun b l' hl' ht => by
+      have e : (s.store64 (a + BitVec.ofNat 64 (8 * i)) v).mem (b + BitVec.ofNat 64 (l'.size - 1))
+          = s.mem (b + BitVec.ofNat 64 (l'.size - 1)) :=
+        State.mem_store_of_disjoint s .w64 _ _ v
+          (hΨ.text_outside_fields hl (lo := i) (cnt := 1) (by omega) (by omega) hl' ht)
+      rw [e]; exact h.text b l' hl' ht
     sp := by rw [hg]; exact h.sp }
 
 /-- Storing into stack slot `i`; the slot takes the stored value's type. -/
@@ -344,6 +398,14 @@ theorem storeStack {i : Nat} {τ : Ty} {v : BitVec 64} (h : WellTyped fetch sys 
       rw [State.load64_store64_disjoint s v hd]
       exact h.heap b l' hl' j τ' hj
     stackHeap := fun b l' hl' => by rw [hb, hz]; exact h.stackHeap b l' hl'
+    text := fun b l' hl' ht => by
+      have hout := h.text_outside_stack hΨ (lo := Γ.room + i) (cnt := 1)
+        (by omega) (by omega) hl' ht
+      rw [show 8 * (Γ.room + i) = 8 * Γ.room + 8 * i by omega, slot_addr] at hout
+      have e : (s.store64 (s.getReg .rsp + BitVec.ofNat 64 (8 * i)) v).mem
+          (b + BitVec.ofNat 64 (l'.size - 1)) = s.mem (b + BitVec.ofNat 64 (l'.size - 1)) :=
+        State.mem_store_of_disjoint s .w64 _ _ v hout
+      rw [e]; exact h.text b l' hl' ht
     sp := by rw [hg]; exact h.sp }
 
 /-- Pushing a value of type `τ` when there is room. -/
@@ -404,6 +466,15 @@ theorem push₀ {n : Nat} {τ : Ty} {v : BitVec 64} (h : WellTyped fetch sys Ψ 
       rw [State.load64_store64_disjoint _ v hd, State.load64_congr hm]
       exact h.heap b l' hl' j τ' hj
     stackHeap := fun b l' hl' => by rw [hb, hz]; exact h.stackHeap b l' hl'
+    text := fun b l' hl' ht => by
+      have hout := h.text_outside_stack hΨ (lo := n) (cnt := 1) (by omega) (by omega) hl' ht
+      have ea : stackBase Γ s + BitVec.ofNat 64 (8 * n) = s.getReg .rsp - 8 := by
+        simp only [stackBase, hroom]; bv_omega
+      rw [ea] at hout
+      have e : ((s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) v).mem
+          (b + BitVec.ofNat 64 (l'.size - 1)) = s.mem (b + BitVec.ofNat 64 (l'.size - 1)) :=
+        State.mem_store_of_disjoint (s.setReg .rsp (s.getReg .rsp - 8)) .w64 _ _ v hout
+      rw [e]; exact h.text b l' hl' ht
     sp := by
       show HasTy fetch sys Ψ ix (Γ.regs .rsp) _
       rw [hint]
@@ -448,6 +519,7 @@ theorem pop₀ {τ : Ty} {σ : List Ty} (h : WellTyped fetch sys Ψ ix Γ s)
       heap := fun b l' hl' j τ' hj => by
         rw [State.load64_congr hm]; exact h.heap b l' hl' j τ' hj
       stackHeap := fun b l' hl' => by rw [hb, hz]; exact h.stackHeap b l' hl'
+      text := fun a l hl ht => by rw [hm]; exact h.text a l hl ht
       sp := by
         show HasTy fetch sys Ψ ix (Γ.regs .rsp) _
         rw [hint]
@@ -497,6 +569,7 @@ theorem allocFrame₀ {k m : Nat} (h : WellTyped fetch sys Ψ ix Γ s)
     heap := fun b l' hl' j τ' hj => by
       rw [State.load64_congr hm]; exact h.heap b l' hl' j τ' hj
     stackHeap := fun b l' hl' => by rw [hb, hz]; exact h.stackHeap b l' hl'
+    text := fun a l hl ht => by rw [hm]; exact h.text a l hl ht
     sp := by
       show HasTy fetch sys Ψ ix (Γ.regs .rsp) _
       rw [hint]
@@ -537,6 +610,7 @@ theorem freeFrame₀ {k : Nat} {top rest : List Ty} (h : WellTyped fetch sys Ψ 
     heap := fun b l' hl' j τ' hj => by
       rw [State.load64_congr hm]; exact h.heap b l' hl' j τ' hj
     stackHeap := fun b l' hl' => by rw [hb, hz]; exact h.stackHeap b l' hl'
+    text := fun a l hl ht => by rw [hm]; exact h.text a l hl ht
     sp := by
       show HasTy fetch sys Ψ ix (Γ.regs .rsp) _
       rw [hint]
@@ -569,6 +643,7 @@ theorem setSp {Γ' : Ctx} (h : WellTyped fetch sys Ψ ix Γ s)
     stackHeap := fun a l hl => by
       have := h.stackHeap a l hl
       simpa only [stackBase, stackSize, hstack, hroom] using this
+    text := h.text
     sp := hv }
 
 /-- What is known of the stack pointer's value may be forgotten. -/
@@ -637,7 +712,8 @@ theorem writeInt {a : BitVec 64} {l : Layout} {i : Nat} {s' : State}
     (h : WellTyped fetch sys Ψ ix Γ s) (hΨ : Ψ.WF) (hl : Ψ a = some l)
     (hi : l.fields[i]? = some .int) (hregs : s'.regs = s.regs) (hflags : s'.flags = s.flags)
     (hperm : s'.perm = s.perm)
-    (hframe : ∀ y, Disjoint (a + BitVec.ofNat 64 (8 * i)) 8 y 8 → s'.load64 y = s.load64 y) :
+    (hframe : ∀ y, Disjoint (a + BitVec.ofNat 64 (8 * i)) 8 y 8 → s'.load64 y = s.load64 y)
+    (hmem : ∀ x, BitVec.ofNat 64 (8 * 1) ≤ x - (a + BitVec.ofNat 64 (8 * i)) → s'.mem x = s.mem x) :
     WellTyped fetch sys Ψ ix Γ s' := by
   have hilt : i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
   have hsz := hΨ.size_lt a l hl
@@ -678,6 +754,9 @@ theorem writeInt {a : BitVec 64} {l : Layout} {i : Nat} {s' : State}
         rw [hframe _ hd]
         exact h.heap b l' hl' j τ' hj
     stackHeap := fun b l' hl' => by rw [hb]; exact h.stackHeap b l' hl'
+    text := fun b l' hl' ht => by
+      rw [hmem _ (hΨ.text_outside_fields hl (lo := i) (cnt := 1) (by omega) (by omega) hl' ht)]
+      exact h.text b l' hl' ht
     sp := by rw [hg]; exact h.sp }
 
 /-- Any change to memory confined to a run of integer fields keeps the state
@@ -688,7 +767,9 @@ theorem writeInts {a : BitVec 64} {l : Layout} {lo cnt : Nat} {s' : State}
     (hi : ∀ j, lo ≤ j → j < lo + cnt → l.fields[j]? = some .int) (hregs : s'.regs = s.regs)
     (hflags : s'.flags = s.flags) (hperm : s'.perm = s.perm)
     (hframe : ∀ y, Disjoint (a + BitVec.ofNat 64 (8 * lo)) (8 * cnt) y 8 →
-      s'.load64 y = s.load64 y) :
+      s'.load64 y = s.load64 y)
+    (hmem : ∀ x, BitVec.ofNat 64 (8 * cnt) ≤ x - (a + BitVec.ofNat 64 (8 * lo)) →
+      s'.mem x = s.mem x) :
     WellTyped fetch sys Ψ ix Γ s' := by
   have hsz := hΨ.size_lt a l hl
   have hg : ∀ r, s'.getReg r = s.getReg r := fun r => by simp only [State.getReg, hregs]
@@ -727,6 +808,9 @@ theorem writeInts {a : BitVec 64} {l : Layout} {lo cnt : Nat} {s' : State}
         rw [hframe _ hd]
         exact h.heap b l' hl' j τ' hj
     stackHeap := fun b l' hl' => by rw [hb]; exact h.stackHeap b l' hl'
+    text := fun b l' hl' ht => by
+      rw [hmem _ (hΨ.text_outside_fields hl hle hc hl' ht)]
+      exact h.text b l' hl' ht
     sp := by rw [hg]; exact h.sp }
 
 /-- Any `m` bytes inside field `i` of a block are readable. -/
@@ -762,7 +846,9 @@ theorem writeSlotInt {i : Nat} {s' : State} (h : WellTyped fetch sys Ψ ix Γ s)
     (hi : i < Γ.stack.length) (hregs : s'.regs = s.regs) (hflags : s'.flags = s.flags)
     (hperm : s'.perm = s.perm)
     (hframe : ∀ y, Disjoint (s.getReg .rsp + BitVec.ofNat 64 (8 * i)) 8 y 8 →
-      s'.load64 y = s.load64 y) :
+      s'.load64 y = s.load64 y)
+    (hmem : ∀ x, BitVec.ofNat 64 (8 * 1) ≤ x - (s.getReg .rsp + BitVec.ofNat 64 (8 * i)) →
+      s'.mem x = s.mem x) :
     WellTyped fetch sys Ψ ix { Γ with stack := Γ.stack.set i .int } s' := by
   have hg : ∀ r, s'.getReg r = s.getReg r := fun r => by simp only [State.getReg, hregs]
   have hz : stackSize { Γ with stack := Γ.stack.set i .int } = stackSize Γ := by
@@ -799,6 +885,12 @@ theorem writeSlotInt {i : Nat} {s' : State} (h : WellTyped fetch sys Ψ ix Γ s)
       rw [hframe _ hd]
       exact h.heap b l' hl' j τ' hj
     stackHeap := fun b l' hl' => by rw [hb, hz]; exact h.stackHeap b l' hl'
+    text := fun b l' hl' ht => by
+      have hout := h.text_outside_stack hΨ (lo := Γ.room + i) (cnt := 1)
+        (by omega) (by omega) hl' ht
+      rw [show 8 * (Γ.room + i) = 8 * Γ.room + 8 * i by omega, slot_addr] at hout
+      rw [hmem _ hout]
+      exact h.text b l' hl' ht
     sp := by rw [hg]; exact h.sp }
 
 /-- Any change to memory confined to a run of integer stack slots keeps the
@@ -808,7 +900,9 @@ theorem writeSlotsInt {lo cnt : Nat} {s' : State} (h : WellTyped fetch sys Ψ ix
     (hi : ∀ j, lo ≤ j → j < lo + cnt → Γ.stack[j]? = some .int) (hregs : s'.regs = s.regs)
     (hflags : s'.flags = s.flags) (hperm : s'.perm = s.perm)
     (hframe : ∀ y, Disjoint (s.getReg .rsp + BitVec.ofNat 64 (8 * lo)) (8 * cnt) y 8 →
-      s'.load64 y = s.load64 y) :
+      s'.load64 y = s.load64 y)
+    (hmem : ∀ x, BitVec.ofNat 64 (8 * cnt) ≤ x - (s.getReg .rsp + BitVec.ofNat 64 (8 * lo)) →
+      s'.mem x = s.mem x) :
     WellTyped fetch sys Ψ ix Γ s' := by
   have hg : ∀ r, s'.getReg r = s.getReg r := fun r => by simp only [State.getReg, hregs]
   have hb : stackBase Γ s' = stackBase Γ s := by simp only [stackBase, hg]
@@ -840,6 +934,12 @@ theorem writeSlotsInt {lo cnt : Nat} {s' : State} (h : WellTyped fetch sys Ψ ix
       rw [hframe _ hd]
       exact h.heap b l' hl' j τ' hj
     stackHeap := fun b l' hl' => by rw [hb]; exact h.stackHeap b l' hl'
+    text := fun b l' hl' ht => by
+      have hout := h.text_outside_stack hΨ (lo := Γ.room + lo) (cnt := cnt)
+        (by omega) hc hl' ht
+      rw [show 8 * (Γ.room + lo) = 8 * Γ.room + 8 * lo by omega, slot_addr] at hout
+      rw [hmem _ hout]
+      exact h.text b l' hl' ht
     sp := by rw [hg]; exact h.sp }
 
 /-- After a two-operand operation on register `d` that left known flags. -/
@@ -1013,6 +1113,28 @@ theorem State.load64_store16_inner (s : State) {base y : BitVec 64} {k : Nat} (v
   rw [State.store16, e, State.load64_store8_inner _ _ (by omega) hd,
     State.load64_store8_inner _ _ (by omega) hd]
 
+/-- A store confined to one 8-byte slot leaves every byte outside the slot unchanged. -/
+theorem State.mem_store_inner (s : State) (w : Width) {base x : BitVec 64} {k : Nat}
+    (v : BitVec w.bits) (hk : k + w.bytes.toNat ≤ 8) (hx : BitVec.ofNat 64 (8 * 1) ≤ x - base) :
+    (s.store w (base + BitVec.ofNat 64 k) v).mem x = s.mem x := by
+  refine State.mem_store_of_disjoint s w _ x v ?_
+  cases w <;> simp only [Width.bytes] at * <;> bv_omega
+
+theorem State.mem_store8_inner (s : State) {base x : BitVec 64} {k : Nat} (v : BitVec 8)
+    (hk : k + 1 ≤ 8) (hx : BitVec.ofNat 64 (8 * 1) ≤ x - base) :
+    (s.store8 (base + BitVec.ofNat 64 k) v).mem x = s.mem x := by
+  rw [State.mem_store8]
+  split
+  · next he => subst he; exact absurd hx (by bv_omega)
+  · rfl
+
+theorem State.mem_store16_inner (s : State) {base x : BitVec 64} {k : Nat} (v : BitVec 16)
+    (hk : k + 2 ≤ 8) (hx : BitVec.ofNat 64 (8 * 1) ≤ x - base) :
+    (s.store16 (base + BitVec.ofNat 64 k) v).mem x = s.mem x := by
+  have e : base + BitVec.ofNat 64 k + 1 = base + BitVec.ofNat 64 (k + 1) := by bv_omega
+  rw [State.store16, e, State.mem_store8_inner _ _ (by omega) hx,
+    State.mem_store8_inner _ _ (by omega) hx]
+
 /-- Byte `k` of slot `i`, as an offset from the start of the slot. -/
 theorem inner_split (a : BitVec 64) (i k : Nat) :
     a + BitVec.ofNat 64 (8 * i + k) = a + BitVec.ofNat 64 (8 * i) + BitVec.ofNat 64 k := by
@@ -1142,7 +1264,8 @@ theorem WriteIntOk.writeRM {w : Width} {rm : RM} {Γ' : Ctx}
     refine ⟨s.store w (a + BitVec.ofNat 64 (8 * (off + i) + k)) v, ?_, State.rip_store _ _ _ _,
       h.writeInt hΨ hl hi (State.regs_store _ _ _ _) (State.flags_store _ _ _ _)
         (State.perm_store _ _ _ _) (fun y hd => by
-          rw [inner_split]; exact State.load64_store_inner s w _ hk hd)⟩
+          rw [inner_split]; exact State.load64_store_inner s w _ hk hd)
+        (fun x hx => by rw [inner_split]; exact State.mem_store_inner s w _ hk hx)⟩
     simp only [State.writeRM, hea, State.write, hc, ite_true]
   | @global base l i k disp hl hwr haddr hi hk =>
     have hilt : i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
@@ -1152,7 +1275,8 @@ theorem WriteIntOk.writeRM {w : Width} {rm : RM} {Γ' : Ctx}
     refine ⟨s.store w (base + BitVec.ofNat 64 (8 * i + k)) v, ?_, State.rip_store _ _ _ _,
       h.writeInt hΨ hl hi (State.regs_store _ _ _ _) (State.flags_store _ _ _ _)
         (State.perm_store _ _ _ _) (fun y hd => by
-          rw [inner_split]; exact State.load64_store_inner s w _ hk hd)⟩
+          rw [inner_split]; exact State.load64_store_inner s w _ hk hd)
+        (fun x hx => by rw [inner_split]; exact State.mem_store_inner s w _ hk hx)⟩
     simp only [State.writeRM, hea, State.write, hc, ite_true]
   | @reg d hd => exact ⟨s.writeReg w d v, rfl, rfl, h.setReg hd (HasTy.int _)⟩
   | @field b fields off i k disp hb hΓ hdisp hi hk =>
@@ -1166,7 +1290,8 @@ theorem WriteIntOk.writeRM {w : Width} {rm : RM} {Γ' : Ctx}
     refine ⟨s.store w (a + BitVec.ofNat 64 (8 * (off + i) + k)) v, ?_, State.rip_store _ _ _ _,
       h.writeInt hΨ hl hi (State.regs_store _ _ _ _) (State.flags_store _ _ _ _)
         (State.perm_store _ _ _ _) (fun y hd => by
-          rw [inner_split]; exact State.load64_store_inner s w _ hk hd)⟩
+          rw [inner_split]; exact State.load64_store_inner s w _ hk hd)
+        (fun x hx => by rw [inner_split]; exact State.mem_store_inner s w _ hk hx)⟩
     simp only [State.writeRM, hea, State.write, hc, ite_true]
   | @slot i k disp τ hdisp hi hk =>
     have hilt : i < Γ.stack.length := (List.getElem?_eq_some_iff.mp hi).1
@@ -1175,7 +1300,8 @@ theorem WriteIntOk.writeRM {w : Width} {rm : RM} {Γ' : Ctx}
     refine ⟨s.store w (s.getReg .rsp + BitVec.ofNat 64 (8 * i + k)) v, ?_, State.rip_store _ _ _ _,
       h.writeSlotInt hΨ hilt (State.regs_store _ _ _ _) (State.flags_store _ _ _ _)
         (State.perm_store _ _ _ _) (fun y hd => by
-          rw [inner_split]; exact State.load64_store_inner s w _ hk hd)⟩
+          rw [inner_split]; exact State.load64_store_inner s w _ hk hd)
+        (fun x hx => by rw [inner_split]; exact State.mem_store_inner s w _ hk hx)⟩
     simp only [State.writeRM, hea, State.write, hc, ite_true]
 
 /-- Writing any byte to a writable operand succeeds likewise. -/
@@ -1195,7 +1321,8 @@ theorem WriteIntOk.writeRM8 {rm : RM} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 1 
     have hc := h.canWrite_inner (m := 1) hl (hwr rfl) hilt hk
     refine ⟨s.store8 (a + BitVec.ofNat 64 (8 * (off + i) + k)) v, ?_, rfl,
       h.writeInt hΨ hl hi rfl rfl rfl (fun y hd => by
-        rw [inner_split]; exact State.load64_store8_inner s _ hk hd)⟩
+        rw [inner_split]; exact State.load64_store8_inner s _ hk hd)
+        (fun x hx => by rw [inner_split]; exact State.mem_store8_inner s _ hk hx)⟩
     simp only [State.writeRM8, hea, State.write8, hc, ite_true]
   | @global base l i k disp hl hwr haddr hi hk =>
     have hilt : i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
@@ -1204,7 +1331,8 @@ theorem WriteIntOk.writeRM8 {rm : RM} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 1 
     have hc := h.canWrite_inner (m := 1) hl hwr hilt hk
     refine ⟨s.store8 (base + BitVec.ofNat 64 (8 * i + k)) v, ?_, rfl,
       h.writeInt hΨ hl hi rfl rfl rfl (fun y hd => by
-        rw [inner_split]; exact State.load64_store8_inner s _ hk hd)⟩
+        rw [inner_split]; exact State.load64_store8_inner s _ hk hd)
+        (fun x hx => by rw [inner_split]; exact State.mem_store8_inner s _ hk hx)⟩
     simp only [State.writeRM8, hea, State.write8, hc, ite_true]
   | @reg d hd => exact ⟨_, rfl, rfl, h.setReg hd (HasTy.int _)⟩
   | @field b fields off i k disp hb hΓ hdisp hi hk =>
@@ -1217,7 +1345,8 @@ theorem WriteIntOk.writeRM8 {rm : RM} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 1 
     have hc := h.canWrite_inner (m := 1) hl (hwr rfl) hilt hk
     refine ⟨s.store8 (a + BitVec.ofNat 64 (8 * (off + i) + k)) v, ?_, rfl,
       h.writeInt hΨ hl hi rfl rfl rfl (fun y hd => by
-        rw [inner_split]; exact State.load64_store8_inner s _ hk hd)⟩
+        rw [inner_split]; exact State.load64_store8_inner s _ hk hd)
+        (fun x hx => by rw [inner_split]; exact State.mem_store8_inner s _ hk hx)⟩
     simp only [State.writeRM8, hea, State.write8, hc, ite_true]
   | @slot i k disp τ hdisp hi hk =>
     have hilt : i < Γ.stack.length := (List.getElem?_eq_some_iff.mp hi).1
@@ -1225,7 +1354,8 @@ theorem WriteIntOk.writeRM8 {rm : RM} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 1 
     have hc := h.canWrite_slot_inner (m := 1) hilt hk
     refine ⟨s.store8 (s.getReg .rsp + BitVec.ofNat 64 (8 * i + k)) v, ?_, rfl,
       h.writeSlotInt hΨ hilt rfl rfl rfl (fun y hd => by
-        rw [inner_split]; exact State.load64_store8_inner s _ hk hd)⟩
+        rw [inner_split]; exact State.load64_store8_inner s _ hk hd)
+        (fun x hx => by rw [inner_split]; exact State.mem_store8_inner s _ hk hx)⟩
     simp only [State.writeRM8, hea, State.write8, hc, ite_true]
 
 /-- Writing any 16-bit value to a writable memory operand succeeds likewise. -/
@@ -1245,7 +1375,8 @@ theorem WriteIntOk.write16 {m : Mem} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 2 (
     have hc := h.canWrite_inner (m := 2) hl (hwr rfl) hilt hk
     refine ⟨s.store16 (a + BitVec.ofNat 64 (8 * (off + i) + k)) v, ?_, rfl,
       h.writeInt hΨ hl hi rfl rfl rfl (fun y hd => by
-        rw [inner_split]; exact State.load64_store16_inner s _ hk hd)⟩
+        rw [inner_split]; exact State.load64_store16_inner s _ hk hd)
+        (fun x hx => by rw [inner_split]; exact State.mem_store16_inner s _ hk hx)⟩
     simp only [hea, State.write16, hc, ite_true]
   | @global base l i k disp hl hwr haddr hi hk =>
     have hilt : i < l.fields.length := (List.getElem?_eq_some_iff.mp hi).1
@@ -1254,7 +1385,8 @@ theorem WriteIntOk.write16 {m : Mem} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 2 (
     have hc := h.canWrite_inner (m := 2) hl hwr hilt hk
     refine ⟨s.store16 (base + BitVec.ofNat 64 (8 * i + k)) v, ?_, rfl,
       h.writeInt hΨ hl hi rfl rfl rfl (fun y hd => by
-        rw [inner_split]; exact State.load64_store16_inner s _ hk hd)⟩
+        rw [inner_split]; exact State.load64_store16_inner s _ hk hd)
+        (fun x hx => by rw [inner_split]; exact State.mem_store16_inner s _ hk hx)⟩
     simp only [hea, State.write16, hc, ite_true]
   | @field b fields off i k disp hb hΓ hdisp hi hk =>
     have hp := h.regs b hb
@@ -1266,7 +1398,8 @@ theorem WriteIntOk.write16 {m : Mem} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 2 (
     have hc := h.canWrite_inner (m := 2) hl (hwr rfl) hilt hk
     refine ⟨s.store16 (a + BitVec.ofNat 64 (8 * (off + i) + k)) v, ?_, rfl,
       h.writeInt hΨ hl hi rfl rfl rfl (fun y hd => by
-        rw [inner_split]; exact State.load64_store16_inner s _ hk hd)⟩
+        rw [inner_split]; exact State.load64_store16_inner s _ hk hd)
+        (fun x hx => by rw [inner_split]; exact State.mem_store16_inner s _ hk hx)⟩
     simp only [hea, State.write16, hc, ite_true]
   | @slot i k disp τ hdisp hi hk =>
     have hilt : i < Γ.stack.length := (List.getElem?_eq_some_iff.mp hi).1
@@ -1274,7 +1407,8 @@ theorem WriteIntOk.write16 {m : Mem} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 2 (
     have hc := h.canWrite_slot_inner (m := 2) hilt hk
     refine ⟨s.store16 (s.getReg .rsp + BitVec.ofNat 64 (8 * i + k)) v, ?_, rfl,
       h.writeSlotInt hΨ hilt rfl rfl rfl (fun y hd => by
-        rw [inner_split]; exact State.load64_store16_inner s _ hk hd)⟩
+        rw [inner_split]; exact State.load64_store16_inner s _ hk hd)
+        (fun x hx => by rw [inner_split]; exact State.mem_store16_inner s _ hk hx)⟩
     simp only [hea, State.write16, hc, ite_true]
 
 /-- An operand holding a code pointer can be read, and what is read is a code pointer. -/

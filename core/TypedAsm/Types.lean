@@ -65,10 +65,14 @@ structure Layout where
   writable : Bool
   /-- The kind of block this is, for blocks that `Ty.ref` pointers refer to. -/
   tag : Option Nat
+  /-- How many bytes of text follow the fields. Text is bytes a program may
+  read but never writes, and its last byte is zero: a name, a message, an
+  argument the program was given. A block that is only text has no fields. -/
+  text : Nat
 
-/-- The size of a block in bytes. -/
+/-- The size of a block in bytes: its fields, then its text. -/
 def Layout.size (l : Layout) : Nat :=
-  8 * l.fields.length
+  8 * l.fields.length + l.text
 
 /-- Memory typing: the layout of the block starting at each address, for the
 addresses where a block starts, and the fields that blocks of each kind
@@ -249,7 +253,7 @@ empty, no two overlap, and a block of a kind has that kind's fields. -/
 structure MemTy.WF (Ψ : MemTy) : Prop where
   size_lt : ∀ a l, Ψ a = some l → l.size < 2 ^ 64
   disjoint : ∀ a b la lb, Ψ a = some la → Ψ b = some lb → a ≠ b → Disjoint a la.size b lb.size
-  nonempty : ∀ a l, Ψ a = some l → l.fields ≠ []
+  nonempty : ∀ a l, Ψ a = some l → 0 < l.size
   kinds : ∀ a l, Ψ a = some l → ∀ tag, l.tag = some tag → Ψ.kinds tag = some l.fields
 
 /-! ## What the types mean
@@ -298,6 +302,8 @@ structure Matches (H : Ty → BitVec 64 → Prop) (Ψ : MemTy) (Γ : Ctx) (s : S
   stackHeap : ∀ a l, Ψ a = some l → Disjoint (stackBase Γ s) (stackSize Γ) a l.size
   /-- The stack pointer holds a value of its type. -/
   sp : H (Γ.regs .rsp) (s.getReg .rsp)
+  /-- The text of each block that has some ends in a zero byte. -/
+  text : ∀ a l, Ψ a = some l → l.text ≠ 0 → s.mem (a + BitVec.ofNat 64 (l.size - 1)) = 0
 
 /-- `HasTy fetch sys Ψ n τ v`: the value `v` has type `τ`, at step count `n`.
 This does not depend on the machine state. -/
@@ -438,7 +444,8 @@ theorem Matches.imp {H H' : Ty → BitVec 64 → Prop} {Γ : Ctx} {s : State}
     heapPerm := h.heapPerm
     heap := fun a l hl i τ hi => himp _ _ (h.heap a l hl i τ hi)
     stackHeap := h.stackHeap
-    sp := himp _ _ h.sp }
+    sp := himp _ _ h.sp
+    text := h.text }
 
 /-- A state well typed at a step count is well typed at every smaller one. -/
 theorem WellTyped.mono {m : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch sys Ψ n Γ s)

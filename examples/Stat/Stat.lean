@@ -24,7 +24,7 @@ def Φ : CodeTy := .ofLabels code base At
 
 /-- The buffer: eighteen integer fields, 144 bytes, writable. That is the
 size of what `fstat` stores, the largest of the three things stored here. -/
-def bufferLayout : Layout := ⟨List.replicate 18 .int, true, none⟩
+def bufferLayout : Layout := ⟨List.replicate 18 .int, true, none, 0⟩
 
 /-- One memory block, the buffer. The file's name before it needs no type. -/
 def blocks : List (BitVec 64 × Layout) := [(bufferAt, bufferLayout)]

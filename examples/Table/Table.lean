@@ -24,9 +24,9 @@ inductive At : Label → Ctx → Prop
 def Φ : CodeTy := .ofLabels code base At
 
 /-- The table: one field, a pointer to the record. -/
-def tableLayout : Layout := ⟨[pair], false, none⟩
+def tableLayout : Layout := ⟨[pair], false, none, 0⟩
 
-def recordLayout : Layout := ⟨[.int, .int], true, none⟩
+def recordLayout : Layout := ⟨[.int, .int], true, none, 0⟩
 
 def blocks : List (BitVec 64 × Layout) := [(dataBase, tableLayout), (recordAddr, recordLayout)]
 

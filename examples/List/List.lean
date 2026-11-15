@@ -21,7 +21,7 @@ def link : Ty := .nullable (.ref 1 false 0)
 /-- A node: a value and a link. -/
 def nodeFields : List Ty := [.int, link]
 
-def nodeLayout : Layout := ⟨nodeFields, false, some 1⟩
+def nodeLayout : Layout := ⟨nodeFields, false, some 1, 0⟩
 
 /-- In the loop `rdi` holds a link. -/
 def walking : Ctx := ⟨fun r => if r = .rdi then link else .int, [], 0, Flags.Any⟩

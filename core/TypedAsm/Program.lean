@@ -186,7 +186,8 @@ theorem BlockOk.nameSlot {a : BitVec 64} {Γ : Ctx} {i : Nat} (hi : i < Γ.stack
         stackHeap := fun b l hl => by
           have := h.stackHeap b l hl
           simpa only [stackBase, stackSize, List.length_set] using this
-        sp := h.sp }⟩) hrest
+        sp := h.sp
+        text := h.text }⟩) hrest
 
 /-! ## Blocks of a kind, and values that may be null -/
 

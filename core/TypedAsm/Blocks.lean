@@ -35,7 +35,7 @@ theorem MemTy.mem_of_ofList {bs : List (BitVec 64 × Layout)} {a : BitVec 64} {l
 /-- Whether the blocks fit in the address space, none is empty, and no two
 with different addresses overlap. -/
 def MemTy.check (bs : List (BitVec 64 × Layout)) : Bool :=
-  bs.all (fun x => decide (x.2.size < 2 ^ 64) && !x.2.fields.isEmpty) &&
+  bs.all (fun x => decide (x.2.size < 2 ^ 64) && decide (0 < x.2.size)) &&
   bs.all (fun x => bs.all (fun y =>
     decide (x.1 = y.1) || decide (Disjoint x.1 x.2.size y.1 y.2.size)))
 
@@ -77,7 +77,7 @@ theorem MemTy.wf_of_check {bs : List (BitVec 64 × Layout)} (h : MemTy.check bs 
     (hk : MemTy.declared kinds bs = MemTy.actual bs := by rfl) :
     (MemTy.ofList bs kinds).WF := by
   simp only [MemTy.check, Bool.and_eq_true, List.all_eq_true, decide_eq_true_eq,
-    Bool.or_eq_true, Bool.not_eq_true', List.isEmpty_eq_false_iff] at h
+    Bool.or_eq_true] at h
   constructor
   · intro a l hl
     exact (h.1 _ (MemTy.mem_of_ofList hl)).1
@@ -105,7 +105,8 @@ theorem Matches.ofCheck {H : Ty → BitVec 64 → Prop} {bs : List (BitVec 64 ×
       H τ (s.load64 (s.getReg .rsp + BitVec.ofNat 64 (8 * i))))
     (hheap : ∀ x ∈ bs, ∀ i τ, x.2.fields[i]? = some τ →
       H τ (s.load64 (x.1 + BitVec.ofNat 64 (8 * i))))
-    (hrsp : H (Γ.regs .rsp) (s.getReg .rsp)) :
+    (hrsp : H (Γ.regs .rsp) (s.getReg .rsp))
+    (htext : ∀ x ∈ bs, x.2.text ≠ 0 → s.mem (x.1 + BitVec.ofNat 64 (x.2.size - 1)) = 0) :
     Matches H (MemTy.ofList bs kinds) Γ s := by
   simp only [stateCheck, Bool.and_eq_true, List.all_eq_true, decide_eq_true_eq,
     Bool.or_eq_true, Bool.not_eq_true'] at hc
@@ -124,6 +125,7 @@ theorem Matches.ofCheck {H : Ty → BitVec 64 → Prop} {bs : List (BitVec 64 ×
       · exact hw
     heap := fun a l hl => hheap _ (MemTy.mem_of_ofList hl)
     stackHeap := fun a l hl => (hb _ (MemTy.mem_of_ofList hl)).2
-    sp := hrsp }
+    sp := hrsp
+    text := fun a l hl => htext _ (MemTy.mem_of_ofList hl) }
 
 end TypedAsm

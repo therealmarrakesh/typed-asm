@@ -372,7 +372,7 @@ theorem mmap_ok {sys : Syscall} {len : BitVec 64} {fields : List Ty} {tag : Opti
     (hfit : 8 * fields.length ≤ len.toNat) (hne : fields ≠ [])
     (hzero : ∀ υ ∈ fields, υ.zeroOk = true)
     (hkind : ∀ t, tag = some t → Ψ.kinds t = some fields)
-    (hτ : ∀ (Ψ₂ : MemTy) (a : BitVec 64), Ψ₂ a = some ⟨fields, true, tag⟩ →
+    (hτ : ∀ (Ψ₂ : MemTy) (a : BitVec 64), Ψ₂ a = some ⟨fields, true, tag, 0⟩ →
       HasTy fetch sys Ψ₂ n τ a) :
     ∃ Ψ₂ : MemTy, Ψ.Ext Ψ₂ ∧ Ψ₂.WF ∧
       WellTyped fetch sys Ψ₂ n (Γ.afterSyscall.setReg .rax (.orErr τ)) (mmap s) := by
@@ -423,12 +423,10 @@ theorem mmap_ok {sys : Syscall} {len : BitVec 64} {fields : List Ty} {tag : Opti
           cases hl : Ψ a with
           | none => rfl
           | some l =>
-            have hr := State.canRead_iff.mp (h.heapPerm a l hl).1 0 (by
-              have := List.length_pos_iff.mpr (hΨ.nonempty a l hl)
-              simp only [Layout.size]; omega)
+            have hr := State.canRead_iff.mp (h.heapPerm a l hl).1 0 (hΨ.nonempty a l hl)
             rw [show a + BitVec.ofNat 64 0 = a by simp, hU a (by simpa using hpos)] at hr
             exact absurd hr (by decide)
-        let L : Layout := ⟨fields, true, tag⟩
+        let L : Layout := ⟨fields, true, tag, 0⟩
         let Ψ₂ : MemTy := ⟨fun x => if x = a then some L else Ψ x, Ψ.kinds⟩
         have hcases : ∀ x l, Ψ₂ x = some l → (x = a ∧ l = L) ∨ (x ≠ a ∧ Ψ x = some l) := by
           intro x l hl
@@ -461,7 +459,8 @@ theorem mmap_ok {sys : Syscall} {len : BitVec 64} {fields : List Ty} {tag : Opti
               · exact hΨ.disjoint x y lx ly hx' hy' hxy
           · intro x l hl
             rcases hcases x l hl with ⟨-, rfl⟩ | ⟨-, hl'⟩
-            · exact hne
+            · show 0 < 8 * fields.length + 0
+              omega
             · exact hΨ.nonempty x l hl'
           · intro x l hl t ht
             rcases hcases x l hl with ⟨-, rfl⟩ | ⟨-, hl'⟩
@@ -535,7 +534,20 @@ theorem mmap_ok {sys : Syscall} {len : BitVec 64} {fields : List Ty} {tag : Opti
                 exact (hR (stackBase Γ s) (stackSize Γ) h.stackSize_lt
                   (State.canRead_of_canWrite h.stackPerm)).symm
               · exact h.stackHeap x l hl'
-            sp := by rw [hg]; exact h.sp.ext hext }
+            sp := by rw [hg]; exact h.sp.ext hext
+            text := fun x l hl ht => by
+              rcases hcases x l hl with ⟨-, hlL⟩ | ⟨-, hl'⟩
+              · rw [hlL] at ht
+                exact absurd rfl ht
+              · -- the byte is readable, so it is not in the fresh memory
+                have hpos := hΨ.nonempty x l hl'
+                have hr := State.canRead_iff.mp (h.heapPerm x l hl').1 (l.size - 1) (by omega)
+                rw [State.mem_mapZero s hal hsz4 hfit64]
+                split
+                · next hin =>
+                  have hn := hU _ hin
+                  rw [hn] at hr
+                · exact h.text x l hl' ht }
         have hM : WellTyped fetch sys Ψ₂ n Γ
             { s.mapZero a size with world := { s.world with asked := s.world.asked + 1 } } :=
           hM₀.congr rfl rfl rfl rfl
@@ -629,7 +641,10 @@ theorem storeBytes_ok {sys : Syscall} {r : Reg} {fields : List Ty} {off cnt : Na
       (fun j hj hj' => by
         have := hints (j - off) (by omega)
         rwa [show off + (j - off) = j by omega] at this)
-      rfl rfl rfl (fun y hd => ?_)
+      rfl rfl rfl (fun y hd => ?_) (fun x hx => by
+        show (s.storeBytes _ data).mem x = s.mem x
+        rw [State.mem_storeBytes s _ x _ (by omega), List.getElem?_eq_none (by bv_omega)]
+        rfl)
     refine (State.load64_congr (s := s.storeBytes _ _) rfl y).trans
       (State.load64_storeBytes_disjoint s _ (by omega) ?_ (hd.2 (by omega)))
     have h1 := hd.1 (by decide)
@@ -664,7 +679,11 @@ theorem storeBytes_ok_stack {sys : Syscall} {r : Reg} {v d : BitVec 64} {cnt : N
       (fun j hj hj' => by
         have := hints (j - d.toNat / 8) (by omega)
         rwa [show d.toNat / 8 + (j - d.toNat / 8) = j by omega] at this)
-      rfl rfl rfl (fun y hd => ?_)
+      rfl rfl rfl (fun y hd => ?_) (fun x hx => by
+        show (s.storeBytes _ data).mem x = s.mem x
+        rw [hbase]
+        rw [State.mem_storeBytes s _ x _ (by omega), List.getElem?_eq_none (by bv_omega)]
+        rfl)
     rw [hbase]
     refine (State.load64_congr (s := s.storeBytes _ _) rfl y).trans
       (State.load64_storeBytes_disjoint s _ (by omega) ?_ (hd.2 (by omega)))

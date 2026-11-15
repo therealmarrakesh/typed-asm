@@ -141,6 +141,20 @@ theorem load_store_disjoint (s : State) (w w' : Width) (a b : BitVec 64) (v : Bi
   · refine load64_congr ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ <;> apply mem_store_of_disjoint <;>
       cases w <;> simp only [Width.bytes] at * <;> bv_decide
 
+/-- Two states with the same eight bytes at an address load the same 64-bit
+value from it. -/
+theorem load64_congr_bytes {s t : State} {b : BitVec 64}
+    (h : ∀ j : BitVec 64, j < 8 → t.mem (b + j) = s.mem (b + j)) : t.load64 b = s.load64 b := by
+  refine load64_congr ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_
+  · simpa using h 0 (by decide)
+  · exact h 1 (by decide)
+  · exact h 2 (by decide)
+  · have := h 3 (by decide); rwa [show b + 3 = b + 2 + 1 by bv_omega] at this
+  · exact h 4 (by decide)
+  · have := h 5 (by decide); rwa [show b + 5 = b + 4 + 1 by bv_omega] at this
+  · have := h 6 (by decide); rwa [show b + 6 = b + 4 + 2 by bv_omega] at this
+  · have := h 7 (by decide); rwa [show b + 7 = b + 4 + 2 + 1 by bv_omega] at this
+
 /-- A byte store leaves a 64-bit load unchanged if the byte is outside the loaded range. -/
 theorem load64_store8_disjoint (s : State) {a b : BitVec 64} (v : BitVec 8) (h : 8 ≤ a - b) :
     (s.store8 a v).load64 b = s.load64 b := by

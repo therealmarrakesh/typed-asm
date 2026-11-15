@@ -24,7 +24,7 @@ inductive At : Label → Ctx → Prop
 def Φ : CodeTy := .ofLabels code base At
 
 /-- The buffer: two integer fields, sixteen bytes, writable. -/
-def bufferLayout : Layout := ⟨[.int, .int], true, none⟩
+def bufferLayout : Layout := ⟨[.int, .int], true, none, 0⟩
 
 def blocks : List (BitVec 64 × Layout) := [(dataBase, bufferLayout)]
 
