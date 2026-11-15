@@ -460,18 +460,110 @@ macro "ty_index" : tactic =>
     | (refine index8_slot _ _ ?_ ?_ <;> decide)
     | (refine index_bytes _ _ _ ?_; decide))
 
-/-- Proves which typed value a block laid out as eight-byte cells has at a
-cell reached through an index, and that it is the only one there. -/
+open Lean Meta Elab Tactic in
+/-- Writes out a shape that the goal asks the size or the typed values of,
+where it is named by a definition: `node.size` becomes the size of what
+`node` is defined as. Fails if there is nothing to write out. -/
+elab "ty_shape_open" : tactic => withMainContext do
+  let goal ← getMainGoal
+  let target ← instantiateMVars (← goal.getType)
+  let fns := [``ShapeOf.size, ``ShapeOf.free, ``ShapeOf.valAt, ``ShapeOf.sole]
+  let changed ← IO.mkRef false
+  let target' ← Meta.transform target (pre := fun e => do
+    let f := e.getAppFn
+    let args := e.getAppArgs
+    if f.isConst && fns.contains f.constName! && args.size ≥ 2 then
+      let S := args[1]!
+      if S.isAppOf ``ShapeOf.mk || S.hasLooseBVars then return .continue
+      let S' ← whnf S
+      if S'.isAppOf ``ShapeOf.mk then
+        changed.set true
+        return .continue (mkAppN f (args.set! 1 S'))
+    return .continue)
+  unless ← changed.get do throwError "no shape to write out"
+  replaceMainGoal [← goal.replaceTargetDefEq target']
+
+/-! An array of `n` elements of one shape, reached three ways: through a
+pointer stepped along it (`a * k + f`: element `k`, byte `f` of it), at a
+fixed number of bytes from its start, and through an index scaled by the
+element's size. -/
+
+namespace ShapeOf
+
+variable {S : Shape} {n a k f o i off m : Nat} {t : Ty}
+
+theorem valAt_rep_elem (hf : S.fits = true) (ha : a = S.size) (hi : k < n)
+    (hv : S.valAt f = some t) : (S.rep n).valAt (a * k + f) = some t := by
+  subst ha; rw [Nat.mul_comm]; exact valAt_rep hf hi hv
+
+theorem sole_rep_elem (hf : S.fits = true) (ha : a = S.size) (hi : k < n)
+    (hin : f + 8 ≤ S.size) (hs : S.sole f = true) : (S.rep n).sole (a * k + f) = true := by
+  subst ha; rw [Nat.mul_comm]; exact sole_rep hf hi hin hs
+
+theorem free_rep_elem (hf : S.fits = true) (ha : a = S.size) (hi : k < n)
+    (hin : f + m ≤ S.size) (hfree : S.free f m = true) :
+    (S.rep n).free (a * k + f) m = true := by
+  subst ha; rw [Nat.mul_comm]; exact free_rep hf hi hin hfree
+
+theorem valAt_rep_at (hf : S.fits = true) (hi : o / S.size < n)
+    (hv : S.valAt (o % S.size) = some t) : (S.rep n).valAt o = some t := by
+  have := valAt_rep hf hi hv
+  rwa [Nat.mul_comm, Nat.div_add_mod] at this
+
+theorem sole_rep_at (hf : S.fits = true) (hi : o / S.size < n)
+    (hin : o % S.size + 8 ≤ S.size) (hs : S.sole (o % S.size) = true) :
+    (S.rep n).sole o = true := by
+  have := sole_rep hf hi hin hs
+  rwa [Nat.mul_comm, Nat.div_add_mod] at this
+
+theorem free_rep_at (hf : S.fits = true) (hi : o / S.size < n)
+    (hin : o % S.size + m ≤ S.size) (hfree : S.free (o % S.size) m = true) :
+    (S.rep n).free o m = true := by
+  have := free_rep hf hi hin hfree
+  rwa [Nat.mul_comm, Nat.div_add_mod] at this
+
+theorem valAt_rep_idx (hf : S.fits = true) (h8 : S.size = 8) (hoff : off % 8 = 0)
+    (hi : off / 8 + i < n) (hv : S.valAt 0 = some t) :
+    (S.rep n).valAt (off + 8 * i) = some t := by
+  have := valAt_rep hf hi hv
+  rw [h8] at this
+  rwa [show (off / 8 + i) * 8 + 0 = off + 8 * i by omega] at this
+
+theorem sole_rep_idx (hf : S.fits = true) (h8 : S.size = 8) (hoff : off % 8 = 0)
+    (hi : off / 8 + i < n) (hs : S.sole 0 = true) :
+    (S.rep n).sole (off + 8 * i) = true := by
+  have := sole_rep hf hi (f := 0) (by omega) hs
+  rw [h8] at this
+  rwa [show (off / 8 + i) * 8 + 0 = off + 8 * i by omega] at this
+
+end ShapeOf
+
+/-- Proves a premise about an element of an array: a bound on which element
+it is, from the hypotheses, or a fact about the element's own shape, by
+working it out. -/
+macro "ty_elem" : tactic =>
+  `(tactic| first
+    | exact rfl
+    | decide
+    | assumption
+    | omega
+    | ((try ty_shape_open)
+       simp only [ShapeOf.raw, Nat.reduceDiv, Nat.reduceMod, Nat.reduceAdd, Nat.reduceMul,
+         Nat.zero_add, Nat.add_zero, BitVec.reduceToNat, BitVec.toNat_ofNat, Nat.reducePow]
+       first | assumption | omega))
+
+/-- Proves which typed value an array has at a place in one of its elements,
+that it is the only one there, or that bytes of an element are plain. -/
 macro "ty_val" : tactic =>
   `(tactic| first
-    | (refine Shape.valAt_cells (by decide) ?_ ?_
-       · (try simp only [Nat.reduceDiv, Nat.zero_add, Nat.add_zero, BitVec.reduceToNat])
-         ty_field
-       · exact rfl)
-    | (refine Shape.sole_cells (τ := ?_) (by decide) ?_ ?_
-       · (try simp only [Nat.reduceDiv, Nat.zero_add, Nat.add_zero, BitVec.reduceToNat])
-         ty_field
-       · exact rfl))
+    | (refine ShapeOf.valAt_rep_elem ?_ ?_ ?_ ?_ <;> ty_elem)
+    | (refine ShapeOf.sole_rep_elem ?_ ?_ ?_ ?_ ?_ <;> ty_elem)
+    | (refine ShapeOf.free_rep_elem ?_ ?_ ?_ ?_ ?_ <;> ty_elem)
+    | (refine ShapeOf.valAt_rep_idx ?_ ?_ ?_ ?_ ?_ <;> ty_elem)
+    | (refine ShapeOf.sole_rep_idx ?_ ?_ ?_ ?_ ?_ <;> ty_elem)
+    | (refine ShapeOf.valAt_rep_at ?_ ?_ ?_ <;> ty_elem)
+    | (refine ShapeOf.sole_rep_at ?_ ?_ ?_ ?_ <;> ty_elem)
+    | (refine ShapeOf.free_rep_at ?_ ?_ ?_ ?_ <;> ty_elem))
 
 /-- Proves a fact with no unknowns in it from the hypotheses: the fact
 itself, or one side of an "or". A goal with unknowns is refused, since a
@@ -513,7 +605,7 @@ macro "ty_inside" : tactic =>
   `(tactic| first
     | decide
     | (simp only [ShapeOf.raw, ShapeOf.clear, ShapeOf.set, ShapeOf.take, ShapeOf.drop,
-         ShapeOf.append, Shape.cells,
+         ShapeOf.append, ShapeOf.rep_size,
          List.length_replicate, List.length_set, List.length_cons, List.length_nil,
          List.length_take, List.length_drop, List.length_append]
        first | decide | omega))
@@ -556,29 +648,6 @@ elab "ty_prop_only" : tactic => do
   unless ← isProp (← getMainTarget) do
     throwError "not a proposition"
 
-open Lean Meta Elab Tactic in
-/-- Writes out a shape that the goal asks the size or the typed values of,
-where it is named by a definition: `node.size` becomes the size of what
-`node` is defined as. Fails if there is nothing to write out. -/
-elab "ty_shape_open" : tactic => withMainContext do
-  let goal ← getMainGoal
-  let target ← instantiateMVars (← goal.getType)
-  let fns := [``ShapeOf.size, ``ShapeOf.free, ``ShapeOf.valAt, ``ShapeOf.sole]
-  let changed ← IO.mkRef false
-  let target' ← Meta.transform target (pre := fun e => do
-    let f := e.getAppFn
-    let args := e.getAppArgs
-    if f.isConst && fns.contains f.constName! && args.size ≥ 2 then
-      let S := args[1]!
-      if S.isAppOf ``ShapeOf.mk || S.hasLooseBVars then return .continue
-      let S' ← whnf S
-      if S'.isAppOf ``ShapeOf.mk then
-        changed.set true
-        return .continue (mkAppN f (args.set! 1 S'))
-    return .continue)
-  unless ← changed.get do throwError "no shape to write out"
-  replaceMainGoal [← goal.replaceTargetDefEq target']
-
 macro_rules
   | `(tactic| ty_side) =>
     `(tactic| ty_prop_only; first
@@ -595,12 +664,12 @@ macro_rules
       | ty_owned_byte
       -- a bound against the length of a long list, without counting it out
       | (simp only [ShapeOf.raw, ShapeOf.clear, ShapeOf.set, ShapeOf.take, ShapeOf.drop,
-           ShapeOf.append, Shape.cells,
+           ShapeOf.append, ShapeOf.rep_size,
            List.length_replicate, List.length_set, List.length_cons, List.length_nil]
          first | decide | omega)
       -- a bound on a byte reached through an index, from a bound on the index
       | (simp only [ShapeOf.raw, ShapeOf.clear, ShapeOf.set, ShapeOf.take, ShapeOf.drop,
-           ShapeOf.append, Shape.cells,
+           ShapeOf.append, ShapeOf.rep_size,
            List.length_replicate, List.length_set, List.length_cons, List.length_nil,
            Scale.shift, NarrowW.bytes, Width.bytes, BitVec.toNat_ofNat, BitVec.reduceToNat, Nat.reducePow,
            Nat.reduceMod,
@@ -609,7 +678,7 @@ macro_rules
       -- the same, against a shape named by a definition
       | (ty_shape_open
          simp only [ShapeOf.raw, ShapeOf.clear, ShapeOf.set, ShapeOf.take, ShapeOf.drop,
-           ShapeOf.append, Shape.cells,
+           ShapeOf.append, ShapeOf.rep_size,
            List.length_replicate, List.length_set, List.length_cons, List.length_nil,
            Scale.shift, NarrowW.bytes, Width.bytes, BitVec.toNat_ofNat, BitVec.reduceToNat,
            Nat.reducePow, Nat.reduceMod,
@@ -1297,21 +1366,13 @@ private partial def listElems? (e : Expr) : Option (List Expr) :=
 
 mutual
 
-/-- A block's shape in the notation used in messages: `[int, int]` for one
-laid out as eight-byte cells, `16 bytes` for plain bytes, and the typed
-values with where they start otherwise. -/
+/-- A block's shape in the notation used in messages: `16 bytes` for plain
+bytes, the typed values with where they start otherwise, and `4 × (…)` for
+an array. -/
 private partial def ppShape (S : Expr) : MetaM String := do
   let S ← instantiateMVars S
-  if S.isAppOfArity ``Shape.cells 1 then
-    match listElems? S.appArg! with
-    | some elems =>
-      let parts ← elems.mapM ppTy
-      return s!"[{", ".intercalate parts}]"
-    | none =>
-      if S.appArg!.isAppOfArity ``List.replicate 3 then
-        let n ← ppClean S.appArg!.appFn!.appArg!
-        return s!"{n} × {← ppTy S.appArg!.appArg!}"
-      else return ← ppClean S
+  if S.isAppOfArity ``ShapeOf.rep 3 then
+    return s!"{← ppClean S.appFn!.appArg!} × ({← ppShape S.appArg!})"
   if S.isAppOfArity ``ShapeOf.raw 2 then
     return s!"{← ppClean S.appArg!} bytes"
   if S.isAppOfArity ``ShapeOf.mk 3 then
@@ -2721,8 +2782,8 @@ private def typeMmap (rule : TSyntax `term) : TacticM Unit := do
           evalTactic (← `(tactic| first
             | decide
             | rfl
-            | exact Shape.fits_cells _
-            | (simp only [ShapeOf.raw, Shape.cells, List.length_cons, List.length_nil,
+            | (refine ShapeOf.fits_rep ?_ _; first | exact rfl | decide)
+            | (simp only [ShapeOf.raw, ShapeOf.rep_size, List.length_cons, List.length_nil,
                 List.length_replicate]; omega)
             | (simp; done)))
       catch _ =>

@@ -790,7 +790,7 @@ each. The index in `rcx` is exactly 2. -/
 def Γ₄ : Ctx where
   regs := fun r =>
     if r = .rdi then .ptr (.raw 32) true 0
-    else if r = .rsi then .ptr (Shape.cells (List.replicate 4 (.ptr (.raw 16) true 0))) false 0
+    else if r = .rsi then .ptr ((ShapeOf.mk 8 [(0, .ptr (.raw 16) true 0)]).rep 4) false 0
     else if r = .rcx then .eq 2
     else .int
   stack := [.int]
@@ -905,6 +905,69 @@ example (i : BitVec 64) (hlt : i.toNat < 65) :
 example (i : BitVec 64) (hlt : i.toNat < 64) :
     Straight Ψ 10 (filling i) (.store8 (.sib (some .rbx) (some (.rcx, .s1)) 7) .rax)
       (filling i) := by
+  ty_straight
+
+/-! An array of records. Each is 24 bytes: a number, a pointer to sixteen
+bytes at byte 8, and eight plain bytes. `rbx` points at record `k` of `n`,
+as a pointer does that is stepped along the array, and `k < n` is what puts
+each access inside the array. The pointer is loaded with its type and stored
+back; a plain byte goes into the last eight bytes, not over the pointer; and
+stepping on by one record's length gives a pointer at record `k + 1`. -/
+
+/-- One record of the array. -/
+def entryShape : Shape := ⟨24, [(8, .ptr (.raw 16) true 0)]⟩
+
+/-- `rbx` points at record `k` of an array of `n`. -/
+def walking (n k : Nat) : Ctx :=
+  ⟨fun r => if r = .rbx then .ptr (entryShape.rep n) true (24 * k) else .int, [], 0,
+    Flags.Any, []⟩
+
+example (n k : Nat) (hk : k < n) :
+    Straight Ψ 10 (walking n k) (.mov .w64 (.r_m .rax (.sib (some .rbx) none 8)))
+      ((walking n k).setReg .rax (.ptr (.raw 16) true 0)) := by
+  ty_straight
+
+example (n k : Nat) (hk : k < n) :
+    Straight Ψ 10 ((walking n k).setReg .rax (.ptr (.raw 16) true 0))
+      (.mov .w64 (.rm_r (.mem (.sib (some .rbx) none 8)) .rax))
+      ((walking n k).setReg .rax (.ptr (.raw 16) true 0)) := by
+  ty_straight
+
+example (n k : Nat) (hk : k < n) :
+    Straight Ψ 10 (walking n k) (.store8 (.sib (some .rbx) none 16) .rax) (walking n k) := by
+  ty_straight
+
+example (n k : Nat) :
+    ∃ Γ', Straight Ψ 10 (walking n k) (.alu .add .w64 (.rm_i (.reg .rbx) 24)) Γ' ∧
+      Γ'.regs .rbx = .ptr (entryShape.rep n) true (24 * (k + 1)) :=
+  ⟨_, by ty_straight, rfl⟩
+
+/-- error: cannot type `mov byte ptr [rbx+8], al` in the current context
+• store8RM: the bytes are not known to be clear of the typed values the block holds -/
+#guard_msgs in
+example (n k : Nat) (hk : k < n) :
+    Straight Ψ 10 (walking n k) (.store8 (.sib (some .rbx) none 8) .rax) (walking n k) := by
+  ty_straight
+
+/-- error: cannot type `mov rax, qword ptr [rbx+8]` in the current context
+• loadField: the block is not known to hold a typed value there: a bound on the index is needed among the hypotheses
+• loadInt: the bytes are not known to be inside the block: a bound on the index is needed among the hypotheses -/
+#guard_msgs in
+example (n k : Nat) :
+    ∃ Γ', Straight Ψ 10 (walking n k) (.mov .w64 (.r_m .rax (.sib (some .rbx) none 8))) Γ' :=
+  ⟨_, by ty_straight⟩
+
+/-! An array of `n` pointers, reached through an index known only to be
+below `n`. -/
+
+example (n : Nat) (i : BitVec 64) (hi : i.toNat < n) :
+    Straight Ψ 10
+      ⟨fun r => if r = .rsi then .ptr ((ShapeOf.mk 8 [(0, .ptr (.raw 16) true 0)]).rep n) false 0
+        else if r = .rcx then .eq i else .int, [], 0, Flags.Any, []⟩
+      (.mov .w64 (.r_m .rax (.sib (some .rsi) (some (.rcx, .s8)) 0)))
+      ((⟨fun r => if r = .rsi then .ptr ((ShapeOf.mk 8 [(0, .ptr (.raw 16) true 0)]).rep n) false 0
+        else if r = .rcx then .eq i else .int, [], 0, Flags.Any, []⟩ : Ctx).setReg .rax
+          (.ptr (.raw 16) true 0)) := by
   ty_straight
 
 /-! ## Exactly known values

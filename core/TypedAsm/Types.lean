@@ -113,6 +113,186 @@ theorem eq_of_sole {S : ShapeOf τ} {o : Nat} (h : S.sole o = true) {p q : Nat �
   rw [hx] at hp' hq'
   rw [List.mem_singleton.mp hp', List.mem_singleton.mp hq']
 
+/-- The typed values of `n` copies of a block laid end to end from byte `o`. -/
+def repFrom (S : ShapeOf τ) (o : Nat) : Nat → List (Nat × τ)
+  | 0 => []
+  | n + 1 => S.vals.map (fun p => (o + p.1, p.2)) ++ repFrom S (o + S.size) n
+
+/-- `n` copies of a block laid end to end: an array of `n` elements of that
+shape. -/
+def rep (n : Nat) (S : ShapeOf τ) : ShapeOf τ := ⟨n * S.size, repFrom S 0 n⟩
+
+@[simp] theorem rep_size (n : Nat) (S : ShapeOf τ) : (S.rep n).size = n * S.size := rfl
+
+/-- Every typed value of the copies lies at or after where they start. -/
+theorem le_of_mem_repFrom {S : ShapeOf τ} {o n : Nat} {q : Nat × τ}
+    (h : q ∈ repFrom S o n) : o ≤ q.1 := by
+  induction n generalizing o with
+  | zero => cases h
+  | succ n ih =>
+    simp only [repFrom, List.mem_append, List.mem_map] at h
+    rcases h with ⟨p, -, rfl⟩ | h
+    · simp
+    · have := ih h; omega
+
+/-- And before where they end, when each typed value lies inside its block. -/
+theorem lt_of_mem_repFrom {S : ShapeOf τ} (hf : S.fits = true) {o n : Nat} {q : Nat × τ}
+    (h : q ∈ repFrom S o n) : q.1 + 8 ≤ o + n * S.size := by
+  induction n generalizing o with
+  | zero => cases h
+  | succ n ih =>
+    simp only [repFrom, List.mem_append, List.mem_map] at h
+    rw [Nat.succ_mul]
+    rcases h with ⟨p, hp, rfl⟩ | h
+    · have := fits_mem hf p hp
+      simp only
+      omega
+    · have := ih h; omega
+
+theorem fits_rep {S : ShapeOf τ} (hf : S.fits = true) (n : Nat) : (S.rep n).fits = true := by
+  refine List.all_eq_true.mpr fun q hq => decide_eq_true ?_
+  have := lt_of_mem_repFrom hf (o := 0) hq
+  show q.1 + 8 ≤ n * S.size
+  omega
+
+/-- Element `i` of the copies holds what the block holds, `i` blocks on. -/
+theorem find_repFrom {S : ShapeOf τ} (hf : S.fits = true) {o n i f : Nat} {t : τ}
+    (hi : i < n) (hv : S.valAt f = some t) :
+    ((repFrom S o n).find? fun q => q.1 == o + i * S.size + f).map (·.2) = some t := by
+  induction n generalizing o i with
+  | zero => omega
+  | succ n ih =>
+    simp only [repFrom, List.find?_append]
+    cases i with
+    | zero =>
+      have e : (S.vals.map fun p => (o + p.1, p.2)).find? (fun q => q.1 == o + 0 * S.size + f)
+          = (S.vals.find? fun p => p.1 == f).map fun p => (o + p.1, p.2) := by
+        rw [List.find?_map]
+        congr 2
+        funext p
+        simp only [Function.comp, Nat.zero_mul, Nat.add_zero]
+        rw [Bool.eq_iff_iff]
+        simp only [beq_iff_eq]
+        omega
+      rw [e]
+      simp only [valAt, Option.map_eq_some_iff] at hv
+      obtain ⟨p, hp, rfl⟩ := hv
+      simp [hp]
+    | succ j =>
+      have hnone : (S.vals.map fun p => (o + p.1, p.2)).find?
+          (fun q => q.1 == o + (j + 1) * S.size + f) = none := by
+        rw [List.find?_eq_none]
+        intro q hq
+        obtain ⟨p, hp, rfl⟩ := List.mem_map.mp hq
+        have := fits_mem hf p hp
+        rw [Nat.succ_mul]
+        simp only [beq_iff_eq]
+        omega
+      rw [hnone, Option.none_or]
+      have := ih (o := o + S.size) (i := j) (by omega)
+      rw [Nat.succ_mul]
+      rw [show o + (j * S.size + S.size) + f = o + S.size + j * S.size + f by omega]
+      exact this
+
+theorem valAt_rep {S : ShapeOf τ} (hf : S.fits = true) {n i f : Nat} {t : τ} (hi : i < n)
+    (hv : S.valAt f = some t) : (S.rep n).valAt (i * S.size + f) = some t := by
+  have := find_repFrom hf (o := 0) hi hv
+  simpa [valAt, rep] using this
+
+/-- Typed values of copies that start at or after the end of a run of bytes
+keep clear of it. -/
+theorem clear_after {S : ShapeOf τ} {o n x m : Nat} (hx : x + m ≤ o) :
+    ∀ q ∈ repFrom S o n, clearOf x m q = true := by
+  intro q hq
+  have := le_of_mem_repFrom hq
+  simp only [clearOf, Bool.or_eq_true, decide_eq_true_eq]
+  omega
+
+theorem free_repFrom {S : ShapeOf τ} (hf : S.fits = true) {o n i f m : Nat} (hi : i < n)
+    (hin : f + m ≤ S.size) (hfree : S.free f m = true) :
+    (repFrom S o n).all (clearOf (o + i * S.size + f) m) = true := by
+  induction n generalizing o i with
+  | zero => omega
+  | succ n ih =>
+    simp only [repFrom, List.all_append, Bool.and_eq_true]
+    cases i with
+    | zero =>
+      constructor
+      · refine List.all_eq_true.mpr fun q hq => ?_
+        obtain ⟨p, hp, rfl⟩ := List.mem_map.mp hq
+        have := clearOf_of_free hfree p hp
+        simp only [clearOf, Bool.or_eq_true, decide_eq_true_eq]
+        omega
+      · exact List.all_eq_true.mpr fun q hq => clear_after (by omega) q hq
+    | succ j =>
+      constructor
+      · refine List.all_eq_true.mpr fun q hq => ?_
+        obtain ⟨p, hp, rfl⟩ := List.mem_map.mp hq
+        have := fits_mem hf p hp
+        rw [Nat.succ_mul]
+        simp only [clearOf, Bool.or_eq_true, decide_eq_true_eq]
+        omega
+      · have := ih (o := o + S.size) (i := j) (by omega)
+        rw [Nat.succ_mul,
+          show o + (j * S.size + S.size) + f = o + S.size + j * S.size + f by omega]
+        exact this
+
+/-- Bytes that are plain in the block are plain in each element of the array. -/
+theorem free_rep {S : ShapeOf τ} (hf : S.fits = true) {n i f m : Nat} (hi : i < n)
+    (hin : f + m ≤ S.size) (hfree : S.free f m = true) :
+    (S.rep n).free (i * S.size + f) m = true := by
+  have := free_repFrom hf (o := 0) hi hin hfree
+  simpa [free, rep] using this
+
+theorem sole_repFrom {S : ShapeOf τ} (hf : S.fits = true) {o n i f : Nat} (hi : i < n)
+    (hin : f + 8 ≤ S.size) (hs : S.sole f = true) :
+    ((repFrom S o n).filter fun q => !clearOf (o + i * S.size + f) 8 q).length = 1 := by
+  induction n generalizing o i with
+  | zero => omega
+  | succ n ih =>
+    simp only [repFrom, List.filter_append, List.length_append]
+    cases i with
+    | zero =>
+      have hrest : (repFrom S (o + S.size) n).filter
+          (fun q => !clearOf (o + 0 * S.size + f) 8 q) = [] :=
+        List.filter_eq_nil_iff.mpr fun q hq => by
+          rw [clear_after (by omega) q hq]; decide
+      have hfirst : ((S.vals.map fun p => (o + p.1, p.2)).filter
+          fun q => !clearOf (o + 0 * S.size + f) 8 q).length
+            = (S.vals.filter fun p => !clearOf f 8 p).length := by
+        rw [List.filter_map, List.length_map]
+        congr 2
+        funext p
+        simp only [Function.comp, clearOf, Nat.zero_mul, Nat.add_zero]
+        congr 1
+        rw [Bool.eq_iff_iff]
+        simp only [Bool.or_eq_true, decide_eq_true_eq]
+        omega
+      simp only [sole, beq_iff_eq] at hs
+      rw [hfirst, hrest, hs]
+      rfl
+    | succ j =>
+      have hfirst : (S.vals.map fun p => (o + p.1, p.2)).filter
+          (fun q => !clearOf (o + (j + 1) * S.size + f) 8 q) = [] :=
+        List.filter_eq_nil_iff.mpr fun q hq => by
+          obtain ⟨p, hp, rfl⟩ := List.mem_map.mp hq
+          have := fits_mem hf p hp
+          rw [Nat.succ_mul]
+          simp only [clearOf, Bool.or_eq_false_iff, decide_eq_false_iff_not,
+            Bool.not_eq_eq_eq_not, Bool.not_true]
+          omega
+      have := ih (o := o + S.size) (i := j) (by omega)
+      rw [hfirst, Nat.succ_mul,
+        show o + (j * S.size + S.size) + f = o + S.size + j * S.size + f by omega]
+      simpa using this
+
+/-- A typed value alone in its eight bytes of the block is alone in them in
+each element of the array. -/
+theorem sole_rep {S : ShapeOf τ} (hf : S.fits = true) {n i f : Nat} (hi : i < n)
+    (hin : f + 8 ≤ S.size) (hs : S.sole f = true) : (S.rep n).sole (i * S.size + f) = true := by
+  have := sole_repFrom hf (o := 0) hi hin hs
+  simpa [sole, rep] using this
+
 end ShapeOf
 
 /-- A description of the machine at one program point, over some notion `τ` of type.
@@ -196,114 +376,6 @@ def Ty.isInt : Ty → Bool
 
 theorem Ty.eq_int_of_isInt {τ : Ty} (h : τ.isInt = true) : τ = .int := by
   cases τ <;> first | rfl | exact absurd h (by simp [Ty.isInt])
-
-/-- The typed values of a run of eight-byte cells starting at byte `o`: one
-for each cell that is not a plain number. -/
-def Shape.cellsFrom (o : Nat) : List Ty → List (Nat × Ty)
-  | [] => []
-  | τ :: rest => if τ.isInt then cellsFrom (o + 8) rest else (o, τ) :: cellsFrom (o + 8) rest
-
-/-- A block laid out as eight-byte cells with the given types: the way to
-write an array of typed values, which an index known only by a bound can
-then reach into. A cell of type `int` is plain bytes. -/
-def Shape.cells (F : List Ty) : Shape := ⟨8 * F.length, Shape.cellsFrom 0 F⟩
-
-theorem Shape.fits_cellsFrom {F : List Ty} {o : Nat} {p : Nat × Ty}
-    (h : p ∈ Shape.cellsFrom o F) : o ≤ p.1 ∧ p.1 + 8 ≤ o + 8 * F.length := by
-  induction F generalizing o with
-  | nil => cases h
-  | cons υ rest ih =>
-    simp only [Shape.cellsFrom] at h
-    simp only [List.length_cons]
-    split at h
-    · have := ih h; omega
-    · rcases List.mem_cons.mp h with rfl | h
-      · simp only; omega
-      · have := ih h; omega
-
-/-- In a run of cells, the typed value of a cell is the one found at its offset. -/
-theorem Shape.find_cellsFrom {F : List Ty} {o i : Nat} {τ : Ty} (h : F[i]? = some τ)
-    (hn : τ.isInt = false) :
-    (Shape.cellsFrom o F).find? (fun p => p.1 == o + 8 * i) = some (o + 8 * i, τ) := by
-  induction F generalizing o i with
-  | nil => simp at h
-  | cons υ rest ih =>
-    cases i with
-    | zero =>
-      simp only [List.getElem?_cons_zero, Option.some.injEq] at h
-      subst h
-      simp [Shape.cellsFrom, hn]
-    | succ j =>
-      simp only [List.getElem?_cons_succ] at h
-      have e : o + 8 * (j + 1) = (o + 8) + 8 * j := by omega
-      simp only [Shape.cellsFrom]
-      split
-      · rw [e]; exact ih h
-      · rw [List.find?_cons_of_neg (by simp), e]; exact ih h
-
-/-- The typed value of a cell of a block laid out as cells. -/
-theorem Shape.valAt_cells {F : List Ty} {off i : Nat} {τ : Ty} (h8 : off % 8 = 0)
-    (h : F[off / 8 + i]? = some τ) (hn : τ.isInt = false) :
-    (Shape.cells F).valAt (off + 8 * i) = some τ := by
-  have e : off + 8 * i = 0 + 8 * (off / 8 + i) := by omega
-  simp only [ShapeOf.valAt, Shape.cells]
-  rw [e, Shape.find_cellsFrom h hn]
-  rfl
-
-theorem Shape.clear_cellsFrom {F : List Ty} {o x : Nat} (hx : x + 8 ≤ o) :
-    ∀ p ∈ Shape.cellsFrom o F, ShapeOf.clearOf x 8 p = true := by
-  induction F generalizing o with
-  | nil => intro p hp; simp [Shape.cellsFrom] at hp
-  | cons υ rest ih =>
-    intro p hp
-    simp only [Shape.cellsFrom] at hp
-    split at hp
-    · exact ih (by omega) p hp
-    · rcases List.mem_cons.mp hp with rfl | hp
-      · simp [ShapeOf.clearOf]; omega
-      · exact ih (by omega) p hp
-
-theorem Shape.filter_cellsFrom {F : List Ty} {o i : Nat} {τ : Ty} (h : F[i]? = some τ)
-    (hn : τ.isInt = false) :
-    ((Shape.cellsFrom o F).filter fun p => !ShapeOf.clearOf (o + 8 * i) 8 p).length = 1 := by
-  induction F generalizing o i with
-  | nil => simp at h
-  | cons υ rest ih =>
-    cases i with
-    | zero =>
-      simp only [List.getElem?_cons_zero, Option.some.injEq] at h
-      subst h
-      have hrest : (Shape.cellsFrom (o + 8) rest).filter
-          (fun p => !ShapeOf.clearOf (o + 8 * 0) 8 p) = [] :=
-        List.filter_eq_nil_iff.mpr (fun p hp => by
-          have := Shape.clear_cellsFrom (x := o + 8 * 0) (by omega) p hp
-          rw [this]; decide)
-      simp only [Shape.cellsFrom, hn, Bool.false_eq_true, ↓reduceIte]
-      rw [List.filter_cons_of_pos (by simp [ShapeOf.clearOf]), hrest]
-      rfl
-    | succ j =>
-      simp only [List.getElem?_cons_succ] at h
-      have e : o + 8 * (j + 1) = (o + 8) + 8 * j := by omega
-      simp only [Shape.cellsFrom]
-      split
-      · rw [e]; exact ih h
-      · rw [List.filter_cons_of_neg (by simp [ShapeOf.clearOf]; omega), e]; exact ih h
-
-/-- A cell's typed value is the only one in its eight bytes. -/
-theorem Shape.sole_cells {F : List Ty} {off i : Nat} {τ : Ty} (h8 : off % 8 = 0)
-    (h : F[off / 8 + i]? = some τ) (hn : τ.isInt = false) :
-    (Shape.cells F).sole (off + 8 * i) = true := by
-  have e : off + 8 * i = 0 + 8 * (off / 8 + i) := by omega
-  simp only [ShapeOf.sole, Shape.cells, beq_iff_eq]
-  rw [e]
-  exact Shape.filter_cellsFrom h hn
-
-/-- Every typed value of a block laid out as cells lies inside it. -/
-theorem Shape.fits_cells (F : List Ty) : (Shape.cells F).fits = true := by
-  refine List.all_eq_true.mpr fun p hp => decide_eq_true ?_
-  have := Shape.fits_cellsFrom (o := 0) (F := F) hp
-  show p.1 + 8 ≤ 8 * F.length
-  omega
 
 /-- The layout of one memory block. -/
 structure Layout where
