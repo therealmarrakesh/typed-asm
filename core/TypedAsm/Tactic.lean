@@ -494,7 +494,9 @@ macro "ty_owned_at" : tactic =>
     | (refine' OwnedAt.of_inside (k := 0) ?entry ?addr ?inside
        case entry => rfl
        case addr =>
-         first
+         -- matched as written: comparing two addresses by working them out
+         -- is slow, and settles nothing when one is not known
+         with_reducible first
          | rfl
          | exact BitVec.add_assoc _ _ _
          | exact OwnedAt.addr_sub _ _ _
@@ -503,7 +505,9 @@ macro "ty_owned_at" : tactic =>
     | (refine' OwnedAt.of_inside (k := 1) ?entry ?addr ?inside
        case entry => rfl
        case addr =>
-         first
+         -- matched as written: comparing two addresses by working them out
+         -- is slow, and settles nothing when one is not known
+         with_reducible first
          | rfl
          | exact BitVec.add_assoc _ _ _
          | exact OwnedAt.addr_sub _ _ _
@@ -512,7 +516,9 @@ macro "ty_owned_at" : tactic =>
     | (refine' OwnedAt.of_inside (k := 2) ?entry ?addr ?inside
        case entry => rfl
        case addr =>
-         first
+         -- matched as written: comparing two addresses by working them out
+         -- is slow, and settles nothing when one is not known
+         with_reducible first
          | rfl
          | exact BitVec.add_assoc _ _ _
          | exact OwnedAt.addr_sub _ _ _
@@ -521,7 +527,9 @@ macro "ty_owned_at" : tactic =>
     | (refine' OwnedAt.of_inside (k := 3) ?entry ?addr ?inside
        case entry => rfl
        case addr =>
-         first
+         -- matched as written: comparing two addresses by working them out
+         -- is slow, and settles nothing when one is not known
+         with_reducible first
          | rfl
          | exact BitVec.add_assoc _ _ _
          | exact OwnedAt.addr_sub _ _ _
@@ -595,7 +603,9 @@ elab "ty_prop_only" : tactic => do
 macro_rules
   | `(tactic| ty_side) =>
     `(tactic| ty_prop_only; first
-      | rfl
+      -- not the `rfl` tactic: on an inequality it would compare the two sides
+      -- as if for equality, working both out in full, before giving up
+      | exact rfl
       | decide
       | exact EaIs.base (by decide) rfl
       | exact EaIs.indexed (by decide) rfl rfl
@@ -1584,8 +1594,12 @@ private def typeBufferOwned (goal : MVarId) (rule : Name) (sized : Bool) : Tacti
     if t.isAppOf ``BlockOk then rest? := some g
     else if t.isForall then
       discard <| deep <| runOn g (do evalTactic (← `(tactic| first
-        | (refine ints_of_check ?_; first | ((try dsimp only); decide) | rfl)
-        | (intro j hj; refine getElem?_replicate_of_lt ?_; omega))))
+        | (intro j hj
+           refine getElem?_replicate_of_lt ?_
+           try simp only [BitVec.toNat_ofNat, Nat.reduceMod, Nat.reduceAdd, Nat.reduceDiv,
+             Nat.reducePow] at hj
+           omega)
+        | (refine ints_of_check ?_; first | decide +kernel | rfl))))
     else if (← isProp t) then
       discard <| deep <| runOn g (do evalTactic (← `(tactic| ty_inside)))
   let some rest := rest? | throwError "unexpected goals"

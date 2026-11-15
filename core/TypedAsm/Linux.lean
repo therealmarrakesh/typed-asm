@@ -1240,18 +1240,45 @@ def Ty.isInt : Ty → Bool
   | .int => true
   | _ => false
 
+/-- Whether the `k` fields from number `off` on are there and are all
+integers. One pass along the list. -/
+def intsFrom : List Ty → Nat → Nat → Bool
+  | _, _, 0 => true
+  | [], _, _ + 1 => false
+  | τ :: rest, 0, k + 1 => τ.isInt && intsFrom rest 0 k
+  | _ :: rest, off + 1, k + 1 => intsFrom rest off (k + 1)
+
 /-- The condition of `linux_read` on the fields, from a check that can be
 computed when the fields and the count are known. -/
-theorem ints_of_check {fields : List Ty} {off k : Nat}
-    (h : (List.range k).all (fun j => (fields[off + j]?).elim false Ty.isInt) = true) :
+theorem ints_of_check {fields : List Ty} {off k : Nat} (h : intsFrom fields off k = true) :
     ∀ j, j < k → fields[off + j]? = some .int := by
-  intro j hj
-  have hj' := List.all_eq_true.mp h j (List.mem_range.mpr hj)
-  cases hf : fields[off + j]? with
-  | none => rw [hf] at hj'; exact absurd hj' (by simp)
-  | some τ =>
-    rw [hf] at hj'
-    cases τ <;> first | rfl | exact absurd hj' (by simp [Ty.isInt])
+  induction fields generalizing off k with
+  | nil =>
+    cases k with
+    | zero => intro j hj; omega
+    | succ k => simp [intsFrom] at h
+  | cons τ rest ih =>
+    cases k with
+    | zero => intro j hj; omega
+    | succ k =>
+      cases off with
+      | zero =>
+        simp only [intsFrom, Bool.and_eq_true] at h
+        intro j hj
+        cases j with
+        | zero =>
+          have hτ : τ = .int := by
+            cases τ <;> first | rfl | exact absurd h.1 (by simp [Ty.isInt])
+          simp [hτ]
+        | succ j =>
+          have := ih (off := 0) h.2 j (by omega)
+          simpa using this
+      | succ off =>
+        simp only [intsFrom] at h
+        intro j hj
+        have := ih (off := off) h j hj
+        rw [show off + 1 + j = (off + j) + 1 by omega, List.getElem?_cons_succ]
+        exact this
 
 /-- `read` into the stack: with 0 in `rax`, the call returns, provided the
 stack pointer's value is known, the buffer in `rsi` is a known distance
