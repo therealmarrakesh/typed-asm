@@ -17,6 +17,7 @@ import StatProgram
 import ArgsProgram
 import OwnProgram
 import DoubleProgram
+import FreshProgram
 
 /-!
 # Whole programs, against a real machine
@@ -90,7 +91,12 @@ def cases : List Case := [
   { label := "double-empty", program := Double.program },
   { label := "double-short", program := Double.program, input := pattern 100 },
   { label := "double-page", program := Double.program, input := pattern 4096 },
-  { label := "double-more", program := Double.program, input := pattern 5000 }]
+  { label := "double-more", program := Double.program, input := pattern 5000 },
+  -- at least eight bytes of input: with fewer, what the program writes shows
+  -- where the kernel put its page, which no two runs agree on
+  { label := "fresh-short", program := Fresh.program, input := pattern 100 },
+  { label := "fresh-page", program := Fresh.program, input := pattern 4096 },
+  { label := "fresh-more", program := Fresh.program, input := pattern 5000 }]
 
 /-- A run as it is recorded: the exit status as Linux reports it, then what
 was written to standard output. -/
