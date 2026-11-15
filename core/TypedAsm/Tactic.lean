@@ -1091,6 +1091,46 @@ elab "ty_fetch" : tactic => withMainContext do
 private def isAddrLit (e : Expr) : Bool :=
   e.isAppOfArity ``BitVec.ofNat 2 && e.appArg!.nat?.isSome
 
+/-- A list with its spine worked out: each tail brought to the form of an
+element followed by a list, as far as that goes, and a number of elements
+dropped from an unknown list written as a number. -/
+private partial def normList (e : Expr) : MetaM Expr := do
+  let e ← whnf e
+  if e.isAppOfArity ``List.cons 3 then
+    return mkApp3 e.appFn!.appFn!.appFn! e.appFn!.appFn!.appArg! e.appFn!.appArg!
+      (← normList e.appArg!)
+  if e.isAppOfArity ``List.drop 3 then
+    let n := e.appFn!.appArg!
+    if n.nat?.isNone then
+      let n' ← whnf n
+      if let some k := n'.nat? then
+        return mkApp2 e.appFn!.appFn! (mkNatLit k) e.appArg!
+  return e
+
+/-- A context written as its five parts, with each register's type and the
+list of owned blocks worked out where a definition stood in for them: a
+signature's field, say. Returns nothing if there was nothing to do. -/
+private def workOutCtx (ctx : Expr) : MetaM (Option Expr) := do
+  unless ctx.isAppOfArity ``CtxOf.mk 6 do return none
+  let args := ctx.getAppArgs
+  let mut regs := args[1]!
+  let mut changed := false
+  if regs.isAppOfArity ``RegMap.get 2 && regs.appArg!.isAppOfArity ``RegMap.mk 17 then
+    let tbl := regs.appArg!.getAppArgs
+    let mut out := tbl
+    for i in [1:17] do
+      let e := tbl[i]!
+      unless (← isConstructorApp e) || e.getAppFn.isFVar do
+        let e' ← whnf e
+        unless e' == e do
+          out := out.set! i e'
+          changed := true
+    regs := mkApp regs.appFn! (mkAppN regs.appArg!.getAppFn out)
+  let owned ← normList args[5]!
+  unless owned == args[5]! do changed := true
+  unless changed do return none
+  return some (mkAppN ctx.getAppFn ((args.set! 1 regs).set! 5 owned))
+
 elab_rules : tactic
   | `(tactic| ty_normalize) => do
     let g ← getMainGoal
@@ -1098,11 +1138,27 @@ elab_rules : tactic
     unless t.isAppOfArity ``BlockOk 6 do
       evalTactic (← `(tactic| ty_dsimp_ctx))
       return
+    -- a context given by name is opened up
+    let mut opened := t
+    for _ in [0:4] do
+      let ctx := opened.appArg!
+      if ctx.isAppOf ``CtxOf.mk || ctx.isFVar || ctx.isMVar || !ctx.getAppFn.isConst then break
+      let some ctx' ← unfoldDefinition? ctx | break
+      opened := mkApp opened.appFn! ctx'.headBeta
+    unless opened == t do
+      replaceMainGoal [← g.replaceTargetDefEq opened]
     -- the register types, as a table of the sixteen
-    let regs ← whnfR (← mkAppM ``CtxOf.regs #[t.appArg!])
+    let regs ← whnfR (← mkAppM ``CtxOf.regs #[opened.appArg!])
     unless regs.isAppOf ``RegMap.get && regs.appArg!.isAppOf ``RegMap.mk do
       evalTactic (← `(tactic| refine BlockOk.regsEta ?_))
     evalTactic (← `(tactic| ty_dsimp_ctx))
+    -- what a definition still stands in for, worked out
+    let g ← getMainGoal
+    let t := (← instantiateMVars (← g.getType)).consumeMData
+    if t.isAppOfArity ``BlockOk 6 then
+      if let some ctx' ← g.withContext (workOutCtx t.appArg!) then
+        replaceMainGoal [← g.replaceTargetDefEq (mkApp t.appFn! ctx')]
+        evalTactic (← `(tactic| ty_dsimp_ctx))
     -- the address, as a number
     let g ← getMainGoal
     let t := (← instantiateMVars (← g.getType)).consumeMData
@@ -1274,6 +1330,11 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
     return m!"the flags are not known here, so they do not decide the condition"
   if ty.isForall then
     return m!"the operation reads the carry flag, which is not known to be defined here"
+  if ty.isAppOf ``OwnedAt || ty.isAppOf ``OwnedIdx then
+    return m!"the address is not known to be that of a field of a block the context owns"
+  if ty.isAppOf ``EaIs then
+    return m!"the registers the address is computed from must each hold an exactly known \
+      value; a register holding some number is given a name with `ty_name`"
   return m!"needs `{← ppClean ty}`"
 
 /-- The rules for an operand judgment, in the order to try them. -/
@@ -1851,6 +1912,27 @@ private def introBranch : TacticM Unit := do
   evalTactic (← `(tactic| first
     | rintro f $subst:ident $hcond:ident
     | (intro f hflags $hcond:ident; try dsimp only at hflags)))
+  -- What an unsigned comparison's outcome says about the two numbers is put
+  -- among the hypotheses as `hlt` or `hge`, for bounds on an index.
+  let hlt := mkIdent `hlt
+  let hge := mkIdent `hge
+  -- only where the flags are those of a comparison: matching the lemmas
+  -- against flags of another kind would set about computing them
+  let isCmp ← withMainContext do
+    let some d := (← getLCtx).findFromUserName? `hcond | pure false
+    let t ← instantiateMVars d.type
+    pure (t.find? (·.isConstOf ``AluOp.cmp)).isSome
+  if isCmp then try
+    Tactic.withoutRecover do evalTactic (← `(tactic| first
+      | (have $hlt := cmp_below $hcond
+         try simp only [BitVec.toNat_ofNat, Nat.reduceMod, Nat.reducePow] at $hlt:ident)
+      | (have $hlt := cmp_not_ae $hcond
+         try simp only [BitVec.toNat_ofNat, Nat.reduceMod, Nat.reducePow] at $hlt:ident)
+      | (have $hge := cmp_not_below $hcond
+         try simp only [BitVec.toNat_ofNat, Nat.reduceMod, Nat.reducePow] at $hge:ident)
+      | (have $hge := cmp_ae $hcond
+         try simp only [BitVec.toNat_ofNat, Nat.reduceMod, Nat.reducePow] at $hge:ident)))
+  catch _ => pure ()
 
 /-- Closes a goal reached under an assumption about a condition that the
 exactly known flags contradict. Returns whether it did. -/
