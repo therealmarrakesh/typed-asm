@@ -1,37 +1,15 @@
 # TypedAsm
 
-An x86-64 assembler embedded in Lean 4, in which instructions, data, layouts
-and the facts about them are all values that can be computed with and proved
-things about.
+An x86-64 assembler embedded in Lean 4, with a type system for instructions
+and the machine state they act on. Programs and their types can be checked
+and computed over directly.
 
 ## What this is
 
-Instructions, data, layouts, contexts and signatures are all values of Lean
-types, inside a language where values can be computed with and propositions
-about them can be proved. Safety is the first thing proved about them. It is a
-consequence of the embedding, not its definition.
-
-What follows from that:
-
-- **The macro language is Lean.** Any function that returns instructions is a
-  macro, with the full language behind it: recursion, data structures, type
-  classes.
-- **Programs are data.** They can be generated, transformed, analysed,
-  specialised and compared by ordinary functions, and those functions can
-  themselves be proved correct.
-- **Types are computed, not just checked.** A signature can depend on a
-  number, a context on an address.
-- **Any statable property is provable in principle.** Not only "never
-  faults", but "these two routines are equivalent", "this uses at most `k`
-  stack slots", "this returns the sum". The semantics to state all of those
-  exists today.
-- **The output carries its meaning.** The bytes in the executable are the
-  image of a term, through an encoder proved to round-trip, so a statement
-  about the term is a statement about the file.
-
-One qualification. Safety has a general method, the type system. Other
-properties so far have only the raw semantics to be proved against; there is
-no program logic yet to make them convenient.
+Programs are ordinary x86-64 assembly, written as Lean terms. Their types and
+semantics are defined in Lean as well: a program is typed by a judgment
+proved sound, and reasoned about against the same semantics that defines how
+it runs.
 
 ## Status
 
@@ -42,32 +20,19 @@ What exists and is checked today:
 - A type system for that model, with its soundness proof. A typed program
   never gets stuck and never faults, on the machine that decodes its
   instructions from memory.
-- Memory described to the byte. A block has a size in bytes and typed values
-  at byte offsets; everything else in it is plain bytes, which can be read
-  and written at any offset and any width that stays inside the block. The
-  stack is described the same way, as pieces laid end to end above the stack
-  pointer: a `push` adds a piece of eight bytes, and making room for locals
-  adds a piece of as many bytes as are asked for, which can be cut into the
-  locals it holds. A local can be handed to a function: its piece of the
-  stack is detached and becomes a block the function is given to own, and is
-  attached again when the function has given it back. An array of any shape
-  can be reached through an index known only by a bound.
-- An assembler core with labels for code and for data. A program is a list
-  of lines in segments: any number, in any order, each executable, read-only
-  or writable, holding instructions, data or both, with alignment where it is
-  asked for. An instruction that reaches data names it by label, and the
-  distance is worked out from where the two end up. The executable file and
-  the state a program starts in are both made from the program alone, one
-  loadable segment for each of its segments; what a program needs of the
-  state it starts in is stated line by line.
+- Memory and the stack are typed to the byte. Stack space can be lent to a
+  called function, and arrays can be indexed by any value within bounds.
+- An assembler with labels for code and data. A program can have any number
+  of segments, in any order. Each segment is executable, read-only or
+  writable, and can be aligned.
 - A model of the Linux calls a program needs (`read`, `write`, `openat`,
   `close`, `fstat`, `lseek`, `mmap`, `munmap`, `exit`, `exit_group`,
   `clock_gettime`, `getrandom`).
-- Twenty-one example programs in `examples/`, each built into an executable whose
-  safety theorem depends only on Lean's three standard axioms.
+- Twenty-one example programs in `examples/`, each built into an executable
+  whose safety theorem depends only on Lean's three standard axioms.
 - Tests against real tools: 79,628 instructions against the GNU assembler,
   13,460 instruction sequences against a real processor, and 42 whole-program
   runs compared with the same programs run as Linux executables.
 
-There is no surface language. The example programs are written as Lean
-constructor terms, and their typing is done by tactics.
+The example programs are written as Lean constructor terms, and their typing
+is done by tactics.
