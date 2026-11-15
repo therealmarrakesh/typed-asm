@@ -762,6 +762,21 @@ example (h : ∀ v : BitVec 64, BlockOk Φ fetch linux Ψ 0
   ty_name_slot 0 as v
   exact (h v).asTable
 
+/-! The order in which owned blocks are listed can be changed: here the
+block whose address is in `rbx` is brought to the front, where a call would
+take it from. -/
+
+/-- Two owned blocks; `rbx` holds the address of the second. -/
+def Γo (p q : BitVec 64) : Ctx :=
+  ⟨fun r => if r = .rbx then .eq q else .int, [], 0, Flags.Any,
+    [(p, [.int]), (q, [.int, .int])]⟩
+
+example (p q : BitVec 64)
+    (h : BlockOk Φ fetch linux Ψ 0 { Γo p q with owned := [(q, [.int, .int]), (p, [.int])] }) :
+    BlockOk Φ fetch linux Ψ 0 (Γo p q) := by
+  ty_own_first .rbx
+  exact h.asTable
+
 /-! A record used as a shorter one, and a stack deeper than a label cares
 about, need no rule of their own: the context is stated for every tail.
 Here `rdi` points to a record that starts with two integers and goes on in

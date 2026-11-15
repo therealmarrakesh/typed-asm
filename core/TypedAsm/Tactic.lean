@@ -45,6 +45,10 @@ needs an argument, typically a fact about values at a branch.
 * `ty_split r at m` regards the owned block whose address is in `r` as two,
   the first `m` fields and the rest; `ty_join r` regards that block and the
   one that starts where it ends as one.
+* `ty_own_first r` lists the owned block whose address is in `r` first, which
+  is where a call takes the blocks it hands over from. A system call's
+  buffer may be in an owned block, and a signature may take and give blocks
+  (`FnSig.takes`, `FnSig.gives`).
 * `ty_byte as b` types the load of a byte of text and splits on it: zero, or
   some `b` that is not, after which the pointer may be stepped forward.
 * `ctx_sub` and `sub_regs` compare contexts.
@@ -684,6 +688,7 @@ syntax "ty_freeze " term : tactic
 syntax "ty_freeze_kind " term " as " term : tactic
 syntax "ty_split " term " at " term : tactic
 syntax "ty_join " term : tactic
+syntax "ty_own_first " term : tactic
 
 /-! ## Choosing the rule from the instruction
 
@@ -2779,6 +2784,16 @@ elab "ty_loaded" : tactic => withMainContext do
       throwError "ty_loaded: the starting state does not meet the entry contract; this does \
         not hold:{indentExpr t}"
   setGoals others
+
+/-- `ty_own_first r`: register `r` holds exactly the address of a block the
+context owns. From here on that block is listed first among the owned ones.
+The order means nothing, but a call hands a function the blocks its
+signature takes from the front of the list, in the signature's order. -/
+elab_rules : tactic
+  | `(tactic| ty_own_first $r) => do
+    freezeWith (name := "ty_own_first") fun k => do
+      let kq := Syntax.mkNumLit (toString k)
+      `(tactic| refine BlockOk.frontOwned (r := $r) (k := $kq) (base := ?_) (F := ?_) ?_ ?_ ?_)
 
 /-- `ty_into h` types the instruction here and ends the block with it. Use it
 when the next instruction is at a label and the block should hand over to

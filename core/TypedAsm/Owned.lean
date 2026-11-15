@@ -417,6 +417,45 @@ theorem BlockOk.joinOwned {a : BitVec 64} {Γ : Ctx} {r : Reg} {k₁ k₂ : Nat}
     BlockOk Φ fetch sys Ψ a Γ :=
   .weaken (fun _ _ hΨ₁ _ _ h => h.joinOwned hΨ₁ hk₁ hk₂ hne hsz) hrest
 
+/-- A list is its element at one place followed by the rest, in some order. -/
+private theorem perm_cons_eraseIdx {α : Type} {l : List α} {k : Nat} {b : α}
+    (h : l[k]? = some b) : (b :: l.eraseIdx k).Perm l := by
+  induction l generalizing k with
+  | nil => cases h
+  | cons x xs ih =>
+    cases k with
+    | zero =>
+      simp only [List.getElem?_cons_zero, Option.some.injEq] at h
+      subst h
+      exact .refl _
+    | succ k =>
+      simp only [List.getElem?_cons_succ] at h
+      simp only [List.eraseIdx_cons_succ]
+      exact (List.Perm.swap x b _).trans ((ih h).cons x)
+
+/-- **The order in which a context lists the blocks it owns means nothing.** -/
+theorem WellTyped.permOwned {L : List (BitVec 64 × List Ty)}
+    (h : WellTyped fetch sys Ψ n Γ s) (hp : L.Perm Γ.owned) :
+    WellTyped fetch sys Ψ n { Γ with owned := L } s :=
+  { regs := h.regs, flags := h.flags, stackPerm := h.stackPerm, stackSize_lt := h.stackSize_lt,
+    stack := h.stack, heapPerm := h.heapPerm, heap := h.heap, stackHeap := h.stackHeap,
+    sp := h.sp, text := h.text,
+    owned :=
+      { perm := fun b hb => h.owned.perm b (hp.subset hb)
+        size_lt := fun b hb => h.owned.size_lt b (hp.subset hb)
+        vals := fun b hb => h.owned.vals b (hp.subset hb)
+        stack := fun b hb => h.owned.stack b (hp.subset hb)
+        heap := fun b hb => h.owned.heap b (hp.subset hb)
+        apart := (hp.pairwise_iff (fun hd => hd.symm)).mpr h.owned.apart } }
+
+/-- Listing one owned block first, between instructions: a call hands over
+the blocks its signature takes from the front of the list. -/
+theorem BlockOk.frontOwned {a : BitVec 64} {Γ : Ctx} {r : Reg} {k : Nat} {base : BitVec 64}
+    {F : List Ty} (_hΓ : Γ.regs r = .eq base) (hk : Γ.owned[k]? = some (base, F))
+    (hrest : BlockOk Φ fetch sys Ψ a { Γ with owned := (base, F) :: Γ.owned.eraseIdx k }) :
+    BlockOk Φ fetch sys Ψ a Γ :=
+  .weaken (fun _ _ _ _ _ h => h.permOwned (perm_cons_eraseIdx hk)) hrest
+
 /-- An `mmap` whose memory the program is to own, in a block: the rest of
 the block is typed once for every error number, and once for every address
 `p` of whole pages, with the pages owned as a block of integers. -/
