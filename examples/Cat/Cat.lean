@@ -57,9 +57,8 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     -- cmp r14, r13; jae done
     ty_step
     ty_branch
-    -- carrying on, the argument's number is below the count
-    have hlt := cmp_not_ae hcond
-    -- so its slot is there to load; then the `openat` and the test of its answer
+    -- carrying on, the argument's number is below the count (`hlt`), so its
+    -- slot is there to load; then the `openat` and the test of its answer
     ty_steps
     ty_branch
     -- mov r12, rax, and on into `next`

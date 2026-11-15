@@ -626,6 +626,65 @@ example : BlockOk Φm ownFetch linux Ψ (Asm.addr owning 0 .afterFree) bare := b
     ty_split .rbx at 512
     ty_block
 
+/-! A function handed a page must hand it back: it may not give it to the
+kernel and return as if nothing had happened. And inside it, an index into
+the page must be known to fall within it. -/
+
+inductive Fn
+  | drops | reaches
+  deriving DecidableEq
+
+def handed : List (Asm Fn) := [
+  .label .drops, .ins (.mov .w32 (.rm_i (.reg .rax) 11)),
+  .ins (.mov .w32 (.rm_i (.reg .rsi) 4096)), .ins .syscall, .ins .ret,
+  .label .reaches, .ins (.mov .w64 (.r_m .rax (.sib (some .rdi) (some (.rcx, .s8)) 0))),
+  .ins .ret]
+
+def handedFetch : Fetch := Asm.fetch 0 handed
+
+/-- Takes the page at the address in `rdi` and gives it back. -/
+def pageSig (p : BitVec 64) : FnSig where
+  args := fun r => if r = .rdi then .eq p else .int
+  results := fun _ => .int
+  preserved := calleeSaved
+  need := 0
+  takes := [(p, List.replicate 512 .int)]
+  gives := [(p, List.replicate 512 .int)]
+
+inductive AtFn : Fn → Ctx → Prop
+  | drops (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+    (pageSig p).CallerOk saved ret rest room → AtFn .drops ((pageSig p).entry saved ret rest room)
+  | reaches (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat) :
+    (pageSig p).CallerOk saved ret rest room →
+    AtFn .reaches ((pageSig p).entry saved ret rest room)
+
+def Φh : CodeTy := .ofLabels handed 0 AtFn
+
+/-- error: `ret`: the blocks owned here are not the ones the function gives back, followed by the caller's own; a function must hand back what its signature says and dispose of anything else it took -/
+#guard_msgs in
+example (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat)
+    (hK : (pageSig p).CallerOk saved ret rest room) :
+    BlockOk Φh handedFetch linux Ψ (Asm.addr handed 0 .drops)
+      ((pageSig p).entry saved ret rest room) := by
+  ty_steps
+  ty_munmap
+  ty_block
+
+/--
+error: at address 13: cannot type `mov rax, qword ptr [rdi+rcx*8]` in the current context
+• loadIndexed: `rdi` must hold a pointer, but its type is `exactly p`
+• loadOwned: the address is not known to be that of a field of a block the context owns
+• loadOwnedAt: the field is not known to be inside the block: a bound on the index is needed among the hypotheses
+• loadInt: `rdi` must hold a pointer, but its type is `exactly p`
+-/
+#guard_msgs in
+example (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Ty) (room : Nat)
+    (hK : (pageSig p).CallerOk saved ret rest room) :
+    BlockOk Φh handedFetch linux Ψ (Asm.addr handed 0 .reaches)
+      ((pageSig p).entry saved ret rest room) := by
+  ty_name .rcx as i
+  ty_block
+
 /-! ## Accepted, for contrast
 
 Storing a writable pointer into a field typed as a read-only pointer is

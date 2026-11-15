@@ -72,10 +72,8 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   | get n saved ret rest room hK hn =>
     -- the index is any integer; call it `v`
     ty_name .rdx as v
+    -- entering `inbounds`, the comparison has found `v` below the length
     ty_block
-    -- entering `inbounds`: the comparison found `v` below the length
-    have hlt := cmp_below hcond
-    simpa [Nat.mod_eq_of_lt hn] using hlt
   | inbounds n v saved ret rest room hK hv => ty_block
 
 /-! ## The memory typing and the entry contract -/
