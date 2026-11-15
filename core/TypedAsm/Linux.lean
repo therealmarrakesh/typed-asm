@@ -724,6 +724,44 @@ theorem storeBytes_ok_stack {sys : Syscall} {r : Reg} {v d : BitVec 64} {cnt : N
     have h1 := hd.1 (by decide)
     bv_omega
 
+/-- Bytes stored in a run of fields of an owned block leave the state well
+typed, whatever they are, with those fields integers from then on and the
+others as they were. -/
+theorem storeBytes_ok_owned {sys : Syscall} {r : Reg} {k lo cnt : Nat} {a v : BitVec 64}
+    {F F' : List Ty} {data : List (BitVec 8)} (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF)
+    (hr : r ≠ .rsp) (hbuf : Γ.regs r = .eq v) (hat : OwnedIdx Γ.owned k a F v lo)
+    (hle : lo + cnt ≤ F.length) (hlen' : F'.length = F.length)
+    (hsame : ∀ j, j < lo ∨ lo + cnt ≤ j → F'[j]? = F[j]?)
+    (hints : ∀ j, lo ≤ j → j < lo + cnt → F'[j]? = some .int)
+    (hlen : data.length ≤ 8 * cnt) :
+    WellTyped fetch sys Ψ n { Γ with owned := Γ.owned.set k (a, F') }
+      (s.storeBytes (s.getReg r) data) := by
+  obtain ⟨hklt, hkeq⟩ := List.getElem?_eq_some_iff.mp hat.entry
+  have hin : (a, F) ∈ Γ.owned := hkeq ▸ List.getElem_mem hklt
+  have hsz := h.owned.size_lt _ hin
+  simp only at hsz
+  rw [h.eqReg hr hbuf, hat.addr]
+  by_cases hc : cnt = 0
+  · have hz : data = [] := List.length_eq_zero_iff.mp (by omega)
+    have hF : F' = F := List.ext_getElem? fun j => hsame j (by omega)
+    have hset : Γ.owned.set k (a, F) = Γ.owned := by
+      rw [← hkeq]; exact List.set_getElem_self hklt
+    rw [hz, State.storeBytes_nil, hF, hset]
+    exact h.congr rfl rfl rfl rfl
+  · refine h.writeOwned hΨ hat.entry (lo := lo) (cnt := cnt) (by omega) hle hlen' hsame
+      rfl rfl rfl (fun y hd => ?_) (fun x hx => by
+        show (s.storeBytes _ data).mem x = s.mem x
+        rw [State.mem_storeBytes s _ x _ (by omega), List.getElem?_eq_none (by bv_omega)]
+        rfl)
+      (fun j τ h1 h2 hj => by
+        rw [hints j h1 h2] at hj
+        cases hj
+        exact HasTy.int _)
+    refine (State.load64_congr (s := s.storeBytes _ _) rfl y).trans
+      (State.load64_storeBytes_disjoint s _ (by omega) ?_ (hd.2 (by omega)))
+    have h1 := hd.1 (by decide)
+    bv_omega
+
 namespace Fills
 
 variable {t : State} {r : Reg} {room : Nat}
@@ -752,6 +790,43 @@ theorem ok_stack {sys : Syscall} {v d : BitVec 64} {cnt : Nat}
   · exact ret_ok
       ((storeBytes_ok_stack (data := data) h hΨ hr hsp hbuf h8 hints (by omega)).congr
         (t := { s.storeBytes (s.getReg r) data with world := w }) rfl rfl rfl rfl) v'
+
+/-- A call that fills a buffer lying in a run of fields of an owned block
+keeps the state well typed, with those fields integers afterwards. -/
+theorem ok_owned {sys : Syscall} {k lo cnt : Nat} {a v : BitVec 64} {F F' : List Ty}
+    (hf : Fills s (s.getReg r) room t) (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF)
+    (hr : r ≠ .rsp) (hbuf : Γ.regs r = .eq v) (hat : OwnedIdx Γ.owned k a F v lo)
+    (hle : lo + cnt ≤ F.length) (hlen' : F'.length = F.length)
+    (hsame : ∀ j, j < lo ∨ lo + cnt ≤ j → F'[j]? = F[j]?)
+    (hints : ∀ j, lo ≤ j → j < lo + cnt → F'[j]? = some .int) (hroom : room ≤ 8 * cnt) :
+    WellTyped fetch sys Ψ n
+      ({ Γ with owned := Γ.owned.set k (a, F') } : Ctx).afterSyscall t := by
+  rcases hf with hf | ⟨data, v', w, hlen, -, rfl⟩
+  · -- nothing was stored: the fields that become integers hold what they held
+    have h0 := storeBytes_ok_owned (data := []) h hΨ hr hbuf hat hle hlen' hsame hints
+      (Nat.zero_le _)
+    rw [State.storeBytes_nil] at h0
+    exact hf.ok (h0.congr rfl rfl rfl rfl)
+  · exact ret_ok
+      ((storeBytes_ok_owned (data := data) h hΨ hr hbuf hat hle hlen' hsame hints
+        (by omega)).congr
+        (t := { s.storeBytes (s.getReg r) data with world := w }) rfl rfl rfl rfl) v'
+
+/-- The same when the fields are integers already: the context stays as it is. -/
+theorem ok_owned_int {sys : Syscall} {k lo cnt : Nat} {a v : BitVec 64} {F : List Ty}
+    (hf : Fills s (s.getReg r) room t) (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF)
+    (hr : r ≠ .rsp) (hbuf : Γ.regs r = .eq v) (hat : OwnedIdx Γ.owned k a F v lo)
+    (hle : lo + cnt ≤ F.length) (hints : ∀ j, j < cnt → F[lo + j]? = some .int)
+    (hroom : room ≤ 8 * cnt) : WellTyped fetch sys Ψ n Γ.afterSyscall t := by
+  have := ok_owned (F' := F) hf h hΨ hr hbuf hat hle rfl (fun _ _ => rfl)
+    (fun j h1 h2 => by
+      have := hints (j - lo) (by omega)
+      rwa [show lo + (j - lo) = j by omega] at this) hroom
+  obtain ⟨hklt, hkeq⟩ := List.getElem?_eq_some_iff.mp hat.entry
+  have hset : Γ.owned.set k (a, F) = Γ.owned := by
+    rw [← hkeq]; exact List.set_getElem_self hklt
+  rw [hset] at this
+  exact this
 
 theorem rip {buf : BitVec 64} (hf : Fills s buf room t) : t.rip = s.rip := by
   rcases hf with hf | ⟨data, v, w, -, -, rfl⟩
@@ -1269,6 +1344,66 @@ theorem linux_getrandom_stack {v d len : BitVec 64} (hΓ : Γ.regs .rax = .eq 31
   rw [h.eqReg (by decide) hlen] at hf
   exact ⟨Linux.getrandom s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok_stack h hΨ (by decide) hsp hbuf h8 hints (by omega)⟩
+
+/-- `read` into memory the program owns: the buffer starts at a field of an
+owned block and lies in integer fields of it. -/
+theorem linux_read_owned {k lo : Nat} {a v : BitVec 64} {F : List Ty} {len : BitVec 64}
+    (hΓ : Γ.regs .rax = .eq 0) (hbuf : Γ.regs .rsi = .eq v)
+    (hat : OwnedIdx Γ.owned k a F v lo)
+    (hlen : Γ.regs .rdx = .eq len)
+    (hle : lo + (len.toNat + 7) / 8 ≤ F.length)
+    (hints : ∀ j, j < (len.toNat + 7) / 8 → F[lo + j]? = some .int) :
+    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+  intro Ψ₁ _ hΨ n s h
+  have hax := h.eqReg (by decide) hΓ
+  have hf := Linux.read_fills s
+  rw [h.eqReg (by decide) hlen] at hf
+  exact ⟨Linux.read s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+    hf.ok_owned_int h hΨ (by decide) hbuf hat hle hints (by omega)⟩
+
+/-- `fstat` into memory the program owns: the buffer starts at a field of an
+owned block and lies in integer fields of it. -/
+theorem linux_fstat_owned {k lo : Nat} {a v : BitVec 64} {F : List Ty}
+    (hΓ : Γ.regs .rax = .eq 5) (hbuf : Γ.regs .rsi = .eq v)
+    (hat : OwnedIdx Γ.owned k a F v lo)
+    (hle : lo + 18 ≤ F.length)
+    (hints : ∀ j, j < 18 → F[lo + j]? = some .int) :
+    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+  intro Ψ₁ _ hΨ n s h
+  have hax := h.eqReg (by decide) hΓ
+  have hf := Linux.fstat_fills s
+  exact ⟨Linux.fstat s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+    hf.ok_owned_int h hΨ (by decide) hbuf hat hle hints (by omega)⟩
+
+/-- `clock_gettime` into memory the program owns: the buffer starts at a field of an
+owned block and lies in integer fields of it. -/
+theorem linux_clock_gettime_owned {k lo : Nat} {a v : BitVec 64} {F : List Ty}
+    (hΓ : Γ.regs .rax = .eq 228) (hbuf : Γ.regs .rsi = .eq v)
+    (hat : OwnedIdx Γ.owned k a F v lo)
+    (hle : lo + 2 ≤ F.length)
+    (hints : ∀ j, j < 2 → F[lo + j]? = some .int) :
+    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+  intro Ψ₁ _ hΨ n s h
+  have hax := h.eqReg (by decide) hΓ
+  have hf := Linux.clockGettime_fills s
+  exact ⟨Linux.clockGettime s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+    hf.ok_owned_int h hΨ (by decide) hbuf hat hle hints (by omega)⟩
+
+/-- `getrandom` into memory the program owns: the buffer starts at a field of an
+owned block and lies in integer fields of it. -/
+theorem linux_getrandom_owned {k lo : Nat} {a v : BitVec 64} {F : List Ty} {len : BitVec 64}
+    (hΓ : Γ.regs .rax = .eq 318) (hbuf : Γ.regs .rdi = .eq v)
+    (hat : OwnedIdx Γ.owned k a F v lo)
+    (hlen : Γ.regs .rsi = .eq len)
+    (hle : lo + (len.toNat + 7) / 8 ≤ F.length)
+    (hints : ∀ j, j < (len.toNat + 7) / 8 → F[lo + j]? = some .int) :
+    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+  intro Ψ₁ _ hΨ n s h
+  have hax := h.eqReg (by decide) hΓ
+  have hf := Linux.getrandom_fills s
+  rw [h.eqReg (by decide) hlen] at hf
+  exact ⟨Linux.getrandom s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+    hf.ok_owned_int h hΨ (by decide) hbuf hat hle hints (by omega)⟩
 
 /-- `mmap` for a block of plain fields: with 9 in `rax`, the length in `rsi`,
 3 in `rdx` and 0x22 in `r10`, the call returns an error number or a writable

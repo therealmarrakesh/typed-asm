@@ -528,6 +528,62 @@ macro "ty_owned_at" : tactic =>
          | exact OwnedAt.addr_sub' _ _ _ _
        case inside => ty_inside))
 
+/-- The address of a field reached through an index scaled by eight. -/
+theorem owned_addr8 (a c : BitVec 64) (disp : BitVec 32) (h8 : disp.toNat % 8 = 0)
+    (hd : disp.toNat < 2 ^ 31) :
+    a + (c <<< Scale.s8.shift) + disp.signExtend 64
+      = a + BitVec.ofNat 64 (8 * (c.toNat + disp.toNat / 8)) := by
+  rw [BitVec.add_assoc, index8_slot c disp h8 hd]
+
+/-- A block's own address is that of its first field. -/
+theorem owned_addr0 (a : BitVec 64) : a = a + BitVec.ofNat 64 (8 * 0) := by simp
+
+/-- An address a whole number of fields into a block. -/
+theorem owned_addrOff (a d : BitVec 64) (h : d.toNat % 8 = 0) :
+    a + d = a + BitVec.ofNat 64 (8 * (d.toNat / 8)) := by
+  congr 1
+  apply BitVec.eq_of_toNat_eq
+  have := d.isLt
+  simp only [BitVec.toNat_ofNat]
+  omega
+
+/-- Proves which field of an owned block an address reached through an index
+is that of: the block is the one the base register holds the address of. -/
+macro "ty_owned_idx" : tactic =>
+  `(tactic| first
+    | (refine' OwnedIdx.mk (k := 0) ?entry ?addr ?fit
+       case entry => rfl
+       case addr =>
+         first
+         | exact owned_addr8 _ _ _ (by decide) (by decide)
+         | exact owned_addr0 _
+         | exact owned_addrOff _ _ (by decide)
+       case fit => ty_inside)
+    | (refine' OwnedIdx.mk (k := 1) ?entry ?addr ?fit
+       case entry => rfl
+       case addr =>
+         first
+         | exact owned_addr8 _ _ _ (by decide) (by decide)
+         | exact owned_addr0 _
+         | exact owned_addrOff _ _ (by decide)
+       case fit => ty_inside)
+    | (refine' OwnedIdx.mk (k := 2) ?entry ?addr ?fit
+       case entry => rfl
+       case addr =>
+         first
+         | exact owned_addr8 _ _ _ (by decide) (by decide)
+         | exact owned_addr0 _
+         | exact owned_addrOff _ _ (by decide)
+       case fit => ty_inside)
+    | (refine' OwnedIdx.mk (k := 3) ?entry ?addr ?fit
+       case entry => rfl
+       case addr =>
+         first
+         | exact owned_addr8 _ _ _ (by decide) (by decide)
+         | exact owned_addr0 _
+         | exact owned_addrOff _ _ (by decide)
+       case fit => ty_inside))
+
 open Lean Meta Elab Tactic in
 /-- Fails unless the goal is a proposition. A rule's unknowns are goals too,
 and a side-condition tactic let loose on one of them would fill it with
@@ -541,7 +597,10 @@ macro_rules
     `(tactic| ty_prop_only; first
       | rfl
       | decide
+      | exact EaIs.base (by decide) rfl
+      | exact EaIs.indexed (by decide) rfl rfl
       | ty_owned_at
+      | ty_owned_idx
       -- a bound against the length of a long list, without counting it out
       | (simp only [List.length_replicate, List.length_set, List.length_cons, List.length_nil]
          first | decide | omega)
@@ -785,7 +844,8 @@ def Instr.rules : Instr → List Name
   | .mov .w64 (.r_m _ (.sib (some _) none _)) => [``Straight.loadField, ``Straight.loadOwned]
   | .mov .w64 (.r_m _ (.rip _)) => [``Straight.loadGlobal_of]
   | .mov .w64 (.r_m _ (.sib (some .rsp) (some _) _)) => [``Straight.loadStackIndexed]
-  | .mov .w64 (.r_m _ (.sib (some _) (some _) _)) => [``Straight.loadIndexed, ``Straight.loadInt]
+  | .mov .w64 (.r_m _ (.sib (some _) (some _) _)) =>
+    [``Straight.loadIndexed, ``Straight.loadOwned, ``Straight.loadOwnedAt, ``Straight.loadInt]
   | .mov _ (.r_m _ _) => [``Straight.loadInt]
   | .movzx _ _ _ (.reg _) => [``Straight.movzxExact, ``Straight.movzxRM]
   | .movzx _ _ _ _ => [``Straight.movzxRM]
@@ -796,10 +856,11 @@ def Instr.rules : Instr → List Name
   -- stores
   | .mov .w64 (.rm_r (.mem (.sib (some .rsp) none _)) _) => [``Straight.storeStack]
   | .mov .w64 (.rm_r (.mem (.sib (some _) none _)) _) =>
-    [``Straight.storeField, ``Straight.storeOwned, ``Straight.storeInt]
+    [``Straight.storeField, ``Straight.storeOwned, ``Straight.storeOwnedKeep, ``Straight.storeInt]
   | .mov .w64 (.rm_r (.mem (.rip _)) _) => [``Straight.storeGlobal_of, ``Straight.storeInt]
   | .mov .w64 (.rm_r (.mem (.sib (some _) (some _) _)) _) =>
-    [``Straight.storeIndexed, ``Straight.storeInt]
+    [``Straight.storeIndexed, ``Straight.storeOwned, ``Straight.storeOwnedKeepAt,
+      ``Straight.storeInt]
   | .mov _ (.rm_r (.mem _) _) => [``Straight.storeInt]
   | .mov _ (.rm_i (.mem _) _) => [``Straight.storeImm]
   | .store8 _ _ => [``Straight.store8RM]
@@ -893,7 +954,8 @@ def Instr.endsBlock : Instr → Bool
 /-- Every straight-line rule, for instructions whose shape is not known. -/
 def allStraightRules : List Name := sharpeningRules ++ [``Straight.movRR64, ``Straight.movRR32, ``Straight.movRI, ``Straight.movAbs, ``Straight.leaRip, ``Straight.lea, ``Straight.loadStack, ``Straight.loadField, ``Straight.storeStack, ``Straight.storeField, ``Straight.push, ``Straight.pop, ``Straight.allocFrame, ``Straight.freeFrame', ``Straight.aluExact, ``Straight.aluExactRR, ``Straight.addPtr, ``Straight.aluRR, ``Straight.aluRI, ``Straight.testExact, ``Straight.nop, ``Straight.aluStoreR, ``Straight.aluStoreI, ``Straight.cmpR, ``Straight.cmpI, ``Straight.aluLoad, ``Straight.testRM, ``Straight.negRM, ``Straight.notRM, ``Straight.shiftImm, ``Straight.shiftCl, ``Straight.mulRM, ``Straight.imulRM, ``Straight.divSafe, ``Straight.idivSafe, ``Straight.imul2RM, ``Straight.imul3RM, ``Straight.popcntRM, ``Straight.bswap, ``Straight.cdq, ``Straight.cqo, ``Straight.movsxdRM, ``Straight.cmovRM, ``Straight.setccRM, ``Straight.movzxRM, ``Straight.movsxRM, ``Straight.loadInt, ``Straight.storeInt, ``Straight.storeImm, ``Straight.store8RM, ``Straight.store16RM, ``Straight.loadGlobal_of, ``Straight.storeGlobal_of, ``Straight.xorSelf,
   ``Straight.loadIndexed, ``Straight.storeIndexed, ``Straight.loadStackIndexed,
-  ``Straight.loadOwned, ``Straight.storeOwned]
+  ``Straight.loadOwned, ``Straight.storeOwned, ``Straight.storeOwnedKeep, ``Straight.loadOwnedAt,
+  ``Straight.storeOwnedKeepAt]
 
 private unsafe def evalInstrUnsafe (e : Expr) : MetaM Instr :=
   evalExpr Instr (mkConst ``Instr) e
@@ -1314,7 +1376,8 @@ def typeStraight : TacticM Unit := deep <| withMainContext do
     catch _ => pure false
   let general := rules.filter fun r =>
     !sharpeningRules.contains r &&
-      !(ownsNothing && (r == ``Straight.loadOwned || r == ``Straight.storeOwned))
+      !(ownsNothing && [``Straight.loadOwned, ``Straight.storeOwned, ``Straight.storeOwnedKeep,
+        ``Straight.loadOwnedAt, ``Straight.storeOwnedKeepAt].contains r)
   for rule in (if general.isEmpty then rules else general) do
     msg := msg ++ m!"\n• {← explainRule rule}"
   throwError msg
@@ -1429,6 +1492,43 @@ private def typeBufferStack (goal : MVarId) (rule : Name) (sized : Bool) : Tacti
   let some rest := rest? | throwError "unexpected goals"
   return rest
 
+/-- Types a call whose buffer is in memory the program owns, at the head of a
+block goal. Returns the rest of the block. -/
+private def typeBufferOwned (goal : MVarId) (rule : Name) (sized : Bool) : TacticM MVarId := do
+  let r := mkIdent rule
+  let tac ← if sized then
+      `(tactic| refine BlockOk.sys (by ty_fetch)
+          ($r (k := ?_) (lo := ?_) (a := ?_) (v := ?_) (F := ?_) (len := ?_) ?_ ?_ ?_ ?_ ?_ ?_) ?_)
+    else
+      `(tactic| refine BlockOk.sys (by ty_fetch)
+          ($r (k := ?_) (lo := ?_) (a := ?_) (v := ?_) (F := ?_) ?_ ?_ ?_ ?_ ?_) ?_)
+  let gs ← runOn goal (do evalTactic tac)
+  -- what the registers hold, then which block and field the buffer starts at
+  for g in gs do
+    if ← g.isAssigned then continue
+    let t ← instantiateMVars (← g.getType)
+    if let some (_, lhs, _) := t.eq? then
+      if lhs.isAppOf ``CtxOf.regs then
+        discard <| runOn g (do evalTactic (← `(tactic| rfl)))
+  for g in gs do
+    if ← g.isAssigned then continue
+    let t ← instantiateMVars (← g.getType)
+    if t.isAppOf ``OwnedIdx then
+      discard <| deep <| runOn g (do evalTactic (← `(tactic| ty_owned_idx)))
+  let mut rest? : Option MVarId := none
+  for g in gs do
+    if ← g.isAssigned then continue
+    let t ← instantiateMVars (← g.getType)
+    if t.isAppOf ``BlockOk then rest? := some g
+    else if t.isForall then
+      discard <| deep <| runOn g (do evalTactic (← `(tactic| first
+        | (refine ints_of_check ?_; first | ((try dsimp only); decide) | rfl)
+        | (intro j hj; refine getElem?_replicate_of_lt ?_; omega))))
+    else if (← isProp t) then
+      discard <| deep <| runOn g (do evalTactic (← `(tactic| ty_inside)))
+  let some rest := rest? | throwError "unexpected goals"
+  return rest
+
 /-- Types a system call that returns, at the head of a block goal, leaving
 the rest of the block as the main goal. -/
 private def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
@@ -1455,6 +1555,12 @@ private def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
     evalTactic (← `(tactic| ty_normalize))
     return
   catch _ => saved.restore
+  try
+    let rest ← typeBufferOwned goal (Name.mkStr rule.getPrefix (rule.getString! ++ "_owned")) sized
+    setGoals [rest]
+    evalTactic (← `(tactic| ty_normalize))
+    return
+  catch _ => saved.restore
   let gs ← applySysRule goal rule (.block sized)
   let mut rest? : Option MVarId := none
   let mut left : List MVarId := []
@@ -1470,9 +1576,9 @@ private def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
         let reg := (regName? lhs.appArg!).getD "the register"
         let actual ← g.withContext do ppTy (← reduce (← mkAppM ``CtxOf.regs #[ctx, lhs.appArg!]))
         if rhs.isAppOf ``Ty.ptr then
-          throwError "`{name}` needs `{reg}` to hold a writable pointer to the buffer, or the \
-            address of stack slots taken with `lea` once `rsp` has a name, but its type is \
-            `{actual}`"
+          throwError "`{name}` needs `{reg}` to hold a writable pointer to the buffer, the \
+            address of stack slots taken with `lea` once `rsp` has a name, or the address of \
+            a field of a block the context owns, but its type is `{actual}`"
         else
           throwError "`{name}` needs the count in `{reg}` to be exactly known, but its type is \
             `{actual}`"

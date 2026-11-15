@@ -168,6 +168,15 @@ structure OwnedAt (owned : List (BitVec 64 × List Ty)) (k : Nat) (a : BitVec 64
   entry : owned[k]? = some (a, F)
   addr : p = a + off
 
+/-- `EaIs Γ m p`: the address the memory operand `m` names is exactly `p`,
+because the registers it is computed from hold exactly known values. -/
+inductive EaIs (Γ : Ctx) : Mem → BitVec 64 → Prop
+  | base {b : Reg} {v : BitVec 64} {disp : BitVec 32} :
+    b ≠ .rsp → Γ.regs b = .eq v → EaIs Γ (.sib (some b) none disp) (v + disp.signExtend 64)
+  | indexed {b : Reg} {x : IndexReg} {sc : Scale} {v c : BitVec 64} {disp : BitVec 32} :
+    b ≠ .rsp → Γ.regs b = .eq v → Γ.regs x.toReg = .eq c →
+    EaIs Γ (.sib (some b) (some (x, sc)) disp) (v + (c <<< sc.shift) + disp.signExtend 64)
+
 /-- As `OwnedAt.mk`, for a search among several blocks: the offset is also
 shown to fall inside the block, so that a block the address is not in is
 passed over. -/
@@ -210,9 +219,9 @@ inductive ReadOk (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) (n : Nat) : RM → P
     ReadOk Ψ next Γ n (.mem (.sib (some b) none 0))
   /-- Bytes of an owned block: the base register holds an exactly known
   value that, with the displacement, lands `off` bytes into the block. -/
-  | owned {b : Reg} {k : Nat} {a v off : BitVec 64} {F : List Ty} {disp : BitVec 32} :
-    b ≠ .rsp → Γ.regs b = .eq v → OwnedAt Γ.owned k a F (v + disp.signExtend 64) off → off.toNat + n ≤ 8 * F.length →
-    ReadOk Ψ next Γ n (.mem (.sib (some b) none disp))
+  | owned {m : Mem} {k : Nat} {a p off : BitVec 64} {F : List Ty} :
+    EaIs Γ m p → OwnedAt Γ.owned k a F p off → off.toNat + n ≤ 8 * F.length →
+    ReadOk Ψ next Γ n (.mem m)
 
 /-- `WriteIntOk Ψ next Γ n rm Γ'`: overwriting `n` bytes of `rm` with an arbitrary
 value is safe and leaves a state matching `Γ'`. A register or stack slot
@@ -238,9 +247,9 @@ inductive WriteIntOk (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) (n : Nat) : RM �
     next + disp.signExtend 64 = base + BitVec.ofNat 64 (8 * i + k) →
     l.fields[i]? = some .int → k + n ≤ 8 → WriteIntOk Ψ next Γ n (.mem (.rip disp)) Γ
   /-- Bytes within one integer field of an owned block. -/
-  | owned {b : Reg} {k : Nat} {a v off : BitVec 64} {F : List Ty} {disp : BitVec 32} :
-    b ≠ .rsp → Γ.regs b = .eq v → OwnedAt Γ.owned k a F (v + disp.signExtend 64) off → F[off.toNat / 8]? = some .int →
-    off.toNat % 8 + n ≤ 8 → WriteIntOk Ψ next Γ n (.mem (.sib (some b) none disp)) Γ
+  | owned {m : Mem} {k : Nat} {a p off : BitVec 64} {F : List Ty} :
+    EaIs Γ m p → OwnedAt Γ.owned k a F p off → F[off.toNat / 8]? = some .int →
+    off.toNat % 8 + n ≤ 8 → WriteIntOk Ψ next Γ n (.mem m) Γ
 
 /-- `Holds Ψ next Γ rm τ`: `rm` is a register, a whole field or a whole stack
 slot that holds a value of type `τ`. -/
@@ -354,17 +363,26 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
     fields[off + i]? = some τ → Sub (Γ.regs s) τ →
     Straight Ψ next Γ (.mov .w64 (.rm_r (.mem (.sib (some b) none disp)) s)) Γ
   /-- Load a whole field of an owned block, keeping its type. -/
-  | loadOwned {Γ : Ctx} {d b : Reg} {k : Nat} {a v off : BitVec 64} {F : List Ty}
-      {disp : BitVec 32} {τ : Ty} :
-    d ≠ .rsp → b ≠ .rsp → Γ.regs b = .eq v → OwnedAt Γ.owned k a F (v + disp.signExtend 64) off → off.toNat % 8 = 0 → F[off.toNat / 8]? = some τ →
-    Straight Ψ next Γ (.mov .w64 (.r_m d (.sib (some b) none disp))) (Γ.setReg d τ)
+  | loadOwned {Γ : Ctx} {d : Reg} {m : Mem} {k : Nat} {a p off : BitVec 64} {F : List Ty}
+      {τ : Ty} :
+    d ≠ .rsp → EaIs Γ m p → OwnedAt Γ.owned k a F p off → off.toNat % 8 = 0 →
+    F[off.toNat / 8]? = some τ →
+    Straight Ψ next Γ (.mov .w64 (.r_m d m)) (Γ.setReg d τ)
   /-- Store into a whole field of an owned block. The field takes the type of
   what is stored, whatever it held before: nothing else looks at it. -/
-  | storeOwned {Γ : Ctx} {b s : Reg} {k : Nat} {a v off : BitVec 64} {F : List Ty}
-      {disp : BitVec 32} :
-    b ≠ .rsp → s ≠ .rsp → Γ.regs b = .eq v → OwnedAt Γ.owned k a F (v + disp.signExtend 64) off → off.toNat % 8 = 0 → off.toNat / 8 < F.length →
-    Straight Ψ next Γ (.mov .w64 (.rm_r (.mem (.sib (some b) none disp)) s))
+  | storeOwned {Γ : Ctx} {s : Reg} {m : Mem} {k : Nat} {a p off : BitVec 64} {F : List Ty} :
+    s ≠ .rsp → EaIs Γ m p → OwnedAt Γ.owned k a F p off → off.toNat % 8 = 0 →
+    off.toNat / 8 < F.length →
+    Straight Ψ next Γ (.mov .w64 (.rm_r (.mem m) s))
       { Γ with owned := Γ.owned.set k (a, F.set (off.toNat / 8) (Γ.regs s)) }
+  /-- Store into a whole field of an owned block a value of the type the
+  field has already: the context stays as it is. This is the store to use
+  where the field is not known exactly, as in a loop over an array. -/
+  | storeOwnedKeep {Γ : Ctx} {s : Reg} {m : Mem} {k : Nat} {a p off : BitVec 64} {F : List Ty}
+      {τ : Ty} :
+    s ≠ .rsp → EaIs Γ m p → OwnedAt Γ.owned k a F p off → off.toNat % 8 = 0 →
+    F[off.toNat / 8]? = some τ → Sub (Γ.regs s) τ →
+    Straight Ψ next Γ (.mov .w64 (.rm_r (.mem m) s)) Γ
   /-- Load a whole field through an index, keeping its type. -/
   | loadIndexed {Γ : Ctx} {d b : Reg} {x : IndexReg} {sc : Scale} {fields : List Ty}
       {writable : Bool} {off i : Nat} {disp : BitVec 32} {c : BitVec 64} {τ : Ty} :
@@ -724,6 +742,7 @@ local macro "ext_rule" : tactic =>
     | (apply Straight.strNext <;> ext_premise)
     | (apply Straight.loadOwned <;> ext_premise)
     | (apply Straight.storeOwned <;> ext_premise)
+    | (apply Straight.storeOwnedKeep <;> ext_premise)
     | (apply Straight.storeStack <;> ext_premise)
     | (apply Straight.push <;> ext_premise)
     | (apply Straight.pop <;> ext_premise)
@@ -940,5 +959,40 @@ def ProgramOk (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) : Prop 
 its `rip`, at every step count. -/
 def StateOk (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (s : State) : Prop :=
   ∃ Γ, Φ s.rip Γ ∧ ∀ n, WellTyped fetch sys Ψ n Γ s
+
+/-- Where an address falls in an owned block, by the number of the field:
+the block at place `k` is at `a` with fields `F`, and the address is that of
+field `i`. For an index that is not known exactly, where the offset cannot
+be worked out as a number. -/
+structure OwnedIdx (owned : List (BitVec 64 × List Ty)) (k : Nat) (a : BitVec 64) (F : List Ty)
+    (p : BitVec 64) (i : Nat) : Prop where
+  entry : owned[k]? = some (a, F)
+  addr : p = a + BitVec.ofNat 64 (8 * i)
+  fit : 8 * F.length ≤ 2 ^ 64
+
+theorem OwnedIdx.toNat {owned : List (BitVec 64 × List Ty)} {k : Nat} {a p : BitVec 64}
+    {F : List Ty} {i : Nat} (h : OwnedIdx owned k a F p i) (hi : i < F.length) :
+    (BitVec.ofNat 64 (8 * i)).toNat = 8 * i := by
+  have := h.fit
+  rw [BitVec.toNat_ofNat, Nat.mod_eq_of_lt (by omega)]
+
+/-- Load a whole field of an owned block, the field given by its number. -/
+theorem Straight.loadOwnedAt {Ψ : MemTy} {next : BitVec 64} {Γ : Ctx} {d : Reg} {m : Mem}
+    {k i : Nat} {a p : BitVec 64} {F : List Ty} {τ : Ty} (hd : d ≠ .rsp) (he : EaIs Γ m p)
+    (hat : OwnedIdx Γ.owned k a F p i) (hi : F[i]? = some τ) :
+    Straight Ψ next Γ (.mov .w64 (.r_m d m)) (Γ.setReg d τ) := by
+  have e := hat.toNat (List.getElem?_eq_some_iff.mp hi).1
+  exact .loadOwned hd he ⟨hat.entry, hat.addr⟩ (by rw [e]; omega)
+    (by rw [e, Nat.mul_div_cancel_left _ (by decide)]; exact hi)
+
+/-- Store into a whole field of an owned block a value of the type the field
+has, the field given by its number. -/
+theorem Straight.storeOwnedKeepAt {Ψ : MemTy} {next : BitVec 64} {Γ : Ctx} {s : Reg} {m : Mem}
+    {k i : Nat} {a p : BitVec 64} {F : List Ty} {τ : Ty} (hs : s ≠ .rsp) (he : EaIs Γ m p)
+    (hat : OwnedIdx Γ.owned k a F p i) (hi : F[i]? = some τ) (hsub : Sub (Γ.regs s) τ) :
+    Straight Ψ next Γ (.mov .w64 (.rm_r (.mem m) s)) Γ := by
+  have e := hat.toNat (List.getElem?_eq_some_iff.mp hi).1
+  exact .storeOwnedKeep hs he ⟨hat.entry, hat.addr⟩ (by rw [e]; omega)
+    (by rw [e, Nat.mul_div_cancel_left _ (by decide)]; exact hi) hsub
 
 end TypedAsm

@@ -331,7 +331,7 @@ example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .unknown) bare := by ty_
 #guard_msgs in
 example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .unmodelled) bare := by ty_block
 
-/-- error: `read` needs `rsi` to hold a writable pointer to the buffer, or the address of stack slots taken with `lea` once `rsp` has a name, but its type is `int` -/
+/-- error: `read` needs `rsi` to hold a writable pointer to the buffer, the address of stack slots taken with `lea` once `rsp` has a name, or the address of a field of a block the context owns, but its type is `int` -/
 #guard_msgs in
 example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .noBuffer) bare := by ty_block
 
@@ -437,7 +437,7 @@ def twoAt (r : Reg) : Ctx :=
 #guard_msgs in
 example : BlockOk Φy fillFetch linux Ψ (Asm.addr fills 0 .statSmall) (twoAt .rsi) := by ty_block
 
-/-- error: `clock_gettime` needs `rsi` to hold a writable pointer to the buffer, or the address of stack slots taken with `lea` once `rsp` has a name, but its type is `int` -/
+/-- error: `clock_gettime` needs `rsi` to hold a writable pointer to the buffer, the address of stack slots taken with `lea` once `rsp` has a name, or the address of a field of a block the context owns, but its type is `int` -/
 #guard_msgs in
 example : BlockOk Φy fillFetch linux Ψ (Asm.addr fills 0 .clockInt) bare := by ty_block
 
