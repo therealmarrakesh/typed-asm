@@ -103,9 +103,10 @@ def start : State :=
 
 end Index
 
-/-- With no arguments, runs the program on the machine with code in memory:
-what it writes goes to standard output, how it ended to standard error, and
-its exit status becomes this executable's. With `--elf FILE`, writes the
-program as a Linux executable. -/
-def main (args : List String) : IO UInt32 :=
-  exeMain Index.entry.toNat Index.image Index.arrayBytes Index.start args
+/-- The program, with what running it takes. -/
+def Index.program : Runnable where
+  name := "index"
+  entry := Index.entry.toNat
+  image := Index.image
+  data := Index.arrayBytes
+  start := Index.start

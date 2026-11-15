@@ -103,12 +103,6 @@ def start : State :=
 
 /-! ## Running it -/
 
-def describe : Outcome → String
-  | .next s => s!"running: record = ({(s.load64 dataBase).toNat}, {(s.load64 (dataBase + 8)).toNat})"
-  | .fault f => s!"fault: {repr f}"
-  | .exit code => s!"exit {code.toNat}"
-  | .stuck => "stuck"
-
 def recordIs (x y : BitVec 64) : Outcome → Bool
   | .next s => s.load64 dataBase == x && s.load64 (dataBase + 8) == y
   | _ => false
@@ -120,15 +114,11 @@ def recordIs (x y : BitVec 64) : Outcome → Bool
 
 end Swap
 
-/-- With no arguments, runs the program on the machine with code in memory
-and prints the record as it goes. With `--elf FILE`, writes the program as a
-Linux executable. -/
-def main (args : List String) : IO Unit := do
-  match args with
-  | ["--elf", path] =>
-    let bytes := Elf.file Swap.entry.toNat Swap.image Swap.recordBytes (writable := true)
-    IO.FS.writeBinFile path (ByteArray.mk (bytes.map fun b => b.toNat.toUInt8).toArray)
-    IO.println s!"wrote {bytes.length} bytes to {path}"
-  | _ =>
-    for n in [0, 8, 16, 100] do
-      IO.println (Swap.describe (runMem linux n Swap.start))
+/-- The program, with what running it takes. -/
+def Swap.program : Runnable where
+  name := "swap"
+  entry := Swap.entry.toNat
+  image := Swap.image
+  data := Swap.recordBytes
+  start := Swap.start
+  writable := true

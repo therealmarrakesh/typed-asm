@@ -115,8 +115,10 @@ def startWith (input : List ReadEvent) : State :=
 
 end Buffer
 
-/-- With no arguments, runs the program on the machine with code in memory,
-copying this process's standard input to its standard output. With
-`--elf FILE`, writes the program as a Linux executable. -/
-def main (args : List String) : IO UInt32 :=
-  exeMain Buffer.entry.toNat Buffer.image [] Buffer.start args (readsInput := true)
+/-- The program, with what running it takes. -/
+def Buffer.program : Runnable where
+  name := "buffer"
+  entry := Buffer.entry.toNat
+  image := Buffer.image
+  start := Buffer.start
+  readsInput := true

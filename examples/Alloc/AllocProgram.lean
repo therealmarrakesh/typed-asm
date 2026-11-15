@@ -184,8 +184,10 @@ def startWith (input : List ReadEvent) (place : Nat → Option (BitVec 64) := pa
 
 end Alloc
 
-/-- With no arguments, runs the program on the machine with code in memory,
-on this process's standard input. With `--elf FILE`, writes the program as a
-Linux executable. -/
-def main (args : List String) : IO UInt32 :=
-  exeMain Alloc.entry.toNat Alloc.image [] Alloc.start args (readsInput := true)
+/-- The program, with what running it takes. -/
+def Alloc.program : Runnable where
+  name := "alloc"
+  entry := Alloc.entry.toNat
+  image := Alloc.image
+  start := Alloc.start
+  readsInput := true

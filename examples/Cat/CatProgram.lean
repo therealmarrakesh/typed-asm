@@ -197,9 +197,12 @@ def long : List Byte := (List.range 200).map (BitVec.ofNat 8 ·)
 
 end Cat
 
-/-- `lake exe cat -- FILE...` runs the program on the machine with code in
-memory, given those files of this machine. With `--elf FILE`, writes the
-program as a Linux executable. -/
-def main (args : List String) : IO UInt32 :=
-  exeMain Cat.entry.toNat Cat.image Cat.dataBytes (Cat.startArgs []) args (writable := true)
-    (startArgs := some Cat.startArgs) (name := "cat")
+/-- The program, with what running it takes. -/
+def Cat.program : Runnable where
+  name := "cat"
+  entry := Cat.entry.toNat
+  image := Cat.image
+  data := Cat.dataBytes
+  start := Cat.startArgs []
+  writable := true
+  startArgs := some Cat.startArgs

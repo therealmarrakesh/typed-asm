@@ -85,7 +85,11 @@ def start : State :=
 
 end Table
 
-/-- With no arguments, runs the program on the machine with code in memory.
-With `--elf FILE`, writes the program as a Linux executable. -/
-def main (args : List String) : IO UInt32 :=
-  exeMain Table.entry.toNat Table.image Table.dataBytes Table.start args (writable := true)
+/-- The program, with what running it takes. -/
+def Table.program : Runnable where
+  name := "table"
+  entry := Table.entry.toNat
+  image := Table.image
+  data := Table.dataBytes
+  start := Table.start
+  writable := true

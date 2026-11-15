@@ -14,6 +14,7 @@ globs = ["TypedAsm.*"]
 #
 #   <Name>Program.lean   the program and how to run it in the model
 #   <Name>.lean          its typing and the proof that it is safe
+#   <Name>Main.lean      the command line of its executable
 #
 # The executable is built from the program file alone, so it does not link
 # the tactics. Run one with `lake exe <name>`.
@@ -25,7 +26,7 @@ roots = ["Sum", "SumProgram"]
 
 [[lean_exe]]
 name = "sum"
-root = "SumProgram"
+root = "SumMain"
 srcDir = "examples/Sum"
 
 [[lean_lib]]
@@ -35,7 +36,7 @@ roots = ["Swap", "SwapProgram"]
 
 [[lean_exe]]
 name = "swap"
-root = "SwapProgram"
+root = "SwapMain"
 srcDir = "examples/Swap"
 
 [[lean_lib]]
@@ -45,7 +46,7 @@ roots = ["Frame", "FrameProgram"]
 
 [[lean_exe]]
 name = "frame"
-root = "FrameProgram"
+root = "FrameMain"
 srcDir = "examples/Frame"
 
 [[lean_lib]]
@@ -55,7 +56,7 @@ roots = ["Ops", "OpsProgram"]
 
 [[lean_exe]]
 name = "ops"
-root = "OpsProgram"
+root = "OpsMain"
 srcDir = "examples/Ops"
 
 [[lean_lib]]
@@ -65,7 +66,7 @@ roots = ["Index", "IndexProgram"]
 
 [[lean_exe]]
 name = "index"
-root = "IndexProgram"
+root = "IndexMain"
 srcDir = "examples/Index"
 
 [[lean_lib]]
@@ -75,7 +76,7 @@ roots = ["Echo", "EchoProgram"]
 
 [[lean_exe]]
 name = "echo"
-root = "EchoProgram"
+root = "EchoMain"
 srcDir = "examples/Echo"
 
 [[lean_lib]]
@@ -85,7 +86,7 @@ roots = ["Table", "TableProgram"]
 
 [[lean_exe]]
 name = "table"
-root = "TableProgram"
+root = "TableMain"
 srcDir = "examples/Table"
 
 [[lean_lib]]
@@ -95,7 +96,7 @@ roots = ["Dispatch", "DispatchProgram"]
 
 [[lean_exe]]
 name = "dispatch"
-root = "DispatchProgram"
+root = "DispatchMain"
 srcDir = "examples/Dispatch"
 
 [[lean_lib]]
@@ -105,7 +106,7 @@ roots = ["List", "ListProgram"]
 
 [[lean_exe]]
 name = "list"
-root = "ListProgram"
+root = "ListMain"
 srcDir = "examples/List"
 
 [[lean_lib]]
@@ -115,7 +116,7 @@ roots = ["Fact", "FactProgram"]
 
 [[lean_exe]]
 name = "fact"
-root = "FactProgram"
+root = "FactMain"
 srcDir = "examples/Fact"
 
 [[lean_lib]]
@@ -125,7 +126,7 @@ roots = ["Buffer", "BufferProgram"]
 
 [[lean_exe]]
 name = "buffer"
-root = "BufferProgram"
+root = "BufferMain"
 srcDir = "examples/Buffer"
 
 [[lean_lib]]
@@ -135,7 +136,7 @@ roots = ["Keep", "KeepProgram"]
 
 [[lean_exe]]
 name = "keep"
-root = "KeepProgram"
+root = "KeepMain"
 srcDir = "examples/Keep"
 
 [[lean_lib]]
@@ -145,7 +146,7 @@ roots = ["Alloc", "AllocProgram"]
 
 [[lean_exe]]
 name = "alloc"
-root = "AllocProgram"
+root = "AllocMain"
 srcDir = "examples/Alloc"
 
 [[lean_lib]]
@@ -155,7 +156,7 @@ roots = ["Cat", "CatProgram"]
 
 [[lean_exe]]
 name = "cat"
-root = "CatProgram"
+root = "CatMain"
 srcDir = "examples/Cat"
 
 [[lean_lib]]
@@ -165,7 +166,7 @@ roots = ["Stat", "StatProgram"]
 
 [[lean_exe]]
 name = "stat"
-root = "StatProgram"
+root = "StatMain"
 srcDir = "examples/Stat"
 
 [[lean_lib]]
@@ -175,7 +176,7 @@ roots = ["Args", "ArgsProgram"]
 
 [[lean_exe]]
 name = "args"
-root = "ArgsProgram"
+root = "ArgsMain"
 srcDir = "examples/Args"
 
 [[lean_lib]]
@@ -185,7 +186,7 @@ roots = ["Own", "OwnProgram"]
 
 [[lean_exe]]
 name = "own"
-root = "OwnProgram"
+root = "OwnMain"
 srcDir = "examples/Own"
 
 # Not a program to run: instructions the type system rejects, with the
@@ -195,8 +196,9 @@ name = "Rejected"
 srcDir = "examples/Rejected"
 
 # Tests: `lake test` checks the model against results recorded from the GNU
-# assembler and from a real processor. `lake exe capture` regenerates those
-# results, which needs x86-64 Linux with `as` and `cc`.
+# assembler and from a real processor: single instructions, and the example
+# programs run whole as Linux executables. `lake exe capture` regenerates
+# those results, which needs x86-64 Linux with `as` and `cc`.
 
 [[lean_lib]]
 name = "Tests"

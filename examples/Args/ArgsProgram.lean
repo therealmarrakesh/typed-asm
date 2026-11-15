@@ -143,8 +143,11 @@ def startWith (args : List String) : State :=
 
 end Args
 
-/-- `lake exe args -- ARG...` runs the program on the machine with code in
-memory. With `--elf FILE`, writes the program as a Linux executable. -/
-def main (args : List String) : IO UInt32 :=
-  exeMain Args.entry.toNat Args.image Args.dataBytes (Args.startArgs []) args
-    (startArgs := some Args.startArgs) (name := "args")
+/-- The program, with what running it takes. -/
+def Args.program : Runnable where
+  name := "args"
+  entry := Args.entry.toNat
+  image := Args.image
+  data := Args.dataBytes
+  start := Args.startArgs []
+  startArgs := some Args.startArgs

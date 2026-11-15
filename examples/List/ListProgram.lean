@@ -99,7 +99,10 @@ def start : State :=
 
 end List3
 
-/-- With no arguments, runs the program on the machine with code in memory.
-With `--elf FILE`, writes the program as a Linux executable. -/
-def main (args : List String) : IO UInt32 :=
-  exeMain List3.entry.toNat List3.image List3.listBytes List3.start args
+/-- The program, with what running it takes. -/
+def List3.program : Runnable where
+  name := "list"
+  entry := List3.entry.toNat
+  image := List3.image
+  data := List3.listBytes
+  start := List3.start

@@ -136,9 +136,12 @@ def sample : List Byte := (List.range 4096).map (BitVec.ofNat 8 ·)
 
 end Echo
 
-/-- With no arguments, runs the program on the machine with code in memory,
-copying this process's standard input to its standard output. With
-`--elf FILE`, writes the program as a Linux executable. -/
-def main (args : List String) : IO UInt32 :=
-  exeMain Echo.entry.toNat Echo.image Echo.bufferBytes Echo.start args (writable := true)
-    (readsInput := true)
+/-- The program, with what running it takes. -/
+def Echo.program : Runnable where
+  name := "echo"
+  entry := Echo.entry.toNat
+  image := Echo.image
+  data := Echo.bufferBytes
+  start := Echo.start
+  writable := true
+  readsInput := true

@@ -127,7 +127,10 @@ def start : State :=
 
 end Dispatch
 
-/-- With no arguments, runs the program on the machine with code in memory.
-With `--elf FILE`, writes the program as a Linux executable. -/
-def main (args : List String) : IO UInt32 :=
-  exeMain Dispatch.entry.toNat Dispatch.image Dispatch.tableBytes Dispatch.start args
+/-- The program, with what running it takes. -/
+def Dispatch.program : Runnable where
+  name := "dispatch"
+  entry := Dispatch.entry.toNat
+  image := Dispatch.image
+  data := Dispatch.tableBytes
+  start := Dispatch.start

@@ -198,9 +198,11 @@ def start : State :=
 
 end Ops
 
-/-- With no arguments, runs the program on the machine with code in memory:
-what it writes goes to standard output, how it ended to standard error, and
-its exit status becomes this executable's. With `--elf FILE`, writes the
-program as a Linux executable. -/
-def main (args : List String) : IO UInt32 :=
-  exeMain Ops.entry.toNat Ops.image Ops.recordBytes Ops.start args (writable := true)
+/-- The program, with what running it takes. -/
+def Ops.program : Runnable where
+  name := "ops"
+  entry := Ops.entry.toNat
+  image := Ops.image
+  data := Ops.recordBytes
+  start := Ops.start
+  writable := true

@@ -113,7 +113,10 @@ def startWith (input : List ReadEvent) : State :=
 
 end Keep
 
-/-- With no arguments, runs the program on the machine with code in memory.
-With `--elf FILE`, writes the program as a Linux executable. -/
-def main (args : List String) : IO UInt32 :=
-  exeMain Keep.entry.toNat Keep.image [] Keep.start args (readsInput := true)
+/-- The program, with what running it takes. -/
+def Keep.program : Runnable where
+  name := "keep"
+  entry := Keep.entry.toNat
+  image := Keep.image
+  start := Keep.start
+  readsInput := true

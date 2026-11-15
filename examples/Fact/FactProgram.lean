@@ -105,7 +105,9 @@ def start : State :=
 
 end Fact
 
-/-- With no arguments, runs the program on the machine with code in memory.
-With `--elf FILE`, writes the program as a Linux executable. -/
-def main (args : List String) : IO UInt32 :=
-  exeMain Fact.entry.toNat Fact.image [] Fact.start args
+/-- The program, with what running it takes. -/
+def Fact.program : Runnable where
+  name := "fact"
+  entry := Fact.entry.toNat
+  image := Fact.image
+  start := Fact.start

@@ -207,7 +207,10 @@ def startWith (place : Nat → Option (BitVec 64)) : State :=
 
 end Own
 
-/-- With no arguments, runs the program on the machine with code in memory.
-With `--elf FILE`, writes the program as a Linux executable. -/
-def main (args : List String) : IO UInt32 :=
-  exeMain Own.entry.toNat Own.image Own.recordBytes Own.start args
+/-- The program, with what running it takes. -/
+def Own.program : Runnable where
+  name := "own"
+  entry := Own.entry.toNat
+  image := Own.image
+  data := Own.recordBytes
+  start := Own.start
