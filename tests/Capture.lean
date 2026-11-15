@@ -10,7 +10,8 @@ needs a particular machine: x86-64 Linux, with the GNU assembler (`as`,
 
 * `lake exe capture encoding` assembles every instruction with `as`.
 * `lake exe capture hardware` runs every snippet on this processor.
-* `lake exe capture` does both.
+* `lake exe capture programs` runs every whole program as a Linux executable.
+* `lake exe capture` does all three.
 -/
 
 open TypedAsm
@@ -58,10 +59,45 @@ def captureHardware : IO Unit := do
     && {workDir}/runner < {workDir}/cases.txt > tests/data/hardware.txt"
   IO.println s!"wrote tests/data/hardware.txt ({cases.length} cases)"
 
+/-- A word as the shell takes it, whatever is in it. -/
+def quoted (s : String) : String :=
+  "'" ++ s.replace "'" "'\\''" ++ "'"
+
+def bytesFile (path : System.FilePath) (bytes : List Byte) : IO Unit :=
+  IO.FS.writeBinFile path (ByteArray.mk (bytes.map fun b => b.toNat.toUInt8).toArray)
+
+/-- Each case in a directory of its own, holding the executable, the files
+the case has and nothing else. The program is run there under its own name,
+with the case's arguments and standard input. -/
+def capturePrograms : IO Unit := do
+  let cases := Tests.Programs.cases
+  let root := workDir / "programs"
+  if ← root.pathExists then IO.FS.removeDirAll root
+  let mut out := ""
+  for c in cases do
+    let dir := root / c.label
+    IO.FS.createDirAll dir
+    let exe := c.program.name
+    bytesFile (dir / exe) c.program.elf
+    for (name, bytes) in c.files do
+      bytesFile (dir / name) bytes
+    -- standard input and what is recorded stay outside the directory
+    bytesFile (root / "stdin") c.input
+    let args := " ".intercalate (c.args.map quoted)
+    sh s!"chmod +x {dir}/{exe} && cd {dir} && \
+      (./{exe} {args} < ../stdin > ../stdout; echo $? > ../status)"
+    let status := (← IO.FS.readFile (root / "status")).trimAscii.toString.toNat!
+    let written := (← IO.FS.readBinFile (root / "stdout")).toList.map fun b =>
+      BitVec.ofNat 8 b.toNat
+    out := out ++ Tests.Programs.line status written ++ "\n"
+  IO.FS.writeFile "tests/data/programs.txt" out
+  IO.println s!"wrote tests/data/programs.txt ({cases.length} cases)"
+
 def main (args : List String) : IO Unit := do
   IO.FS.createDirAll workDir
   match args with
   | ["encoding"] => captureEncoding
   | ["hardware"] => captureHardware
-  | [] => captureEncoding; captureHardware
-  | _ => IO.println "usage: lake exe capture [encoding|hardware]"
+  | ["programs"] => capturePrograms
+  | [] => captureEncoding; captureHardware; capturePrograms
+  | _ => IO.println "usage: lake exe capture [encoding|hardware|programs]"

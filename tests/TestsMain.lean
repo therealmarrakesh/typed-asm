@@ -7,6 +7,7 @@ Checks the model against results recorded from real tools:
 
 * the encoder against the GNU assembler, and the decoder against the encoder
 * the instruction semantics against a real processor
+* whole programs against the same programs run as Linux executables
 
 It needs nothing but Lean: the recorded results are in `tests/data`. Run it
 with `lake test`. To regenerate the recorded results, see `Capture.lean`.
@@ -61,7 +62,23 @@ def checkHardware : IO Bool := do
       failures := failures.push s!"{text}: model `{model}`, processor `{real}`"
   report "hardware" cases.size failures
 
+def checkPrograms : IO Bool := do
+  let expected ← readLines "tests/data/programs.txt"
+  let cases := Tests.Programs.cases.toArray
+  if expected.size ≠ cases.size then
+    IO.println s!"programs: the data file has {expected.size} lines but there are \
+      {cases.size} cases; regenerate it"
+    return false
+  let mut failures : Array String := #[]
+  for (c, real) in cases.zip expected do
+    let model := Tests.Programs.modelLine c
+    unless model == real do
+      failures := failures.push s!"{c.label}: the model gives {model.take 80}, \
+        the machine {real.take 80}"
+  report "programs" cases.size failures
+
 def main : IO UInt32 := do
   let a ← checkEncoding
   let b ← checkHardware
-  return if a && b then 0 else 1
+  let c ← checkPrograms
+  return if a && b && c then 0 else 1
