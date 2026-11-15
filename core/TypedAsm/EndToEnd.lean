@@ -20,8 +20,8 @@ that the data the program is loaded with has the types the blocks claim.
 
 namespace TypedAsm
 
-variable {L : Type} [DecidableEq L] {code : List (Asm L)} {base dataBase : BitVec 64}
-  {data : List Byte} {blocks : List (BitVec 64 × Layout)} {kinds : List (Nat × Shape)}
+variable {L : Type} [DecidableEq L] {code : List (Asm L)} {base : BitVec 64}
+  {blocks : List (BitVec 64 × Layout)} {kinds : List (Nat × Shape)}
   {At : L → Ctx → Prop} {start : L} {room : Nat} {s : State}
 
 /-- When the blocks are all plain bytes, the data has the types the blocks
@@ -35,19 +35,19 @@ theorem Entry.plain {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
     cases hp
 
 /-- A state meeting the entry contract is well typed, at the entry label. -/
-theorem Entry.stateOk {image : List Byte} {sys : Syscall}
+theorem Entry.stateOk {parts : List (Nat × Perm × List Byte)} {sys : Syscall}
     (hstart : At start (entryCtx room))
     (hfields : ∀ n, ∀ x ∈ blocks, ∀ p ∈ x.2.shape.vals,
       HasTy (Asm.fetch base code) sys (.ofList blocks kinds) n p.2
         (s.load64 (x.1 + BitVec.ofNat 64 p.1)))
-    (h : Entry (Asm.addr code base start) base image dataBase data blocks room 0 s) :
+    (h : Entry (Asm.addr code base start) parts blocks room 0 s) :
     StateOk (.ofLabels code base At) (Asm.fetch base code) sys (.ofList blocks kinds) s :=
   ⟨entryCtx room, by rw [h.rip]; exact .intro hstart, fun n => h.matches HasTy.int (hfields n)⟩
 
 /-- A typed program started in a state meeting its entry contract is safe on
 the machine that looks instructions up in the program. -/
-theorem Entry.safe {image : List Byte} {sys : Syscall}
-    (h : Entry (Asm.addr code base start) base image dataBase data blocks room 0 s)
+theorem Entry.safe {parts : List (Nat × Perm × List Byte)} {sys : Syscall}
+    (h : Entry (Asm.addr code base start) parts blocks room 0 s)
     (hty : BlocksOk (.ofLabels code base At) (Asm.fetch base code) sys (.ofList blocks kinds))
     (hwf : (MemTy.ofList blocks kinds).WF) (hstart : At start (entryCtx room))
     (hfields : ∀ n, ∀ x ∈ blocks, ∀ p ∈ x.2.shape.vals,
@@ -59,19 +59,19 @@ theorem Entry.safe {image : List Byte} {sys : Syscall}
 /-- **A typed program started in a state meeting its entry contract is safe
 on the machine that fetches instructions by decoding memory.** -/
 theorem Entry.safeMem
-    (h : Entry (Asm.addr code base start) base (Asm.image base code) dataBase data blocks room 0 s)
+    (h : Entry (Asm.addr code base start) (Asm.parts base code) blocks room 0 s)
     (hty : BlocksOk (.ofLabels code base At) (Asm.fetch base code) linux (.ofList blocks kinds))
     (hwf : (MemTy.ofList blocks kinds).WF) (hstart : At start (entryCtx room))
     (hfields : ∀ n, ∀ x ∈ blocks, ∀ p ∈ x.2.shape.vals,
       HasTy (Asm.fetch base code) linux (.ofList blocks kinds) n p.2
         (s.load64 (x.1 + BitVec.ofNat 64 p.1))) :
     SafeMem linux s :=
-  .of_safe linux_frame (Asm.loaded h.code) (h.safe hty hwf hstart hfields)
+  .of_safe linux_frame (Asm.loaded h.loaded) (h.safe hty hwf hstart hfields)
 
 /-- The same for a program that goes through its arguments: the entry label
 allows the context for any number of them. -/
-theorem EntryArgs.safe {image : List Byte} {sys : Syscall}
-    (h : EntryArgs (Asm.addr code base start) base image dataBase data blocks room s)
+theorem EntryArgs.safe {parts : List (Nat × Perm × List Byte)} {sys : Syscall}
+    (h : EntryArgs (Asm.addr code base start) parts blocks room s)
     (hty : BlocksOk (.ofLabels code base At) (Asm.fetch base code) sys (.ofList blocks kinds))
     (hwf : (MemTy.ofList blocks kinds).WF) (hstart : ∀ c, At start (argsCtx room c))
     (hfields : ∀ x ∈ blocks, x.2.shape.vals = []) :
@@ -82,19 +82,18 @@ theorem EntryArgs.safe {image : List Byte} {sys : Syscall}
       fun _ => hE.matchesCount hc HasTy.int (fun _ => hasTy_eq.mpr rfl) hfields⟩
 
 theorem EntryArgs.safeMem
-    (h : EntryArgs (Asm.addr code base start) base (Asm.image base code) dataBase data blocks
-      room s)
+    (h : EntryArgs (Asm.addr code base start) (Asm.parts base code) blocks room s)
     (hty : BlocksOk (.ofLabels code base At) (Asm.fetch base code) linux (.ofList blocks kinds))
     (hwf : (MemTy.ofList blocks kinds).WF) (hstart : ∀ c, At start (argsCtx room c))
     (hfields : ∀ x ∈ blocks, x.2.shape.vals = []) :
     SafeMem linux s :=
-  .of_safe linux_frame (Asm.loaded h.choose_spec.1.code) (h.safe hty hwf hstart hfields)
+  .of_safe linux_frame (Asm.loaded h.choose_spec.1.loaded) (h.safe hty hwf hstart hfields)
 
 /-- The same for a program that reads its arguments' text. The text is in
 blocks the program's memory typing does not list, one for each argument,
 wherever the kernel put them: the typing grows to take them in. -/
-theorem EntryTexts.safe {image : List Byte} {sys : Syscall}
-    (h : EntryTexts (Asm.addr code base start) base image dataBase data blocks room s)
+theorem EntryTexts.safe {parts : List (Nat × Perm × List Byte)} {sys : Syscall}
+    (h : EntryTexts (Asm.addr code base start) parts blocks room s)
     (hty : BlocksOk (.ofLabels code base At) (Asm.fetch base code) sys (.ofList blocks kinds))
     (hkinds : MemTy.declared kinds blocks = MemTy.actual blocks)
     (hstart : ∀ c, At start (textsCtx room c))
@@ -106,14 +105,13 @@ theorem EntryTexts.safe {image : List Byte} {sys : Syscall}
     ⟨textsCtx room c, by rw [hrip]; exact .intro (hstart c), hw⟩
 
 theorem EntryTexts.safeMem
-    (h : EntryTexts (Asm.addr code base start) base (Asm.image base code) dataBase data blocks
-      room s)
+    (h : EntryTexts (Asm.addr code base start) (Asm.parts base code) blocks room s)
     (hty : BlocksOk (.ofLabels code base At) (Asm.fetch base code) linux (.ofList blocks kinds))
     (hkinds : MemTy.declared kinds blocks = MemTy.actual blocks)
     (hstart : ∀ c, At start (textsCtx room c))
     (hfields : ∀ x ∈ blocks, x.2.shape.vals = []) :
     SafeMem linux s :=
-  .of_safe linux_frame (Asm.loaded h.choose_spec.1.code) (h.safe hty hkinds hstart hfields)
+  .of_safe linux_frame (Asm.loaded h.choose_spec.1.loaded) (h.safe hty hkinds hstart hfields)
 
 /-! These rest on Lean's three standard axioms and nothing else: no proof in
 the library is taken on trust from a solver or from compiled code. -/

@@ -115,7 +115,7 @@ theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 executable memory, the array readable, and one writable stack slot below `rsp` that
 does not overlap it. This is the contract with whatever loads the program;
 for the ELF file, with the Linux kernel. -/
-abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase arrayBytes blocks 1 0
+abbrev Entry : State → Prop := TypedAsm.Entry entry parts blocks 1 0
 
 /-! ## Safety -/
 

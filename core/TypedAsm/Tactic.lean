@@ -1165,12 +1165,12 @@ private unsafe def evalFetchUnsafe (e : Expr) : MetaM (Option (Instr × BitVec 6
 @[implemented_by evalFetchUnsafe]
 private opaque evalFetch (e : Expr) : MetaM (Option (Instr × BitVec 64))
 
-private unsafe def evalItemsUnsafe (e : Expr) : MetaM (List (Instr × BitVec 64)) := do
-  evalExpr (List (Instr × BitVec 64)) (← inferType e) e
+private unsafe def evalTableUnsafe (e : Expr) : MetaM (List (Nat × Instr × BitVec 64)) := do
+  evalExpr (List (Nat × Instr × BitVec 64)) (← inferType e) e
 
-/-- The instructions a closed layout term comes to. -/
-@[implemented_by evalItemsUnsafe]
-private opaque evalItems (e : Expr) : MetaM (List (Instr × BitVec 64))
+/-- The instructions, each with its address, that a closed table comes to. -/
+@[implemented_by evalTableUnsafe]
+private opaque evalTable (e : Expr) : MetaM (List (Nat × Instr × BitVec 64))
 
 deriving instance ToExpr for Lookup
 
@@ -1187,9 +1187,9 @@ private partial def lookupTree (xs : Array (Nat × Instr × BitVec 64)) (lo hi :
     let m := (lo + hi) / 2
     .node (lookupTree xs lo m) ((xs[m]?.map (·.1)).getD 0) (lookupTree xs m hi)
 
-/-- For each program's instruction table met so far: its base, its
-instructions as the program gives them, and its search tree written out. -/
-initialize layoutCache : IO.Ref (Std.HashMap Expr (Expr × Expr × Expr)) ← IO.mkRef {}
+/-- For each program's instruction table met so far: its instructions with
+their addresses, as the program gives them, and its search tree written out. -/
+initialize layoutCache : IO.Ref (Std.HashMap Expr (Expr × Expr)) ← IO.mkRef {}
 
 /-- A program's instruction table as a function that searches a tree written
 out in full, with a proof that the table is that function. The proof is
@@ -1197,21 +1197,19 @@ out in full, with a proof that the table is that function. The proof is
 program; it is kept as a lemma of its own, and every lookup afterwards is a
 few comparisons of numbers. -/
 private def layoutOf (fetch : Expr) : MetaM (Option (Expr × Expr)) := do
-  let (base, items, tree) ← do
+  let (table, tree) ← do
     if let some r := (← layoutCache.get)[fetch]? then pure r
     else
-      -- unfold to `Asm.fetch base prog`, then to `Fetch.layout base (resolve …)`
+      -- unfold to `Asm.fetch base prog`, a walk along `Asm.table base prog`
       let mut f := fetch
       for _ in [0:8] do
-        if f.isAppOf ``Fetch.layout then break
+        if f.isAppOf ``Asm.fetch then break
         let some f' ← unfoldDefinition? f | return none
         f := f'.headBeta
-      unless f.isAppOfArity ``Fetch.layout 2 do return none
-      let base := f.appFn!.appArg!
-      let items := f.appArg!
-      let (b, given) ← try pure (← evalAddr base, ← evalItems items) catch _ => return none
-      let listed := (Lookup.addrs b given).toArray
-      let r := (base, items, toExpr (lookupTree listed 0 listed.size))
+      unless f.isAppOfArity ``Asm.fetch 4 do return none
+      let table ← mkAppM ``Asm.table #[f.appFn!.appArg!, f.appArg!]
+      let listed ← try pure (← evalTable table).toArray catch _ => return none
+      let r := (table, toExpr (lookupTree listed 0 listed.size))
       layoutCache.modify (·.insert fetch r)
       pure r
   let a := mkApp (mkConst ``BitVec) (mkNatLit 64)
@@ -1220,7 +1218,7 @@ private def layoutOf (fetch : Expr) : MetaM (Option (Expr × Expr)) := do
   let type ← mkEq fetch found
   let rflTrue ← mkEqRefl (mkConst ``Bool.true)
   let value := mkAppN (mkConst ``Lookup.sound)
-    #[base, items, tree, rflTrue, ← mkEqRefl (mkApp (mkConst ``Lookup.toList) tree), rflTrue]
+    #[table, tree, rflTrue, ← mkEqRefl (mkApp (mkConst ``Lookup.toList) tree)]
   let name ← mkAuxLemma [] type (← mkExpectedTypeHint value type)
   return some (found, mkConst name)
 
@@ -3362,36 +3360,37 @@ elab_rules : tactic
             ↓reduceIte])))
 
 /-- `ty_loaded` proves that a starting state meets an entry contract, when
-the state is a prepared one with the program's bytes loaded and `rip` at the
-entry: the form the simulator's starting states have. What is left to show
-is arithmetic about where things are, and is settled by computing. -/
+the state is one with the program loaded and `rip` set to the entry,
+perhaps given a stack with arguments first: the form the simulator's
+starting states have. What is left to show is settled by computing: that
+each of the program's bytes is where it should be, and arithmetic about
+where things are. -/
 elab "ty_loaded" : tactic => withMainContext do
   let g ← getMainGoal
   let others := (← getGoals).drop 1
   let t ← whnfR (← instantiateMVars (← g.getType))
   let tac ←
     if t.isAppOf ``TypedAsm.Entry then
-      `(tactic| refine Entry.ofLoad ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_)
+      `(tactic| refine Entry.ofLoad ?_ ?_ ?_ ?_ ?_ ?_)
     else if t.isAppOf ``TypedAsm.EntryArgs then
-      `(tactic| refine EntryArgs.ofLoad _ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_)
+      `(tactic| refine EntryArgs.ofLoad _ ?_ ?_ ?_ ?_ ?_ ?_)
     else if t.isAppOf ``TypedAsm.EntryTexts then
-      `(tactic| refine EntryTexts.ofLoad _ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_)
+      `(tactic| refine EntryTexts.ofLoad _ ?_ ?_ ?_ ?_ ?_ ?_ ?_)
     else throwError "ty_loaded: the goal is not an entry contract"
   let gs ← try runOn g (do evalTactic tac)
     catch _ =>
-      throwError "ty_loaded: the state must be a prepared state with the program's bytes \
-        loaded at its base and `rip` at its entry"
+      throwError "ty_loaded: the state must be one with the program loaded and `rip` set to \
+        its entry"
   for g in gs do
     if ← g.isAssigned then continue
     let t ← instantiateMVars (← g.getType)
     try
-      if t.isAppOf ``State.HasData then
-        -- each byte is looked at, by the kernel: comparing the state with
-        -- the way it was made would mean working the whole state out
-        discard <| runOn g (do evalTactic (← `(tactic|
-          exact State.hasData_of_check (by decide +kernel))))
-      else
-        discard <| runOn g (do evalTactic (← `(tactic| decide +kernel)))
+      -- that the program is in memory: each byte is looked at, by the
+      -- kernel; anything else: by the kernel too
+      discard <| runOn g (do evalTactic (← `(tactic|
+        first
+          | exact State.holds_of_check (by decide +kernel)
+          | decide +kernel)))
     catch _ =>
       throwError "ty_loaded: the starting state does not meet the entry contract; this does \
         not hold:{indentExpr t}"

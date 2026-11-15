@@ -73,7 +73,7 @@ theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 
 /-- What the program needs of the state it starts in: its bytes in
 executable memory, and the list in readable memory. -/
-abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase listBytes blocks 0 0
+abbrev Entry : State → Prop := TypedAsm.Entry entry parts blocks 0 0
 
 /-- A link that holds the address of a node is a link. -/
 theorem link_node {n : Nat} {a : BitVec 64} (h : Ψ a = some nodeLayout) :
@@ -91,7 +91,8 @@ theorem Entry.valuesOk {s : State} (h : Entry s) (n : Nat) :
   have hlen : listBytes.length = 48 := by decide
   have hval : ∀ k, k + 8 ≤ 48 →
       s.load64 (dataBase + BitVec.ofNat 64 k) = word64 listBytes k :=
-    fun k hk => h.data.load64 (by rw [hlen]; exact hk)
+    fun k hk => (h.hasData (a := dataBase) (bytes := listBytes) (by decide +kernel)).load64
+      (by rw [hlen]; exact hk)
   rcases hx with rfl | rfl | rfl <;>
     (simp only [nodeLayout, nodeShape, List.mem_singleton] at hp; subst hp)
   · -- the first node's link is the second node

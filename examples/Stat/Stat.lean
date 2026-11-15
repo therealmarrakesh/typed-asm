@@ -59,7 +59,7 @@ theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 executable memory, and its buffer readable and writable. Nothing is asked of
 what its data holds, of the files there are, of the time, or of what the
 random bytes are. -/
-abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase [] blocks 0 0
+abbrev Entry : State → Prop := TypedAsm.Entry entry parts blocks 0 0
 
 /-! ## Safety -/
 

@@ -143,7 +143,7 @@ def code : List (Asm Label) := [
   .ins (.mov .w32 (.rm_i (.reg .rdi) 1)),
   .ins (.mov .w32 (.rm_i (.reg .rax) 231)),
   .ins .syscall,
-  .segment false,
+  .segment .ro,
   .label .record, .bytes recordBytes]
 
 /-- Where the code is loaded. -/
@@ -154,25 +154,25 @@ def dataBase : BitVec 64 := Asm.addr code base .record
 
 def fetch : Fetch := Asm.fetch base code
 
-/-- The program's bytes. -/
-def image : List Byte := Asm.image base code
+/-- What the program puts in memory, line by line. -/
+def parts : List (Nat × Perm × List Byte) := Asm.parts base code
 
 /-- The address execution starts at. -/
 def entry : BitVec 64 := Asm.addr code base .start
 
--- The instructions come first and the data after, and every jump, call and
+-- Every instruction stands in an executable segment, and every jump, call and
 -- reference to data reaches the label it names.
 #guard Asm.wellFormed code && Asm.offsetsFit base code
 
-/-- Everything in the starting state except the program itself: the record,
+/-- The starting state but for `rip`: the program in memory, and with it
+the record,
 in read-only memory. The program uses no stack. -/
 def prepared : State :=
-  (State.init.loadData dataBase recordBytes .ro).setReg .rsp 0x80000000
+  (Asm.load State.init base code).setReg .rsp 0x80000000
 
-/-- A starting state: `prepared`, with the program's bytes in executable
-memory and `rip` at the entry. Every request for memory is refused. -/
+/-- A starting state: `prepared`, with `rip` at the entry. Every request for memory is refused. -/
 def start : State :=
-  { prepared.loadCode base image with rip := entry }
+  { prepared with rip := entry }
 
 /-- A page for each request for memory, one after another. -/
 def pages : Nat → Option (BitVec 64) :=
@@ -211,7 +211,5 @@ end Own
 /-- The program, with what running it takes. -/
 def Own.program : Runnable where
   name := "own"
-  entry := Own.entry.toNat
-  image := Own.image
-  segments := (Asm.segments Own.base Own.code).map fun (b, w, bs) => (b.toNat, w, bs)
+  elf := Asm.elf Own.base Own.code .start
   start := Own.start

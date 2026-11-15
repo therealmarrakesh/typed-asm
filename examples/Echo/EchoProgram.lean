@@ -69,7 +69,7 @@ def code : List (Asm Label) := [
   .ins (.mov .w32 (.rm_i (.reg .rax) 60)),
   .ins (.alu .xor .w32 (.rm_r (.reg .rdi) .rdi)),
   .ins .syscall,
-  .segment true,
+  .segment .rw,
   .label .buffer, .bytes bufferBytes]
 
 /-- Where the code is loaded. -/
@@ -80,25 +80,25 @@ def dataBase : BitVec 64 := Asm.addr code base .buffer
 
 def fetch : Fetch := Asm.fetch base code
 
-/-- The program's bytes. -/
-def image : List Byte := Asm.image base code
+/-- What the program puts in memory, line by line. -/
+def parts : List (Nat × Perm × List Byte) := Asm.parts base code
 
 /-- The address execution starts at. -/
 def entry : BitVec 64 := Asm.addr code base .start
 
--- The instructions come first and the data after, and every jump, call and
+-- Every instruction stands in an executable segment, and every jump, call and
 -- reference to data reaches the label it names.
 #guard Asm.wellFormed code && Asm.offsetsFit base code
 
-/-- Everything in the starting state except the program itself: the buffer
+/-- The starting state but for `rip`: the program in memory, and with it
+the buffer
 in writable memory. The program uses no stack. -/
 def prepared : State :=
-  (State.init.loadData dataBase bufferBytes .rw).setReg .rsp 0x80000000
+  (Asm.load State.init base code).setReg .rsp 0x80000000
 
-/-- A starting state: `prepared`, with the program's bytes in executable
-memory and `rip` at the entry. Nothing is waiting to be read. -/
+/-- A starting state: `prepared`, with `rip` at the entry. Nothing is waiting to be read. -/
 def start : State :=
-  { prepared.loadCode base image with rip := entry }
+  { prepared with rip := entry }
 
 /-- The starting state with the given input waiting, one event per `read`. -/
 def startWith (input : List ReadEvent) : State :=
@@ -140,8 +140,6 @@ end Echo
 /-- The program, with what running it takes. -/
 def Echo.program : Runnable where
   name := "echo"
-  entry := Echo.entry.toNat
-  image := Echo.image
-  segments := (Asm.segments Echo.base Echo.code).map fun (b, w, bs) => (b.toNat, w, bs)
+  elf := Asm.elf Echo.base Echo.code .start
   start := Echo.start
   readsInput := true

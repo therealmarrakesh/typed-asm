@@ -136,15 +136,12 @@ def code : List (Asm Label) := [
   .ins .syscall]
 
 /-- Where the code is loaded. -/
-def base : BitVec 64 := BitVec.ofNat 64 Elf.codeBase
-
-/-- The program has no data; this is where its empty data segment goes. -/
-def dataBase : BitVec 64 := BitVec.ofNat 64 Elf.dataBase
+def base : BitVec 64 := Asm.base code
 
 def fetch : Fetch := Asm.fetch base code
 
-/-- The program's bytes. -/
-def image : List Byte := Asm.image base code
+/-- What the program puts in memory, line by line. -/
+def parts : List (Nat × Perm × List Byte) := Asm.parts base code
 
 /-- The address execution starts at. -/
 def entry : BitVec 64 := Asm.addr code base .start
@@ -152,16 +149,16 @@ def entry : BitVec 64 := Asm.addr code base .start
 -- Every jump and call reaches the label it names.
 #guard Asm.offsetsFit base code
 
-/-- Everything in the starting state except the program itself: one free
+/-- The starting state but for `rip`: the program in memory, and with it
+one free
 stack slot, for the return address of the one call. -/
 def prepared : State :=
-  ((State.init.loadData dataBase [] .ro).setPerm 0x7ffffff8 8 .rw).setReg .rsp 0x80000000
+  ((Asm.load State.init base code).setPerm 0x7ffffff8 8 .rw).setReg .rsp 0x80000000
 
-/-- A starting state: `prepared`, with the program's bytes in executable
-memory and `rip` at the entry. Nothing is waiting to be read, and every
-request for memory is refused. -/
+/-- A starting state: `prepared`, with `rip` at the entry. Nothing is
+waiting to be read, and every request for memory is refused. -/
 def start : State :=
-  { prepared.loadCode base image with rip := entry }
+  { prepared with rip := entry }
 
 /-- A page for each request for memory, one after another. -/
 def pages : Nat → Option (BitVec 64) :=
@@ -198,7 +195,6 @@ end Fresh
 /-- The program, with what running it takes. -/
 def Fresh.program : Runnable where
   name := "fresh"
-  entry := Fresh.entry.toNat
-  image := Fresh.image
+  elf := Asm.elf Fresh.base Fresh.code .start
   start := Fresh.start
   readsInput := true

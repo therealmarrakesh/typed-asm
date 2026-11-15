@@ -124,7 +124,7 @@ def code : List (Asm Label) := [
   .ins (.mov .w32 (.rm_i (.reg .rdi) 1)),
   .ins (.mov .w32 (.rm_i (.reg .rax) 231)),
   .ins .syscall,
-  .segment true,
+  .segment .rw,
   .label .buffer, .bytes dataBytes]
 
 /-- Where the code is loaded. -/
@@ -135,26 +135,26 @@ def dataBase : BitVec 64 := Asm.addr code base .buffer
 
 def fetch : Fetch := Asm.fetch base code
 
-/-- The program's bytes. -/
-def image : List Byte := Asm.image base code
+/-- What the program puts in memory, line by line. -/
+def parts : List (Nat × Perm × List Byte) := Asm.parts base code
 
 /-- The address execution starts at. -/
 def entry : BitVec 64 := Asm.addr code base .start
 
--- The instructions come first and the data after, and every jump, call and
+-- Every instruction stands in an executable segment, and every jump, call and
 -- reference to data reaches the label it names.
 #guard Asm.wellFormed code && Asm.offsetsFit base code
 
-/-- Everything in a starting state except the stack and the program itself:
-the buffer in writable memory. -/
+/-- A starting state but for the stack and `rip`: the program in memory, and
+with it the buffer in writable memory. -/
 def prepared : State :=
-  State.init.loadData dataBase dataBytes .rw
+  Asm.load State.init base code
 
-/-- A starting state: the buffer, a stack holding the given arguments, the
-program's bytes in executable memory, and `rip` at the entry. The first
+/-- A starting state: `prepared`, given a stack that holds the arguments,
+with `rip` at the entry. The first
 argument is by custom the program's own name. -/
 def startArgs (args : List (List Byte)) : State :=
-  { (prepared.withArgs 0 args).loadCode base image with rip := entry }
+  { prepared.withArgs 0 args with rip := entry }
 
 /-- That state with the given files there. -/
 def startWith (args : List String) (files : List File) : State :=
@@ -201,8 +201,6 @@ end Cat
 /-- The program, with what running it takes. -/
 def Cat.program : Runnable where
   name := "cat"
-  entry := Cat.entry.toNat
-  image := Cat.image
-  segments := (Asm.segments Cat.base Cat.code).map fun (b, w, bs) => (b.toNat, w, bs)
+  elf := Asm.elf Cat.base Cat.code .start
   start := Cat.startArgs []
   startArgs := some Cat.startArgs

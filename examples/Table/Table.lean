@@ -46,7 +46,7 @@ theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 
 /-- What the program needs of the state it starts in: its bytes in
 executable memory, its data in memory, readable, and the record writable. -/
-abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase dataBytes blocks 0 0
+abbrev Entry : State → Prop := TypedAsm.Entry entry parts blocks 0 0
 
 /-- The data has the types the blocks claim. The table's entry is a pointer
 to the record because the data says so. -/
@@ -60,7 +60,8 @@ theorem Entry.valuesOk {s : State} (h : Entry s) (n : Nat) :
     simp only [tableLayout, List.mem_singleton] at hp
     subst hp
     have hv : s.load64 (dataBase + BitVec.ofNat 64 0) = recordAddr := by
-      rw [h.data.load64 (i := 0) (by decide)]
+      rw [(h.hasData (a := dataBase) (bytes := dataBytes) (by decide +kernel)).load64 (i := 0)
+        (by decide)]
       decide
     rw [hv]
     exact hasTy_ptr.mpr ⟨recordAddr, recordLayout, rfl, rfl, fun _ => rfl, by decide⟩

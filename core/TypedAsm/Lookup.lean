@@ -3,14 +3,14 @@ import TypedAsm.Step
 /-!
 # Finding an instruction quickly
 
-A program's instruction table, `Fetch.layout`, is a list walked from the
-program's base, adding up lengths until the address asked for is reached.
-That is the right definition and a poor way to compute: checking a typing
-looks up every instruction, and each lookup walks past all the ones before.
+A program's instruction table is a list of its instructions, each with its
+address, walked until the address asked for is met: `Lookup.first`. That is
+the right definition and a poor way to compute: checking a typing looks up
+every instruction, and each lookup walks past all the ones before.
 
 `Lookup` is the same table as a search tree keyed by address. A tree is
 written out for a program by the tactics, and `Lookup.sound` shows that it
-answers as the list does, given three facts that are settled by computing
+answers as the list does, given two facts that are settled by computing
 once for the program. After that a lookup costs a few comparisons of
 numbers.
 -/
@@ -122,47 +122,28 @@ theorem find_eq_first {t : Lookup} {lo hi : Nat} (h : t.ok lo hi = true) (x : Na
       have := mem_bounds hl e he
       omega
 
-/-- A program's instructions with the address of each, counted up from the
-base as plain numbers. -/
-def addrs : Nat → List (Instr × BitVec 64) → List (Nat × Instr × BitVec 64)
-  | _, [] => []
-  | b, (i, len) :: rest => (b, i, len) :: addrs (b + len.toNat) rest
+/-- What a walk finds at an address is listed there. -/
+theorem first_mem {xs : List (Nat × Instr × BitVec 64)} {x : Nat} {v : Instr × BitVec 64}
+    (h : first xs x = some v) : (x, v) ∈ xs := by
+  induction xs with
+  | nil => cases h
+  | cons e rest ih =>
+    obtain ⟨a, i, len⟩ := e
+    simp only [first] at h
+    split at h
+    · next hx =>
+      cases h
+      subst hx
+      exact List.mem_cons_self
+    · exact List.mem_cons_of_mem _ (ih h)
 
-/-- The length of a program in bytes. -/
-def total : List (Instr × BitVec 64) → Nat
-  | [] => 0
-  | (_, len) :: rest => len.toNat + total rest
-
-/-- For a program that ends before the address space does, the table finds
-what a walk along the instructions with their addresses finds. -/
-theorem layout_eq_first (items : List (Instr × BitVec 64)) (base a : BitVec 64)
-    (h : base.toNat + total items < 2 ^ 64) :
-    Fetch.layout base items a = first (addrs base.toNat items) a.toNat := by
-  induction items generalizing base with
-  | nil => rfl
-  | cons p rest ih =>
-    obtain ⟨i, len⟩ := p
-    simp only [total] at h
-    simp only [Fetch.layout, addrs, first]
-    have hadd : (base + len).toNat = base.toNat + len.toNat := by
-      rw [BitVec.toNat_add, Nat.mod_eq_of_lt (by omega)]
-    by_cases hab : a = base
-    · subst hab
-      simp
-    · have hne : a.toNat ≠ base.toNat := fun h => hab (BitVec.eq_of_toNat_eq h)
-      simp only [hab, hne, ↓reduceIte]
-      rw [ih (base + len) (by rw [hadd]; omega), hadd]
-
-/-- **A search tree written out for a program is the program's instruction
-table**, if it is a search tree, lists the program's instructions at their
-addresses, and the program ends before the address space does. All three are
-settled by computing. -/
-theorem sound {base : BitVec 64} {items : List (Instr × BitVec 64)} {t : Lookup}
-    (hok : t.ok 0 (2 ^ 64) = true) (hlist : t.toList = addrs base.toNat items)
-    (hfit : decide (base.toNat + total items < 2 ^ 64) = true) :
-    Fetch.layout base items = fun a => t.find a.toNat :=
-  funext fun a => by
-    rw [layout_eq_first items base a (of_decide_eq_true hfit), find_eq_first hok, hlist]
+/-- **A search tree written out for a list of instructions with their
+addresses finds what a walk along the list finds**, if it is a search tree
+and lists those instructions. Both are settled by computing. -/
+theorem sound {xs : List (Nat × Instr × BitVec 64)} {t : Lookup}
+    (hok : t.ok 0 (2 ^ 64) = true) (hlist : t.toList = xs) :
+    (fun a : BitVec 64 => first xs a.toNat) = fun a => t.find a.toNat :=
+  funext fun a => by rw [find_eq_first hok, hlist]
 
 end Lookup
 

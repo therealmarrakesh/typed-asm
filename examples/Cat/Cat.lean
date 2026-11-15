@@ -86,7 +86,7 @@ executable memory, its buffer readable and writable, and the stack as Linux
 leaves it for a new program: the number of arguments at `[rsp]` and a slot
 for each after it. Nothing is asked of what the arguments are or of the
 files there are. -/
-abbrev Entry : State → Prop := TypedAsm.EntryArgs entry base image dataBase dataBytes blocks 0
+abbrev Entry : State → Prop := TypedAsm.EntryArgs entry parts blocks 0
 
 /-! ## Safety -/
 

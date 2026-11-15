@@ -184,7 +184,7 @@ def initial (snippet : List Instr) (inp : Input) : State :=
     |>.setReg .rsp buffer |>.setReg .r10 2
   let bit (n : Nat) : Option Bool := some (inp.flags / n % 2 == 1)
   let s := { s with flags := ⟨bit 1, bit 2, bit 4, bit 8⟩ }
-  { s.loadCode codeBase (bytesOf snippet) with rip := codeBase }
+  { s.loadData codeBase (bytesOf snippet) .rx with rip := codeBase }
 
 /-- Runs until `rip` reaches `stop`, for at most `fuel` steps. -/
 def runTo (stop : BitVec 64) : Nat → State → Outcome

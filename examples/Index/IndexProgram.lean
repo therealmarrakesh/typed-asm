@@ -69,7 +69,7 @@ def code : List (Asm Label) := [
   .label .inbounds,
   .ins (.mov .w64 (.r_m .rax (.sib (some .rdi) (some (.rdx, .s8)) 0))),
   .ins .ret,
-  .segment false,
+  .segment .ro,
   .label .array, .bytes arrayBytes]
 
 /-- Where the code is loaded. -/
@@ -80,25 +80,25 @@ def dataBase : BitVec 64 := Asm.addr code base .array
 
 def fetch : Fetch := Asm.fetch base code
 
-/-- The program's bytes. -/
-def image : List Byte := Asm.image base code
+/-- What the program puts in memory, line by line. -/
+def parts : List (Nat × Perm × List Byte) := Asm.parts base code
 
 /-- The address execution starts at. -/
 def entry : BitVec 64 := Asm.addr code base .start
 
--- The instructions come first and the data after, and every jump, call and
+-- Every instruction stands in an executable segment, and every jump, call and
 -- reference to data reaches the label it names.
 #guard Asm.wellFormed code && Asm.offsetsFit base code
 
-/-- Everything in the starting state except the program itself: the array
+/-- The starting state but for `rip`: the program in memory, and with it
+the array
 in read-only memory, and one free stack slot below `rsp`. -/
 def prepared : State :=
-  ((State.init.loadData dataBase arrayBytes .ro).setPerm 0x7ffffff8 8 .rw).setReg .rsp 0x80000000
+  ((Asm.load State.init base code).setPerm 0x7ffffff8 8 .rw).setReg .rsp 0x80000000
 
-/-- A starting state: `prepared`, with the program's bytes in executable
-memory and `rip` at the entry. -/
+/-- A starting state: `prepared`, with `rip` at the entry. -/
 def start : State :=
-  { prepared.loadCode base image with rip := entry }
+  { prepared with rip := entry }
 
 -- Element 3 is 40.
 #guard exitsWith 40 (run fetch linux 100 start)
@@ -109,7 +109,5 @@ end Index
 /-- The program, with what running it takes. -/
 def Index.program : Runnable where
   name := "index"
-  entry := Index.entry.toNat
-  image := Index.image
-  segments := (Asm.segments Index.base Index.code).map fun (b, w, bs) => (b.toNat, w, bs)
+  elf := Asm.elf Index.base Index.code .start
   start := Index.start

@@ -88,7 +88,7 @@ executable memory, and the stack as Linux leaves it for a new program: the
 number of arguments at `[rsp]`, then the address of each one's text, each
 text readable and ended by a zero. Nothing is asked of what the arguments
 say. -/
-abbrev Entry : State → Prop := TypedAsm.EntryTexts entry base image dataBase dataBytes blocks 0
+abbrev Entry : State → Prop := TypedAsm.EntryTexts entry parts blocks 0
 
 /-! ## Safety -/
 

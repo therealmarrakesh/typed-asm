@@ -1,5 +1,6 @@
 import TypedAsm.Step
 import TypedAsm.Encode
+import TypedAsm.Lookup
 
 /-!
 # Programs with labels
@@ -9,10 +10,12 @@ instead of giving a byte offset, and so do instructions that reach data.
 Every length comes from the encoder, and the offsets are computed from the
 lengths of what lies in between.
 
-The instructions come first. After them come the program's data segments:
-each begins with a `segment` line, is loaded from the next page boundary on,
-readable and perhaps writable, and holds data lines. A label may stand
-anywhere, and names the address of whatever follows it.
+A program is made of segments. The lines before the first `segment` line are
+a segment of their own, readable and executable. Every `segment` line begins
+another, loaded from the next page boundary on with the permission it names.
+There may be any number, in any order. Instructions stand in executable
+segments; data may stand in any; a label may stand anywhere, and names the
+address of whatever follows it.
 -/
 
 namespace TypedAsm
@@ -21,7 +24,7 @@ namespace TypedAsm
 inductive Asm (L : Type)
   /-- An instruction. -/
   | ins (i : Instr)
-  /-- A label, naming the address of the next instruction. -/
+  /-- A label, naming the address of the next line. -/
   | label (l : L)
   | jmp (l : L)
   | jcc (c : Cond) (l : L)
@@ -31,9 +34,12 @@ inductive Asm (L : Type)
   `add dword ptr [record + 12], 1`. The distance is worked out from where the
   two end up. -/
   | ref (i : Instr) (l : L) (past : BitVec 64 := 0)
-  /-- The start of a data segment, readable and writable or readable only.
-  What follows is loaded from the next page boundary on. -/
-  | segment (writable : Bool)
+  /-- The start of a segment with the given permission: `.rx` for
+  instructions, `.ro` for data that is only read, `.rw` for data that is
+  written. What follows is loaded from the next page boundary on. -/
+  | segment (p : Perm)
+  /-- Zero bytes up to the next address that is a multiple of `n`. -/
+  | align (n : Nat)
   /-- Data, byte for byte as written. -/
   | bytes (bs : List Byte)
   /-- Eight bytes holding the address of a label. -/
@@ -45,8 +51,9 @@ namespace Asm
 
 variable {L : Type} [DecidableEq L]
 
-/-- The number of bytes a line occupies. A jump or call has the same length
-whatever its offset, so the length is taken from one with offset zero. -/
+/-- The number of bytes a line occupies, for a line whose size does not
+depend on where it is. A jump or call has the same length whatever its
+offset, so the length is taken from one with offset zero. -/
 def len : Asm L → Nat
   | .ins i => i.length
   | .label _ => 0
@@ -55,22 +62,35 @@ def len : Asm L → Nat
   | .call _ => (Instr.call (.rel 0)).length
   | .ref i _ _ => i.length
   | .segment _ => 0
+  | .align _ => 0
   | .bytes bs => bs.length
   | .quad _ => 8
   | .space n => n
 
 /-- The first page boundary at or after an address. -/
-def pageUp (a : BitVec 64) : BitVec 64 :=
-  BitVec.ofNat 64 ((a.toNat + 4095) / 4096 * 4096)
+def pageUp (a : Nat) : Nat :=
+  (a + 4095) / 4096 * 4096
 
-/-- Where the line after `x` starts, if `x` starts at `a`: past its bytes,
-or for the start of a segment, at the next page boundary. -/
-def next (a : BitVec 64) : Asm L → BitVec 64
+/-- The first multiple of `n` at or after an address. -/
+def alignUp (a n : Nat) : Nat :=
+  if n = 0 then a else (a + (n - 1)) / n * n
+
+/-- Where the line after `x` starts, if `x` starts at `a`: past its bytes;
+for the start of a segment, at the next page boundary; for an alignment, at
+the next multiple. Addresses are plain numbers while a program is laid out. -/
+def next (a : Nat) : Asm L → Nat
   | .segment _ => pageUp a
-  | x => a + BitVec.ofNat 64 x.len
+  | .align n => alignUp a n
+  | x => a + x.len
+
+/-- The permission of the segment the line after `x` is in, if `x` is in a
+segment with permission `p`. -/
+def perm (p : Perm) : Asm L → Perm
+  | .segment q => q
+  | _ => p
 
 /-- The address of a label, in a program whose first line is at address `a`. -/
-def find (l : L) : BitVec 64 → List (Asm L) → Option (BitVec 64)
+def find (l : L) : Nat → List (Asm L) → Option Nat
   | _, [] => none
   | a, x :: rest =>
     match x with
@@ -80,7 +100,7 @@ def find (l : L) : BitVec 64 → List (Asm L) → Option (BitVec 64)
 /-- The address of a label in a program loaded at `base`. A label that does
 not occur is given address 0. -/
 def addr (prog : List (Asm L)) (base : BitVec 64) (l : L) : BitVec 64 :=
-  (find l base prog).getD 0
+  BitVec.ofNat 64 ((find l base.toNat prog).getD 0)
 
 /-- The offset from `next` to `target`, truncated to 32 bits. `offsetsFit`
 checks that nothing was lost. -/
@@ -91,89 +111,114 @@ def offset (next target : BitVec 64) : BitVec 32 :=
 def reaches (next target : BitVec 64) : Bool :=
   next + (offset next target).signExtend 64 == target
 
-/-- The instructions of a program, with labels replaced by offsets. They are
-the lines up to the first data segment: nothing after that is an instruction
-the machine may be sent to. -/
-def resolve (target : L → BitVec 64) : BitVec 64 → List (Asm L) → List (Instr × BitVec 64)
-  | _, [] => []
-  | a, x :: rest =>
-    let next := a + BitVec.ofNat 64 x.len
-    match x with
-    | .ins i => (i, BitVec.ofNat 64 x.len) :: resolve target next rest
-    | .label _ => resolve target next rest
-    | .jmp l => (.jmp (.rel (offset next (target l))), BitVec.ofNat 64 x.len) :: resolve target next rest
-    | .jcc c l => (.jcc c (offset next (target l)), BitVec.ofNat 64 x.len) :: resolve target next rest
-    | .call l =>
-      (.call (.rel (offset next (target l))), BitVec.ofNat 64 x.len) :: resolve target next rest
-    | .ref i l past =>
-      (i.aim (offset next (target l + past)), BitVec.ofNat 64 x.len) :: resolve target next rest
-    | .segment _ | .bytes _ | .quad _ | .space _ => []
+/-- The instruction a line stands for, if it is one, with its label replaced
+by the offset from `nxt`, where the line after it starts. -/
+def instr (target : L → BitVec 64) (nxt : BitVec 64) : Asm L → Option Instr
+  | .ins i => some i
+  | .jmp l => some (.jmp (.rel (offset nxt (target l))))
+  | .jcc c l => some (.jcc c (offset nxt (target l)))
+  | .call l => some (.call (.rel (offset nxt (target l))))
+  | .ref i l past => some (i.aim (offset nxt (target l + past)))
+  | _ => none
+
+/-- The bytes a line starting at `a` comes to: an instruction's encoding,
+data as written, a label's address, or zeros. -/
+def lineBytes (target : L → BitVec 64) (a : Nat) (x : Asm L) : List Byte :=
+  match x with
+  | .bytes bs => bs
+  | .quad l => le64 (target l)
+  | .space n => List.replicate n 0
+  | .align n => List.replicate (alignUp a n - a) 0
+  | x =>
+    match instr target (BitVec.ofNat 64 (next a x)) x with
+    | some i => i.encode
+    | none => []
+
+/-- The instructions of the lines from address `a`, in a segment with
+permission `p`: each with its address and its length. Only what stands in an
+executable segment is an instruction the machine may be sent to. -/
+def tableFrom (target : L → BitVec 64) : Nat → Perm → List (Asm L) → List (Nat × Instr × BitVec 64)
+  | _, _, [] => []
+  | a, p, x :: rest =>
+    let more := tableFrom target (next a x) (perm p x) rest
+    match instr target (BitVec.ofNat 64 (next a x)) x with
+    | some i => if p = .rx then (a, i, BitVec.ofNat 64 i.length) :: more else more
+    | none => more
+
+/-- The instructions of a program loaded at `base`, each with its address
+and its length. -/
+def table (base : BitVec 64) (prog : List (Asm L)) : List (Nat × Instr × BitVec 64) :=
+  tableFrom (addr prog base) base.toNat .rx prog
+
+/-- The instruction table of a program loaded at `base`. -/
+def fetch (base : BitVec 64) (prog : List (Asm L)) : Fetch :=
+  fun a => Lookup.first (table base prog) a.toNat
+
+/-- What the lines from address `a` put in memory, line by line: where, with
+what permission, and which bytes. -/
+def partsFrom (target : L → BitVec 64) : Nat → Perm → List (Asm L) → List (Nat × Perm × List Byte)
+  | _, _, [] => []
+  | a, p, x :: rest => (a, p, lineBytes target a x) :: partsFrom target (next a x) (perm p x) rest
+
+/-- What a program loaded at `base` puts in memory, line by line: where,
+with what permission, and which bytes. This is all that a program's being
+loaded means, and it is stated for each line by itself: nothing is said
+about the gaps between segments. -/
+def parts (base : BitVec 64) (prog : List (Asm L)) : List (Nat × Perm × List Byte) :=
+  partsFrom (addr prog base) base.toNat .rx prog
 
 /-- Whether every jump, call and reference to data in the lines from address
 `a` reaches its target. -/
-def offsetsFitFrom (target : L → BitVec 64) : BitVec 64 → List (Asm L) → Bool
+def offsetsFitFrom (target : L → BitVec 64) : Nat → List (Asm L) → Bool
   | _, [] => true
   | a, x :: rest =>
     let nxt := next a x
     (match x with
-      | .jmp l | .jcc _ l | .call l => reaches nxt (target l)
-      | .ref _ l past => reaches nxt (target l + past)
+      | .jmp l | .jcc _ l | .call l => reaches (BitVec.ofNat 64 nxt) (target l)
+      | .ref _ l past => reaches (BitVec.ofNat 64 nxt) (target l + past)
       | _ => true) && offsetsFitFrom target nxt rest
 
 /-- Whether every jump, call and reference to data in a program loaded at
 `base` reaches its target: that is, whether each offset fits in 32 bits. A
 program can check this about itself with `#guard`. -/
 def offsetsFit (base : BitVec 64) (prog : List (Asm L)) : Bool :=
-  offsetsFitFrom (addr prog base) base prog
+  offsetsFitFrom (addr prog base) base.toNat prog
 
-/-- The instruction table of a program loaded at `base`. -/
-def fetch (base : BitVec 64) (prog : List (Asm L)) : Fetch :=
-  .layout base (resolve (addr prog base) base prog)
+/-- Whether the lines of a segment with permission `p`, and of those after
+it, are laid out as they must be. -/
+def wellFormedFrom : Perm → List (Asm L) → Bool
+  | _, [] => true
+  | p, x :: rest =>
+    (match x with
+      | .segment q => q != .none
+      | .align n => n != 0
+      | .ins _ | .jmp _ | .jcc _ _ | .call _ | .ref _ _ _ => p == .rx
+      | _ => true) && wellFormedFrom (perm p x) rest
 
-/-- Whether a line is one of the instructions' part of a program: an
-instruction, a jump, a call or a label. -/
-def isCode : Asm L → Bool
-  | .ins _ | .label _ | .jmp _ | .jcc _ _ | .call _ | .ref _ _ _ => true
-  | _ => false
-
-/-- Whether a line may stand in a data segment: data, or a label. -/
-def isData : Asm L → Bool
-  | .label _ | .bytes _ | .quad _ | .space _ | .segment _ => true
-  | _ => false
-
-/-- Whether a program is laid out as it must be: its instructions first, and
-from the first `segment` line on nothing but data, labels and further
-segments. A program can check this about itself with `#guard`. -/
+/-- Whether a program is laid out as it must be: every instruction stands in
+an executable segment, every segment can at least be read, and nothing is
+aligned to a multiple of zero. No segment is both writable and executable:
+there is no such permission. A program can check this about itself with
+`#guard`. -/
 def wellFormed (prog : List (Asm L)) : Bool :=
-  let data := prog.dropWhile isCode
-  (match data with
-    | [] => true
-    | x :: _ => match x with
-      | .segment _ => true
-      | _ => false) && data.all isData
+  wellFormedFrom .rx prog
 
-/-- The data segments of the lines from address `a`, when the lines so far
-belong to the segment `cur`, if any: where each segment is loaded, whether it
-is writable, and its bytes. -/
+/-- The segments of the lines from address `a`, when the lines so far belong
+to the segment `cur`: where each segment is loaded, its permission, and its
+bytes. -/
 def segmentsFrom (target : L → BitVec 64) :
-    BitVec 64 → Option (BitVec 64 × Bool × List Byte) → List (Asm L) →
-      List (BitVec 64 × Bool × List Byte)
-  | _, cur, [] => cur.toList
+    Nat → Nat × Perm × List Byte → List (Asm L) → List (Nat × Perm × List Byte)
+  | _, cur, [] => [cur]
   | a, cur, x :: rest =>
-    let nxt := next a x
     match x with
-    | .segment w => cur.toList ++ segmentsFrom target nxt (some (nxt, w, [])) rest
-    | x =>
-      let more : List Byte := match x with
-        | .bytes bs => bs
-        | .quad l => le64 (target l)
-        | .space n => List.replicate n 0
-        | _ => []
-      segmentsFrom target nxt (cur.map fun (b, w, bs) => (b, w, bs ++ more)) rest
+    | .segment q => cur :: segmentsFrom target (pageUp a) (pageUp a, q, []) rest
+    | x => segmentsFrom target (next a x) (cur.1, cur.2.1, cur.2.2 ++ lineBytes target a x) rest
 
-/-- The data segments of a program loaded at `base`. -/
-def segments (base : BitVec 64) (prog : List (Asm L)) : List (BitVec 64 × Bool × List Byte) :=
-  segmentsFrom (addr prog base) base none prog
+/-- The segments of a program loaded at `base`: where each is loaded, its
+permission, and its bytes. The first is the one the program begins in,
+readable and executable, which is there even if it is empty. -/
+def segments (base : BitVec 64) (prog : List (Asm L)) : List (Nat × Perm × List Byte) :=
+  segmentsFrom (addr prog base) base.toNat (base.toNat, .rx, []) prog
 
 end Asm
 

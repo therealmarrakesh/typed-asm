@@ -6,7 +6,8 @@ import TypedAsm.Image
 # The entry contract
 
 What a program needs of the state it starts in, stated once for every
-program of the usual shape: code, some memory blocks, and a stack. It is the
+program of the usual shape: the program itself, some memory blocks, and a
+stack. It is the
 contract with whatever loads the program; for an ELF file, with the kernel.
 
 Nothing is assumed about the registers other than `rsp`, and nothing about
@@ -61,10 +62,39 @@ theorem State.HasData.load64 {s : State} {a : BitVec 64} {bytes : List Byte}
   simp only [State.load64, State.load32, State.load16, State.load8, word64, h0, h1, h2, h3, h4,
     h5, h6, h7, Nat.add_zero]
 
+/-- A run of bytes that is in memory, a line of the program at a time, is in
+memory. -/
+theorem State.Holds.hasData {s : State} {g : Nat × Perm × List Byte} (h : s.Holds g) :
+    s.HasData (BitVec.ofNat 64 g.1) g.2.2 :=
+  fun k hk => (h k hk).1
+
+/-- The byte a program puts at an address, if it puts one there. -/
+def partsByte (parts : List (Nat × Perm × List Byte)) (x : Nat) : Option Byte :=
+  parts.findSome? fun g => if g.1 ≤ x then g.2.2[x - g.1]? else none
+
+/-- Whether a program puts these bytes at an address, as found by looking
+each one up. -/
+def partsHave (parts : List (Nat × Perm × List Byte)) (a : BitVec 64) (bytes : List Byte) : Bool :=
+  (List.range bytes.length).all fun k =>
+    partsByte parts (a + BitVec.ofNat 64 k).toNat == some (bytes.getD k 0)
+
+theorem State.mem_of_partsByte {s : State} {parts : List (Nat × Perm × List Byte)}
+    (h : ∀ g ∈ parts, s.Holds g) {x : BitVec 64} {b : Byte}
+    (hb : partsByte parts x.toNat = some b) : s.mem x = b := by
+  obtain ⟨g, hg, hx⟩ := List.exists_of_findSome?_eq_some hb
+  split at hx
+  · next hle =>
+    obtain ⟨hk, hv⟩ := List.getElem?_eq_some_iff.mp hx
+    have := (h g hg _ hk).1
+    rw [hv] at this
+    rw [← this]
+    congr 1
+    bv_omega
+  · cases hx
+
 /-- What a program needs of its starting state `s`: execution starts at
-`entry`, the program's bytes are in executable memory at `base`, its data
-is in memory at `dataBase`, each memory block has its permissions, and the
-stack is there: `room` writable slots below `rsp` and `above` at and above
+`entry`, every line of the program is in memory, executable where it is to
+be executed, each memory block has its permissions, and the stack is there: `room` writable slots below `rsp` and `above` at and above
 it, overlapping no block.
 
 The slots at and above `rsp` are where the program's arguments are. Linux
@@ -72,12 +102,11 @@ starts a program with the number of arguments at `[rsp]`, the address of
 each argument's text in the slots after it, then a zero, then the
 environment's addresses and a zero, then at least two more words: so there
 are always at least five slots, whatever the program was given. -/
-structure Entry (entry base : BitVec 64) (image : List Byte) (dataBase : BitVec 64)
-    (data : List Byte) (blocks : List (BitVec 64 × Layout)) (room above : Nat) (s : State) :
-    Prop where
+structure Entry (entry : BitVec 64) (parts : List (Nat × Perm × List Byte))
+    (blocks : List (BitVec 64 × Layout)) (room above : Nat) (s : State) : Prop where
   rip : s.rip = entry
-  code : s.HasCode base image
-  data : s.HasData dataBase data
+  /-- What the program puts in memory is there: `Asm.parts` of the program. -/
+  loaded : ∀ g ∈ parts, s.Holds g
   perms : ∀ x ∈ blocks,
     s.canRead x.1 x.2.size = true ∧ (x.2.writable = true → s.canWrite x.1 x.2.size = true)
   stack : s.canWrite (s.getReg .rsp - BitVec.ofNat 64 (8 * room)) (8 * (room + above)) = true
@@ -101,15 +130,28 @@ of arguments; the ones after it are addresses of their text. -/
 def entryCtxArgs (room above : Nat) : Ctx :=
   entryCtx room [.raw (8 * above)]
 
-variable {entry base dataBase : BitVec 64} {image data : List Byte}
+variable {entry : BitVec 64} {parts : List (Nat × Perm × List Byte)}
   {blocks : List (BitVec 64 × Layout)} {room above : Nat}
+
+/-- Bytes the program puts at an address are in memory there: any stretch of
+its data, wherever it begins. That it does put them there is settled by
+computing. -/
+theorem Entry.hasData {s : State} {a : BitVec 64} {bytes : List Byte}
+    (h : Entry entry parts blocks room above s) (hc : partsHave parts a bytes = true) :
+    s.HasData a bytes := by
+  intro k hk
+  have := List.all_eq_true.mp hc k (List.mem_range.mpr hk)
+  simp only [beq_iff_eq] at this
+  rw [State.mem_of_partsByte h.loaded this, List.getD_eq_getElem?_getD,
+    List.getElem?_eq_getElem hk]
+  rfl
 
 /-- A state meeting the entry contract matches the entry context with any
 pieces at and above `rsp` that come to the bytes that are there and whose
 typed values are of their types, provided each typed value of each block is
 of its type to begin with. -/
 theorem Entry.matchesStack {H : Ty → BitVec 64 → Prop} {s : State} {σ : List Shape}
-    (h : Entry entry base image dataBase data blocks room above s) (hint : ∀ v, H .int v)
+    (h : Entry entry parts blocks room above s) (hint : ∀ v, H .int v)
     (hfields : ∀ x ∈ blocks, ∀ p ∈ x.2.shape.vals,
       H p.2 (s.load64 (x.1 + BitVec.ofNat 64 p.1)))
     (hσ : stackLen σ = 8 * above)
@@ -143,7 +185,7 @@ theorem Entry.matchesStack {H : Ty → BitVec 64 → Prop} {s : State} {σ : Lis
 each typed value of each block is of its type to begin with: a fact about the
 program's data. -/
 theorem Entry.matches {H : Ty → BitVec 64 → Prop} {s : State}
-    (h : Entry entry base image dataBase data blocks room 0 s) (hint : ∀ v, H .int v)
+    (h : Entry entry parts blocks room 0 s) (hint : ∀ v, H .int v)
     (hfields : ∀ x ∈ blocks, ∀ p ∈ x.2.shape.vals,
       H p.2 (s.load64 (x.1 + BitVec.ofNat 64 p.1))) :
     Matches H (MemTy.ofList blocks kinds) (entryCtx room) s :=
@@ -152,7 +194,7 @@ theorem Entry.matches {H : Ty → BitVec 64 → Prop} {s : State}
 /-- The same when the blocks are all plain bytes, which needs nothing of the
 data. -/
 theorem Entry.matchesInt {H : Ty → BitVec 64 → Prop} {s : State}
-    (h : Entry entry base image dataBase data blocks room 0 s) (hint : ∀ v, H .int v)
+    (h : Entry entry parts blocks room 0 s) (hint : ∀ v, H .int v)
     (hfields : ∀ x ∈ blocks, x.2.shape.vals = []) :
     Matches H (MemTy.ofList blocks kinds) (entryCtx room) s :=
   h.matches hint (fun x hx p hp => by
@@ -162,7 +204,7 @@ theorem Entry.matchesInt {H : Ty → BitVec 64 → Prop} {s : State}
 /-- For a program that looks at its arguments: the state matches the context
 with `above` slots holding numbers, when the blocks are all plain bytes. -/
 theorem Entry.matchesArgs {H : Ty → BitVec 64 → Prop} {s : State}
-    (h : Entry entry base image dataBase data blocks room above s) (hint : ∀ v, H .int v)
+    (h : Entry entry parts blocks room above s) (hint : ∀ v, H .int v)
     (hfields : ∀ x ∈ blocks, x.2.shape.vals = []) :
     Matches H (MemTy.ofList blocks kinds) (entryCtxArgs room above) s :=
   h.matchesStack hint (fun x hx p hp => by
@@ -184,63 +226,23 @@ theorem Entry.matchesArgs {H : Ty → BitVec 64 → Prop} {s : State}
 /-- The entry contract says nothing about the outside world: it holds
 whatever there is to read. -/
 theorem Entry.withWorld {s : State}
-    (h : Entry entry base image dataBase data blocks room above s) (w : World) :
-    Entry entry base image dataBase data blocks room above { s with world := w } :=
-  ⟨h.rip, h.code, h.data, h.perms, h.stack, h.apart, h.room_lt, h.text⟩
+    (h : Entry entry parts blocks room above s) (w : World) :
+    Entry entry parts blocks room above { s with world := w } :=
+  ⟨h.rip, h.loaded, h.perms, h.stack, h.apart, h.room_lt, h.text⟩
 
-/-- A state built by loading the program into a prepared state meets the
-entry contract, if the prepared state has the data, the blocks and the stack,
-and all lie above the code. -/
-theorem Entry.ofLoad {p : State} (hlen : image.length ≤ 2 ^ 64)
-    (hroom : 8 * (room + above) < 2 ^ 64)
-    (hdata : p.HasData dataBase data)
-    (hfarData : base.toNat + image.length ≤ dataBase.toNat ∧
-      dataBase.toNat + data.length ≤ 2 ^ 64)
+/-- A state with the program loaded, its blocks and its stack, and `rip` set
+to the entry, meets the entry contract. -/
+theorem Entry.ofLoad {p : State} (hroom : 8 * (room + above) < 2 ^ 64)
+    (hloaded : ∀ g ∈ parts, p.Holds g)
     (hblocks : ∀ x ∈ blocks,
       p.canRead x.1 x.2.size = true ∧ (x.2.writable = true → p.canWrite x.1 x.2.size = true))
     (hstack : p.canWrite (p.getReg .rsp - BitVec.ofNat 64 (8 * room)) (8 * (room + above)) = true)
     (hapart : ∀ x ∈ blocks,
       Disjoint (p.getReg .rsp - BitVec.ofNat 64 (8 * room)) (8 * (room + above)) x.1 x.2.size)
-    (hfarBlocks : ∀ x ∈ blocks,
-      base.toNat + image.length ≤ x.1.toNat ∧ x.1.toNat + x.2.size ≤ 2 ^ 64)
-    (hfarStack : base.toNat + image.length + 8 * room ≤ (p.getReg .rsp).toNat ∧
-      (p.getReg .rsp).toNat + 8 * above ≤ 2 ^ 64)
     (htext : ∀ x ∈ blocks, x.2.text ≠ 0 → p.mem (x.1 + BitVec.ofNat 64 (x.2.size - 1)) = 0 := by
       decide) :
-    Entry entry base image dataBase data blocks room above
-      { p.loadCode base image with rip := entry } := by
-  have hp : ({ p.loadCode base image with rip := entry } : State).perm
-      = (p.loadCode base image).perm := rfl
-  have hsp : ({ p.loadCode base image with rip := entry } : State).getReg .rsp = p.getReg .rsp :=
-    rfl
-  refine ⟨rfl, (State.hasCode_loadCode p base image hlen).congr rfl rfl, ?_, ?_, ?_, ?_, hroom,
-    ?_⟩
-  · intro k hk
-    show (p.loadCode base image).mem _ = _
-    rw [State.mem_loadCode p base _ image hlen, List.getElem?_eq_none (by bv_omega)]
-    exact hdata k hk
-  · intro x hx
-    obtain ⟨hr, hw⟩ := hblocks x hx
-    obtain ⟨hf₁, hf₂⟩ := hfarBlocks x hx
-    have hfar : ∀ k, k < x.2.size → image.length ≤ (x.1 + BitVec.ofNat 64 k - base).toNat := by
-      intro k hk; bv_omega
-    rw [State.canRead_congr hp, State.canRead_loadCode hfar, State.canWrite_congr hp,
-      State.canWrite_loadCode hfar]
-    exact ⟨hr, hw⟩
-  · have hfar : ∀ k, k < 8 * (room + above) → image.length
-        ≤ (p.getReg .rsp - BitVec.ofNat 64 (8 * room) + BitVec.ofNat 64 k - base).toNat := by
-      intro k hk; bv_omega
-    rw [hsp, State.canWrite_congr hp, State.canWrite_loadCode hfar]
-    exact hstack
-  · intro x hx
-    rw [hsp]
-    exact hapart x hx
-  · intro x hx ht
-    obtain ⟨hf₁, hf₂⟩ := hfarBlocks x hx
-    have hpos : 0 < x.2.size := by simp only [Layout.size]; omega
-    show (p.loadCode base image).mem _ = _
-    rw [State.mem_loadCode p base _ image hlen, List.getElem?_eq_none (by bv_omega)]
-    exact htext x hx ht
+    Entry entry parts blocks room above { p with rip := entry } :=
+  ⟨rfl, fun g hg => (hloaded g hg).congr rfl rfl, hblocks, hstack, hapart, hroom, htext⟩
 
 /-! ## A starting state with arguments
 
@@ -383,46 +385,46 @@ theorem State.HasData.withArgs {s : State} {a : BitVec 64} {bytes : List Byte}
     omega)]
   exact h k hk
 
-/-- A program loaded into a state given a stack with arguments meets the
+/-- A state with the program loaded, given a stack with arguments, meets the
 entry contract with any number of slots at and above the stack pointer that
-the model's stack has room for, whatever the arguments are, if its code,
-data and blocks lie below the stack. -/
+the model's stack has room for, whatever the arguments are, if the program
+and its blocks lie below the stack. -/
 theorem Entry.ofLoadSlots {p : State} (args : List (List Byte)) (hroom : 8 * room ≤ 0x10000)
-    (habove : 8 * above ≤ 0x10000) (hlen : image.length ≤ 2 ^ 64)
-    (hdata : p.HasData dataBase data)
-    (hfarData : base.toNat + image.length ≤ dataBase.toNat ∧
-      dataBase.toNat + data.length ≤ 0x7ffe0000)
+    (habove : 8 * above ≤ 0x10000)
+    (hloaded : ∀ g ∈ parts, p.Holds g)
+    (hfar : ∀ g ∈ parts, g.1 + g.2.2.length ≤ 0x7ffe0000)
     (hblocks : ∀ x ∈ blocks,
       p.canRead x.1 x.2.size = true ∧ (x.2.writable = true → p.canWrite x.1 x.2.size = true))
-    (hfarBlocks : ∀ x ∈ blocks,
-      base.toNat + image.length ≤ x.1.toNat ∧ x.1.toNat + x.2.size ≤ 0x7ffe0000)
-    (hcode : base.toNat + image.length ≤ 0x7ffe0000)
+    (hfarBlocks : ∀ x ∈ blocks, x.1.toNat + x.2.size ≤ 0x7ffe0000)
     (htext : ∀ x ∈ blocks, x.2.text ≠ 0 → p.mem (x.1 + BitVec.ofNat 64 (x.2.size - 1)) = 0 := by
       decide) :
-    Entry entry base image dataBase data blocks room above
-      { (p.withArgs room args).loadCode base image with rip := entry } := by
+    Entry entry parts blocks room above { p.withArgs room args with rip := entry } := by
   have hbase : argBase.toNat = 0x7fff0000 := rfl
-  have hsp := State.getReg_withArgs p room args
+  have hsp : ({ p.withArgs room args with rip := entry } : State).getReg .rsp = argBase :=
+    State.getReg_withArgs p room args
   -- below the stack, permissions are what they were
-  have hperm : ∀ x : BitVec 64, x.toNat < 0x7ffe0000 → (p.withArgs room args).perm x = p.perm x := by
+  have hperm : ∀ x : BitVec 64, x.toNat < 0x7ffe0000 →
+      ({ p.withArgs room args with rip := entry } : State).perm x = p.perm x := by
     intro x hx
+    show (p.withArgs room args).perm x = p.perm x
     rw [State.perm_withArgs]
     split
     · next hin => exact absurd hin (by bv_omega)
     · rfl
-  refine Entry.ofLoad hlen (by omega) (hdata.withArgs room args hfarData.2) ⟨hfarData.1, by omega⟩
-    ?_ ?_ ?_ (fun x hx => ⟨(hfarBlocks x hx).1, by have := (hfarBlocks x hx).2; omega⟩)
-    ⟨by rw [hsp, hbase]; omega, by rw [hsp, hbase]; omega⟩
-    (fun x hx ht => by
-      have hf := (hfarBlocks x hx).2
-      have hpos : 0 < x.2.size := by simp only [Layout.size]; omega
-      rw [State.mem_withArgs_below p room args (by
-        rw [BitVec.toNat_add, BitVec.toNat_ofNat]
-        omega)]
-      exact htext x hx ht)
+  have hmem : ∀ x : BitVec 64, x.toNat < 0x7ffe0000 →
+      ({ p.withArgs room args with rip := entry } : State).mem x = p.mem x :=
+    fun x hx => State.mem_withArgs_below p room args (by omega)
+  refine ⟨rfl, ?_, ?_, ?_, ?_, by omega, ?_⟩
+  · intro g hg k hk
+    have hf := hfar g hg
+    have hx : (BitVec.ofNat 64 g.1 + BitVec.ofNat 64 k).toNat < 0x7ffe0000 := by
+      rw [BitVec.toNat_add, BitVec.toNat_ofNat, BitVec.toNat_ofNat]
+      omega
+    rw [hmem _ hx, hperm _ hx]
+    exact hloaded g hg k hk
   · intro x hx
     obtain ⟨hr, hw⟩ := hblocks x hx
-    have hf := (hfarBlocks x hx).2
+    have hf := hfarBlocks x hx
     have hin : ∀ i, i < x.2.size → (x.1 + BitVec.ofNat 64 i).toNat < 0x7ffe0000 := by
       intro i hi
       rw [BitVec.toNat_add, BitVec.toNat_ofNat]
@@ -439,32 +441,36 @@ theorem Entry.ofLoadSlots {p : State} (args : List (List Byte)) (hroom : 8 * roo
       exact hw' i hi
   · rw [hsp, State.canWrite_iff]
     intro i hi
+    show ((p.withArgs room args).perm _).writable = true
     rw [State.perm_withArgs]
     split
     · rfl
     · next hout => exact absurd (show _ < _ by bv_omega) hout
   · intro x hx
-    have hf := (hfarBlocks x hx).2
+    have hf := hfarBlocks x hx
     rw [hsp]
     refine ⟨fun _ => ?_, fun _ => ?_⟩ <;> bv_omega
+  · intro x hx ht
+    have hf := hfarBlocks x hx
+    have hpos : 0 < x.2.size := by simp only [Layout.size]; omega
+    rw [hmem _ (by
+      rw [BitVec.toNat_add, BitVec.toNat_ofNat]
+      omega)]
+    exact htext x hx ht
 
 /-- The same for a program that looks at a fixed few of its arguments: up to
 five slots, which are there whatever the program was given. -/
 theorem Entry.ofLoadArgs {p : State} (args : List (List Byte)) (hroom : 8 * room ≤ 0x10000)
-    (habove : above ≤ 5) (hlen : image.length ≤ 2 ^ 64)
-    (hdata : p.HasData dataBase data)
-    (hfarData : base.toNat + image.length ≤ dataBase.toNat ∧
-      dataBase.toNat + data.length ≤ 0x7ffe0000)
+    (habove : above ≤ 5)
+    (hloaded : ∀ g ∈ parts, p.Holds g)
+    (hfar : ∀ g ∈ parts, g.1 + g.2.2.length ≤ 0x7ffe0000)
     (hblocks : ∀ x ∈ blocks,
       p.canRead x.1 x.2.size = true ∧ (x.2.writable = true → p.canWrite x.1 x.2.size = true))
-    (hfarBlocks : ∀ x ∈ blocks,
-      base.toNat + image.length ≤ x.1.toNat ∧ x.1.toNat + x.2.size ≤ 0x7ffe0000)
-    (hcode : base.toNat + image.length ≤ 0x7ffe0000)
+    (hfarBlocks : ∀ x ∈ blocks, x.1.toNat + x.2.size ≤ 0x7ffe0000)
     (htext : ∀ x ∈ blocks, x.2.text ≠ 0 → p.mem (x.1 + BitVec.ofNat 64 (x.2.size - 1)) = 0 := by
       decide) :
-    Entry entry base image dataBase data blocks room above
-      { (p.withArgs room args).loadCode base image with rip := entry } :=
-  Entry.ofLoadSlots args hroom (by omega) hlen hdata hfarData hblocks hfarBlocks hcode htext
+    Entry entry parts blocks room above { p.withArgs room args with rip := entry } :=
+  Entry.ofLoadSlots args hroom (by omega) hloaded hfar hblocks hfarBlocks htext
 
 /-! ## A program that goes through its arguments
 
@@ -483,15 +489,15 @@ def argsCtx (room : Nat) (c : BitVec 64) : Ctx :=
 /-- What a program that goes through its arguments needs of its starting
 state: the entry contract with as many slots as Linux provides for the
 number of arguments found at `[rsp]`. -/
-def EntryArgs (entry base : BitVec 64) (image : List Byte) (dataBase : BitVec 64)
-    (data : List Byte) (blocks : List (BitVec 64 × Layout)) (room : Nat) (s : State) : Prop :=
-  ∃ c : BitVec 64, Entry entry base image dataBase data blocks room (c.toNat + 5) s ∧
+def EntryArgs (entry : BitVec 64) (parts : List (Nat × Perm × List Byte))
+    (blocks : List (BitVec 64 × Layout)) (room : Nat) (s : State) : Prop :=
+  ∃ c : BitVec 64, Entry entry parts blocks room (c.toNat + 5) s ∧
     s.load64 (s.getReg .rsp) = c
 
 /-- A state meeting the contract matches the context for the number of
 arguments it holds, when the blocks are all plain bytes. -/
 theorem Entry.matchesCount {H : Ty → BitVec 64 → Prop} {s : State} {c : BitVec 64}
-    (h : Entry entry base image dataBase data blocks room (c.toNat + 5) s)
+    (h : Entry entry parts blocks room (c.toNat + 5) s)
     (hc : s.load64 (s.getReg .rsp) = c) (hint : ∀ v, H .int v) (heq : ∀ v, H (.eq v) v)
     (hfields : ∀ x ∈ blocks, x.2.shape.vals = []) :
     Matches H (MemTy.ofList blocks kinds) (argsCtx room c) s :=
@@ -522,46 +528,34 @@ theorem Entry.matchesCount {H : Ty → BitVec 64 → Prop} {s : State} {c : BitV
         cases hp
       | k + 2, hk => simp at hk)
 
-theorem EntryArgs.withWorld {s : State} (h : EntryArgs entry base image dataBase data blocks room s)
-    (w : World) : EntryArgs entry base image dataBase data blocks room { s with world := w } :=
+theorem EntryArgs.withWorld {s : State} (h : EntryArgs entry parts blocks room s)
+    (w : World) : EntryArgs entry parts blocks room { s with world := w } :=
   let ⟨c, hE, hc⟩ := h
   ⟨c, hE.withWorld w, hc⟩
 
-/-- A program loaded into a state given a stack with arguments meets the
+/-- A state with the program loaded, given a stack with arguments, meets the
 contract of a program that goes through them, whatever they are. -/
 theorem EntryArgs.ofLoad {p : State} (args : List (List Byte)) (hroom : 8 * room ≤ 0x10000)
-    (hlen : image.length ≤ 2 ^ 64) (hdata : p.HasData dataBase data)
-    (hfarData : base.toNat + image.length ≤ dataBase.toNat ∧
-      dataBase.toNat + data.length ≤ 0x7ffe0000)
+    (hloaded : ∀ g ∈ parts, p.Holds g)
+    (hfar : ∀ g ∈ parts, g.1 + g.2.2.length ≤ 0x7ffe0000)
     (hblocks : ∀ x ∈ blocks,
       p.canRead x.1 x.2.size = true ∧ (x.2.writable = true → p.canWrite x.1 x.2.size = true))
-    (hfarBlocks : ∀ x ∈ blocks,
-      base.toNat + image.length ≤ x.1.toNat ∧ x.1.toNat + x.2.size ≤ 0x7ffe0000)
-    (hcode : base.toNat + image.length ≤ 0x7ffe0000)
+    (hfarBlocks : ∀ x ∈ blocks, x.1.toNat + x.2.size ≤ 0x7ffe0000)
     (htext : ∀ x ∈ blocks, x.2.text ≠ 0 → p.mem (x.1 + BitVec.ofNat 64 (x.2.size - 1)) = 0 := by
       decide) :
-    EntryArgs entry base image dataBase data blocks room
-      { (p.withArgs room args).loadCode base image with rip := entry } := by
-  have hbase : argBase.toNat = 0x7fff0000 := rfl
+    EntryArgs entry parts blocks room { p.withArgs room args with rip := entry } := by
   have hcnt := argCount_toNat args
   refine ⟨argCount args,
-    Entry.ofLoadSlots args hroom (by omega) hlen hdata hfarData hblocks hfarBlocks hcode htext,
-    ?_⟩
-  -- the count is the first word of what was put on the stack, and loading
-  -- the code, far below, does not change it
-  have hd : ({ (p.withArgs room args).loadCode base image with rip := entry } : State).HasData
-      argBase (argBytes args) := by
-    intro k hk
-    have hlen' := argBytes_length_le args
-    show ((p.withArgs room args).loadCode base image).mem _ = _
-    rw [State.mem_loadCode _ _ _ _ hlen, List.getElem?_eq_none (by bv_omega)]
-    exact State.hasData_withArgs p room args k hk
+    Entry.ofLoadSlots args hroom (by omega) hloaded hfar hblocks hfarBlocks htext, ?_⟩
+  -- the count is the first word of what was put on the stack
+  have hd : ({ p.withArgs room args with rip := entry } : State).HasData argBase (argBytes args) :=
+    (State.hasData_withArgs p room args).congr rfl
   have hl := hd.load64 (i := 0) (by
     show 0 + 8 ≤ (argBlock (argsGiven args)).length
     simp only [argBlock, List.length_append, le64_length]
     omega)
-  have hsp : ({ (p.withArgs room args).loadCode base image with rip := entry } : State).getReg .rsp
-      = argBase := State.getReg_withArgs p room args
+  have hsp : ({ p.withArgs room args with rip := entry } : State).getReg .rsp = argBase :=
+    State.getReg_withArgs p room args
   rw [hsp, show argBase = argBase + BitVec.ofNat 64 0 by simp, hl]
   exact word64_le64 _ _
 

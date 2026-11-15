@@ -155,7 +155,7 @@ def code : List (Asm Label) := [
   .ins (.shift .rol .w32 (.reg .rax) .cl),
   .ins (.alu .add .w64 (.rm_i (.reg .rsp) 16)),
   .ins .ret,
-  .segment true,
+  .segment .rw,
   .label .record, .bytes recordBytes]
 
 /-- Where the code is loaded. -/
@@ -166,25 +166,25 @@ def dataBase : BitVec 64 := Asm.addr code base .record
 
 def fetch : Fetch := Asm.fetch base code
 
-/-- The program's bytes. -/
-def image : List Byte := Asm.image base code
+/-- What the program puts in memory, line by line. -/
+def parts : List (Nat × Perm × List Byte) := Asm.parts base code
 
 /-- The address execution starts at. -/
 def entry : BitVec 64 := Asm.addr code base .start
 
--- The instructions come first and the data after, and every jump, call and
+-- Every instruction stands in an executable segment, and every jump, call and
 -- reference to data or code reaches the label it names.
 #guard Asm.wellFormed code && Asm.offsetsFit base code
 
-/-- Everything in the starting state except the program itself: the record
+/-- The starting state but for `rip`: the program in memory, and with it
+the record
 in writable memory, and four free stack slots below `rsp`. -/
 def prepared : State :=
-  ((State.init.loadData dataBase recordBytes .rw).setPerm 0x7fffffe0 32 .rw).setReg .rsp 0x80000000
+  ((Asm.load State.init base code).setPerm 0x7fffffe0 32 .rw).setReg .rsp 0x80000000
 
-/-- A starting state: `prepared`, with the program's bytes in executable
-memory and `rip` at the entry. -/
+/-- A starting state: `prepared`, with `rip` at the entry. -/
 def start : State :=
-  { prepared.loadCode base image with rip := entry }
+  { prepared with rip := entry }
 
 /-! ## Running it -/
 
@@ -198,7 +198,5 @@ end Ops
 /-- The program, with what running it takes. -/
 def Ops.program : Runnable where
   name := "ops"
-  entry := Ops.entry.toNat
-  image := Ops.image
-  segments := (Asm.segments Ops.base Ops.code).map fun (b, w, bs) => (b.toNat, w, bs)
+  elf := Asm.elf Ops.base Ops.code .start
   start := Ops.start

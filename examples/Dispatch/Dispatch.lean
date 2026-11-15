@@ -88,7 +88,7 @@ theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 
 /-- What the program needs of the state it starts in: its bytes in
 executable memory, the table in readable memory, and one writable stack slot. -/
-abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase tableBytes blocks 1 0
+abbrev Entry : State → Prop := TypedAsm.Entry entry parts blocks 1 0
 
 /-- The data has the types the blocks claim. The table's entries are
 function pointers because the data holds the addresses of two functions,
@@ -100,12 +100,13 @@ theorem Entry.valuesOk {s : State} (h : Entry s) (n : Nat) :
   simp only [blocks, List.mem_cons, List.not_mem_nil, or_false] at hx
   subst hx
   simp only [tableLayout, List.mem_cons, List.not_mem_nil, or_false] at hp
+  have hd : s.HasData dataBase tableBytes := h.hasData (by decide +kernel)
   rcases hp with rfl | rfl
   · have e : word64 tableBytes 0 = Asm.addr code base .double := by decide +kernel
-    rw [h.data.load64 (i := 0) (by decide), e]
+    rw [hd.load64 (i := 0) (by decide), e]
     exact blocksOk.hasTy_fn (FnSig.at_label At.double) n
   · have e : word64 tableBytes 8 = Asm.addr code base .square := by decide +kernel
-    rw [h.data.load64 (i := 8) (by decide), e]
+    rw [hd.load64 (i := 8) (by decide), e]
     exact blocksOk.hasTy_fn (FnSig.at_label At.square) n
 
 /-! ## Safety -/

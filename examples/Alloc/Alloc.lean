@@ -79,7 +79,7 @@ theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 /-- What the program needs of the state it starts in: its bytes in
 executable memory. Nothing is asked of the input, or of how requests for
 memory are answered. -/
-abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase [] blocks 0 0
+abbrev Entry : State → Prop := TypedAsm.Entry entry parts blocks 0 0
 
 /-! ## Safety -/
 

@@ -102,7 +102,7 @@ theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
 /-- What the program needs of the state it starts in: its bytes in
 executable memory and two writable stack slots below `rsp`. Nothing is asked
 of how its requests for memory are answered. -/
-abbrev Entry : State → Prop := TypedAsm.Entry entry base image dataBase [] blocks 2 0
+abbrev Entry : State → Prop := TypedAsm.Entry entry parts blocks 2 0
 
 /-! ## Safety -/
 

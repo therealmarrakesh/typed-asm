@@ -120,15 +120,12 @@ def code : List (Asm Label) := [
   .ins .syscall]
 
 /-- Where the code is loaded. -/
-def base : BitVec 64 := BitVec.ofNat 64 Elf.codeBase
-
-/-- The program has no data; this is where its empty data segment goes. -/
-def dataBase : BitVec 64 := BitVec.ofNat 64 Elf.dataBase
+def base : BitVec 64 := Asm.base code
 
 def fetch : Fetch := Asm.fetch base code
 
-/-- The program's bytes. -/
-def image : List Byte := Asm.image base code
+/-- What the program puts in memory, line by line. -/
+def parts : List (Nat × Perm × List Byte) := Asm.parts base code
 
 /-- The address execution starts at. -/
 def entry : BitVec 64 := Asm.addr code base .start
@@ -136,16 +133,15 @@ def entry : BitVec 64 := Asm.addr code base .start
 -- Every jump reaches the label it names.
 #guard Asm.offsetsFit base code
 
-/-- Everything in the starting state except the program itself: nothing.
-The program uses no stack. -/
+/-- The starting state but for `rip`: the program in memory. The program
+uses no stack. -/
 def prepared : State :=
-  (State.init.loadData dataBase [] .ro).setReg .rsp 0x80000000
+  (Asm.load State.init base code).setReg .rsp 0x80000000
 
-/-- A starting state: `prepared`, with the program's bytes in executable
-memory and `rip` at the entry. Nothing is waiting to be read, and every
-request for memory is refused. -/
+/-- A starting state: `prepared`, with `rip` at the entry. Nothing is
+waiting to be read, and every request for memory is refused. -/
 def start : State :=
-  { prepared.loadCode base image with rip := entry }
+  { prepared with rip := entry }
 
 /-- A page for each request for memory, one after another. -/
 def pages : Nat → Option (BitVec 64) :=
@@ -187,7 +183,6 @@ end Alloc
 /-- The program, with what running it takes. -/
 def Alloc.program : Runnable where
   name := "alloc"
-  entry := Alloc.entry.toNat
-  image := Alloc.image
+  elf := Asm.elf Alloc.base Alloc.code .start
   start := Alloc.start
   readsInput := true

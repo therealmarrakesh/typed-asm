@@ -96,7 +96,7 @@ def code : List (Asm Label) := [
   .ins (.alu .xor .w32 (.rm_r (.reg .rdi) .rdi)),
   .ins (.mov .w32 (.rm_i (.reg .rax) 231)),
   .ins .syscall,
-  .segment false,
+  .segment .ro,
   .label .newline, .bytes dataBytes]
 
 /-- Where the code is loaded. -/
@@ -107,26 +107,26 @@ def dataBase : BitVec 64 := Asm.addr code base .newline
 
 def fetch : Fetch := Asm.fetch base code
 
-/-- The program's bytes. -/
-def image : List Byte := Asm.image base code
+/-- What the program puts in memory, line by line. -/
+def parts : List (Nat × Perm × List Byte) := Asm.parts base code
 
 /-- The address execution starts at. -/
 def entry : BitVec 64 := Asm.addr code base .start
 
--- The instructions come first and the data after, and every jump, call and
+-- Every instruction stands in an executable segment, and every jump, call and
 -- reference to data reaches the label it names.
 #guard Asm.wellFormed code && Asm.offsetsFit base code
 
-/-- Everything in a starting state except the stack and the program itself:
-the data. -/
+/-- A starting state but for the stack and `rip`: the program in memory, and
+with it the data. -/
 def prepared : State :=
-  State.init.loadData dataBase dataBytes .ro
+  Asm.load State.init base code
 
-/-- A starting state: the data, a stack holding the given arguments, the
-program's bytes in executable memory, and `rip` at the entry. The first
+/-- A starting state: `prepared`, given a stack that holds the arguments,
+with `rip` at the entry. The first
 argument is by custom the program's own name. -/
 def startArgs (args : List (List Byte)) : State :=
-  { (prepared.withArgs 0 args).loadCode base image with rip := entry }
+  { prepared.withArgs 0 args with rip := entry }
 
 /-- That state for arguments given as strings. -/
 def startWith (args : List String) : State :=
@@ -147,8 +147,6 @@ end Args
 /-- The program, with what running it takes. -/
 def Args.program : Runnable where
   name := "args"
-  entry := Args.entry.toNat
-  image := Args.image
-  segments := (Asm.segments Args.base Args.code).map fun (b, w, bs) => (b.toNat, w, bs)
+  elf := Asm.elf Args.base Args.code .start
   start := Args.startArgs []
   startArgs := some Args.startArgs
