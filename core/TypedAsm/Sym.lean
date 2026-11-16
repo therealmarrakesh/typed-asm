@@ -111,6 +111,8 @@ inductive FlagsS
   | known
   /-- They are exactly what an arithmetic or logic operation left. -/
   | alu (op : AluOp) (w : Width) (a b : Val)
+  /-- They are exactly what a `test` of two values left. -/
+  | test (a b : Val)
   /-- They are exactly these. -/
   | lit (f : Flags)
   | atom (i : Nat)
@@ -162,7 +164,49 @@ def den (ρ : Env) : Num → Nat
   | .sub a b => a.den ρ - b.den ρ
   | .toNat v => (v.den ρ).toNat
 
+/-- Two numbers added, with what can be added up at once added up. -/
+def plus : Num → Num → Num
+  | .lit m, .lit n => .lit (m + n)
+  | .add x (.lit m), .lit n => .add x (.lit (m + n))
+  | a, .lit 0 => a
+  -- one element on from element `x` of elements `a` bytes long is element
+  -- `x + 1`: the form a loop's invariant is stated in
+  | .mul (.lit a) x, .lit n => if a = n then .mul (.lit a) (.add x (.lit 1)) else .add (.mul (.lit a) x) (.lit n)
+  | a, b => .add a b
+
+theorem den_plus (ρ : Env) (a b : Num) : (plus a b).den ρ = a.den ρ + b.den ρ := by
+  unfold plus
+  split
+  · rfl
+  · simp only [den]; omega
+  · rfl
+  · split
+    · next h => subst h; simp only [den, Nat.mul_add, Nat.mul_one]
+    · rfl
+  · rfl
+
 end Num
+
+namespace Val
+
+/-- An operation applied to a term, worked out at once where the term is a number. -/
+def mk1 (f : Op1) : Val → Val
+  | .lit n => .lit (f.den n)
+  | a => .app1 f a
+
+/-- An operation applied to two terms, worked out at once where both are numbers. -/
+def mk2 (f : Op2) : Val → Val → Val
+  | .lit m, .lit n => .lit (f.den m n)
+  | a, b => .app2 f a b
+
+theorem den_mk1 (ρ : Env) (f : Op1) (a : Val) : (mk1 f a).den ρ = f.den (a.den ρ) := by
+  unfold mk1; split <;> rfl
+
+theorem den_mk2 (ρ : Env) (f : Op2) (a b : Val) :
+    (mk2 f a b).den ρ = f.den (a.den ρ) (b.den ρ) := by
+  unfold mk2; split <;> rfl
+
+end Val
 
 mutual
 
@@ -197,6 +241,7 @@ def den (ρ : Env) : FlagsS → Flags → Prop
   | .known => Flags.Known
   | .alu op .w64 a b => (· = (op.apply (a.den ρ) (b.den ρ)).2)
   | .alu op .w32 a b => (· = (op.apply ((a.den ρ).setWidth 32) ((b.den ρ).setWidth 32)).2)
+  | .test a b => (· = Flags.ofResult (a.den ρ &&& b.den ρ) false false)
   | .lit f => (· = f)
   | .atom i => ρ.flags.getD i Flags.Any
 
@@ -275,6 +320,12 @@ theorem den_setReg (ρ : Env) (Γ : CtxS) (r : Reg) (τ : TyS) :
   show (⟨_, _, _, _, _, _⟩ : Ctx) = ⟨_, _, _, _, _, _⟩
   congr 1
 
+theorem den_setReg_flags (ρ : Env) (Γ : CtxS) (r : Reg) (τ : TyS) (fl : FlagsS) :
+    CtxS.den ρ { Γ.setReg r τ with flags := fl }
+      = { (Γ.den ρ).setReg r (τ.den ρ) with flags := fl.den ρ } := by
+  show ({ (Γ.setReg r τ).den ρ with flags := fl.den ρ } : Ctx) = _
+  rw [den_setReg]
+
 end CtxS
 
 /-! ## What a step leaves to be shown -/
@@ -319,6 +370,16 @@ theorem carryConds_spec {ρ : Env} {fl : FlagsS} {op : AluOp}
 
 /-! ## The checker for one instruction that goes on to the next -/
 
+/-- A constant operand as a value: extended with its sign to the width the
+operation works at. -/
+def immVal (w : Width) (imm : BitVec 32) : Val :=
+  match w with
+  | .w64 => .lit (imm.signExtend 64)
+  | .w32 => .lit ((imm.signExtend 32).setWidth 64)
+
+theorem cast_ctx {Ψ : MemTy} {next : BitVec 64} {Γ Δ Δ' : Ctx} {i : Instr}
+    (h : Straight Ψ next Γ i Δ) (e : Δ' = Δ) : Straight Ψ next Γ i Δ' := e ▸ h
+
 /-- The value a type says is held exactly, if it says so. -/
 def exactly : TyS → Option Val
   | .eq v => some v
@@ -353,7 +414,7 @@ def step (next : BitVec 64) (Γ : CtxS) : Instr → Option (CtxS × List CondS)
     else match exactly (Γ.regs.get s) with
       | some a =>
         if s = .rsp then some (Γ.setReg d .int, [])
-        else some (Γ.setReg d (.eq (.app1 .low32 a)), [])
+        else some (Γ.setReg d (.eq (.mk1 .low32 a)), [])
       | none => some (Γ.setReg d .int, [])
   | .mov w (.rm_i (.reg d) imm) =>
     if d = .rsp then none
@@ -361,6 +422,49 @@ def step (next : BitVec 64) (Γ : CtxS) : Instr → Option (CtxS × List CondS)
   | .movAbs d imm => if d = .rsp then none else some (Γ.setReg d (.eq (.lit imm)), [])
   | .lea .w64 d (.rip disp) =>
     if d = .rsp then none else some (Γ.setReg d (.eq (.lit (next + disp.signExtend 64))), [])
+  | .alu op w (.rm_r (.reg d) s) =>
+    if d = .rsp then none
+    else if op = .xor ∧ d = s then
+      some ({ Γ.setReg d (.eq (.lit 0)) with
+        flags := .lit (Flags.ofResult (0 : BitVec w.bits) false false) }, [])
+    else match exactly (Γ.regs.get d), exactly (Γ.regs.get s) with
+      | some a, some b =>
+        if s = .rsp ∨ op.readsCarry = true then some (afterAlu Γ op d, carryConds Γ.flags op)
+        else
+          some ({ (bif op.writesDst then Γ.setReg d (.eq (.mk2 (.alu op w) a b)) else Γ) with
+            flags := .alu op w a b }, [])
+      | _, _ => some (afterAlu Γ op d, carryConds Γ.flags op)
+  | .alu op w (.rm_i (.reg d) imm) =>
+    if d = .rsp then none
+    else match Γ.regs.get d with
+      | .eq a =>
+        if op.readsCarry = true then some (afterAlu Γ op d, carryConds Γ.flags op)
+        else
+          some ({ (bif op.writesDst then
+              Γ.setReg d (.eq (.mk2 (.alu op w) a (immVal w imm))) else Γ) with
+            flags := .alu op w a (immVal w imm) }, [])
+      | .int => some (afterAlu Γ op d, carryConds Γ.flags op)
+      | .ptr S wr off =>
+        -- a pointer moved on stays a pointer into its block, that much further in
+        match op, w with
+        | .add, .w64 =>
+          if imm.toNat < 2 ^ 31 then
+            some ({ Γ.setReg d (.ptr S wr (off.plus (.lit imm.toNat))) with flags := .known }, [])
+          else none
+        | _, _ => none
+      | .str true =>
+        match op, w with
+        | .add, .w64 =>
+          if imm = 1 then some ({ Γ.setReg d (.str false) with flags := .known }, []) else none
+        | _, _ => none
+      | _ => none
+  | .test .w64 (.reg r) (.reg r') =>
+    match exactly (Γ.regs.get r), exactly (Γ.regs.get r') with
+    | some a, some b =>
+      if r = .rsp ∨ r' = .rsp then some ({ Γ with flags := .known }, [])
+      else some ({ Γ with flags := .test a b }, [])
+    | _, _ => some ({ Γ with flags := .known }, [])
+  | .test _ (.reg _) _ => some ({ Γ with flags := .known }, [])
   | _ => none
 
 /-- **What the checker works out is a typing step.** -/
@@ -385,8 +489,10 @@ theorem step_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {i : I
         · cases h; rw [CtxS.den_setReg]; exact .movRR32 hd
         · next hs =>
           cases h
+          refine cast_ctx (.mov32Exact hd hs (by rw [CtxS.den_regs, exactly_den ha])) ?_
           rw [CtxS.den_setReg]
-          exact .mov32Exact hd hs (by rw [CtxS.den_regs, exactly_den ha])
+          show CtxOf.setReg _ _ (.eq ((Val.mk1 .low32 a).den ρ)) = _
+          rw [Val.den_mk1]; rfl
       · cases h; rw [CtxS.den_setReg]; exact .movRR32 hd
   · split at h
     · cases h
@@ -397,6 +503,126 @@ theorem step_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {i : I
   · split at h
     · cases h
     · next hd => cases h; rw [CtxS.den_setReg]; exact .leaRip hd
+  · next op w d s =>
+    split at h
+    · cases h
+    next hd =>
+    split at h
+    · next hx =>
+      obtain ⟨rfl, rfl⟩ := hx
+      cases h
+      exact cast_ctx (.xorSelf hd) (by rw [CtxS.den_setReg_flags]; rfl)
+    next hx =>
+    split at h
+    · next a b ha hb =>
+      split at h
+      · cases h; rw [den_afterAlu]; exact .aluRR hd (carryConds_spec hn)
+      · next hc =>
+        cases h
+        have hs : s ≠ .rsp := fun e => hc (.inl e)
+        have hcarry : op.readsCarry = false := by
+          cases hr : op.readsCarry with
+          | false => rfl
+          | true => exact absurd (.inr hr) hc
+        have hΓd : (Γ.den ρ).regs d = .eq (a.den ρ) := by rw [CtxS.den_regs, exactly_den ha]
+        have hΓs : (Γ.den ρ).regs s = .eq (b.den ρ) := by rw [CtxS.den_regs, exactly_den hb]
+        cases w with
+        | w64 =>
+          refine cast_ctx (.aluExactRR hd hs hΓd hΓs hcarry) ?_
+          cases op.writesDst
+          · rfl
+          · show CtxS.den ρ { Γ.setReg d _ with flags := _ } = _
+            rw [CtxS.den_setReg_flags]
+            show ({ (Γ.den ρ).setReg d (.eq ((Val.mk2 (.alu op .w64) a b).den ρ)) with
+              flags := _ } : Ctx) = _
+            rw [Val.den_mk2]; rfl
+        | w32 =>
+          refine cast_ctx (.aluExactRR32 hd hs hΓd hΓs hcarry) ?_
+          cases op.writesDst
+          · rfl
+          · show CtxS.den ρ { Γ.setReg d _ with flags := _ } = _
+            rw [CtxS.den_setReg_flags]
+            show ({ (Γ.den ρ).setReg d (.eq ((Val.mk2 (.alu op .w32) a b).den ρ)) with
+              flags := _ } : Ctx) = _
+            rw [Val.den_mk2]; rfl
+    · cases h; rw [den_afterAlu]; exact .aluRR hd (carryConds_spec hn)
+  · next op w d imm =>
+    split at h
+    · cases h
+    next hd =>
+    split at h
+    · next a hΓ =>
+      split at h
+      · cases h; rw [den_afterAlu]; exact .aluRI hd (carryConds_spec hn)
+      · next hc =>
+        cases h
+        have hcarry : op.readsCarry = false := (Bool.not_eq_true _).mp hc
+        have hΓd : (Γ.den ρ).regs d = .eq (a.den ρ) := by rw [CtxS.den_regs, hΓ]; rfl
+        cases w with
+        | w64 =>
+          refine cast_ctx (.aluExact (imm := imm) hd hΓd hcarry) ?_
+          cases op.writesDst
+          · rfl
+          · show CtxS.den ρ { Γ.setReg d _ with flags := _ } = _
+            rw [CtxS.den_setReg_flags]
+            show ({ (Γ.den ρ).setReg d
+              (.eq ((Val.mk2 (.alu op .w64) a (immVal .w64 imm)).den ρ)) with flags := _ } : Ctx) = _
+            rw [Val.den_mk2]; rfl
+        | w32 =>
+          refine cast_ctx (.aluExact32 (imm := imm) hd hΓd hcarry) ?_
+          have e : ((imm.signExtend 32).setWidth 64).setWidth 32 = imm.signExtend 32 :=
+            BitVec.setWidth_setWidth_of_le _ (by decide)
+          cases op.writesDst
+          · show ({ Γ.den ρ with flags := (· = (op.apply ((a.den ρ).setWidth 32)
+              (((imm.signExtend 32).setWidth 64).setWidth 32)).2) } : Ctx) = _
+            rw [e]; rfl
+          · show CtxS.den ρ { Γ.setReg d _ with flags := _ } = _
+            rw [CtxS.den_setReg_flags]
+            show ({ (Γ.den ρ).setReg d
+              (.eq ((Val.mk2 (.alu op .w32) a (immVal .w32 imm)).den ρ)) with
+              flags := (· = (op.apply ((a.den ρ).setWidth 32)
+                (((imm.signExtend 32).setWidth 64).setWidth 32)).2) } : Ctx) = _
+            rw [Val.den_mk2]
+            show ({ (Γ.den ρ).setReg d (.eq ((op.apply ((a.den ρ).setWidth 32)
+              (((imm.signExtend 32).setWidth 64).setWidth 32)).1.setWidth 64)) with
+              flags := _ } : Ctx) = _
+            rw [e]; rfl
+    · cases h; rw [den_afterAlu]; exact .aluRI hd (carryConds_spec hn)
+    · next S wr off hΓ =>
+      split at h
+      · split at h
+        · next hlt =>
+          cases h
+          have hΓd : (Γ.den ρ).regs d = .ptr (S.den ρ) wr (off.den ρ) := by
+            rw [CtxS.den_regs, hΓ]; rfl
+          refine cast_ctx (.addPtr (k := imm.toNat) (imm := imm) hd hΓd ⟨by simp, hlt⟩) ?_
+          rw [CtxS.den_setReg_flags]
+          show ({ (Γ.den ρ).setReg d (.ptr (S.den ρ) wr ((off.plus (.lit imm.toNat)).den ρ)) with
+            flags := _ } : Ctx) = _
+          rw [Num.den_plus]; rfl
+        · cases h
+      · cases h
+    · next hΓ =>
+      split at h
+      · split at h
+        · next hi =>
+          cases h; subst hi
+          have hΓd : (Γ.den ρ).regs d = .str true := by rw [CtxS.den_regs, hΓ]; rfl
+          exact cast_ctx (.strNext hd hΓd) (by rw [CtxS.den_setReg_flags]; rfl)
+        · cases h
+      · cases h
+    · cases h
+  · next r r' =>
+    split at h
+    · next a b ha hb =>
+      split at h
+      · cases h; exact .testRM (.reg _)
+      · next hc =>
+        cases h
+        exact .testExact (fun e => hc (.inl e)) (fun e => hc (.inr e))
+          (by rw [CtxS.den_regs, exactly_den ha]) (by rw [CtxS.den_regs, exactly_den hb])
+    · cases h; exact .testRM (.reg _)
+  · cases h; exact .testRM (.reg _)
   · cases h
 
 end Sym

@@ -77,10 +77,44 @@ def bvLit? (e : Expr) : Option (BitVec 64) :=
 
 def natLit? (e : Expr) : Option Nat := e.nat? <|> e.rawNatLit?
 
+/-- An arithmetic or logic operation named outright. -/
+def aluOp? (e : Expr) : Option AluOp :=
+  match e.constName? with
+  | some ``AluOp.add => some .add | some ``AluOp.or => some .or | some ``AluOp.adc => some .adc
+  | some ``AluOp.sbb => some .sbb | some ``AluOp.and => some .and | some ``AluOp.sub => some .sub
+  | some ``AluOp.xor => some .xor | some ``AluOp.cmp => some .cmp
+  | _ => none
+
+/-- `op.apply a b` at a width, taken apart. -/
+private def aluApply? (e : Expr) : Option (Nat × AluOp × Expr × Expr) := do
+  guard (e.isAppOfArity ``AluOp.apply 4)
+  let a := e.getAppArgs
+  let n ← natLit? a[0]!
+  let op ← aluOp? a[1]!
+  return (n, op, a[2]!, a[3]!)
+
+/-- A 64-bit value cut to its low 32 bits, taken apart. -/
+private def low? (e : Expr) : Option Expr := do
+  guard (e.isAppOfArity ``BitVec.setWidth 3)
+  guard (natLit? e.getAppArgs[1]! == some 32)
+  return e.appArg!
+
 /-- The term for a 64-bit value as it is written. -/
 partial def reifyVal (e : Expr) : ReifyM Val := do
   let e := e.consumeMData
   if let some n := bvLit? e then return .lit n
+  -- the result of an operation, as the rules write it
+  if e.isAppOfArity ``Prod.fst 3 then
+    if let some (64, op, a, b) := aluApply? e.appArg! then
+      return .app2 (.alu op .w64) (← reifyVal a) (← reifyVal b)
+  if e.isAppOfArity ``BitVec.setWidth 3 && natLit? e.getAppArgs[1]! == some 64 then
+    let inner := e.appArg!
+    if let some a := low? inner then
+      if natLit? inner.getAppArgs[0]! == some 64 then return .app1 .low32 (← reifyVal a)
+    if inner.isAppOfArity ``Prod.fst 3 then
+      if let some (32, op, a, b) := aluApply? inner.appArg! then
+        if let (some a, some b) := (low? a, low? b) then
+          return .app2 (.alu op .w32) (← reifyVal a) (← reifyVal b)
   if e.isAppOfArity ``HAdd.hAdd 6 then
     return .add (← reifyVal e.appFn!.appArg!) (← reifyVal e.appArg!)
   if e.isAppOfArity ``HShiftLeft.hShiftLeft 6 then
@@ -176,6 +210,22 @@ def reifyFlags (e : Expr) : ReifyM FlagsS := do
   let e := e.consumeMData
   if e.isConstOf ``Flags.Any then return .any
   if e.isConstOf ``Flags.Known then return .known
+  -- exactly what an operation left
+  if let .lam _ _ body _ := e then
+    if let some (_, lhs, rhs) := body.eq? then
+      if lhs == .bvar 0 && !rhs.hasLooseBVars then
+        if rhs.isAppOfArity ``Prod.snd 3 then
+          match aluApply? rhs.appArg! with
+          | some (64, op, a, b) => return .alu op .w64 (← reifyVal a) (← reifyVal b)
+          | some (32, op, a, b) =>
+            if let (some a, some b) := (low? a, low? b) then
+              return .alu op .w32 (← reifyVal a) (← reifyVal b)
+          | _ => pure ()
+        if rhs.isAppOfArity ``Flags.ofResult 4 then
+          let r := rhs.getAppArgs
+          if natLit? r[0]! == some 64 && r[2]!.isConstOf ``Bool.false && r[3]!.isConstOf ``Bool.false
+              && r[1]!.isAppOfArity ``HAnd.hAnd 6 then
+            return .test (← reifyVal r[1]!.appFn!.appArg!) (← reifyVal r[1]!.appArg!)
   let s ← get
   let (i, as) := intern s.flags e
   set { s with flags := as }
@@ -315,6 +365,10 @@ def denFlags (as : Atoms) : FlagsS → MetaM Expr
   | .atom i => return as.flags[i]!
   | .lit f => do
     withLocalDeclD `f (mkConst ``Flags) fun x => do mkLambdaFVars #[x] (← mkEq x (toExpr f))
+  | .test a b => do
+    let v ← mkAppM ``Flags.ofResult #[← mkAppM ``HAnd.hAnd #[← denVal as a, ← denVal as b],
+      mkConst ``Bool.false, mkConst ``Bool.false]
+    withLocalDeclD `f (mkConst ``Flags) fun x => do mkLambdaFVars #[x] (← mkEq x v)
   | .alu op .w64 a b => do
     let r ← mkAppOptM ``AluOp.apply #[mkNatLit 64, toExpr op, ← denVal as a, ← denVal as b]
     let v ← mkAppM ``Prod.snd #[r]
