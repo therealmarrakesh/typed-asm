@@ -2701,6 +2701,7 @@ context it was come to with and what the step left to be shown. -/
 private inductive WalkMove
   | name (k : Nat) (r : Reg)
   | opened
+  | split (at' : Nat) (i : Instr) (len : BitVec 64)
   | step (at' : Nat) (i : Instr) (len : BitVec 64) (arrived : Sym.CtxS) (cs : List Sym.CondS)
 
 /-- Arithmetic left to be shown by the steps of a run, not yet settled. -/
@@ -2858,7 +2859,7 @@ directly and checked by the kernel with the rest. Returns the goal for the
 rest of the block, or nothing where this does not apply, and then the step is
 taken the long way. -/
 private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
-    TacticM (Option MVarId) :=
+    TacticM (Option (List MVarId)) :=
     goal.withContext do
   unless ty.isAppOfArity ``BlockOk 6 do return none
   if ty.hasExprMVar then return none
@@ -2909,7 +2910,7 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
   -- the term read from the context, and what it gives is what the kernel is
   -- asked to confirm: that the term means this context, and that the checker
   -- comes to that answer.
-  let symStep : TacticM (Option MVarId) := do
+  let symStep : TacticM (Option (List MVarId)) := do
     -- The context the last run left is the one this one starts from, as a
     -- rule: its term is kept, with what its variables stand for, and is not
     -- read again. It is used only if all it mentions is still in scope.
@@ -2933,10 +2934,6 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let waits (S : Sym.CtxS) (i : Instr) (at' next' : Nat) : Bool :=
       i.endsBlock || (stops?.getD #[]).contains next' || (stops?.getD #[]).contains at' ||
       (match i with
-        | .test _ (.reg r) (.reg r') =>
-          r == r' && (match S.regs.get r with
-            | .nullable _ | .orErr _ => true
-            | _ => false)
         | .movzx _ _ .w8 (.mem (.sib (some b) none _)) =>
           (match S.regs.get b with
             | .str _ => true
@@ -2975,6 +2972,13 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         let some (i, len') := instrs[at']? | break
         let next' := at' + len'.toNat
         if steps > 0 && waits cur i at' next' then break
+        -- a value that may be null, or what a system call handed back, is
+        -- about to be tested: the block goes on once for each thing it may be
+        if let some (_, _, isErr) := Sym.toSplit cur i then
+          if stops?.isNone then break
+          if isErr && !cur.under k then break
+          moves := moves.push (.split at' i len')
+          break
         -- a pointer to a block of a kind that is reached through is opened
         if let some (r, tag, w, off) := Sym.toOpen cur i then
           let some Sk := Sym.lookupNat P.kinds tag | break
@@ -3005,9 +3009,10 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       for _ in [0:moves.size] do
         match moves.back? with
         | some (.step ..) => break
+        | some (.split ..) => break
         | some _ => moves := moves.pop
         | none => break
-      if steps == 0 then return (none, prog?)
+      if moves.isEmpty then return (none, prog?)
       return (some (S₀, moves, at', arrived), prog?) : Sym.ReifyM _).run ((kept?.map (·.2)).getD {})
     let some (S₀, moves, atEnd, arrived) := result | return none
     let P : Sym.Prog := (prog?.map (·.1)).getD {}
@@ -3017,13 +3022,16 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let code : List (BitVec 64 × Instr × BitVec 64) :=
       moves.toList.filterMap fun
         | .step at' i len' _ _ => some (BitVec.ofNat 64 at', i, len')
+        | .split at' i len' => some (BitVec.ofNat 64 at', i, len')
         | _ => none
     let W := Sym.walk P code moves.size k₀ (BitVec.ofNat 64 n) S
     let rec final : Sym.Walk → Option Sym.CtxS
       | .stop _ Γ => some Γ
       | .conds _ rest => final rest
       | .name _ rest => final rest
-    let some S' := final W | return none
+      | .both _ _ => none
+      | .err _ _ _ => none
+    let S'? := final W
     let ρ := atoms.env
     let SE := toExpr S
     -- that what was read of the program is so: each part by looking
@@ -3075,7 +3083,7 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let aEnd := toExpr (BitVec.ofNat 64 atEnd)
     let bv := mkApp (mkConst ``BitVec) (mkNatLit 64)
     let outerInsts ← getLocalInstances
-    let restRef : IO.Ref (Option (Expr × Array Name)) ← IO.mkRef none
+    let restRef : IO.Ref (Array (Expr × Array Name)) ← IO.mkRef #[]
     let rec down (W : Sym.Walk) (atoms : Sym.Atoms) (vs : Array Expr) (names : Array Name) :
         TacticM Expr := do
       match W with
@@ -3084,7 +3092,7 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         let allTy ← mkForallFVars vs (mkAppN ty.getAppFn #[Φ, fetch, sys, Ψ, aEnd, Γ'E])
         let m ← withLCtx lctx outerInsts <|
           mkFreshExprSyntheticOpaqueMVar allTy (← goal.getTag)
-        restRef.set (some (m, names))
+        restRef.modify (·.push (m, names))
         return mkAppN m vs
       | .conds cs rest =>
         let mut hn := mkConst ``True.intro
@@ -3108,8 +3116,19 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           let atoms' := { atoms with val := pad.set! k v }
           let body ← down rest atoms' (vs.push v) (names.push name)
           mkLambdaFVars #[v] (← instantiateMVars body)
+      | .both l r =>
+        mkAppM ``And.intro #[← down l atoms vs names, ← down r atoms vs names]
+      | .err k l r =>
+        let hl ← withLocalDeclD `e bv fun v => do
+          withLocalDeclD `herr (mkApp (mkConst ``SysErr) v) fun hv => do
+            let pad := atoms.val ++ Array.replicate (k + 1 - atoms.val.size) (toExpr (0 : BitVec 64))
+            let atoms' := { atoms with val := pad.set! k v }
+            let body ← down l atoms' ((vs.push v).push hv) ((names.push `e).push `herr)
+            mkLambdaFVars #[v, hv] (← instantiateMVars body)
+        mkAppM ``And.intro #[hl, ← down r atoms vs names]
     let hW ← down W atoms #[] #[]
-    let some (m, names) ← restRef.get | return none
+    let rests ← restRef.get
+    if rests.isEmpty then return none
     let fuelE := mkNatLit moves.size
     let PE := toExpr P
     let WE := toExpr W
@@ -3118,24 +3137,32 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let hwalk ← mkExpectedTypeHint (← mkEqRefl walkE) (← mkEq walkE WE)
     goal.assign (mkAppN (mkConst ``Sym.walk_sound')
       #[Φ, fetch, sys, Ψ, ρ, PE, codeE, hP, hcode, fuelE, mkNatLit k₀, a, SE, WE, hwalk, hW])
-    -- the values named are in the goal for the rest of the block
-    let mut g := m.mvarId!
+    -- the values named are in the goals for the rest of the block
+    let mut goals : List MVarId := []
     let mut newVals : Array Expr := #[]
-    for name in names do
-      let (fv, g') ← g.intro name
-      newVals := newVals.push (mkFVar fv)
-      g := g'
-    -- the context at the end as the goal has it, kept for the next walk
-    let gty := (← instantiateMVars (← g.getType)).consumeMData
-    let mut atoms' := atoms
-    let mut j := 0
-    for mv in moves do
-      if let .name k _ := mv then
-        if j < newVals.size then
-          let pad := atoms'.val ++ Array.replicate (k + 1 - atoms'.val.size) (toExpr (0 : BitVec 64))
-          atoms' := { atoms' with val := pad.set! k newVals[j]! }
-          j := j + 1
-    symKept.set (some (gty.getAppArgs[5]!, { S' with blocks := [] }, atoms'))
+    for (m, names) in rests do
+      let mut g := m.mvarId!
+      newVals := #[]
+      for name in names do
+        let (fv, g') ← g.intro name
+        newVals := newVals.push (mkFVar fv)
+        g := g'
+      goals := goals ++ [g]
+    -- where the walk came to one end, the context there as the goal has it
+    -- is kept for the next walk
+    match S'?, goals with
+    | some S', [g] =>
+      let gty := (← instantiateMVars (← g.getType)).consumeMData
+      let mut atoms' := atoms
+      let mut j := 0
+      for mv in moves do
+        if let .name k _ := mv then
+          if j < newVals.size then
+            let pad := atoms'.val ++ Array.replicate (k + 1 - atoms'.val.size) (toExpr (0 : BitVec 64))
+            atoms' := { atoms' with val := pad.set! k newVals[j]! }
+            j := j + 1
+      symKept.set (some (gty.getAppArgs[5]!, { S' with blocks := [] }, atoms'))
+    | _, _ => symKept.set none
     -- which instruction of the walk gave each register, and the flags, what
     -- the context says of them at its end
     let stepsL := moves.toList.filterMap fun
@@ -3158,7 +3185,7 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         unless before.flags == after.flags do t := t.insert "flags" (at', i.toAsm)
       trailRef.modify (·.insert (fetch.hash, atEnd) t)
       trailDone.set true
-    return some g
+    return some goals
   symStep
 
 /-- What a register holding the address `v` may be made a pointer to, where
@@ -3274,8 +3301,8 @@ private partial def typeStepCore (named : Bool := false) : TacticM StepResult :=
     saved.restore
     trace[TypedAsm.fast] "the checker's step failed: {e.toMessageData}"
     pure none
-  if let some rest := fast? then
-    setGoals (rest :: others)
+  if let some rests := fast? then
+    setGoals (rests ++ others)
     return .stepped
   -- An instruction that ends the block is known for one from the program's
   -- table, without a step being tried on it first.

@@ -3998,6 +3998,11 @@ inductive Walk
   | conds (cs : List CondS) (rest : Walk)
   /-- A value was given the name `k`; then the rest, for every value. -/
   | name (k : Nat) (rest : Walk)
+  /-- A value that may be null: the rest with it null, and with it not. -/
+  | both (l r : Walk)
+  /-- What a system call handed back: the rest with it an error number,
+  named `k`, and with it a value. -/
+  | err (k : Nat) (l r : Walk)
 
 /-- That a walk's conditions hold, and that `P` holds of where it stopped:
 for every value each name may stand for. -/
@@ -4005,6 +4010,8 @@ def Walk.holds (P : BitVec 64 → Ctx → Prop) : Walk → Env → Prop
   | .stop a Γ, ρ => P a (Γ.den ρ)
   | .conds cs rest, ρ => CondS.all ρ cs ∧ rest.holds P ρ
   | .name k rest, ρ => ∀ x, rest.holds P (ρ.setVal k x)
+  | .both l r, ρ => l.holds P ρ ∧ r.holds P ρ
+  | .err k l r, ρ => (∀ e, SysErr e → l.holds P (ρ.setVal k e)) ∧ r.holds P ρ
 
 /-- The first register an instruction needs the value of that the context
 only knows to hold a number. -/
@@ -4175,6 +4182,34 @@ theorem castData_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy
       · exact h
   · exact h
 
+/-- The register a `test` of itself is about to look at that holds a value
+which may be null, or what a system call handed back: the type the value has
+otherwise, and whether it is the second. The block goes on once for each of
+the two things it may be. -/
+def toSplit (Γ : CtxS) : Instr → Option (Reg × TyS × Bool)
+  | .test _ (.reg r) (.reg r') =>
+    if r = r' ∧ r ≠ .rsp then
+      match Γ.regs.get r with
+      | .nullable τ => some (r, τ, false)
+      | .orErr τ => some (r, τ, true)
+      | _ => none
+    else none
+  | _ => none
+
+theorem toSplit_spec {Γ : CtxS} {i : Instr} {r : Reg} {τ : TyS} {e : Bool}
+    (h : toSplit Γ i = some (r, τ, e)) :
+    r ≠ .rsp ∧ Γ.regs.get r = (if e then .orErr τ else .nullable τ) := by
+  unfold toSplit at h
+  split at h
+  · split at h
+    · next hc =>
+      split at h
+      · next hΓ => cases h; exact ⟨hc.2, hΓ⟩
+      · next hΓ => cases h; exact ⟨hc.2, hΓ⟩
+      · cases h
+    · cases h
+  · cases h
+
 /-- The checker walked from an address for at most so many moves, `k` being
 a variable no term yet mentions. Before an instruction, a pointer to a block
 of a kind that it reaches through is opened, and a value it needs to speak
@@ -4186,6 +4221,14 @@ def walk (P : Prog) (code : List (BitVec 64 × Instr × BitVec 64)) :
     match lookup code a with
     | none => .stop a Γ
     | some (i, len) =>
+      match toSplit Γ i with
+      | some (r, τ, false) =>
+        .both (.stop a (Γ.setReg r (.eq (.lit 0)))) (.stop a (Γ.setReg r τ))
+      | some (r, τ, true) =>
+        if Γ.under k then
+          .err k (.stop a (Γ.setReg r (.eq (.var k)))) (.stop a (Γ.setReg r τ))
+        else .stop a Γ
+      | none =>
       match toOpen Γ i with
       | some (r, tag, w, off) =>
         match lookupNat P.kinds tag with
@@ -4217,6 +4260,32 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
     split at h
     · exact h
     · next i len hl =>
+      split at h
+      · next r τ hsp =>
+        obtain ⟨hr, hΓ⟩ := toSplit_spec hsp
+        have h₀ := h.1
+        have h₁ := h.2
+        simp only [Walk.holds] at h₀ h₁
+        rw [CtxS.den_setReg] at h₀ h₁
+        exact .splitNull hr (by rw [CtxS.den_regs, hΓ]; rfl) h₀ h₁
+      · next r τ hsp =>
+        obtain ⟨hr, hΓ⟩ := toSplit_spec hsp
+        split at h
+        · next hu =>
+          have h₁ := h.2
+          simp only [Walk.holds] at h₁
+          rw [CtxS.den_setReg] at h₁
+          refine .splitErr hr (by rw [CtxS.den_regs, hΓ]; rfl) (fun e he => ?_) h₁
+          have h₀ := h.1 e he
+          simp only [Walk.holds] at h₀
+          rw [CtxS.den_setReg, CtxS.den_setVal hu] at h₀
+          have e' : (TyS.eq (.var k)).den (ρ.setVal k e) = .eq e := by
+            show Ty.eq ((padSet 0 ρ.val k e).getD k 0) = _
+            rw [getD_padSet]; simp
+          rw [e'] at h₀
+          exact h₀
+        · exact h
+      next =>
       split at h
       · next r tag w off ho =>
         split at h
