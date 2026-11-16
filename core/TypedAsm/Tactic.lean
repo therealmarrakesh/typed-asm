@@ -1693,6 +1693,115 @@ private def workOutCtx (ctx : Expr) : MetaM (Option Expr) := do
   return some (mkAppN ctx.getAppFn
     ((((args.set! 1 regs).set! 2 stack).set! 5 owned).set! 6 above))
 
+private def regIdx : Reg → Nat
+  | .rax => 0 | .rcx => 1 | .rdx => 2 | .rbx => 3 | .rsp => 4 | .rbp => 5 | .rsi => 6 | .rdi => 7
+  | .r8 => 8 | .r9 => 9 | .r10 => 10 | .r11 => 11 | .r12 => 12 | .r13 => 13 | .r14 => 14
+  | .r15 => 15
+
+private def allRegs : Array Reg :=
+  #[.rax, .rcx, .rdx, .rbx, .rsp, .rbp, .rsi, .rdi, .r8, .r9, .r10, .r11, .r12, .r13, .r14, .r15]
+
+/-- The rules a context is tidied by, read once from `ty_dsimp_core`. -/
+initialize ctxSimpCache : IO.Ref (Option (Simp.Context × Simp.SimprocsArray)) ← IO.mkRef none
+
+private def ctxSimp : TacticM (Simp.Context × Simp.SimprocsArray) := do
+  if let some r := ← ctxSimpCache.get then return r
+  let stx ← `(tactic| ty_dsimp_core)
+  let some stx ← liftMacroM (expandMacro? stx) | throwError "ty_dsimp_core does not expand"
+  let r ← mkSimpContext stx (eraseLocal := false) (kind := .dsimp)
+  ctxSimpCache.set (some (r.ctx, r.simprocs))
+  return (r.ctx, r.simprocs)
+
+/-- For each address term worked out so far, the number it comes to. -/
+initialize addrCache : IO.Ref (Std.HashMap Expr Nat) ← IO.mkRef {}
+
+/-- The number a closed address term comes to, by the kernel's evaluator.
+What is remembered is remembered under the term with the definitions it
+names written out, since a name may come to stand for something else while
+an editor is open. -/
+private def addrNat (e : Expr) : MetaM (Option Nat) := do
+  if e.hasFVar || e.hasExprMVar then return none
+  if isAddrLit e then return e.appArg!.nat?
+  let mut key := e
+  for a in e.getAppArgs do
+    if let .const n _ := a then
+      if let some (.defnInfo d) := (← getEnv).find? n then key := mkApp key d.value
+  if let some n := (← addrCache.get)[key]? then return some n
+  let n? ← try
+      let v ← ofExceptKernelException
+        (Kernel.whnf (← getEnv) {} (mkApp2 (mkConst ``BitVec.toNat) (mkNatLit 64) e))
+      match v with
+      | .lit (.natVal n) => pure (some n)
+      | _ => pure (some (← evalAddr e))
+    catch _ => pure none
+  if let some n := n? then addrCache.modify (·.insert key n)
+  return n?
+
+/-- A term with every field taken of a context written out replaced by that
+field. A rule's result mentions the context it started from once for each
+field it keeps, and each mention is the whole of it. -/
+private partial def stripProjs (e : Expr) : Expr :=
+  e.replace fun e =>
+    match e with
+    | .app f x =>
+      if x.isAppOfArity ``CtxOf.mk 7 && f.isApp && f.appFn!.isConst then
+        let i? := match f.appFn!.constName! with
+          | ``CtxOf.regs => some 1 | ``CtxOf.stack => some 2 | ``CtxOf.room => some 3
+          | ``CtxOf.flags => some 4 | ``CtxOf.owned => some 5 | ``CtxOf.above => some 6
+          | _ => none
+        i?.map fun i => stripProjs x.getAppArgs[i]!
+      else none
+    | .proj ``CtxOf i x =>
+      if x.isAppOfArity ``CtxOf.mk 7 then some (stripProjs x.getAppArgs[i + 1]!) else none
+    | _ => none
+
+/-- Whether a term is a constructor applied, or something applied that
+cannot be looked into: the forms a register's type is kept in. -/
+private def settledHead (env : Environment) (e : Expr) : Bool :=
+  match e.getAppFn with
+  | .fvar _ => true
+  | .const n _ => match env.find? n with
+    | some (.ctorInfo _) => true
+    | _ => false
+  | _ => false
+
+/-- A block goal brought to the form it is kept in, without `dsimp` over
+the whole of it: the context is opened by the kernel's evaluator, each
+register's type is worked out by itself, and each part is then tidied alone.
+Returns whether it did so. -/
+private def fastNormalize (g : MVarId) (t : Expr) : TacticM Bool := g.withContext do
+  if t.hasExprMVar then return false
+  let args := t.getAppArgs
+  let Γ := args[5]!
+  let env ← getEnv
+  let lctx ← getLCtx
+  let kwhnf (e : Expr) : MetaM Expr := ofExceptKernelException (Kernel.whnf env lctx e)
+  let ctxW ← kwhnf Γ
+  unless ctxW.isAppOfArity ``CtxOf.mk 7 do return false
+  let nargs := ctxW.getAppArgs
+  let (sctx, sprocs) ← ctxSimp
+  let tidy (e : Expr) : MetaM Expr := do return (← Meta.dsimp (stripProjs e) sctx sprocs).1
+  let τ := nargs[0]!
+  let mut tbl : Array Expr := #[τ]
+  for r in allRegs do
+    let raw := mkApp nargs[1]! (toExpr r)
+    let e ← kwhnf raw
+    tbl := tbl.push (← tidy (if settledHead env e then e else raw.headBeta))
+  let mut ctxN := mkAppN ctxW.getAppFn #[τ,
+    mkApp2 (mkConst ``RegMap.get) τ (mkAppN (mkConst ``RegMap.mk) tbl),
+    ← tidy nargs[2]!, ← tidy nargs[3]!, ← tidy nargs[4]!, ← tidy nargs[5]!, ← tidy nargs[6]!]
+  if let some c ← workOutCtx ctxN then ctxN ← tidy c
+  let a := args[4]!
+  let aN ← if isAddrLit a then pure a else
+    match ← addrNat a with
+    | some n => pure (toExpr (BitVec.ofNat 64 n))
+    | none => pure a
+  let new ← mkFreshExprSyntheticOpaqueMVar
+    (mkAppN t.getAppFn #[args[0]!, args[1]!, args[2]!, args[3]!, aN, ctxN]) (← g.getTag)
+  g.assign (mkAppN (mkConst ``BlockOk.regsEta) #[args[0]!, args[1]!, args[2]!, args[3]!, a, Γ, new])
+  replaceMainGoal [new.mvarId!]
+  return true
+
 elab_rules : tactic
   | `(tactic| ty_normalize) => do
     let g ← getMainGoal
@@ -1700,6 +1809,8 @@ elab_rules : tactic
     unless t.isAppOfArity ``BlockOk 6 do
       evalTactic (← `(tactic| ty_dsimp_ctx))
       return
+    let saved ← saveState
+    if ← (try fastNormalize g t catch _ => do saved.restore; pure false) then return
     -- a context given by name is opened up
     let mut opened := t
     for _ in [0:4] do
@@ -2370,25 +2481,6 @@ private def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
   evalTactic (← `(tactic| ty_normalize))
   setGoals ((← getGoals) ++ left)
 
-private def regIdx : Reg → Nat
-  | .rax => 0 | .rcx => 1 | .rdx => 2 | .rbx => 3 | .rsp => 4 | .rbp => 5 | .rsi => 6 | .rdi => 7
-  | .r8 => 8 | .r9 => 9 | .r10 => 10 | .r11 => 11 | .r12 => 12 | .r13 => 13 | .r14 => 14
-  | .r15 => 15
-
-private def allRegs : Array Reg :=
-  #[.rax, .rcx, .rdx, .rbx, .rsp, .rbp, .rsi, .rdi, .r8, .r9, .r10, .r11, .r12, .r13, .r14, .r15]
-
-/-- The rules a context is tidied by, read once from `ty_dsimp_core`. -/
-initialize ctxSimpCache : IO.Ref (Option (Simp.Context × Simp.SimprocsArray)) ← IO.mkRef none
-
-private def ctxSimp : TacticM (Simp.Context × Simp.SimprocsArray) := do
-  if let some r := ← ctxSimpCache.get then return r
-  let stx ← `(tactic| ty_dsimp_core)
-  let some stx ← liftMacroM (expandMacro? stx) | throwError "ty_dsimp_core does not expand"
-  let r ← mkSimpContext stx (eraseLocal := false) (kind := .dsimp)
-  ctxSimpCache.set (some (r.ctx, r.simprocs))
-  return (r.ctx, r.simprocs)
-
 /-- One instruction that goes on to the next, typed without the tactic
 framework where the checker covers it: the instruction is read from the
 program's table, the checker is run by the kernel's evaluator, and of the
@@ -2458,13 +2550,15 @@ private def fastStep (goal : MVarId) (ty : Expr) (named : Bool) : TacticM (Optio
   unless ctxW.isAppOfArity ``CtxOf.mk 7 do return none
   let nargs := ctxW.getAppArgs
   let (sctx, sprocs) ← ctxSimp
-  let tidy (e : Expr) : MetaM Expr := do return (← Meta.dsimp e sctx sprocs).1
+  let tidy (e : Expr) : MetaM Expr := do return (← Meta.dsimp (stripProjs e) sctx sprocs).1
   -- each register's type: what it was, or what the instruction made it
   let mut out := tbl
   for r in allRegs do
     let j := 1 + regIdx r
     let e ← kwhnf (mkApp nargs[1]! (toExpr r))
-    unless e == tbl[j]! do out := out.set! j (← tidy e)
+    unless e == tbl[j]! do
+      unless settledHead env e do return none
+      out := out.set! j (← tidy e)
   let field (j : Nat) : MetaM Expr := do
     let new := nargs[j]!
     if new == cargs[j]! then return cargs[j]!
@@ -2726,31 +2820,6 @@ private def noContextDeclared : String := "no context is declared at label"
 /-- Whether an error is the report that a label has no context at all. -/
 private def isNoContext (e : Exception) : TacticM Bool := do
   return (← e.toMessageData.toString).startsWith noContextDeclared
-
-/-- For each address term worked out so far, the number it comes to. -/
-initialize addrCache : IO.Ref (Std.HashMap Expr Nat) ← IO.mkRef {}
-
-/-- The number a closed address term comes to, by the kernel's evaluator.
-What is remembered is remembered under the term with the definitions it
-names written out, since a name may come to stand for something else while
-an editor is open. -/
-private def addrNat (e : Expr) : MetaM (Option Nat) := do
-  if e.hasFVar || e.hasExprMVar then return none
-  if isAddrLit e then return e.appArg!.nat?
-  let mut key := e
-  for a in e.getAppArgs do
-    if let .const n _ := a then
-      if let some (.defnInfo d) := (← getEnv).find? n then key := mkApp key d.value
-  if let some n := (← addrCache.get)[key]? then return some n
-  let n? ← try
-      let v ← ofExceptKernelException
-        (Kernel.whnf (← getEnv) {} (mkApp2 (mkConst ``BitVec.toNat) (mkNatLit 64) e))
-      match v with
-      | .lit (.natVal n) => pure (some n)
-      | _ => pure (some (← evalAddr e))
-    catch _ => pure none
-  if let some n := n? then addrCache.modify (·.insert key n)
-  return n?
 
 /-- Proves `Φ a Δ` for a labelled program: finds the label whose address is
 `a` and a context allowed there. `check` runs once the context is chosen and
