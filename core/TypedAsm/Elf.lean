@@ -58,6 +58,28 @@ def headers (entry firstLen : Nat) (segs : List (Nat × Perm × List Byte)) : Li
     ++ programHeader 5 0 loadBase (headerSize segs.length + firstLen)
     ++ (segs.flatMap fun (va, p, bs) => programHeader (flags p) (va - loadBase) va bs.length)
 
+theorem programHeader_length (f o v n : Nat) : (programHeader f o v n).length = 56 := by
+  simp [programHeader, le32n, le64n, le32, le64]
+
+theorem header_length (entry n : Nat) : (header entry n).length = 64 := by
+  simp [header, le16, le32n, le64n, le32, le64]
+
+/-- The headers are as long as `headerSize` says. -/
+theorem headers_length (entry firstLen : Nat) (segs : List (Nat × Perm × List Byte)) :
+    (headers entry firstLen segs).length = headerSize segs.length := by
+  have hf : ∀ l : List (Nat × Perm × List Byte),
+      (l.flatMap fun (va, p, bs) => programHeader (flags p) (va - loadBase) va bs.length).length
+        = l.length * 56 := by
+    intro l
+    induction l with
+    | nil => rfl
+    | cons x rest ih =>
+      rw [List.flatMap_cons, List.length_append, ih, programHeader_length, List.length_cons]
+      omega
+  unfold headers headerSize
+  rw [List.length_append, List.length_append, header_length, programHeader_length, hf]
+  omega
+
 /-- The bytes of an executable file that begins with `first`, straight after
 the headers, and whose other segments are `segs`: for each, where it is
 loaded, its permission, and its bytes. Each of those sits in the file as far
