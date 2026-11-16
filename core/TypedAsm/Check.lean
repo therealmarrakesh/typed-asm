@@ -15,7 +15,9 @@ for them. Where it needs to know what a register holds it looks, and where
 the context does not say, as for a register a function was handed by
 whoever called it, it has no answer and the rules are used directly.
 
-It covers the forms that work on registers alone, and `push` and `pop`. For an instruction with
+It covers the forms that work on registers alone, and those that work on
+the stack: `push` and `pop`, making and giving back room, and loading and
+storing a typed value at a place on it. For an instruction with
 several rules it takes the one that keeps most, in the order the rules are
 tried by hand: an exactly known result where the operands are exactly
 known, and otherwise a number.
@@ -117,6 +119,84 @@ def pop (Γ : Ctx) (r : Reg) : Option Step :=
       else none
     | [] => none
 
+/-- Which piece of the stack byte `d` above the stack pointer is in, counting
+pieces from `k`, and how far into it. -/
+def pieceAt : List Shape → Nat → Nat → Option (Nat × Shape × Nat)
+  | [], _, _ => none
+  | S :: σ, k, d => if d < S.size then some (k, S, d) else pieceAt σ (k + 1) (d - S.size)
+
+theorem pieceAt_spec : ∀ (σ : List Shape) (k₀ d : Nat) {k : Nat} {S : Shape} {i : Nat},
+    pieceAt σ k₀ d = some (k, S, i) →
+    ∃ j, k = k₀ + j ∧ σ[j]? = some S ∧ d = stackOff σ j + i ∧ i < S.size
+  | [], _, _, _, _, _, h => by cases h
+  | T :: σ, k₀, d, k, S, i, h => by
+    unfold pieceAt at h
+    split at h
+    · next hlt =>
+      cases h
+      exact ⟨0, rfl, rfl, by simp, hlt⟩
+    · next hge =>
+      obtain ⟨j, hk, hj, hd, hi⟩ := pieceAt_spec σ (k₀ + 1) (d - T.size) h
+      refine ⟨j + 1, by omega, hj, ?_, hi⟩
+      show d = T.size + stackOff σ j + i
+      omega
+
+/-- The displacement of a memory operand, where it reaches forward. -/
+def dispOf (disp : BitVec 32) : Option Nat :=
+  if disp.toNat < 2 ^ 31 then some disp.toNat else none
+
+theorem dispOf_spec {disp : BitVec 32} {d : Nat} (h : dispOf disp = some d) : byteDisp d disp := by
+  unfold dispOf at h
+  split at h
+  · next hlt => cases h; exact ⟨by simp, hlt⟩
+  · cases h
+
+/-- Loading the typed value at a place on the stack. -/
+def loadStack (Γ : Ctx) (r : Reg) (disp : BitVec 32) : Option Step :=
+  if r = .rsp then none
+  else match dispOf disp with
+    | none => none
+    | some d =>
+      match pieceAt Γ.stack 0 d with
+      | none => none
+      | some (_, S, i) =>
+        match S.valAt i with
+        | some τ => some ⟨Γ.setReg r τ, True⟩
+        | none => none
+
+/-- Storing a register's eight bytes at a place on the stack: they take its type. -/
+def storeStack (Γ : Ctx) (s : Reg) (disp : BitVec 32) : Option Step :=
+  if s = .rsp then none
+  else match dispOf disp with
+    | none => none
+    | some d =>
+      match pieceAt Γ.stack 0 d with
+      | none => none
+      | some (k, S, i) =>
+        if i + 8 ≤ S.size then
+          some ⟨{ Γ with stack := Γ.stack.set k (S.set i (Γ.regs s)) }, True⟩
+        else none
+
+/-- Making room on the stack: so many bytes of the free room become one
+piece of plain bytes. Left to be shown: that there is that much room. -/
+def allocFrame (Γ : Ctx) (imm : BitVec 32) : Option Step :=
+  match dispOf imm with
+  | none => none
+  | some k =>
+    some ⟨{ Γ.moveSp (-BitVec.ofNat 64 k) with
+      stack := .raw k :: Γ.stack, room := Γ.room - k, flags := Flags.Known }, k ≤ Γ.room⟩
+
+/-- Giving back the pieces at the top of the stack that come to so many bytes. -/
+def freeFrame (Γ : Ctx) (imm : BitVec 32) : Option Step :=
+  match dispOf imm with
+  | none => none
+  | some k =>
+    match stackDrop Γ.stack k with
+    | none => none
+    | some rest =>
+      some ⟨{ Γ.moveSp (BitVec.ofNat 64 k) with
+        stack := rest, room := Γ.room + k, flags := Flags.Known }, True⟩
+
 /-- **The checker for one instruction that goes on to the next.** `next` is
 the address of the instruction after it. -/
 def straight (next : BitVec 64) (Γ : Ctx) : Instr → Option Step
@@ -137,7 +217,11 @@ def straight (next : BitVec 64) (Γ : Ctx) : Instr → Option Step
         flags := (· = Flags.ofResult (0 : BitVec w.bits) false false) }, True⟩
     else aluRR Γ .xor w d s
   | .alu op w (.rm_r (.reg d) s) => aluRR Γ op w d s
+  | .alu .sub .w64 (.rm_i (.reg .rsp) imm) => allocFrame Γ imm
+  | .alu .add .w64 (.rm_i (.reg .rsp) imm) => freeFrame Γ imm
   | .alu op w (.rm_i (.reg d) imm) => aluRI Γ op w d imm
+  | .mov .w64 (.r_m r (.sib (some .rsp) none disp)) => loadStack Γ r disp
+  | .mov .w64 (.rm_r (.mem (.sib (some .rsp) none disp)) s) => storeStack Γ s disp
   | .push r => push Γ r
   | .pop r => pop Γ r
   | .test .w64 (.reg r) (.reg r') => testRR Γ r r'
@@ -238,6 +322,69 @@ theorem pop_sound {r : Reg} {st : Step} (h : pop Γ r = some st) :
       · cases h
     · cases h
 
+theorem loadStack_sound {r : Reg} {disp : BitVec 32} {st : Step}
+    (h : loadStack Γ r disp = some st) :
+    Straight Ψ next Γ (.mov .w64 (.r_m r (.sib (some .rsp) none disp))) st.ctx := by
+  unfold loadStack at h
+  split at h
+  · cases h
+  · next hr =>
+    split at h
+    · cases h
+    · next d hd =>
+      split at h
+      · cases h
+      · next k S i hp =>
+        obtain ⟨j, hk, hj, hoff, _⟩ := pieceAt_spec _ _ _ hp
+        split at h
+        · next τ hv => cases h; exact .loadStack hr (dispOf_spec hd) ⟨hj, hoff⟩ hv
+        · cases h
+
+theorem storeStack_sound {s : Reg} {disp : BitVec 32} {st : Step}
+    (h : storeStack Γ s disp = some st) :
+    Straight Ψ next Γ (.mov .w64 (.rm_r (.mem (.sib (some .rsp) none disp)) s)) st.ctx := by
+  unfold storeStack at h
+  split at h
+  · cases h
+  · next hs =>
+    split at h
+    · cases h
+    · next d hd =>
+      split at h
+      · cases h
+      · next k S i hp =>
+        obtain ⟨j, hk, hj, hoff, _⟩ := pieceAt_spec _ _ _ hp
+        have hkj : k = j := by omega
+        subst hkj
+        split at h
+        · next hsz => cases h; exact .storeStack hs (dispOf_spec hd) ⟨hj, hoff⟩ hsz
+        · cases h
+
+theorem allocFrame_sound {imm : BitVec 32} {st : Step} (h : allocFrame Γ imm = some st)
+    (hn : st.needs) : Straight Ψ next Γ (.alu .sub .w64 (.rm_i (.reg .rsp) imm)) st.ctx := by
+  unfold allocFrame at h
+  split at h
+  · cases h
+  · next k hk =>
+    cases h
+    have hroom : Γ.room = (Γ.room - k) + k := by
+      have : k ≤ Γ.room := hn
+      omega
+    exact .allocFrame (dispOf_spec hk) hroom
+
+theorem freeFrame_sound {imm : BitVec 32} {st : Step} (h : freeFrame Γ imm = some st) :
+    Straight Ψ next Γ (.alu .add .w64 (.rm_i (.reg .rsp) imm)) st.ctx := by
+  unfold freeFrame at h
+  split at h
+  · cases h
+  · next k hk =>
+    split at h
+    · cases h
+    · next rest hd =>
+      cases h
+      obtain ⟨top, hst, hlen⟩ := stackDrop_eq hd
+      exact .freeFrame (dispOf_spec hk) hst hlen
+
 /-- **What the checker works out is a typing step.** -/
 theorem straight_sound {i : Instr} {st : Step} (h : straight next Γ i = some st)
     (hn : st.needs) : Straight Ψ next Γ i st.ctx := by
@@ -265,7 +412,11 @@ theorem straight_sound {i : Instr} {st : Step} (h : straight next Γ i = some st
       · next hd => cases h; exact .xorSelf hd
     · exact aluRR_sound h hn
   · exact aluRR_sound h hn
+  · exact allocFrame_sound h hn
+  · exact freeFrame_sound h
   · exact aluRI_sound h hn
+  · exact loadStack_sound h
+  · exact storeStack_sound h
   · exact push_sound h hn
   · exact pop_sound h
   · exact testRR_sound h
