@@ -65,11 +65,28 @@ def Perm.executable : Perm → Bool
 theorem Perm.readable_of_writable {p : Perm} (h : p.writable = true) : p.readable = true := by
   cases p <;> simp_all [Perm.readable, Perm.writable]
 
-/-- What one `read` from the outside world delivers: some bytes, or an error
-number. -/
+/-- The errors a call may answer with where the choice is the kernel's and
+not settled by what the program asked: the call would have to wait and was
+asked not to, the device failed, there is no room left, the reader of a pipe
+has gone, the file would grow past a limit, or past the user's quota. -/
+inductive Errno
+  | again | io | nospc | pipe | fbig | dquot
+  deriving DecidableEq
+
+/-- The number a call hands back for an error: the negated error number. -/
+def Errno.code : Errno → BitVec 64
+  | .again => -11
+  | .io => -5
+  | .nospc => -28
+  | .pipe => -32
+  | .fbig => -27
+  | .dquot => -122
+
+/-- What one `read` from the outside world delivers: some bytes, or an
+error. -/
 inductive ReadEvent
   | bytes (data : List (BitVec 8))
-  | error (errno : BitVec 64)
+  | error (e : Errno)
 
 /-- What the kernel does with one call, where the choice is its own and not
 settled by what the program asked. -/
@@ -78,8 +95,8 @@ inductive Fate
   | full
   /-- At most this many bytes, where the call is one that may stop early. -/
   | short (n : Nat)
-  /-- Nothing, because the call would have to wait and was asked not to. -/
-  | again
+  /-- Nothing, and this error, where the call is one that may fail with it. -/
+  | fail (e : Errno)
 
 /-- A file: its name, and its bytes. The bytes are what it held to begin
 with, overlaid by what has been written to it since, so that writing costs
@@ -140,9 +157,6 @@ structure World where
   input : List ReadEvent := []
   /-- The bytes of each `write` so far, most recent first. -/
   writes : List (List (BitVec 8)) := []
-  /-- How many bytes each coming `write` will accept at most, one entry per
-  call. When none is left a `write` accepts everything it is given. -/
-  writeCaps : List Nat := []
   /-- Where the kernel would put the memory of each request for some, by the
   number of the request, or `none` to refuse it. Nothing is assumed about
   the choice; the model of `mmap` refuses a place that is not free. -/
@@ -160,9 +174,11 @@ structure World where
   have been handed out. -/
   random : Nat → BitVec 8 := fun _ => 0
   drawn : Nat := 0
-  /-- What the kernel does with each coming `getrandom`, one entry per call.
-  A choice the call does not allow counts as `full`, and so does having none
-  left. -/
+  /-- What the kernel does with each coming call in which it has a choice:
+  one entry for each `write`, each `read` of a file, and each `getrandom`
+  whose flags it accepts, in the order they are made. A choice the call does
+  not allow counts as `full`, and so does having none left. What a `read` of
+  the program's input delivers is in `input`. -/
   fates : List Fate := []
   /-- The time, in seconds and nanoseconds, at each successive asking, and
   how many times it has been asked. -/

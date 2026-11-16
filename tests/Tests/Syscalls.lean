@@ -41,9 +41,9 @@ def after (buf len flags : BitVec 64) (fates : List Fate) (at_ : BitVec 64) :
 -- With `GRND_RANDOM` it may.
 #guard after 0x10000 200 2 [.short 5] 0x10005 == (5, mark)
 -- "Would have to wait" is an answer only to a call that asked not to wait.
-#guard after 0x10000 512 1 [.again] 0x10000 == (-11, mark)
-#guard after 0x10000 512 0 [.again] 0x10000 == (512, 1)
-#guard after 0x10000 512 5 [.again] 0x10000 == (512, 1)
+#guard after 0x10000 512 1 [.fail .again] 0x10000 == (-11, mark)
+#guard after 0x10000 512 0 [.fail .again] 0x10000 == (512, 1)
+#guard after 0x10000 512 5 [.fail .again] 0x10000 == (512, 1)
 -- Flags the kernel refuses, with nothing stored.
 #guard after 0x10000 512 8 [] 0x10000 == (-22, mark)
 #guard after 0x10000 512 6 [] 0x10000 == (-22, mark)
@@ -53,5 +53,68 @@ def after (buf len flags : BitVec 64) (fates : List Fate) (at_ : BitVec 64) :
 #guard after 0x11000 512 0 [] 0x10fff == (-14, mark)
 -- Nothing asked for, nothing stored.
 #guard after 0x10000 0 0 [] 0x10000 == (0, mark)
+
+/-! ## `write` -/
+
+/-- The same page, holding `0, 1, 2, …`, with a `write` of `count` bytes from
+`buf` to standard output about to be made. -/
+def writing (buf count : BitVec 64) (fates : List Fate) : State :=
+  let s := (State.init.setPerm 0x10000 4096 .rw).storeBytes 0x10000
+    ((List.range 4096).map (BitVec.ofNat 8 ·))
+  let s := (((s.setReg .rax 1).setReg .rdi 1).setReg .rsi buf).setReg .rdx count
+  { s with world := { fates := fates } }
+
+/-- The result of the call, and how many bytes reached the output. -/
+def wrote (buf count : BitVec 64) (fates : List Fate) : BitVec 64 × Nat :=
+  let t := Linux.write (writing buf count fates)
+  (t.getReg .rax, t.world.output.length)
+
+-- Everything.
+#guard wrote 0x10000 100 [] == (100, 100)
+-- The kernel took seven; the rest is the program's to send again.
+#guard wrote 0x10000 100 [.short 7] == (7, 7)
+-- It never takes nothing when something was offered.
+#guard wrote 0x10000 100 [.short 0] == (100, 100)
+-- No room left, or the reader gone: an error, and nothing written.
+#guard wrote 0x10000 100 [.fail .nospc] == (-28, 0)
+#guard wrote 0x10000 100 [.fail .pipe] == (-32, 0)
+-- A buffer that runs off the end of the page is written as far as the page goes.
+#guard wrote 0x10fc0 100 [] == (64, 64)
+-- One with no readable byte is a bad address.
+#guard wrote 0x11000 100 [] == (-14, 0)
+-- A descriptor that is not open.
+#guard (Linux.write ((writing 0x10000 100 []).setReg .rdi 7)).getReg .rax == -9
+
+/-! ## `read` -/
+
+/-- The marked page, with a `read` of `count` bytes into `buf` from standard
+input about to be made, and `input` waiting. -/
+def reading (buf count : BitVec 64) (input : List ReadEvent) : State :=
+  let s := (State.init.setPerm 0x10000 4096 .rw).storeBytes 0x10000 (List.replicate 4096 mark)
+  let s := (((s.setReg .rax 0).setReg .rdi 0).setReg .rsi buf).setReg .rdx count
+  { s with world := { input := input } }
+
+def tenBytes : List (BitVec 8) := (List.range 10).map fun i => BitVec.ofNat 8 (i + 1)
+
+/-- The result, the byte at `at_` afterwards, and how many bytes are still
+waiting in the first input event. -/
+def readOf (buf count : BitVec 64) (input : List ReadEvent) (at_ : BitVec 64) :
+    BitVec 64 × BitVec 8 × Nat :=
+  let t := Linux.read (reading buf count input)
+  (t.getReg .rax, t.mem at_, match t.world.input with | .bytes d :: _ => d.length | _ => 0)
+
+-- Ten bytes waiting, sixteen asked for: ten delivered, the eleventh byte untouched.
+#guard readOf 0x10000 16 [.bytes tenBytes] 0x10009 == (10, 10, 0)
+#guard readOf 0x10000 16 [.bytes tenBytes] 0x1000a == (10, mark, 0)
+-- Four asked for: four delivered and six still waiting.
+#guard readOf 0x10000 4 [.bytes tenBytes] 0x10004 == (4, mark, 6)
+-- An error the device reports, with nothing stored.
+#guard readOf 0x10000 16 [.error .io, .bytes tenBytes] 0x10000 == (-5, mark, 10)
+-- Nothing left to read.
+#guard readOf 0x10000 16 [] 0x10000 == (0, mark, 0)
+-- A buffer with three writable bytes takes three; the rest still waits.
+#guard readOf 0x10ffd 16 [.bytes tenBytes] 0x10fff == (3, 3, 7)
+-- One with none is a bad address, and nothing is lost.
+#guard readOf 0x11000 16 [.bytes tenBytes] 0x10fff == (-14, mark, 10)
 
 end Tests.Syscalls

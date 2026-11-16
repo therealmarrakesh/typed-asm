@@ -20,10 +20,11 @@ outside world's business, and nothing is proved from it.
 
 What the model leaves out, none of which touches the above:
 
-* A `write` to a closed pipe raises a signal in the real kernel. Here it
-  does not.
-* A `read` into memory that is not writable fails without consuming input.
-  The real kernel may deliver part of the data first.
+* Signals. A process of the model has no handlers, having no way to install
+  one, so no call is interrupted with `EINTR`. A signal that ends or stops
+  the process does so from outside and is no answer to a call; a `write` to
+  a pipe whose reader has gone is answered with `EPIPE`, as it is when that
+  signal is ignored.
 * There are no directories. A file is found by its whole name, spelled
   exactly as in `World.files`, and a relative name needs `AT_FDCWD`.
 * `openat` understands the access mode and `O_CREAT`, `O_EXCL`, `O_TRUNC`
@@ -64,76 +65,175 @@ the low half of the register. -/
 def fdArg (s : State) (r : Reg) : Nat :=
   ((s.getReg r).setWidth 32).toNat
 
-/-- How many of `count` bytes the next `write` accepts. -/
-def accepted (w : World) (count : Nat) : Nat :=
-  match w.writeCaps with
-  | [] => count
-  | cap :: _ => min count cap
+/-- Counting up from `i`, the first of the next `fuel` bytes at `a` whose
+permission does not satisfy `p`, or `i + fuel` if all do. -/
+def runFrom (s : State) (p : Perm → Bool) (a : BitVec 64) : Nat → Nat → Nat
+  | i, 0 => i
+  | i, fuel + 1 =>
+    if p (s.perm (a + BitVec.ofNat 64 i)) then runFrom s p a (i + 1) fuel else i
 
-/-- `write(fd, buf, count)`: append bytes from `buf` to the output, or store
-them in a file at the descriptor's position. The world says how many of the
-`count` this call accepts; the result is that number, and a program that
-wants everything written must go round again. -/
-def write (s : State) : State :=
+/-- How many of the `n` bytes at `a` can be written before one that cannot:
+as far as the kernel gets when it copies into a buffer. -/
+def writableRun (s : State) (a : BitVec 64) (n : Nat) : Nat :=
+  runFrom s Perm.writable a 0 n
+
+/-- How many of the `n` bytes at `a` can be read before one that cannot: as
+far as the kernel gets when it copies out of a buffer. -/
+def readableRun (s : State) (a : BitVec 64) (n : Nat) : Nat :=
+  runFrom s Perm.readable a 0 n
+
+theorem runFrom_spec (s : State) (p : Perm → Bool) (a : BitVec 64) : ∀ fuel i,
+    i ≤ runFrom s p a i fuel ∧ runFrom s p a i fuel ≤ i + fuel ∧
+    (∀ j, i ≤ j → j < runFrom s p a i fuel → p (s.perm (a + BitVec.ofNat 64 j)) = true) ∧
+    (runFrom s p a i fuel < i + fuel →
+      p (s.perm (a + BitVec.ofNat 64 (runFrom s p a i fuel))) = false)
+  | 0, i => ⟨Nat.le_refl _, Nat.le_refl _, fun j h1 h2 => absurd h2 (by simp only [runFrom]; omega),
+      fun h => absurd h (by simp only [runFrom]; omega)⟩
+  | fuel + 1, i => by
+    by_cases hw : p (s.perm (a + BitVec.ofNat 64 i)) = true
+    · obtain ⟨h1, h2, h3, h4⟩ := runFrom_spec s p a fuel (i + 1)
+      simp only [runFrom, hw, ↓reduceIte]
+      refine ⟨by omega, by omega, fun j hj hlt => ?_, fun h => h4 (by omega)⟩
+      by_cases hji : j = i
+      · rw [hji]; exact hw
+      · exact h3 j (by omega) hlt
+    · simp only [runFrom, hw, Bool.false_eq_true, ↓reduceIte]
+      exact ⟨Nat.le_refl _, by omega, fun j h1 h2 => absurd h2 (by omega),
+        fun _ => trivial⟩
+
+theorem writableRun_le (s : State) (a : BitVec 64) (n : Nat) : writableRun s a n ≤ n := by
+  have := (runFrom_spec s Perm.writable a n 0).2.1
+  simpa [writableRun] using this
+
+theorem canWrite_writableRun (s : State) (a : BitVec 64) (n : Nat) :
+    s.canWrite a (writableRun s a n) = true := by
+  rw [State.canWrite_iff]
+  exact fun i hi => (runFrom_spec s Perm.writable a n 0).2.2.1 i (Nat.zero_le _) hi
+
+theorem canRead_readableRun (s : State) (a : BitVec 64) (n : Nat) :
+    s.canRead a (readableRun s a n) = true := by
+  rw [State.canRead_iff]
+  exact fun i hi => (runFrom_spec s Perm.readable a n 0).2.2.1 i (Nat.zero_le _) hi
+
+theorem readableRun_le (s : State) (a : BitVec 64) (n : Nat) : readableRun s a n ≤ n := by
+  have := (runFrom_spec s Perm.readable a n 0).2.1
+  simpa [readableRun] using this
+
+/-- How many bytes a call hands over when it sets out to hand over `most`
+and the kernel does `d` with it: all of them, or fewer if the kernel stops
+early, but never none. -/
+def taken (d : Fate) (most : Nat) : Nat :=
+  match d with
+  | .short k => if 0 < k then min k most else most
+  | _ => most
+
+theorem taken_le (d : Fate) (most : Nat) : taken d most ≤ most := by
+  unfold taken
+  split
+  · split
+    · exact Nat.min_le_right _ _
+    · exact Nat.le_refl _
+  · exact Nat.le_refl _
+
+/-- A call that hands something over hands over at least one byte. -/
+theorem taken_pos (d : Fate) {most : Nat} (h : 0 < most) : 0 < taken d most := by
+  unfold taken
+  split
+  · split <;> omega
+  · exact h
+
+/-- `write(fd, buf, count)` when the kernel does `d` with it: append bytes
+from `buf` to the output, or store them in a file at the descriptor's
+position. The kernel takes as many bytes as it can read, up to its limit on
+one call, or fewer if it stops early, and the result is how many: a program
+that wants everything written must go round again. Or it fails, with
+nothing written. -/
+def writeBy (d : Fate) (s : State) : State :=
   let fd := fdArg s .rdi
   let buf := s.getReg .rsi
   let count := (s.getReg .rdx).toNat
+  let most := readableRun s buf (min count 0x7ffff000)
+  let n := taken d most
   match s.world.fd? fd with
   | some .stdout =>
-    if s.canRead buf count then
-      let n := accepted s.world count
-      ret { s with
-          world := { s.world with
-            writes := s.loadBytes buf n :: s.world.writes, writeCaps := s.world.writeCaps.tail } }
-        (BitVec.ofNat 64 n)
-    else ret s (-14)
+    if 0 < count ∧ most = 0 then ret s (-14)
+    else match d with
+      | .fail e => ret s e.code
+      | _ =>
+        ret { s with world := { s.world with writes := s.loadBytes buf n :: s.world.writes } }
+          (BitVec.ofNat 64 n)
   | some (.file i pos r w app) =>
     if !w then ret s (-9)
-    else if s.canRead buf count then
+    else if 0 < count ∧ most = 0 then ret s (-14)
+    else
       match s.world.files[i]? with
       | none => ret s (-9)
       | some f =>
-        let n := accepted s.world count
-        let start := if app then f.size else pos
-        ret { s with
-            world := { s.world.setFd fd (.file i (start + n) r w app) with
-              files := s.world.files.setIfInBounds i (f.write start (s.loadBytes buf n))
-              writeCaps := s.world.writeCaps.tail } }
-          (BitVec.ofNat 64 n)
-    else ret s (-14)
+        match d with
+        | .fail e => ret s e.code
+        | _ =>
+          let start := if app then f.size else pos
+          ret { s with
+              world := { s.world.setFd fd (.file i (start + n) r w app) with
+                files := s.world.files.setIfInBounds i (f.write start (s.loadBytes buf n)) } }
+            (BitVec.ofNat 64 n)
   | _ => ret s (-9)
 
-/-- `read(fd, buf, count)`. From the program's input: take the next input
-event; bytes are stored at `buf`, at most `count` of them, and what does not
-fit stays for the next call; with no input left the call returns 0. From a
-file: the bytes at the descriptor's position, up to the end of the file. -/
-def read (s : State) : State :=
+/-- The kernel's decision for the call being made, and the state with that
+decision used up. -/
+def nextFate (s : State) : Fate × State :=
+  (s.world.fates.head?.getD .full, { s with world := { s.world with fates := s.world.fates.tail } })
+
+/-- `write(fd, buf, count)`, with the kernel doing what the world says. -/
+def write (s : State) : State :=
+  writeBy (nextFate s).1 (nextFate s).2
+
+/-- `read(fd, buf, count)` when the kernel does `d` with it. The kernel
+stores as far into the buffer as it can write, `room` bytes, and no further.
+From the program's input: take the next input event; bytes are stored at
+`buf`, at most `room` of them, and what does not fit stays for the next
+call; with no input left the call returns 0. From a file: the bytes at the
+descriptor's position, up to the end of the file, or fewer if the kernel
+stops early; or the device fails, and nothing is stored. -/
+def readBy (d : Fate) (s : State) : State :=
   let fd := fdArg s .rdi
   let buf := s.getReg .rsi
   let count := (s.getReg .rdx).toNat
+  let room := writableRun s buf (min count 0x7ffff000)
   match s.world.fd? fd with
   | some .stdin =>
-    if s.canWrite buf count then
+    if 0 < count ∧ room = 0 then ret s (-14)
+    else
       match s.world.input with
       | [] => ret s 0
-      | .error e :: rest => ret { s with world := { s.world with input := rest } } e
+      | .error e :: rest => ret { s with world := { s.world with input := rest } } e.code
       | .bytes data :: rest =>
-        let chunk := data.take count
-        let left := data.drop count
+        let chunk := data.take room
+        let left := data.drop room
         give s buf chunk (BitVec.ofNat 64 chunk.length)
           { s.world with input := if left.isEmpty then rest else .bytes left :: rest }
-    else ret s (-14)
   | some (.file i pos r w app) =>
     if !r then ret s (-9)
-    else if s.canWrite buf count then
+    else if 0 < count ∧ room = 0 then ret s (-14)
+    else
       match s.world.files[i]? with
       | none => ret s (-9)
       | some f =>
-        let data := (f.read pos count).take count
-        give s buf data (BitVec.ofNat 64 data.length)
-          (s.world.setFd fd (.file i (pos + data.length) r w app))
-    else ret s (-14)
+        match d with
+        | .fail .io => ret s (-5)
+        | _ =>
+          let data := (f.read pos (taken d room)).take room
+          give s buf data (BitVec.ofNat 64 data.length)
+            (s.world.setFd fd (.file i (pos + data.length) r w app))
   | _ => ret s (-9)
+
+/-- `read(fd, buf, count)`, with the kernel doing what the world says. A
+read of the program's input has its answer in `World.input` and uses up no
+decision. -/
+def read (s : State) : State :=
+  match s.world.fd? (fdArg s .rdi) with
+  | some (.file ..) => readBy (nextFate s).1 (nextFate s).2
+  | _ => readBy .full s
 
 /-- The bytes of a zero-terminated string at `a`, without the zero: a name
 as a program hands it to the kernel. It fails if a byte cannot be read, or
@@ -251,41 +351,6 @@ def clockGettime (s : State) : State :=
       { s.world with asks := s.world.asks + 1 }
   else ret s (-14)
 
-/-- Counting up from `i`, the first of the next `fuel` bytes at `a` that is
-not writable, or `i + fuel` if all are. -/
-def runFrom (s : State) (a : BitVec 64) : Nat → Nat → Nat
-  | i, 0 => i
-  | i, fuel + 1 =>
-    if (s.perm (a + BitVec.ofNat 64 i)).writable then runFrom s a (i + 1) fuel else i
-
-/-- How many of the `n` bytes at `a` can be written before one that cannot:
-as far as the kernel gets when it copies into a buffer. -/
-def writableRun (s : State) (a : BitVec 64) (n : Nat) : Nat :=
-  runFrom s a 0 n
-
-theorem runFrom_spec (s : State) (a : BitVec 64) : ∀ fuel i,
-    i ≤ runFrom s a i fuel ∧ runFrom s a i fuel ≤ i + fuel ∧
-    (∀ j, i ≤ j → j < runFrom s a i fuel → (s.perm (a + BitVec.ofNat 64 j)).writable = true) ∧
-    (runFrom s a i fuel < i + fuel →
-      (s.perm (a + BitVec.ofNat 64 (runFrom s a i fuel))).writable = false)
-  | 0, i => ⟨Nat.le_refl _, Nat.le_refl _, fun j h1 h2 => absurd h2 (by simp only [runFrom]; omega),
-      fun h => absurd h (by simp only [runFrom]; omega)⟩
-  | fuel + 1, i => by
-    by_cases hw : (s.perm (a + BitVec.ofNat 64 i)).writable = true
-    · obtain ⟨h1, h2, h3, h4⟩ := runFrom_spec s a fuel (i + 1)
-      simp only [runFrom, hw, ↓reduceIte]
-      refine ⟨by omega, by omega, fun j hj hlt => ?_, fun h => h4 (by omega)⟩
-      by_cases hji : j = i
-      · rw [hji]; exact hw
-      · exact h3 j (by omega) hlt
-    · simp only [runFrom, hw, Bool.false_eq_true, ↓reduceIte]
-      exact ⟨Nat.le_refl _, by omega, fun j h1 h2 => absurd h2 (by omega),
-        fun _ => trivial⟩
-
-theorem writableRun_le (s : State) (a : BitVec 64) (n : Nat) : writableRun s a n ≤ n := by
-  have := (runFrom_spec s a n 0).2.1
-  simpa [writableRun] using this
-
 /-- Whether the call number `318` was handed flags the kernel refuses: a bit
 it does not know, or both `GRND_RANDOM` (2) and `GRND_INSECURE` (4). -/
 def grndBad (s : State) : Bool :=
@@ -327,7 +392,7 @@ def getrandom (s : State) : State :=
   else
     let w := { s.world with fates := s.world.fates.tail }
     match s.world.fates.head? with
-    | some .again =>
+    | some (.fail .again) =>
       if grndMayRefuse s then ret { s with world := w } (-11) else grndDeliver s w (grndMost s)
     | some (.short k) =>
       grndDeliver s w (if grndMayStop s && decide (0 < k) then min k (grndMost s) else grndMost s)
@@ -922,9 +987,43 @@ local macro "fills" : tactic =>
     | (with_reducible exact fills_give (by assumption) (List.length_take_le _ _))
     | split))
 
-theorem write_only (s : State) : OnlyWorld s (write s) := by
-  simp only [write]
+theorem writeBy_only (d : Fate) (s : State) : OnlyWorld s (writeBy d s) := by
+  simp only [writeBy]
   only_world
+
+theorem write_only (s : State) : OnlyWorld s (write s) := by
+  obtain ⟨v, w, e⟩ := writeBy_only (nextFate s).1 (nextFate s).2
+  exact ⟨v, w, e⟩
+
+/-- **What a program may conclude from the result of a `write` to its
+output**, whatever the kernel did with it. Either the call failed, with an
+error number, and nothing was written. Or it answered a count `n`, no more
+than was asked for: then exactly the first `n` bytes of the buffer were
+added to the output. Nothing says `n` is all that was asked for, only that
+it is not zero when something was: a program that goes round again with the
+rest gets somewhere each time. -/
+theorem writeBy_stdout (d : Fate) (s : State)
+    (hfd : s.world.fd? (fdArg s .rdi) = some .stdout) :
+    (SysErr ((writeBy d s).getReg .rax) ∧ (writeBy d s).world = s.world) ∨
+    ∃ n, n ≤ (s.getReg .rdx).toNat ∧ (0 < (s.getReg .rdx).toNat → 0 < n) ∧
+      (writeBy d s).getReg .rax = BitVec.ofNat 64 n ∧
+      (writeBy d s).world.writes = s.loadBytes (s.getReg .rsi) n :: s.world.writes := by
+  have hmost : readableRun s (s.getReg .rsi) (min (s.getReg .rdx).toNat 0x7ffff000)
+      ≤ (s.getReg .rdx).toNat :=
+    Nat.le_trans (readableRun_le _ _ _) (Nat.min_le_left _ _)
+  simp only [writeBy, hfd]
+  split
+  · exact .inl ⟨by rw [ret_rax]; decide, rfl⟩
+  · next h0 =>
+    have hcount : ∀ d' : Fate, taken d' (readableRun s (s.getReg .rsi)
+          (min (s.getReg .rdx).toNat 0x7ffff000)) ≤ (s.getReg .rdx).toNat ∧
+        (0 < (s.getReg .rdx).toNat → 0 < taken d' (readableRun s (s.getReg .rsi)
+          (min (s.getReg .rdx).toNat 0x7ffff000))) :=
+      fun d' => ⟨Nat.le_trans (taken_le _ _) hmost, fun hpos => taken_pos _ (by omega)⟩
+    cases d with
+    | fail e => exact .inl ⟨by rw [ret_rax]; cases e <;> decide, rfl⟩
+    | full => exact .inr ⟨_, (hcount .full).1, (hcount .full).2, ret_rax _ _, rfl⟩
+    | short k => exact .inr ⟨_, (hcount (.short k)).1, (hcount (.short k)).2, ret_rax _ _, rfl⟩
 
 theorem openat_only (s : State) : OnlyWorld s (openat s) := by
   simp only [openat]
@@ -938,9 +1037,38 @@ theorem lseek_only (s : State) : OnlyWorld s (lseek s) := by
   simp only [lseek]
   only_world
 
+/-- A call that stored within a smaller room stored within a larger one. -/
+theorem Fills.mono {buf : BitVec 64} {room room' : Nat} {t : State} (hf : Fills s buf room t)
+    (h : room ≤ room') : Fills s buf room' t := by
+  rcases hf with hf | ⟨data, v, w, hlen, hcan, rfl⟩
+  · exact .inl hf
+  · exact .inr ⟨data, v, w, Nat.le_trans hlen h, hcan, rfl⟩
+
+/-- A call made in a state that differs only in its world fills what it
+would have filled. -/
+theorem Fills.ofWorld {buf : BitVec 64} {room : Nat} {t : State} {w₀ : World}
+    (hf : Fills { s with world := w₀ } buf room t) : Fills s buf room t := by
+  rcases hf with ⟨v, w, rfl⟩ | ⟨data, v, w, hlen, hcan, rfl⟩
+  · exact .inl ⟨v, w, rfl⟩
+  · exact .inr ⟨data, v, w, hlen, hcan, rfl⟩
+
+theorem readBy_fills (d : Fate) (s : State) :
+    Fills s (s.getReg .rsi) (s.getReg .rdx).toNat (readBy d s) := by
+  have hroom : writableRun s (s.getReg .rsi) (min (s.getReg .rdx).toNat 0x7ffff000)
+      ≤ (s.getReg .rdx).toNat :=
+    Nat.le_trans (writableRun_le _ _ _) (Nat.min_le_left _ _)
+  simp only [readBy]
+  repeat' (first
+    | (with_reducible exact Fills.same _ _ _ _)
+    | (with_reducible exact Fills.only _ _ _ _ _)
+    | exact (fills_give (canWrite_writableRun _ _ _) (List.length_take_le _ _)).mono hroom
+    | split)
+
 theorem read_fills (s : State) : Fills s (s.getReg .rsi) (s.getReg .rdx).toNat (read s) := by
   simp only [read]
-  fills
+  split
+  · exact (readBy_fills (nextFate s).1 (nextFate s).2).ofWorld
+  · exact readBy_fills _ s
 
 theorem fstat_fills (s : State) : Fills s (s.getReg .rsi) 144 (fstat s) := by
   simp only [fstat]
@@ -992,24 +1120,19 @@ inductive Getrandom (s : State) : State → Prop
         (s.perm (s.getReg .rdi + BitVec.ofNat 64 data.length)).writable = false)) →
     Getrandom s (give s (s.getReg .rdi) data (BitVec.ofNat 64 data.length) w)
 
-theorem canWrite_writableRun (s : State) (a : BitVec 64) (n : Nat) :
-    s.canWrite a (writableRun s a n) = true := by
-  rw [State.canWrite_iff]
-  exact fun i hi => (runFrom_spec s a n 0).2.2.1 i (Nat.zero_le _) hi
-
 /-- A delivery of an amount the call may deliver is an answer the contract allows. -/
 theorem grndDeliver_allowed (s : State) (w : World) (want : Nat) (hbad : grndBad s = false)
     (hw : SameBut s.world w) (hle : want ≤ grndMost s)
     (hwant : want = grndMost s ∨ (grndMayStop s = true ∧ 0 < want)) :
     Getrandom s (grndDeliver s w want) := by
-  have hrun := runFrom_spec s (s.getReg .rdi) want 0
+  have hrun := runFrom_spec s Perm.writable (s.getReg .rdi) want 0
   have hn : writableRun s (s.getReg .rdi) want ≤ want := writableRun_le _ _ _
   simp only [grndDeliver]
   split
   · next h0 =>
     refine .fault w hbad hw (by omega) ?_
     have := hrun.2.2.2 (by show writableRun s _ want < 0 + want; omega)
-    rw [show runFrom s (s.getReg .rdi) 0 want = 0 from h0.1] at this
+    rw [show runFrom s Perm.writable (s.getReg .rdi) 0 want = 0 from h0.1] at this
     simpa using this
   · next h0 =>
     obtain ⟨fates, drawn, rfl⟩ := hw
@@ -1106,9 +1229,9 @@ theorem getrandom_fills (s : State) :
 theorem writableRun_eq {s : State} {a : BitVec 64} {k n : Nat} (hcan : s.canWrite a k = true)
     (hstop : k = n ∨ (k < n ∧ (s.perm (a + BitVec.ofNat 64 k)).writable = false)) :
     writableRun s a n = k := by
-  obtain ⟨-, h2, h3, h4⟩ := runFrom_spec s a n 0
+  obtain ⟨-, h2, h3, h4⟩ := runFrom_spec s Perm.writable a n 0
   rw [State.canWrite_iff] at hcan
-  show runFrom s a 0 n = k
+  show runFrom s Perm.writable a 0 n = k
   apply Nat.le_antisymm
   · apply Nat.le_of_not_lt
     intro hgt
@@ -1131,7 +1254,7 @@ def withChoices (s : State) (fates : List Fate) (random : Nat → BitVec 8) : St
 theorem getrandom_of_bad {s : State} (h : grndBad s = true) : getrandom s = ret s (-22) := by
   simp [getrandom, h]
 
-theorem getrandom_of_again {s : State} (h : grndBad s = false) (hf : s.world.fates = [.again])
+theorem getrandom_of_again {s : State} (h : grndBad s = false) (hf : s.world.fates = [.fail .again])
     (hr : grndMayRefuse s = true) : ∃ w, getrandom s = ret { s with world := w } (-11) := by
   simp only [getrandom, h, hf, hr, Bool.false_eq_true, ↓reduceIte, List.head?_cons]
   exact ⟨_, rfl⟩
@@ -1163,8 +1286,8 @@ theorem Getrandom.realized {s t : State} (h : Getrandom s t) :
     rw [getrandom_of_bad (s := withChoices s [] fun _ => 0) hbad]
     exact ⟨by rw [ret_rax, ret_rax], rfl⟩
   | again w hbad _ hr =>
-    refine ⟨[.again], fun _ => 0, ?_⟩
-    obtain ⟨w', e⟩ := getrandom_of_again (s := withChoices s [.again] fun _ => 0) hbad rfl hr
+    refine ⟨[.fail .again], fun _ => 0, ?_⟩
+    obtain ⟨w', e⟩ := getrandom_of_again (s := withChoices s [.fail .again] fun _ => 0) hbad rfl hr
     rw [e]
     exact ⟨by rw [ret_rax, ret_rax], rfl⟩
   | fault w hbad _ hpos hperm =>
