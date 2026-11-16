@@ -3819,9 +3819,39 @@ elab "ty_loaded" : tactic => withMainContext do
       -- long run of data takes more nesting than the default allows.
       -- Which it is is told from the goal. Trying the first on a goal of the
       -- other kind fails only after the two have been compared at length.
-      if (t.find? (·.isConstOf ``State.Holds)).isSome then
-        discard <| runOn g (do evalTactic (← `(tactic|
-          exact State.holds_of_check (by set_option maxRecDepth 100000 in decide +kernel))))
+      if let some holds := t.find? (·.isAppOfArity ``State.Holds 2) then
+        -- The state is looked at to see how it was made. One made by loading
+        -- the program needs no byte of memory looked at: that loading puts
+        -- each line in memory is proved once, from a comparison of the lines
+        -- with the segments. Any other state has each byte looked at.
+        let p := holds.appFn!.appArg!
+        let p' ← (do
+          match p.getAppFn.constName? with
+          | some _ => pure ((← unfoldDefinition? p).getD p)
+          | none => pure p)
+        let viaLoad : Option (TSyntax `tactic) ←
+          if p'.isAppOf ``State.setReg then
+            pure (some (← `(tactic|
+              exact Asm.prepared_holds _ _ _ _ _ _ _
+                (by set_option maxRecDepth 100000 in decide +kernel)
+                (by set_option maxRecDepth 100000 in decide +kernel))))
+          else if p'.isAppOf ``Asm.load then
+            pure (some (← `(tactic|
+              exact Asm.load_holds _ _ _ _ (by set_option maxRecDepth 100000 in decide +kernel))))
+          else pure none
+        let done ← match viaLoad with
+          | some tac =>
+            let before ← saveState
+            try
+              discard <| runOn g (do evalTactic tac)
+              pure true
+            catch _ =>
+              before.restore
+              pure false
+          | none => pure false
+        unless done do
+          discard <| runOn g (do evalTactic (← `(tactic|
+            exact State.holds_of_check (by set_option maxRecDepth 100000 in decide +kernel))))
       else
         discard <| runOn g (do evalTactic (← `(tactic|
           (set_option maxRecDepth 100000 in decide +kernel))))
