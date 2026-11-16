@@ -33,6 +33,18 @@ exactly known from the operand. Each stands for the function `Op1.den`. -/
 inductive Op1
   /-- The low 32 bits, extended with zeros: what a 32-bit move leaves. -/
   | low32
+  | neg (w : Width)
+  | not (w : Width)
+  | popcnt (w : Width)
+  | bswap (w : Width)
+  /-- The sign of the low 32 bits, or of all 64, in every bit. -/
+  | fill32
+  | fill64
+  /-- The low 32 bits extended with their sign. -/
+  | sext32
+  /-- A narrow value extended with zeros, or with its sign, at a width. -/
+  | zx (w : Width) (sw : NarrowW)
+  | sx (w : Width) (sw : NarrowW)
   deriving DecidableEq, Repr
 
 /-- An operation of two values, likewise. -/
@@ -43,6 +55,15 @@ inductive Op2
 
 def Op1.den : Op1 → BitVec 64 → BitVec 64
   | .low32, a => (a.setWidth 32).setWidth 64
+  | .neg w, a => (subBorrow 0 (a.setWidth w.bits) false).1.setWidth 64
+  | .not w, a => (~~~(a.setWidth w.bits)).setWidth 64
+  | .popcnt w, a => (popcount (a.setWidth w.bits)).setWidth 64
+  | .bswap w, a => (TypedAsm.bswap w (a.setWidth w.bits)).setWidth 64
+  | .fill32, a => (signFill (a.setWidth 32)).setWidth 64
+  | .fill64, a => signFill a
+  | .sext32, a => (a.setWidth 32).signExtend 64
+  | .zx w sw, a => ((a.setWidth sw.bits).setWidth w.bits).setWidth 64
+  | .sx w sw, a => ((a.setWidth sw.bits).signExtend w.bits).setWidth 64
 
 def Op2.den : Op2 → BitVec 64 → BitVec 64 → BitVec 64
   | .alu op .w64, a, b => (op.apply a b).1
@@ -116,6 +137,9 @@ inductive FlagsS
   | alu (op : AluOp) (w : Width) (a b : Val)
   /-- They are exactly what a `test` of two values left. -/
   | test (a b : Val)
+  /-- They are exactly what negating a value, or counting its bits, left. -/
+  | neg (w : Width) (a : Val)
+  | popcnt (w : Width) (a : Val)
   /-- They are exactly these. -/
   | lit (f : Flags)
   | atom (i : Nat)
@@ -261,6 +285,9 @@ def den (ρ : Env) : FlagsS → Flags → Prop
   | .alu op .w64 a b => (· = (op.apply (a.den ρ) (b.den ρ)).2)
   | .alu op .w32 a b => (· = (op.apply ((a.den ρ).setWidth 32) ((b.den ρ).setWidth 32)).2)
   | .test a b => (· = Flags.ofResult (a.den ρ &&& b.den ρ) false false)
+  | .neg w a => (· = (subBorrow 0 ((a.den ρ).setWidth w.bits) false).2)
+  | .popcnt w a =>
+    (· = ⟨some false, some ((a.den ρ).setWidth w.bits == 0), some false, some false⟩)
   | .lit f => (· = f)
   | .atom i => ρ.flags.getD i Flags.Any
 
@@ -350,6 +377,19 @@ theorem den_setReg_flags (ρ : Env) (Γ : CtxS) (r : Reg) (τ : TyS) (fl : Flags
       = { (Γ.den ρ).setReg r (τ.den ρ) with flags := fl.den ρ } := by
   show ({ (Γ.setReg r τ).den ρ with flags := fl.den ρ } : Ctx) = _
   rw [den_setReg]
+
+theorem den_setReg_mk1 (ρ : Env) (Γ : CtxS) (r : Reg) (f : Op1) (a : Val) :
+    (Γ.setReg r (.eq (.mk1 f a))).den ρ = (Γ.den ρ).setReg r (.eq (f.den (a.den ρ))) := by
+  rw [den_setReg]
+  show CtxOf.setReg _ _ (.eq ((Val.mk1 f a).den ρ)) = _
+  rw [Val.den_mk1]
+
+theorem den_setReg_mk1_flags (ρ : Env) (Γ : CtxS) (r : Reg) (f : Op1) (a : Val) (fl : FlagsS) :
+    CtxS.den ρ { Γ.setReg r (.eq (.mk1 f a)) with flags := fl }
+      = { (Γ.den ρ).setReg r (.eq (f.den (a.den ρ))) with flags := fl.den ρ } := by
+  rw [den_setReg_flags]
+  show ({ CtxOf.setReg _ _ (.eq ((Val.mk1 f a).den ρ)) with flags := _ } : Ctx) = _
+  rw [Val.den_mk1]
 
 end CtxS
 
@@ -1662,6 +1702,37 @@ theorem writes_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {n :
     · cases h
   · cases h
 
+/-- A narrower value in a register extended into another: exactly known
+where the source is. -/
+def extendReg (Γ : CtxS) (d r : Reg) (f : Op1) : Option (CtxS × List CondS) :=
+  if d = .rsp then none
+  else match exactly (Γ.regs.get r) with
+    | some a =>
+      if r = .rsp then some (Γ.setReg d .int, []) else some (Γ.setReg d (.eq (.mk1 f a)), [])
+    | none => some (Γ.setReg d .int, [])
+
+/-- What `extendReg` gives: the register and its exactly known value, or
+that the result is a number. -/
+theorem extendReg_spec {ρ : Env} {Γ : CtxS} {d r : Reg} {f : Op1} {x : CtxS × List CondS}
+    (h : extendReg Γ d r f = some x) :
+    d ≠ .rsp ∧ ((∃ a, r ≠ .rsp ∧ (Γ.den ρ).regs r = .eq a ∧
+        x.1.den ρ = (Γ.den ρ).setReg d (.eq (f.den a))) ∨
+      x.1.den ρ = (Γ.den ρ).setReg d .int) := by
+  unfold extendReg at h
+  split at h
+  · cases h
+  · next hd =>
+    refine ⟨hd, ?_⟩
+    split at h
+    · next a ha =>
+      split at h
+      · cases h; exact .inr (CtxS.den_setReg ρ Γ d .int)
+      · next hr =>
+        cases h
+        exact .inl ⟨a.den ρ, hr, by rw [CtxS.den_regs, exactly_den ha],
+          CtxS.den_setReg_mk1 ρ Γ d f a⟩
+    · cases h; exact .inr (CtxS.den_setReg ρ Γ d .int)
+
 /-- Arithmetic with its first operand in memory. -/
 def aluMem (Γ : CtxS) (op : AluOp) (w : Width) (m : Mem) : Option (CtxS × List CondS) :=
   if op.writesDst then
@@ -1703,114 +1774,38 @@ theorem reads_map {Γ : CtxS} {n : Nat} {m : Mem} {f : List CondS → CtxS × Li
   | none => rw [hr] at h; cases h
   | some cs => rw [hr] at h; cases h; exact ⟨cs, rfl, rfl⟩
 
-/-- **The checker** for an instruction that goes on to the next. It gives the
-context afterwards and what is left to be shown. -/
-def step (next : BitVec 64) (Γ : CtxS) : Instr → Option (CtxS × List CondS)
-  | .nop => some (Γ, [])
-  | .mov .w64 (.rm_r (.reg d) s) =>
+/-- The checker for `mov`. -/
+def stepMov (next : BitVec 64) (Γ : CtxS) (w : Width) (ops : Operands) :
+    Option (CtxS × List CondS) :=
+  match w, ops with
+  | .w64, (.rm_r (.reg d) s) =>
     if d = .rsp ∨ s = .rsp then none else some (Γ.setReg d (Γ.regs.get s), [])
-  | .mov .w32 (.rm_r (.reg d) s) =>
+  | .w32, (.rm_r (.reg d) s) =>
     if d = .rsp then none
     else match exactly (Γ.regs.get s) with
       | some a =>
         if s = .rsp then some (Γ.setReg d .int, [])
         else some (Γ.setReg d (.eq (.mk1 .low32 a)), [])
       | none => some (Γ.setReg d .int, [])
-  | .mov w (.rm_i (.reg d) imm) =>
+  | w, (.rm_i (.reg d) imm) =>
     if d = .rsp then none
     else some (Γ.setReg d (.eq (.lit ((imm.signExtend w.bits).setWidth 64))), [])
-  | .movAbs d imm => if d = .rsp then none else some (Γ.setReg d (.eq (.lit imm)), [])
-  | .lea .w64 d (.rip disp) =>
-    if d = .rsp then none else some (Γ.setReg d (.eq (.lit (next + disp.signExtend 64))), [])
-  | .alu .sub .w64 (.rm_i (.reg .rsp) imm) => allocFrame Γ imm
-  | .alu .add .w64 (.rm_i (.reg .rsp) imm) => freeFrame Γ imm
-  | .mov .w64 (.r_m r (.sib (some .rsp) none disp)) => loadStack Γ r disp
-  | .mov .w64 (.rm_r (.mem (.sib (some .rsp) none disp)) s) => storeStack Γ s disp
-  | .push r => push Γ r
-  | .pop r => pop Γ r
-  | .mov .w64 (.r_m d m) => load Γ d m
-  | .mov w (.r_m d m) =>
+  | .w64, (.r_m r (.sib (some .rsp) none disp)) => loadStack Γ r disp
+  | .w64, (.rm_r (.mem (.sib (some .rsp) none disp)) s) => storeStack Γ s disp
+  | .w64, (.r_m d m) => load Γ d m
+  | w, (.r_m d m) =>
     if d = .rsp then none else (reads Γ w.bytes.toNat m).map fun cs => (Γ.setReg d .int, cs)
-  | .alu op w (.r_m d m) =>
-    if d = .rsp then none
-    else (reads Γ w.bytes.toNat m).map fun cs => (afterAlu Γ op d, cs ++ carryConds Γ.flags op)
-  | .mov .w32 (.rm_r (.mem m) _) => writes Γ 4 m
-  | .mov w (.rm_i (.mem m) _) => writes Γ w.bytes.toNat m
-  | .store8 m _ => writes Γ 1 m
-  | .store16 m _ => writes Γ 2 m
-  | .alu op w (.rm_r (.mem m) _) => aluMem Γ op w m
-  | .alu op w (.rm_i (.mem m) _) => aluMem Γ op w m
-  | .test w (.mem m) _ =>
-    (reads Γ w.bytes.toNat m).map fun cs => ({ Γ with flags := .known }, cs)
-  | .imul2 w d (.mem m) =>
-    if d = .rsp then none
-    else (reads Γ w.bytes.toNat m).map fun cs =>
-      ({ Γ.setReg d .int with flags := .defined true false false true }, cs)
-  | .imul3 w d (.mem m) _ =>
-    if d = .rsp then none
-    else (reads Γ w.bytes.toNat m).map fun cs =>
-      ({ Γ.setReg d .int with flags := .defined true false false true }, cs)
-  | .popcnt w d (.mem m) =>
-    if d = .rsp then none
-    else (reads Γ w.bytes.toNat m).map fun cs => ({ Γ.setReg d .int with flags := .known }, cs)
-  | .movsxd d (.mem m) =>
-    if d = .rsp then none else (reads Γ 4 m).map fun cs => (Γ.setReg d .int, cs)
-  | .movzx _ d sw (.mem m) =>
-    if d = .rsp then none else (reads Γ sw.bytes m).map fun cs => (Γ.setReg d .int, cs)
-  | .movsx _ d sw (.mem m) =>
-    if d = .rsp then none else (reads Γ sw.bytes m).map fun cs => (Γ.setReg d .int, cs)
-  | .alu op w (.rm_r (.reg d) s) =>
-    if d = .rsp then none
-    else if op = .xor ∧ d = s then
-      some ({ Γ.setReg d (.eq (.lit 0)) with
-        flags := .lit (Flags.ofResult (0 : BitVec w.bits) false false) }, [])
-    else match exactly (Γ.regs.get d), exactly (Γ.regs.get s) with
-      | some a, some b =>
-        if s = .rsp ∨ op.readsCarry = true then some (afterAlu Γ op d, carryConds Γ.flags op)
-        else
-          some ({ (bif op.writesDst then Γ.setReg d (.eq (.mk2 (.alu op w) a b)) else Γ) with
-            flags := .alu op w a b }, [])
-      | _, _ => some (afterAlu Γ op d, carryConds Γ.flags op)
-  | .alu op w (.rm_i (.reg d) imm) =>
-    if d = .rsp then none
-    else match Γ.regs.get d with
-      | .eq a =>
-        if op.readsCarry = true then some (afterAlu Γ op d, carryConds Γ.flags op)
-        else
-          some ({ (bif op.writesDst then
-              Γ.setReg d (.eq (.mk2 (.alu op w) a (immVal w imm))) else Γ) with
-            flags := .alu op w a (immVal w imm) }, [])
-      | .int => some (afterAlu Γ op d, carryConds Γ.flags op)
-      | .ptr S wr off =>
-        -- a pointer moved on stays a pointer into its block, that much further in
-        match op, w with
-        | .add, .w64 =>
-          if imm.toNat < 2 ^ 31 then
-            some ({ Γ.setReg d (.ptr S wr (off.plus (.lit imm.toNat))) with flags := .known }, [])
-          else none
-        | _, _ => none
-      | .str true =>
-        match op, w with
-        | .add, .w64 =>
-          if imm = 1 then some ({ Γ.setReg d (.str false) with flags := .known }, []) else none
-        | _, _ => none
-      | _ => none
-  | .test .w64 (.reg r) (.reg r') =>
-    match exactly (Γ.regs.get r), exactly (Γ.regs.get r') with
-    | some a, some b =>
-      if r = .rsp ∨ r' = .rsp then some ({ Γ with flags := .known }, [])
-      else some ({ Γ with flags := .test a b }, [])
-    | _, _ => some ({ Γ with flags := .known }, [])
-  | .test _ (.reg _) _ => some ({ Γ with flags := .known }, [])
-  | _ => none
+  | .w32, (.rm_r (.mem m) _) => writes Γ 4 m
+  | w, (.rm_i (.mem m) _) => writes Γ w.bytes.toNat m
+  | _, _ => none
 
-/-- **What the checker works out is a typing step.** -/
-theorem step_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {i : Instr}
-    {x : CtxS × List CondS} (h : step next Γ i = some x) (hn : CondS.all ρ x.2) :
-    Straight Ψ next (Γ.den ρ) i (x.1.den ρ) := by
-  unfold step at h
+theorem stepMov_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
+    
+    {x : CtxS × List CondS} (h : stepMov next Γ w ops = some x)
+    (hn : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) (.mov w ops) (x.1.den ρ) := by
+  unfold stepMov at h
   split at h
-  · cases h; exact .nop
   · split at h
     · cases h
     · next hc =>
@@ -1834,18 +1829,8 @@ theorem step_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {i : I
   · split at h
     · cases h
     · next hd => cases h; rw [CtxS.den_setReg]; exact .movRI hd
-  · split at h
-    · cases h
-    · next hd => cases h; rw [CtxS.den_setReg]; exact .movAbs hd
-  · split at h
-    · cases h
-    · next hd => cases h; rw [CtxS.den_setReg]; exact .leaRip hd
-  · exact allocFrame_sound h hn
-  · exact freeFrame_sound h
   · exact loadStack_sound h
   · exact storeStack_sound h
-  · exact push_sound h hn
-  · exact pop_sound h
   · exact load_sound h hn
   · split at h
     · cases h
@@ -1856,6 +1841,129 @@ theorem step_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {i : I
         rw [hr] at h; cases h
         rw [CtxS.den_setReg]
         exact .loadInt hd (reads_sound hr hn)
+  · exact .storeInt (writes_sound h hn).1
+  · exact .storeImm (writes_sound h hn).1
+  · cases h
+
+/-- The checker for `lea`. -/
+def stepLea (next : BitVec 64) (Γ : CtxS) (w : Width) (d : Reg) (m : Mem) :
+    Option (CtxS × List CondS) :=
+  match w, d, m with
+  | .w64, d, (.rip disp) =>
+    if d = .rsp then none else some (Γ.setReg d (.eq (.lit (next + disp.signExtend 64))), [])
+  | .w64, d, (.sib (some b) none disp) =>
+    if d = .rsp then none
+    else match exactly (Γ.regs.get b) with
+      | some a => some (Γ.setReg d (.eq (.add a (.lit (disp.signExtend 64)))), [])
+      | none => some (Γ.setReg d .int, [])
+  | .w64, d, (.sib (some b) (some (x, sc)) disp) =>
+    if d = .rsp then none
+    else match exactly (Γ.regs.get b), exactly (Γ.regs.get x.toReg) with
+      | some a, some c =>
+        if b = .rsp then some (Γ.setReg d .int, [])
+        else
+          some (Γ.setReg d (.eq (.add (.add a (.shl c sc.shift)) (.lit (disp.signExtend 64)))), [])
+      | _, _ => some (Γ.setReg d .int, [])
+  | _, d, _ => if d = .rsp then none else some (Γ.setReg d .int, [])
+
+theorem stepLea_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
+    
+    {x : CtxS × List CondS} (h : stepLea next Γ w d m = some x)
+    (hn : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) (.lea w d m) (x.1.den ρ) := by
+  unfold stepLea at h
+  split at h
+  · split at h
+    · cases h
+    · next hd => cases h; rw [CtxS.den_setReg]; exact .leaRip hd
+  · next b disp =>
+    split at h
+    · cases h
+    · next hd =>
+      split at h
+      · next a ha =>
+        cases h
+        rw [CtxS.den_setReg]
+        have hΓ : (Γ.den ρ).regs b = .eq (a.den ρ) := by rw [CtxS.den_regs, exactly_den ha]
+        by_cases hb : b = .rsp
+        · subst hb; exact .leaSp hd hΓ
+        · exact .leaExactB hd hb hΓ
+      · cases h; rw [CtxS.den_setReg]; exact .lea hd
+  · next b x sc disp =>
+    split at h
+    · cases h
+    · next hd =>
+      split at h
+      · next a c ha hc =>
+        split at h
+        · cases h; rw [CtxS.den_setReg]; exact .lea hd
+        · next hb =>
+          cases h
+          rw [CtxS.den_setReg]
+          exact .leaExactBI hd hb (by rw [CtxS.den_regs, exactly_den ha])
+            (by rw [CtxS.den_regs, exactly_den hc])
+      · cases h; rw [CtxS.den_setReg]; exact .lea hd
+  · split at h
+    · cases h
+    · next hd => cases h; rw [CtxS.den_setReg]; exact .lea hd
+
+/-- The checker for `alu`. -/
+def stepAlu (next : BitVec 64) (Γ : CtxS) (op : AluOp) (w : Width) (ops : Operands) :
+    Option (CtxS × List CondS) :=
+  match op, w, ops with
+  | .sub, .w64, (.rm_i (.reg .rsp) imm) => allocFrame Γ imm
+  | .add, .w64, (.rm_i (.reg .rsp) imm) => freeFrame Γ imm
+  | op, w, (.r_m d m) =>
+    if d = .rsp then none
+    else (reads Γ w.bytes.toNat m).map fun cs => (afterAlu Γ op d, cs ++ carryConds Γ.flags op)
+  | op, w, (.rm_r (.mem m) _) => aluMem Γ op w m
+  | op, w, (.rm_i (.mem m) _) => aluMem Γ op w m
+  | op, w, (.rm_r (.reg d) s) =>
+    if d = .rsp then none
+    else if op = .xor ∧ d = s then
+      some ({ Γ.setReg d (.eq (.lit 0)) with
+        flags := .lit (Flags.ofResult (0 : BitVec w.bits) false false) }, [])
+    else match exactly (Γ.regs.get d), exactly (Γ.regs.get s) with
+      | some a, some b =>
+        if s = .rsp ∨ op.readsCarry = true then some (afterAlu Γ op d, carryConds Γ.flags op)
+        else
+          some ({ (bif op.writesDst then Γ.setReg d (.eq (.mk2 (.alu op w) a b)) else Γ) with
+            flags := .alu op w a b }, [])
+      | _, _ => some (afterAlu Γ op d, carryConds Γ.flags op)
+  | op, w, (.rm_i (.reg d) imm) =>
+    if d = .rsp then none
+    else match Γ.regs.get d with
+      | .eq a =>
+        if op.readsCarry = true then some (afterAlu Γ op d, carryConds Γ.flags op)
+        else
+          some ({ (bif op.writesDst then
+              Γ.setReg d (.eq (.mk2 (.alu op w) a (immVal w imm))) else Γ) with
+            flags := .alu op w a (immVal w imm) }, [])
+      | .int => some (afterAlu Γ op d, carryConds Γ.flags op)
+      | .ptr S wr off =>
+        -- a pointer moved on stays a pointer into its block, that much further in
+        match op, w with
+        | .add, .w64 =>
+          if imm.toNat < 2 ^ 31 then
+            some ({ Γ.setReg d (.ptr S wr (off.plus (.lit imm.toNat))) with flags := .known }, [])
+          else none
+        | _, _ => none
+      | .str true =>
+        match op, w with
+        | .add, .w64 =>
+          if imm = 1 then some ({ Γ.setReg d (.str false) with flags := .known }, []) else none
+        | _, _ => none
+      | _ => none
+
+theorem stepAlu_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
+    
+    {x : CtxS × List CondS} (h : stepAlu next Γ op w ops = some x)
+    (hn : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) (.alu op w ops) (x.1.den ρ) := by
+  unfold stepAlu at h
+  split at h
+  · exact allocFrame_sound h hn
+  · exact freeFrame_sound h
   · split at h
     · cases h
     · next hd =>
@@ -1866,49 +1974,13 @@ theorem step_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {i : I
         obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hn
         rw [den_afterAlu]
         exact .aluLoad hd (reads_sound hr h₁) (carryConds_spec h₂)
-  · exact .storeInt (writes_sound h hn).1
-  · exact .storeImm (writes_sound h hn).1
-  · exact .store8RM (writes_sound h hn).1
-  · exact .store16RM (writes_sound h hn).1
   · rcases aluMem_spec (Ψ := Ψ) (next := next) h hn with ⟨hwd, Γ', e, hr, hw, hcf⟩ | ⟨hwd, e, hr⟩
     · rw [e]; exact .aluStoreR hwd hr hw hcf
     · rw [e]; exact .cmpR hwd hr
   · rcases aluMem_spec (Ψ := Ψ) (next := next) h hn with ⟨hwd, Γ', e, hr, hw, hcf⟩ | ⟨hwd, e, hr⟩
     · rw [e]; exact .aluStoreI hwd hr hw hcf
     · rw [e]; exact .cmpI hwd hr
-  · obtain ⟨cs, hr, rfl⟩ := reads_map h
-    exact .testRM (reads_sound hr hn)
-  · split at h
-    · cases h
-    · next hd =>
-      obtain ⟨cs, hr, rfl⟩ := reads_map h
-      exact cast_ctx (.imul2RM hd (reads_sound hr hn)) (by rw [CtxS.den_setReg_flags]; rfl)
-  · split at h
-    · cases h
-    · next hd =>
-      obtain ⟨cs, hr, rfl⟩ := reads_map h
-      exact cast_ctx (.imul3RM hd (reads_sound hr hn)) (by rw [CtxS.den_setReg_flags]; rfl)
-  · split at h
-    · cases h
-    · next hd =>
-      obtain ⟨cs, hr, rfl⟩ := reads_map h
-      exact cast_ctx (.popcntRM hd (reads_sound hr hn)) (by rw [CtxS.den_setReg_flags]; rfl)
-  · split at h
-    · cases h
-    · next hd =>
-      obtain ⟨cs, hr, rfl⟩ := reads_map h
-      rw [CtxS.den_setReg]; exact .movsxdRM hd (reads_sound hr hn)
-  · split at h
-    · cases h
-    · next hd =>
-      obtain ⟨cs, hr, rfl⟩ := reads_map h
-      rw [CtxS.den_setReg]; exact .movzxRM hd (reads_sound hr hn)
-  · split at h
-    · cases h
-    · next hd =>
-      obtain ⟨cs, hr, rfl⟩ := reads_map h
-      rw [CtxS.den_setReg]; exact .movsxRM hd (reads_sound hr hn)
-  · next op w d s =>
+  · next d s =>
     split at h
     · cases h
     next hd =>
@@ -1951,7 +2023,7 @@ theorem step_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {i : I
               flags := _ } : Ctx) = _
             rw [Val.den_mk2]; rfl
     · cases h; rw [den_afterAlu]; exact .aluRR hd (carryConds_spec hn)
-  · next op w d imm _ _ =>
+  · next d imm _ _ =>
     split at h
     · cases h
     next hd =>
@@ -2017,6 +2089,30 @@ theorem step_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {i : I
         · cases h
       · cases h
     · cases h
+
+/-- The checker for `test`. -/
+def stepTest (next : BitVec 64) (Γ : CtxS) (w : Width) (dst : RM) (src : RI) :
+    Option (CtxS × List CondS) :=
+  match w, dst, src with
+  | w, (.mem m), _ =>
+    (reads Γ w.bytes.toNat m).map fun cs => ({ Γ with flags := .known }, cs)
+  | .w64, (.reg r), (.reg r') =>
+    match exactly (Γ.regs.get r), exactly (Γ.regs.get r') with
+    | some a, some b =>
+      if r = .rsp ∨ r' = .rsp then some ({ Γ with flags := .known }, [])
+      else some ({ Γ with flags := .test a b }, [])
+    | _, _ => some ({ Γ with flags := .known }, [])
+  | _, (.reg _), _ => some ({ Γ with flags := .known }, [])
+
+theorem stepTest_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
+    
+    {x : CtxS × List CondS} (h : stepTest next Γ w dst src = some x)
+    (hn : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) (.test w dst src) (x.1.den ρ) := by
+  unfold stepTest at h
+  split at h
+  · obtain ⟨cs, hr, rfl⟩ := reads_map h
+    exact .testRM (reads_sound hr hn)
   · next r r' =>
     split at h
     · next a b ha hb =>
@@ -2028,6 +2124,299 @@ theorem step_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {i : I
           (by rw [CtxS.den_regs, exactly_den ha]) (by rw [CtxS.den_regs, exactly_den hb])
     · cases h; exact .testRM (.reg _)
   · cases h; exact .testRM (.reg _)
+
+/-- The checker for `imul2`. -/
+def stepImul2 (next : BitVec 64) (Γ : CtxS) (w : Width) (d : Reg) (src : RM) :
+    Option (CtxS × List CondS) :=
+  match w, d, src with
+  | w, d, (.mem m) =>
+    if d = .rsp then none
+    else (reads Γ w.bytes.toNat m).map fun cs =>
+      ({ Γ.setReg d .int with flags := .defined true false false true }, cs)
+  | _, _, _ => none
+
+theorem stepImul2_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
+    
+    {x : CtxS × List CondS} (h : stepImul2 next Γ w d src = some x)
+    (hn : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) (.imul2 w d src) (x.1.den ρ) := by
+  unfold stepImul2 at h
+  split at h
+  · split at h
+    · cases h
+    · next hd =>
+      obtain ⟨cs, hr, rfl⟩ := reads_map h
+      exact cast_ctx (.imul2RM hd (reads_sound hr hn)) (by rw [CtxS.den_setReg_flags]; rfl)
+  · cases h
+
+/-- The checker for `imul3`. -/
+def stepImul3 (next : BitVec 64) (Γ : CtxS) (w : Width) (d : Reg) (src : RM) (imm : BitVec 32) :
+    Option (CtxS × List CondS) :=
+  match w, d, src, imm with
+  | w, d, (.mem m), _ =>
+    if d = .rsp then none
+    else (reads Γ w.bytes.toNat m).map fun cs =>
+      ({ Γ.setReg d .int with flags := .defined true false false true }, cs)
+  | _, _, _, _ => none
+
+theorem stepImul3_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
+    
+    {x : CtxS × List CondS} (h : stepImul3 next Γ w d src imm = some x)
+    (hn : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) (.imul3 w d src imm) (x.1.den ρ) := by
+  unfold stepImul3 at h
+  split at h
+  · split at h
+    · cases h
+    · next hd =>
+      obtain ⟨cs, hr, rfl⟩ := reads_map h
+      exact cast_ctx (.imul3RM hd (reads_sound hr hn)) (by rw [CtxS.den_setReg_flags]; rfl)
+  · cases h
+
+/-- The checker for `popcnt`. -/
+def stepPopcnt (next : BitVec 64) (Γ : CtxS) (w : Width) (d : Reg) (src : RM) :
+    Option (CtxS × List CondS) :=
+  match w, d, src with
+  | w, d, (.mem m) =>
+    if d = .rsp then none
+    else (reads Γ w.bytes.toNat m).map fun cs => ({ Γ.setReg d .int with flags := .known }, cs)
+  | w, d, (.reg r) =>
+    if d = .rsp then none
+    else match exactly (Γ.regs.get r) with
+      | some a =>
+        if r = .rsp then some ({ Γ.setReg d .int with flags := .known }, [])
+        else some ({ Γ.setReg d (.eq (.mk1 (.popcnt w) a)) with flags := .popcnt w a }, [])
+      | none => some ({ Γ.setReg d .int with flags := .known }, [])
+
+theorem stepPopcnt_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
+    
+    {x : CtxS × List CondS} (h : stepPopcnt next Γ w d src = some x)
+    (hn : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) (.popcnt w d src) (x.1.den ρ) := by
+  unfold stepPopcnt at h
+  split at h
+  · split at h
+    · cases h
+    · next hd =>
+      obtain ⟨cs, hr, rfl⟩ := reads_map h
+      exact cast_ctx (.popcntRM hd (reads_sound hr hn)) (by rw [CtxS.den_setReg_flags]; rfl)
+  · next r =>
+    split at h
+    · cases h
+    · next hd =>
+      split at h
+      · next a ha =>
+        split at h
+        · cases h
+          exact cast_ctx (.popcntRM hd (.reg _)) (by rw [CtxS.den_setReg_flags]; rfl)
+        · next hr =>
+          cases h
+          exact cast_ctx (.popcntExact hd hr (by rw [CtxS.den_regs, exactly_den ha]))
+            (CtxS.den_setReg_mk1_flags ρ Γ d (.popcnt w) a (.popcnt w a))
+      · cases h
+        exact cast_ctx (.popcntRM hd (.reg _)) (by rw [CtxS.den_setReg_flags]; rfl)
+
+/-- The checker for `movsxd`. -/
+def stepMovsxd (next : BitVec 64) (Γ : CtxS) (d : Reg) (src : RM) :
+    Option (CtxS × List CondS) :=
+  match d, src with
+  | d, (.mem m) =>
+    if d = .rsp then none else (reads Γ 4 m).map fun cs => (Γ.setReg d .int, cs)
+  | d, (.reg r) => extendReg Γ d r .sext32
+
+theorem stepMovsxd_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
+    
+    {x : CtxS × List CondS} (h : stepMovsxd next Γ d src = some x)
+    (hn : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) (.movsxd d src) (x.1.den ρ) := by
+  unfold stepMovsxd at h
+  split at h
+  · split at h
+    · cases h
+    · next hd =>
+      obtain ⟨cs, hr, rfl⟩ := reads_map h
+      rw [CtxS.den_setReg]; exact .movsxdRM hd (reads_sound hr hn)
+  · obtain ⟨hd, ⟨a, hr, hΓ, e⟩ | e⟩ := extendReg_spec (ρ := ρ) h
+    · rw [e]; exact .movsxdExact hd hr hΓ
+    · rw [e]; exact .movsxdRM hd (.reg _)
+
+/-- The checker for `movzx`. -/
+def stepMovzx (next : BitVec 64) (Γ : CtxS) (w : Width) (d : Reg) (sw : NarrowW) (src : RM) :
+    Option (CtxS × List CondS) :=
+  match w, d, sw, src with
+  | _, d, sw, (.mem m) =>
+    if d = .rsp then none else (reads Γ sw.bytes m).map fun cs => (Γ.setReg d .int, cs)
+  | w, d, sw, (.reg r) => extendReg Γ d r (.zx w sw)
+
+theorem stepMovzx_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
+    
+    {x : CtxS × List CondS} (h : stepMovzx next Γ w d sw src = some x)
+    (hn : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) (.movzx w d sw src) (x.1.den ρ) := by
+  unfold stepMovzx at h
+  split at h
+  · split at h
+    · cases h
+    · next hd =>
+      obtain ⟨cs, hr, rfl⟩ := reads_map h
+      rw [CtxS.den_setReg]; exact .movzxRM hd (reads_sound hr hn)
+  · obtain ⟨hd, ⟨a, hr, hΓ, e⟩ | e⟩ := extendReg_spec (ρ := ρ) h
+    · rw [e]; exact .movzxExact hd hr hΓ
+    · rw [e]; exact .movzxRM hd (.reg _)
+
+/-- The checker for `movsx`. -/
+def stepMovsx (next : BitVec 64) (Γ : CtxS) (w : Width) (d : Reg) (sw : NarrowW) (src : RM) :
+    Option (CtxS × List CondS) :=
+  match w, d, sw, src with
+  | _, d, sw, (.mem m) =>
+    if d = .rsp then none else (reads Γ sw.bytes m).map fun cs => (Γ.setReg d .int, cs)
+  | w, d, sw, (.reg r) => extendReg Γ d r (.sx w sw)
+
+theorem stepMovsx_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
+    
+    {x : CtxS × List CondS} (h : stepMovsx next Γ w d sw src = some x)
+    (hn : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) (.movsx w d sw src) (x.1.den ρ) := by
+  unfold stepMovsx at h
+  split at h
+  · split at h
+    · cases h
+    · next hd =>
+      obtain ⟨cs, hr, rfl⟩ := reads_map h
+      rw [CtxS.den_setReg]; exact .movsxRM hd (reads_sound hr hn)
+  · obtain ⟨hd, ⟨a, hr, hΓ, e⟩ | e⟩ := extendReg_spec (ρ := ρ) h
+    · rw [e]; exact .movsxExact hd hr hΓ
+    · rw [e]; exact .movsxRM hd (.reg _)
+
+/-- The checker for `unary`. -/
+def stepUnary (next : BitVec 64) (Γ : CtxS) (op : UnOp) (w : Width) (dst : RM) :
+    Option (CtxS × List CondS) :=
+  match op, w, dst with
+  | .neg, w, (.reg d) =>
+    if d = .rsp then none
+    else match exactly (Γ.regs.get d) with
+      | some a => some ({ Γ.setReg d (.eq (.mk1 (.neg w) a)) with flags := .neg w a }, [])
+      | none => some ({ Γ.setReg d .int with flags := .known }, [])
+  | .not, w, (.reg d) =>
+    if d = .rsp then none
+    else match exactly (Γ.regs.get d) with
+      | some a => some (Γ.setReg d (.eq (.mk1 (.not w) a)), [])
+      | none => some (Γ.setReg d .int, [])
+  | _, _, _ => none
+
+theorem stepUnary_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
+    
+    {x : CtxS × List CondS} (h : stepUnary next Γ op w dst = some x)
+    (hn : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) (.unary op w dst) (x.1.den ρ) := by
+  unfold stepUnary at h
+  split at h
+  · next d =>
+    split at h
+    · cases h
+    · next hd =>
+      split at h
+      · next a ha =>
+        cases h
+        exact cast_ctx (.negExact hd (by rw [CtxS.den_regs, exactly_den ha]))
+          (CtxS.den_setReg_mk1_flags ρ Γ d (.neg w) a (.neg w a))
+      · cases h
+        exact cast_ctx (.negRM (.reg _) (.reg hd)) (by rw [CtxS.den_setReg_flags]; rfl)
+  · next d =>
+    split at h
+    · cases h
+    · next hd =>
+      split at h
+      · next a ha =>
+        cases h
+        exact cast_ctx (.notExact hd (by rw [CtxS.den_regs, exactly_den ha]))
+          (CtxS.den_setReg_mk1 ρ Γ d (.not w) a)
+      · cases h
+        exact cast_ctx (.notRM (.reg _) (.reg hd)) (CtxS.den_setReg ρ Γ d .int)
+  · cases h
+
+/-- **The checker** for an instruction that goes on to the next. It gives the
+context afterwards and what is left to be shown. -/
+def step (next : BitVec 64) (Γ : CtxS) : Instr → Option (CtxS × List CondS)
+  | .nop => some (Γ, [])
+  | .mov w ops => stepMov next Γ w ops
+  | .movAbs d imm => if d = .rsp then none else some (Γ.setReg d (.eq (.lit imm)), [])
+  | .lea w d m => stepLea next Γ w d m
+  | .alu op w ops => stepAlu next Γ op w ops
+  | .push r => push Γ r
+  | .pop r => pop Γ r
+  | .store8 m _ => writes Γ 1 m
+  | .store16 m _ => writes Γ 2 m
+  | .test w dst src => stepTest next Γ w dst src
+  | .imul2 w d src => stepImul2 next Γ w d src
+  | .imul3 w d src imm => stepImul3 next Γ w d src imm
+  | .popcnt w d src => stepPopcnt next Γ w d src
+  | .movsxd d src => stepMovsxd next Γ d src
+  | .movzx w d sw src => stepMovzx next Γ w d sw src
+  | .movsx w d sw src => stepMovsx next Γ w d sw src
+  | .unary op w dst => stepUnary next Γ op w dst
+  | .bswap w r =>
+    if r = .rsp then none
+    else match exactly (Γ.regs.get r) with
+      | some a => some (Γ.setReg r (.eq (.mk1 (.bswap w) a)), [])
+      | none => some (Γ.setReg r .int, [])
+  | .cdq =>
+    match exactly (Γ.regs.get .rax) with
+    | some a => some (Γ.setReg .rdx (.eq (.mk1 .fill32 a)), [])
+    | none => some (Γ.setReg .rdx .int, [])
+  | .cqo =>
+    match exactly (Γ.regs.get .rax) with
+    | some a => some (Γ.setReg .rdx (.eq (.mk1 .fill64 a)), [])
+    | none => some (Γ.setReg .rdx .int, [])
+  | _ => none
+
+/-- **What the checker works out is a typing step.** -/
+theorem step_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {i : Instr}
+    {x : CtxS × List CondS} (h : step next Γ i = some x) (hn : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) i (x.1.den ρ) := by
+  unfold step at h
+  split at h
+  · cases h; exact .nop
+  · exact stepMov_sound h hn
+  · split at h
+    · cases h
+    · next hd => cases h; rw [CtxS.den_setReg]; exact .movAbs hd
+  · exact stepLea_sound h hn
+  · exact stepAlu_sound h hn
+  · exact push_sound h hn
+  · exact pop_sound h
+  · exact .store8RM (writes_sound h hn).1
+  · exact .store16RM (writes_sound h hn).1
+  · exact stepTest_sound h hn
+  · exact stepImul2_sound h hn
+  · exact stepImul3_sound h hn
+  · exact stepPopcnt_sound h hn
+  · exact stepMovsxd_sound h hn
+  · exact stepMovzx_sound h hn
+  · exact stepMovsx_sound h hn
+  · exact stepUnary_sound h hn
+  · next w r =>
+    split at h
+    · cases h
+    · next hr =>
+      split at h
+      · next a ha =>
+        cases h
+        exact cast_ctx (.bswapExact hr (by rw [CtxS.den_regs, exactly_den ha]))
+          (CtxS.den_setReg_mk1 ρ Γ r (.bswap w) a)
+      · cases h; exact cast_ctx (.bswap hr) (CtxS.den_setReg ρ Γ r .int)
+  · split at h
+    · next a ha =>
+      cases h
+      exact cast_ctx (.cdqExact (by rw [CtxS.den_regs, exactly_den ha]))
+        (CtxS.den_setReg_mk1 ρ Γ .rdx .fill32 a)
+    · cases h; exact cast_ctx .cdq (CtxS.den_setReg ρ Γ .rdx .int)
+  · split at h
+    · next a ha =>
+      cases h
+      exact cast_ctx (.cqoExact (by rw [CtxS.den_regs, exactly_den ha]))
+        (CtxS.den_setReg_mk1 ρ Γ .rdx .fill64 a)
+    · cases h; exact cast_ctx .cqo (CtxS.den_setReg ρ Γ .rdx .int)
   · cases h
 
 end Sym

@@ -345,6 +345,29 @@ partial def denVal (as : Atoms) : Val → MetaM Expr
   | .add a b => return bvBin ``instHAdd ``HAdd.hAdd ``BitVec.instAdd (← denVal as a) (← denVal as b)
   | .shl a k => do mkAppM ``HShiftLeft.hShiftLeft #[← denVal as a, mkNatLit k]
   | .app1 .low32 a => return setWidthE 32 64 (setWidthE 64 32 (← denVal as a))
+  | .app1 (.neg w) a => do
+    let r ← mkAppM ``subBorrow #[toExpr (0 : BitVec w.bits), setWidthE 64 w.bits (← denVal as a),
+      mkConst ``Bool.false]
+    return setWidthE w.bits 64 (← mkAppM ``Prod.fst #[r])
+  | .app1 (.not w) a => do
+    return setWidthE w.bits 64
+      (← mkAppM ``Complement.complement #[setWidthE 64 w.bits (← denVal as a)])
+  | .app1 (.popcnt w) a => do
+    return setWidthE w.bits 64 (← mkAppM ``popcount #[setWidthE 64 w.bits (← denVal as a)])
+  | .app1 (.bswap w) a => do
+    return setWidthE w.bits 64
+      (← mkAppM ``TypedAsm.bswap #[toExpr w, setWidthE 64 w.bits (← denVal as a)])
+  | .app1 .fill32 a => do
+    return setWidthE 32 64 (← mkAppM ``signFill #[setWidthE 64 32 (← denVal as a)])
+  | .app1 .fill64 a => do mkAppM ``signFill #[← denVal as a]
+  | .app1 .sext32 a => do
+    return mkApp3 (mkConst ``BitVec.signExtend) (mkNatLit 32) (mkNatLit 64)
+      (setWidthE 64 32 (← denVal as a))
+  | .app1 (.zx w sw) a => do
+    return setWidthE w.bits 64 (setWidthE sw.bits w.bits (setWidthE 64 sw.bits (← denVal as a)))
+  | .app1 (.sx w sw) a => do
+    return setWidthE w.bits 64 (mkApp3 (mkConst ``BitVec.signExtend) (mkNatLit sw.bits)
+      (mkNatLit w.bits) (setWidthE 64 sw.bits (← denVal as a)))
   | .app2 (.alu op .w64) a b => do
     mkAppM ``Prod.fst #[← mkAppOptM ``AluOp.apply #[mkNatLit 64, toExpr op, ← denVal as a, ← denVal as b]]
   | .app2 (.alu op .w32) a b => do
@@ -409,6 +432,17 @@ def denFlags (as : Atoms) : FlagsS → MetaM Expr
   | .atom i => return as.flags[i]!
   | .lit f => do
     withLocalDeclD `f (mkConst ``Flags) fun x => do mkLambdaFVars #[x] (← mkEq x (toExpr f))
+  | .neg w a => do
+    let r ← mkAppM ``subBorrow #[toExpr (0 : BitVec w.bits), setWidthE 64 w.bits (← denVal as a),
+      mkConst ``Bool.false]
+    let v ← mkAppM ``Prod.snd #[r]
+    withLocalDeclD `f (mkConst ``Flags) fun x => do mkLambdaFVars #[x] (← mkEq x v)
+  | .popcnt w a => do
+    let some' (b : Expr) : MetaM Expr := mkAppM ``Option.some #[b]
+    let z ← mkAppM ``BEq.beq #[setWidthE 64 w.bits (← denVal as a), toExpr (0 : BitVec w.bits)]
+    let f := mkConst ``Bool.false
+    let v ← mkAppM ``Flags.mk #[← some' f, ← some' z, ← some' f, ← some' f]
+    withLocalDeclD `f (mkConst ``Flags) fun x => do mkLambdaFVars #[x] (← mkEq x v)
   | .test a b => do
     let v ← mkAppM ``Flags.ofResult #[← mkAppM ``HAnd.hAnd #[← denVal as a, ← denVal as b],
       mkConst ``Bool.false, mkConst ``Bool.false]
