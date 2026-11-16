@@ -3492,7 +3492,7 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
   let some (instr, len) := instrs[n]? | return none
   -- a jump may be one the walk follows; nothing else that ends a block is
   if instr.endsBlock && !(instr matches .jmp (.rel _)) && !(instr matches .jcc _ _) &&
-      !(instr matches .ret) && !(instr matches .call (.rel _)) then
+      !(instr matches .ret) && !(instr matches .call (.rel _)) && !(instr matches .syscall) then
     return none
   let typeOf (r : Reg) : MetaM Expr := whnf tbl[1 + regIdx r]!
   let iE := toExpr instr
@@ -3542,6 +3542,11 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
             | .str _ => true
             | _ => false)
         | _ => false)
+    -- an operating system that returns from the calls Linux returns from, as
+    -- Linux does: system calls that return are then stepped over in the walk
+    let linux? : Option Expr ← (do
+      try pure (some (← synthInstance (mkApp (mkConst ``LikeLinux) sys)))
+      catch _ => pure none)
     let ((result, prog?), atoms) ← (do
       let some S₀ ← (match kept? with
         | some (Sc, _) => pure (some Sc)
@@ -3605,6 +3610,18 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           unless at' < t && !stops.contains t do break
           moves := moves.push (.split at' i len')
           break
+        -- a system call that returns is a step like any other
+        if let .syscall := i then
+          if linux?.isNone then break
+          if advanced && (stops?.getD #[]).contains at' then break
+          let some (S', cs) := Sym.stepSys cur | break
+          moves := moves.push (.step at' i len' arrived cs)
+          steps := steps + 1
+          advanced := true
+          cur := S'
+          arrived := cur
+          at' := next'
+          continue
         let into := known && stops?.isSome && (stops?.getD #[]).contains next' &&
           !i.endsBlock && !(advanced && (stops?.getD #[]).contains at') &&
           !(Sym.toByte cur i).isSome &&
@@ -3840,7 +3857,8 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       labels := ((stops?.getD #[]).map (BitVec.ofNat 64)).toList
       enters := enters.toList.map fun e => (BitVec.ofNat 64 e.at', BitVec.ofNat 64 e.t, e.Δ)
       leaves := leave?.toList.map fun e => (BitVec.ofNat 64 e.at', e.Δ)
-      calls := call?.toList.map fun e => (BitVec.ofNat 64 e.at', e.j, e.R, e.Δ) }
+      calls := call?.toList.map fun e => (BitVec.ofNat 64 e.at', e.j, e.R, e.Δ)
+      linux := linux?.isSome }
     let S := { S₀ with blocks := [] }
     -- the context at the end: the walk again, as the checker makes it
     let code : List (BitVec 64 × Instr × BitVec 64) :=
@@ -3986,12 +4004,15 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           before.restore
           -- which of them could not be shown
           let some (at', i) := condInstrs[nth]? | throwError "left over"
+          -- a system call is left to be told of the long way
+          let sysCall := i matches .syscall
           let stepsBefore := (moves.toList.take (condMoveIdx[nth]?.getD 0)).countP
             fun | .step .. => true | _ => false
           if stepsBefore > 0 then
             -- the walk up to this instruction is taken first, by itself
             stepLimit.set (some stepsBefore)
             throwError "left over"
+          if sysCall then throwError "left over"
           for c in cs do
             let ok ← (do
               let s ← saveState
@@ -4096,10 +4117,13 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let PE := toExpr P
     let WE := toExpr W
     let hP := mkAppN (mkConst ``Sym.Prog.Ok.mk) #[Ψ, ρ, PE, hB, hT, hK]
+    let hsys := match linux? with
+      | some inst => mkApp2 (mkConst ``Sym.likeLinux) sys inst
+      | none => mkApp (mkConst ``Sym.anySystem) sys
     let walkE := mkAppN (mkConst ``Sym.walk) #[PE, codeE, fuelE, mkNatLit k₀, a, SE]
     let hwalk ← mkExpectedTypeHint (← mkEqRefl walkE) (← mkEq walkE WE)
     goal.assign (mkAppN (mkConst ``Sym.walk_sound')
-      #[Φ, fetch, sys, Ψ, ρ, PE, codeE, hP, hcode, fuelE, mkNatLit k₀, a, SE, WE, hwalk, hW])
+      #[Φ, fetch, sys, Ψ, ρ, PE, codeE, hP, hcode, hsys, fuelE, mkNatLit k₀, a, SE, WE, hwalk, hW])
     -- the values named are in the goals for the rest of the block
     let mut goals : List MVarId := []
     let mut newVals : Array Expr := #[]

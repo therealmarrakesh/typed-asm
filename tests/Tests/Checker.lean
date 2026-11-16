@@ -257,6 +257,31 @@ example : refused counted (.mov .w64 (.r_m .rcx (idx .rsp .rax .s8 36))) = true 
 example : left (reg counted .rax (.eq (v 1))) (.mov .w64 (.r_m .rcx (idx .rsp .rax .s8 8)))
     = some 1 := by decide
 
+/-! ## System calls that return -/
+
+def sysLeft (Γ : CtxS) : Option Nat := (stepSys Γ).map (·.2.length)
+
+-- `write`, by its number, whatever its arguments; and what it leaves in `rax`
+example : sysLeft (reg base .rax (.eq (.lit 1))) = some 0 := by decide
+example : ((stepSys (reg base .rax (.eq (.lit 1)))).map (·.1.regs.get .rax)) = some .int := by
+  decide
+-- a number that is not written out says nothing of which call it is
+example : sysLeft base = none := by decide
+example : sysLeft (reg base .rax (.eq (v 1))) = none := by decide
+-- `fstat` needs 144 plain bytes that may be written
+example : sysLeft (reg (reg base .rax (.eq (.lit 5))) .rsi (.ptr (.mk (.lit 144) .nil) true (.lit 0)))
+    = some 0 := by decide
+example : sysLeft (reg (reg base .rax (.eq (.lit 5))) .rsi (.ptr (.mk (.lit 143) .nil) true (.lit 0)))
+    = none := by decide
+example : sysLeft (reg (reg base .rax (.eq (.lit 5))) .rsi (.ptr (.mk (.lit 144) .nil) false (.lit 0)))
+    = none := by decide
+-- `read` of a count in a register: within the buffer, to be shown
+example : sysLeft (reg (reg (reg base .rax (.eq (.lit 0))) .rsi
+    (.ptr (.mk (.lit 64) .nil) true (.lit 0))) .rdx (.eq (v 2))) = some 1 := by decide
+-- and not over a typed value
+example : sysLeft (reg (reg (reg base .rax (.eq (.lit 0))) .rsi (.ptr rec2 true (.lit 0))) .rdx
+    (.eq (v 2))) = none := by decide
+
 /-! ## Why an instruction is refused -/
 
 def isReason (Γ : CtxS) (i : Instr) (p : Reject → Bool) : Bool :=

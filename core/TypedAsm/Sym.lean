@@ -1,4 +1,5 @@
 import TypedAsm.Loc
+import TypedAsm.Linux
 import TypedAsm.RegMap
 
 /-!
@@ -4391,6 +4392,9 @@ structure Prog where
   variable that is the return address's type, the context wanted where the
   call returns, and the context the code called is entered in. -/
   calls : List (BitVec 64 × Nat × CtxS × CtxS) := []
+  /-- Whether the operating system is one that returns from the calls Linux
+  returns from, as Linux does: then system calls that return are stepped over. -/
+  linux : Bool := false
 
 /-- That the blocks said to be of a kind are. -/
 def TagsOk (Ψ : MemTy) : List (BitVec 64 × Nat) → Prop
@@ -4707,6 +4711,143 @@ theorem enterJump_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemT
     · cases h
   · cases h
 
+/-! ### System calls that return -/
+
+/-- What a system call that returns leaves: its result in `rax`, and `rcx`,
+`r11` and the flags as the processor leaves them. -/
+def CtxS.afterSyscall (Γ : CtxS) : CtxS :=
+  { ((Γ.setReg .rax .int).setReg .rcx .int).setReg .r11 .int with flags := .any }
+
+theorem CtxS.den_afterSyscall (ρ : Env) (Γ : CtxS) :
+    Γ.afterSyscall.den ρ = (Γ.den ρ).afterSyscall := by
+  show CtxS.den ρ { ((Γ.setReg .rax .int).setReg .rcx .int).setReg .r11 .int with flags := .any } = _
+  rw [CtxS.den_setReg_flags, CtxS.den_setReg, CtxS.den_setReg]
+  rfl
+
+/-- Whether a shape is seen to hold no typed value. -/
+def ShapeS.plain : ShapeS → Bool
+  | .mk _ .nil => true
+  | _ => false
+
+theorem ShapeS.plain_free {ρ : Env} {S : ShapeS} (h : S.plain = true) (o n : Nat) :
+    (S.den ρ).free o n = true := by
+  unfold ShapeS.plain at h
+  split at h
+  · rfl
+  · cases h
+
+/-- A call that fills `n` bytes through a register: what is left to be shown
+for them to be plain bytes of the block it points into, which may be written. -/
+def sysFill (Γ : CtxS) (b : Reg) (n : Nat) : Option (CtxS × List CondS) :=
+  match Γ.regs.get b with
+  | .ptr S true off =>
+    match within off n S.size, freeConds S off n with
+    | some ws, some fs => some (Γ.afterSyscall, ws ++ fs)
+    | _, _ => none
+  | _ => none
+
+theorem sysFill_spec {ρ : Env} {Γ : CtxS} {b : Reg} {n : Nat} {x : CtxS × List CondS}
+    (h : sysFill Γ b n = some x) (hc : CondS.all ρ x.2) :
+    x.1 = Γ.afterSyscall ∧ ∃ S off, (Γ.den ρ).regs b = .ptr S true off ∧ off + n ≤ S.size ∧
+      S.free off n = true := by
+  unfold sysFill at h
+  split at h
+  · next S off hΓ =>
+    split at h
+    · next ws fs hw hf =>
+      cases h
+      obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc
+      refine ⟨rfl, S.den ρ, off.den ρ, by rw [CtxS.den_regs, hΓ]; rfl, ?_, freeConds_spec hf h₂⟩
+      rw [ShapeS.den_size]; exact within_spec hw h₁
+    · cases h
+  · cases h
+
+/-- A call that fills as many bytes as a register says, through another. -/
+def sysFillBy (Γ : CtxS) (b c : Reg) : Option (CtxS × List CondS) :=
+  match Γ.regs.get b, Γ.regs.get c with
+  | .ptr S true off, .eq len =>
+    if S.plain then some (Γ.afterSyscall, [.le (off.plus (.toNat len)) S.size]) else none
+  | _, _ => none
+
+theorem sysFillBy_spec {ρ : Env} {Γ : CtxS} {b c : Reg} {x : CtxS × List CondS}
+    (h : sysFillBy Γ b c = some x) (hc : CondS.all ρ x.2) :
+    x.1 = Γ.afterSyscall ∧ ∃ S off len, (Γ.den ρ).regs b = .ptr S true off ∧
+      (Γ.den ρ).regs c = .eq len ∧ off + len.toNat ≤ S.size ∧ S.free off len.toNat = true := by
+  unfold sysFillBy at h
+  split at h
+  · next S off len hb hcr =>
+    split at h
+    · next hp =>
+      cases h
+      refine ⟨rfl, S.den ρ, off.den ρ, len.den ρ, by rw [CtxS.den_regs, hb]; rfl,
+        by rw [CtxS.den_regs, hcr]; rfl, ?_, ShapeS.plain_free hp _ _⟩
+      have := hc.1
+      simp only [CondS.den, Num.den_plus] at this
+      rw [ShapeS.den_size]; exact this
+    · cases h
+  · cases h
+
+/-- **The checker for a system call that returns**: the call is told by the
+number in `rax`, which must be written out. -/
+def stepSys (Γ : CtxS) : Option (CtxS × List CondS) :=
+  match Γ.regs.get .rax with
+  | .eq (.lit nr) =>
+    if nr = 1 ∨ nr = 3 ∨ nr = 8 ∨ nr = 257 ∨ nr = 74 ∨ nr = 75 ∨ nr = 39 then
+      some (Γ.afterSyscall, [])
+    else if nr = 5 then sysFill Γ .rsi 144
+    else if nr = 228 then sysFill Γ .rsi 16
+    else if nr = 0 then sysFillBy Γ .rsi .rdx
+    else if nr = 318 then sysFillBy Γ .rdi .rsi
+    else none
+  | _ => none
+
+theorem stepSys_sound {fetch : Fetch} {sys : Syscall} [LikeLinux sys] {Ψ : MemTy} {ρ : Env}
+    {Γ : CtxS} {x : CtxS × List CondS} (h : stepSys Γ = some x) (hc : CondS.all ρ x.2) :
+    SysReturns fetch sys Ψ (Γ.den ρ) (x.1.den ρ) := by
+  unfold stepSys at h
+  split at h
+  · next nr hΓ =>
+    have hax : (Γ.den ρ).regs .rax = .eq nr := by rw [CtxS.den_regs, hΓ]; rfl
+    split at h
+    · next hn =>
+      cases h
+      rw [CtxS.den_afterSyscall]
+      rcases hn with e | e | e | e | e | e | e <;> subst e
+      · exact linux_write hax
+      · exact linux_close hax
+      · exact linux_lseek hax
+      · exact linux_openat hax
+      · exact linux_fsync hax
+      · exact linux_fdatasync hax
+      · exact linux_getpid hax
+    · split at h
+      · next e =>
+        subst e
+        obtain ⟨hx, S, off, hb, hle, hf⟩ := sysFill_spec h hc
+        rw [hx, CtxS.den_afterSyscall]; exact linux_fstat hax hb hle hf
+      · split at h
+        · next e =>
+          subst e
+          obtain ⟨hx, S, off, hb, hle, hf⟩ := sysFill_spec h hc
+          rw [hx, CtxS.den_afterSyscall]; exact linux_clock_gettime hax hb hle hf
+        · split at h
+          · next e =>
+            subst e
+            obtain ⟨hx, S, off, len, hb, hl, hle, hf⟩ := sysFillBy_spec h hc
+            rw [hx, CtxS.den_afterSyscall]; exact linux_read hax hb hl hle hf
+          · split at h
+            · next e =>
+              subst e
+              obtain ⟨hx, S, off, len, hb, hl, hle, hf⟩ := sysFillBy_spec h hc
+              rw [hx, CtxS.den_afterSyscall]; exact linux_getrandom hax hb hl hle hf
+            · cases h
+  · cases h
+
+/-- A system call stepped over, where the operating system is like Linux. -/
+def sysStep (P : Prog) (Γ : CtxS) : Instr → Option (CtxS × List CondS)
+  | .syscall => if P.linux then stepSys Γ else none
+  | _ => none
+
 /-- What a return leaves: the return address, whose type is a variable,
 popped. The variable, and the context. -/
 def afterRet (Γ : CtxS) : Option (Nat × CtxS) :=
@@ -4884,6 +5025,9 @@ def walk (P : Prog) (code : List (BitVec 64 × Instr × BitVec 64)) :
             .name k (walk P code fuel (k + 1) a (Γ.setReg r (.eq (.var k))))
           else .stop a Γ
         | none =>
+          match sysStep P Γ i with
+          | some (Γ', cs) => .conds cs (walk P code fuel k (a + len) Γ')
+          | none =>
           match step (a + len) { Γ with blocks := P.blocks } i with
           | some (Γ', cs) =>
             -- the next instruction may be where the block is handed over
@@ -4895,7 +5039,8 @@ def walk (P : Prog) (code : List (BitVec 64 × Instr × BitVec 64)) :
 /-- **A walk whose conditions hold types the block it started at**, if the
 block where it stopped is typed. -/
 theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P : Prog}
-    {code : List (BitVec 64 × Instr × BitVec 64)} (hcode : Agrees fetch code) :
+    {code : List (BitVec 64 × Instr × BitVec 64)} (hcode : Agrees fetch code)
+    (hsys : P.linux = true → LikeLinux sys) :
     (fuel k : Nat) → (a : BitVec 64) → (Γ : CtxS) → (ρ : Env) → P.Ok Ψ ρ →
     (walk P code fuel k a Γ).holds Φ (BlockOk Φ fetch sys Ψ) ρ →
     BlockOk Φ fetch sys Ψ a (Γ.den ρ)
@@ -4917,7 +5062,7 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
       split at h
       · next t hj =>
         obtain ⟨d, rfl, rfl⟩ := jumpTo_spec hj
-        exact .jump (Agrees.lookup code hcode hl) (walk_sound hcode fuel k _ Γ ρ hP h)
+        exact .jump (Agrees.lookup code hcode hl) (walk_sound hcode hsys fuel k _ Γ ρ hP h)
       next =>
       split at h
       · next c t hb =>
@@ -4979,7 +5124,7 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
           split at h
           · exact h
           · next hr =>
-            have := walk_sound hcode fuel k a (Γ.setReg r (.ptr S w off)) ρ hP h
+            have := walk_sound hcode hsys fuel k a (Γ.setReg r (.ptr S w off)) ρ hP h
             rw [CtxS.den_setReg] at this
             exact .openRef hr (by rw [CtxS.den_regs, toOpen_spec ho]; rfl)
               (KindsOk.lookup _ hP.kinds hk) this
@@ -4990,7 +5135,7 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
           · next hu =>
             simp only [Bool.and_eq_true] at hu
             have key : ∀ x, BlockOk Φ fetch sys Ψ a ((Γ.den ρ).setReg r (.eq x)) := fun x => by
-              have := walk_sound hcode fuel (k + 1) a (Γ.setReg r (.eq (.var k)))
+              have := walk_sound hcode hsys fuel (k + 1) a (Γ.setReg r (.eq (.var k)))
                 (ρ.setVal k x) (hP.setVal hu.1.2 hu.2) (h x)
               rw [CtxS.den_setReg, CtxS.den_setVal hu.1.1] at this
               have e : (TyS.eq (.var k)).den (ρ.setVal k x) = .eq x := by
@@ -5004,6 +5149,18 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
           · exact h
         · split at h
           · next Γ' cs hs =>
+            unfold sysStep at hs
+            split at hs
+            · split at hs
+              · next hlin =>
+                haveI := hsys hlin
+                exact .sys (Agrees.lookup code hcode hl) (stepSys_sound hs h.1)
+                  (walk_sound hcode hsys fuel k (a + len) Γ' ρ hP h.2)
+              · cases hs
+            · cases hs
+          next =>
+          split at h
+          · next Γ' cs hs =>
             have hst := step_sound (Ψ := Ψ) (ρ := ρ) (Γ := { Γ with blocks := P.blocks })
               hP.blocks hs
             split at h
@@ -5011,16 +5168,23 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
               exact .last (Agrees.lookup code hcode hl)
                 (.straight (hst h.1) (handOver_sound hh h.2.1 h.2.2))
             · exact .step (Agrees.lookup code hcode hl) (hst h.1)
-                (castData_sound hP (walk_sound hcode fuel k (a + len) _ ρ hP h.2))
+                (castData_sound hP (walk_sound hcode hsys fuel k (a + len) _ ρ hP h.2))
           · exact h
 
 /-- The same, from the walk written out. -/
 theorem walk_sound' {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
     {P : Prog} {code : List (BitVec 64 × Instr × BitVec 64)}
-    (hP : P.Ok Ψ ρ) (hcode : Agrees fetch code) {fuel k : Nat} {a : BitVec 64} {Γ : CtxS}
+    (hP : P.Ok Ψ ρ) (hcode : Agrees fetch code) (hsys : P.linux = true → LikeLinux sys)
+    {fuel k : Nat} {a : BitVec 64} {Γ : CtxS}
     {W : Walk} (h : walk P code fuel k a Γ = W) (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) ρ) :
     BlockOk Φ fetch sys Ψ a (Γ.den ρ) :=
-  walk_sound hcode fuel k a Γ ρ hP (by rw [h]; exact hW)
+  walk_sound hcode hsys fuel k a Γ ρ hP (by rw [h]; exact hW)
+
+/-- An operating system like Linux, for a walk that steps over system calls. -/
+theorem likeLinux {sys : Syscall} [i : LikeLinux sys] : true = true → LikeLinux sys := fun _ => i
+
+/-- A walk that steps over no system call asks nothing of the operating system. -/
+theorem anySystem {sys : Syscall} : false = true → LikeLinux sys := fun h => nomatch h
 
 /-! ## Why the checker has no answer
 
