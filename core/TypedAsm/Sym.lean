@@ -72,6 +72,8 @@ inductive Num
   | sub (a b : Num)
   /-- A 64-bit value as a number. -/
   | toNat (v : Val)
+  /-- How many bytes a shape that is a variable is. -/
+  | size (i : Nat)
   deriving DecidableEq, Repr
 
 mutual
@@ -163,6 +165,7 @@ def den (ρ : Env) : Num → Nat
   | .mul a b => a.den ρ * b.den ρ
   | .sub a b => a.den ρ - b.den ρ
   | .toNat v => (v.den ρ).toNat
+  | .size i => (ρ.shape.getD i ⟨0, []⟩).size
 
 /-- Two numbers added, with what can be added up at once added up. -/
 def plus : Num → Num → Num
@@ -258,6 +261,16 @@ def denOwned (ρ : Env) : List (Val × ShapeS) → List (BitVec 64 × Shape) →
   | [], rest => rest
   | (a, S) :: bs, rest => (a.den ρ, S.den ρ) :: denOwned ρ bs rest
 
+/-- What a stack goes on as, after the pieces written out. -/
+def stackTail (ρ : Env) : Option Nat → List Shape
+  | some i => ρ.stack.getD i []
+  | none => []
+
+/-- The owned blocks a context has besides those written out. -/
+def ownedTail (ρ : Env) : Option Nat → List (BitVec 64 × Shape)
+  | some i => ρ.owned.getD i []
+  | none => []
+
 namespace CtxS
 
 /-- The context a term stands for. -/
@@ -267,14 +280,10 @@ def den (ρ : Env) (Γ : CtxS) : Ctx where
      Γ.regs.rbp.den ρ, Γ.regs.rsi.den ρ, Γ.regs.rdi.den ρ, Γ.regs.r8.den ρ, Γ.regs.r9.den ρ,
      Γ.regs.r10.den ρ, Γ.regs.r11.den ρ, Γ.regs.r12.den ρ, Γ.regs.r13.den ρ, Γ.regs.r14.den ρ,
      Γ.regs.r15.den ρ⟩
-  stack := denShapes ρ Γ.stack (match Γ.stackRest with
-    | some i => ρ.stack.getD i []
-    | none => [])
+  stack := denShapes ρ Γ.stack (stackTail ρ Γ.stackRest)
   room := Γ.room.den ρ
   flags := Γ.flags.den ρ
-  owned := denOwned ρ Γ.owned (match Γ.ownedRest with
-    | some i => ρ.owned.getD i []
-    | none => [])
+  owned := denOwned ρ Γ.owned (ownedTail ρ Γ.ownedRest)
   above := Γ.above.den ρ
 
 end CtxS
@@ -403,7 +412,490 @@ theorem den_afterAlu (ρ : Env) (Γ : CtxS) (op : AluOp) (d : Reg) :
   · show ({ (Γ.setReg d .int).den ρ with flags := Flags.Known } : Ctx) = _
     rw [CtxS.den_setReg]; rfl
 
-/-- **The checker**, for the forms that work on registers alone. It gives the
+
+/-! ## The stack -/
+
+/-- A number written as one. -/
+def Num.lit? : Num → Option Nat
+  | .lit n => some n
+  | _ => none
+
+theorem Num.lit?_den {ρ : Env} {a : Num} {n : Nat} (h : a.lit? = some n) : a.den ρ = n := by
+  cases a <;> simp only [Num.lit?, Option.some.injEq, reduceCtorEq] at h
+  subst h; rfl
+
+/-- A number with `k` taken from it, and what is left to be shown for there
+to be that much: nothing, where the number is written as something plus at
+least `k`. -/
+def Num.minus (a : Num) (k : Nat) : Num × List CondS :=
+  match a with
+  | .lit m => if k ≤ m then (.lit (m - k), []) else (.sub a (.lit k), [.le (.lit k) a])
+  | .add x (.lit m) =>
+    if m = k then (x, [])
+    else if k ≤ m then (.add x (.lit (m - k)), [])
+    else (.sub a (.lit k), [.le (.lit k) a])
+  | a => (.sub a (.lit k), [.le (.lit k) a])
+
+theorem Num.minus_spec {ρ : Env} {a : Num} {k : Nat} (h : CondS.all ρ (a.minus k).2) :
+    a.den ρ = (a.minus k).1.den ρ + k := by
+  revert h
+  unfold Num.minus
+  split
+  · next m =>
+    by_cases hk : k ≤ m
+    · simp only [if_pos hk]; intro _; simp only [Num.den]; omega
+    · simp only [if_neg hk]; intro h
+      have := h.1; simp only [CondS.den, Num.den] at this ⊢; omega
+  · next x m =>
+    by_cases hm : m = k
+    · simp only [if_pos hm]; intro _; subst hm; rfl
+    · by_cases hk : k ≤ m
+      · simp only [if_neg hm, if_pos hk]; intro _; simp only [Num.den]; omega
+      · simp only [if_neg hm, if_neg hk]; intro h
+        have := h.1; simp only [CondS.den, Num.den] at this ⊢; omega
+  · intro h; have := h.1; simp only [CondS.den, Num.den] at this ⊢; omega
+
+/-- A value with a number added, added up at once where it can be. -/
+def Val.plusLit : Val → BitVec 64 → Val
+  | .lit m, d => .lit (m + d)
+  | .add x (.lit m), d => if m + d = 0 then x else .add x (.lit (m + d))
+  | a, d => if d = 0 then a else .add a (.lit d)
+
+theorem Val.den_plusLit (ρ : Env) (a : Val) (d : BitVec 64) :
+    (a.plusLit d).den ρ = a.den ρ + d := by
+  unfold Val.plusLit
+  split
+  · rfl
+  · next x m =>
+    by_cases h : m + d = 0
+    · rw [if_pos h]
+      show x.den ρ = x.den ρ + m + d
+      rw [BitVec.add_assoc, h]; exact (BitVec.add_zero _).symm
+    · rw [if_neg h]
+      show x.den ρ + (m + d) = x.den ρ + m + d
+      rw [BitVec.add_assoc]
+  · by_cases h : d = 0
+    · rw [if_pos h, h]; exact (BitVec.add_zero _).symm
+    · rw [if_neg h]; rfl
+
+/-- The type of a value after a known amount is added to it, where the type
+is one the terms have a form for. -/
+def TyS.shift? (τ : TyS) (d : BitVec 64) : Option TyS :=
+  match τ with
+  | .eq v => some (.eq (v.plusLit d))
+  | .atom _ => none
+  | _ => some .int
+
+theorem TyS.den_shift {ρ : Env} {τ υ : TyS} {d : BitVec 64} (h : τ.shift? d = some υ) :
+    υ.den ρ = (τ.den ρ).shift d := by
+  cases τ <;> simp only [TyS.shift?, Option.some.injEq, reduceCtorEq] at h <;> subst h <;>
+    try rfl
+  show Ty.eq _ = Ty.eq _
+  rw [Val.den_plusLit]
+
+namespace CtxS
+
+/-- The context after the stack pointer has moved. -/
+def moveSp (Γ : CtxS) (d : BitVec 64) : Option CtxS :=
+  ((Γ.regs.get .rsp).shift? d).map (Γ.setReg .rsp ·)
+
+theorem moveSp_spec {Γ Γ' : CtxS} {d : BitVec 64} (h : Γ.moveSp d = some Γ') :
+    ∃ υ, Γ' = Γ.setReg .rsp υ ∧ ∀ ρ, υ.den ρ = ((Γ.den ρ).regs .rsp).shift d := by
+  unfold moveSp at h
+  cases hs : (Γ.regs.get .rsp).shift? d with
+  | none => rw [hs] at h; cases h
+  | some υ =>
+    rw [hs] at h; cases h
+    exact ⟨υ, rfl, fun ρ => by rw [TyS.den_shift hs, den_regs]⟩
+
+/-- The meaning of a context with the stack pointer's type, the stack, the
+room and the flags replaced. -/
+theorem den_sp (ρ : Env) (Γ : CtxS) (υ : TyS) (σ : List ShapeS) (room : Num) (fl : FlagsS) :
+    CtxS.den ρ { Γ.setReg .rsp υ with stack := σ, room := room, flags := fl }
+      = { (Γ.den ρ).setReg .rsp (υ.den ρ) with
+          stack := denShapes ρ σ (stackTail ρ Γ.stackRest), room := room.den ρ,
+          flags := fl.den ρ } := by
+  show ({ (Γ.setReg .rsp υ).den ρ with stack := _, room := _, flags := _ } : Ctx) = _
+  rw [den_setReg]; rfl
+
+end CtxS
+
+/-- How many bytes a shape is, as a term. -/
+def ShapeS.size : ShapeS → Num
+  | .mk size _ => size
+  | .rep n E => .mul n E.size
+  | .atom i => .size i
+
+theorem ShapeS.den_size (ρ : Env) : (S : ShapeS) → (S.den ρ).size = S.size.den ρ
+  | .mk _ _ => rfl
+  | .rep n E => by
+    show n.den ρ * (E.den ρ).size = n.den ρ * E.size.den ρ
+    rw [ShapeS.den_size ρ E]
+  | .atom _ => rfl
+
+namespace ValsS
+
+/-- The type of the value that starts at a byte, if one does. -/
+def find : ValsS → Nat → Option TyS
+  | .nil, _ => none
+  | .cons o τ rest, i => if o == i then some τ else rest.find i
+
+theorem den_find (ρ : Env) : (vs : ValsS) → (i : Nat) →
+    ((vs.den ρ).find? fun p => p.1 == i).map (·.2) = (vs.find i).map (TyS.den ρ)
+  | .nil, _ => rfl
+  | .cons o τ rest, i => by
+    show (List.find? _ ((o, τ.den ρ) :: rest.den ρ)).map _ = _
+    rw [List.find?_cons]
+    unfold find
+    cases h : o == i
+    · exact den_find ρ rest i
+    · rfl
+
+/-- The typed values that keep clear of `n` bytes from `o`. -/
+def clear : ValsS → Nat → Nat → ValsS
+  | .nil, _, _ => .nil
+  | .cons p τ rest, o, n =>
+    if p + 8 ≤ o ∨ o + n ≤ p then .cons p τ (rest.clear o n) else rest.clear o n
+
+theorem den_clear (ρ : Env) : (vs : ValsS) → (o n : Nat) →
+    (vs.clear o n).den ρ = (vs.den ρ).filter (ShapeOf.clearOf o n)
+  | .nil, _, _ => rfl
+  | .cons p τ rest, o, n => by
+    show _ = List.filter _ ((p, τ.den ρ) :: rest.den ρ)
+    unfold clear
+    by_cases h : p + 8 ≤ o ∨ o + n ≤ p
+    · rw [if_pos h, List.filter_cons_of_pos (by simpa [ShapeOf.clearOf] using h)]
+      show (p, τ.den ρ) :: _ = _
+      rw [den_clear ρ rest o n]
+    · rw [if_neg h, List.filter_cons_of_neg (by simpa [ShapeOf.clearOf] using h)]
+      exact den_clear ρ rest o n
+
+/-- The typed values with one of a given type at byte `i`, in place of
+whatever reached into those eight bytes. -/
+def set (vs : ValsS) (i : Nat) (τ : TyS) : ValsS := .cons i τ (vs.clear i 8)
+
+end ValsS
+
+/-- The typed value at a byte of a shape whose typed values are written out. -/
+def ShapeS.valAt : ShapeS → Nat → Option TyS
+  | .mk _ vals, i => vals.find i
+  | _, _ => none
+
+theorem ShapeS.den_valAt {ρ : Env} {S : ShapeS} {i : Nat} {τ : TyS} (h : S.valAt i = some τ) :
+    (S.den ρ).valAt i = some (τ.den ρ) := by
+  cases S with
+  | mk size vals =>
+    show ((vals.den ρ).find? fun p => p.1 == i).map (·.2) = _
+    rw [ValsS.den_find, show vals.find i = some τ from h]; rfl
+  | rep _ _ => cases h
+  | atom _ => cases h
+
+/-- The pieces of a stack as terms stand for a list of the same length before
+whatever it goes on as. -/
+theorem denShapes_getElem? (ρ : Env) : (σ : List ShapeS) → (rest : List Shape) → (j : Nat) →
+    (S : ShapeS) → σ[j]? = some S → (denShapes ρ σ rest)[j]? = some (S.den ρ)
+  | [], _, _, _, h => by cases h
+  | T :: σ, rest, 0, S, h => by
+    cases h; rfl
+  | T :: σ, rest, j + 1, S, h => by
+    show (denShapes ρ σ rest)[j]? = _
+    exact denShapes_getElem? ρ σ rest j S h
+
+theorem denShapes_set (ρ : Env) : (σ : List ShapeS) → (rest : List Shape) → (j : Nat) →
+    (S S' : ShapeS) → σ[j]? = some S →
+    denShapes ρ (σ.set j S') rest = (denShapes ρ σ rest).set j (S'.den ρ)
+  | [], _, _, _, _, h => by cases h
+  | T :: σ, rest, 0, S, S', _ => rfl
+  | T :: σ, rest, j + 1, S, S', h => by
+    show T.den ρ :: denShapes ρ (σ.set j S') rest = T.den ρ :: (denShapes ρ σ rest).set j _
+    rw [denShapes_set ρ σ rest j S S' h]
+
+/-- Which piece of the stack byte `d` above the stack pointer is in, counting
+pieces from `k`, and how far into it: found where the pieces before it have
+lengths that are numbers. -/
+def pieceAt : List ShapeS → Nat → Nat → Option (Nat × ShapeS × Nat × Nat)
+  | [], _, _ => none
+  | S :: σ, k, d =>
+    match S.size.lit? with
+    | some sz => if d < sz then some (k, S, d, sz) else pieceAt σ (k + 1) (d - sz)
+    | none => none
+
+theorem pieceAt_spec (ρ : Env) (rest : List Shape) : (σ : List ShapeS) → (k₀ d : Nat) →
+    {k : Nat} → {S : ShapeS} → {i sz : Nat} → pieceAt σ k₀ d = some (k, S, i, sz) →
+    ∃ j, k = k₀ + j ∧ σ[j]? = some S ∧ d = stackOff (denShapes ρ σ rest) j + i ∧ i < sz ∧
+      (S.den ρ).size = sz
+  | [], _, _, _, _, _, _, h => by cases h
+  | T :: σ, k₀, d, k, S, i, sz, h => by
+    unfold pieceAt at h
+    split at h
+    · next tz ht =>
+      have hT : (T.den ρ).size = tz := by rw [ShapeS.den_size, Num.lit?_den ht]
+      split at h
+      · next hlt =>
+        cases h
+        exact ⟨0, rfl, rfl, by simp, hlt, hT⟩
+      · next hge =>
+        obtain ⟨j, hk, hj, hd, hi, hs⟩ := pieceAt_spec ρ rest σ (k₀ + 1) (d - tz) h
+        refine ⟨j + 1, by omega, hj, ?_, hi, hs⟩
+        show d = (T.den ρ).size + stackOff (denShapes ρ σ rest) j + i
+        omega
+    · cases h
+
+/-- The stack with the pieces at its top that come to `k` bytes taken off,
+where their lengths are numbers. -/
+def dropPieces : List ShapeS → Nat → Option (List ShapeS)
+  | [], k => if k = 0 then some [] else none
+  | S :: σ, k =>
+    if k = 0 then some (S :: σ)
+    else match S.size.lit? with
+      | some sz => if sz ≤ k then dropPieces σ (k - sz) else none
+      | none => none
+
+theorem dropPieces_spec (ρ : Env) (tail : List Shape) : (σ : List ShapeS) → (k : Nat) →
+    {rest : List ShapeS} → dropPieces σ k = some rest →
+    ∃ top, denShapes ρ σ tail = top ++ denShapes ρ rest tail ∧ stackLen top = k
+  | [], k, rest, h => by
+    unfold dropPieces at h
+    split at h
+    · next hk => cases h; exact ⟨[], rfl, hk.symm⟩
+    · cases h
+  | S :: σ, k, rest, h => by
+    unfold dropPieces at h
+    split at h
+    · next hk => cases h; exact ⟨[], rfl, hk.symm⟩
+    · split at h
+      · next sz hs =>
+        split at h
+        · next hle =>
+          obtain ⟨top, he, hl⟩ := dropPieces_spec ρ tail σ (k - sz) h
+          refine ⟨S.den ρ :: top, ?_, ?_⟩
+          · show S.den ρ :: denShapes ρ σ tail = _
+            rw [he]; rfl
+          · show (S.den ρ).size + stackLen top = k
+            rw [ShapeS.den_size, Num.lit?_den hs]; omega
+        · cases h
+      · cases h
+
+/-- The stack a context's terms stand for. -/
+theorem CtxS.den_stack (ρ : Env) (Γ : CtxS) :
+    (Γ.den ρ).stack = denShapes ρ Γ.stack (stackTail ρ Γ.stackRest) := rfl
+
+/-- A `push`. -/
+def push (Γ : CtxS) (r : Reg) : Option (CtxS × List CondS) :=
+  if r = .rsp then none
+  else match Γ.moveSp (-8) with
+    | some Γ' =>
+      some ({ Γ' with
+        stack := .mk (.lit 8) (.cons 0 (Γ.regs.get r) .nil) :: Γ.stack,
+        room := (Γ.room.minus 8).1 }, (Γ.room.minus 8).2)
+    | none => none
+
+/-- A `pop`. -/
+def pop (Γ : CtxS) (r : Reg) : Option (CtxS × List CondS) :=
+  if r = .rsp then none
+  else match Γ.moveSp 8 with
+    | none => none
+    | some Γ' =>
+      match Γ.stack with
+      | .mk (.lit 8) (.cons 0 τ .nil) :: σ =>
+        some (CtxS.setReg { Γ' with stack := σ, room := Γ.room.plus (.lit 8) } r τ, [])
+      | S :: σ =>
+        if S.size.lit? = some 8 then
+          some (CtxS.setReg { Γ' with stack := σ, room := Γ.room.plus (.lit 8) } r .int, [])
+        else none
+      | [] => none
+
+/-- Making room on the stack. -/
+def allocFrame (Γ : CtxS) (imm : BitVec 32) : Option (CtxS × List CondS) :=
+  if imm.toNat < 2 ^ 31 then
+    match Γ.moveSp (-BitVec.ofNat 64 imm.toNat) with
+    | some Γ' =>
+      some ({ Γ' with
+        stack := .mk (.lit imm.toNat) .nil :: Γ.stack,
+        room := (Γ.room.minus imm.toNat).1, flags := .known }, (Γ.room.minus imm.toNat).2)
+    | none => none
+  else none
+
+/-- Giving room on the stack back. -/
+def freeFrame (Γ : CtxS) (imm : BitVec 32) : Option (CtxS × List CondS) :=
+  if imm.toNat < 2 ^ 31 then
+    match dropPieces Γ.stack imm.toNat, Γ.moveSp (BitVec.ofNat 64 imm.toNat) with
+    | some rest, some Γ' =>
+      some ({ Γ' with stack := rest, room := Γ.room.plus (.lit imm.toNat), flags := .known }, [])
+    | _, _ => none
+  else none
+
+/-- A 64-bit load from a place on the stack. -/
+def loadStack (Γ : CtxS) (r : Reg) (disp : BitVec 32) : Option (CtxS × List CondS) :=
+  if r = .rsp ∨ ¬ disp.toNat < 2 ^ 31 then none
+  else match pieceAt Γ.stack 0 disp.toNat with
+    | some (_, S, i, sz) =>
+      match S.valAt i with
+      | some τ => some (Γ.setReg r τ, [])
+      | none => if i + 8 ≤ sz then some (Γ.setReg r .int, []) else none
+    | none => none
+
+/-- A 64-bit store to a place on the stack: the bytes take the type of what
+is stored. -/
+def storeStack (Γ : CtxS) (s : Reg) (disp : BitVec 32) : Option (CtxS × List CondS) :=
+  if s = .rsp ∨ ¬ disp.toNat < 2 ^ 31 then none
+  else match pieceAt Γ.stack 0 disp.toNat with
+    | some (k, .mk size vals, i, sz) =>
+      if i + 8 ≤ sz then
+        some ({ Γ with stack := Γ.stack.set k (.mk size (vals.set i (Γ.regs.get s))) }, [])
+      else none
+    | _ => none
+
+theorem byteDisp_toNat {disp : BitVec 32} (h : disp.toNat < 2 ^ 31) : byteDisp disp.toNat disp :=
+  ⟨by simp, h⟩
+
+theorem push_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {r : Reg}
+    {x : CtxS × List CondS} (h : push Γ r = some x) (hn : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) (.push r) (x.1.den ρ) := by
+  unfold push at h
+  split at h
+  · cases h
+  · next hr =>
+    split at h
+    · next Γ' hm =>
+      cases h
+      obtain ⟨υ, rfl, hυ⟩ := CtxS.moveSp_spec hm
+      refine cast_ctx (.push hr (Num.minus_spec hn)) ?_
+      refine (CtxS.den_sp ρ Γ υ _ _ Γ.flags).trans ?_
+      rw [hυ, CtxS.den_regs ρ Γ r]; rfl
+    · cases h
+
+theorem pop_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {r : Reg}
+    {x : CtxS × List CondS} (h : pop Γ r = some x) :
+    Straight Ψ next (Γ.den ρ) (.pop r) (x.1.den ρ) := by
+  unfold pop at h
+  split at h
+  · cases h
+  next hr =>
+  split at h
+  · cases h
+  next Γ' hm =>
+  obtain ⟨υ, rfl, hυ⟩ := CtxS.moveSp_spec hm
+  have room : ∀ σ : List ShapeS, ∀ τ : TyS,
+      (CtxS.setReg { Γ.setReg .rsp υ with stack := σ, room := Γ.room.plus (.lit 8) } r τ).den ρ
+        = CtxOf.setReg { (Γ.den ρ).moveSp 8 with
+            stack := denShapes ρ σ (stackTail ρ Γ.stackRest),
+            room := (Γ.den ρ).room + 8 } r (τ.den ρ) := by
+    intro σ τ
+    rw [CtxS.den_setReg]
+    refine congrArg (fun c => CtxOf.setReg c r (τ.den ρ)) ?_
+    refine (CtxS.den_sp ρ Γ υ σ _ Γ.flags).trans ?_
+    rw [hυ, Num.den_plus]; rfl
+  split at h
+  · next τ σ hst =>
+    cases h
+    rw [room]
+    exact .pop hr (by rw [CtxS.den_stack, hst]; rfl)
+  · next S σ _ hst =>
+    split at h
+    · next hsz =>
+      cases h
+      rw [room]
+      exact .popPlain hr (by rw [CtxS.den_stack, hst]; rfl)
+        (by rw [ShapeS.den_size, Num.lit?_den hsz])
+    · cases h
+  · cases h
+
+theorem allocFrame_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {imm : BitVec 32}
+    {x : CtxS × List CondS} (h : allocFrame Γ imm = some x) (hn : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) (.alu .sub .w64 (.rm_i (.reg .rsp) imm)) (x.1.den ρ) := by
+  unfold allocFrame at h
+  split at h
+  · next hlt =>
+    split at h
+    · next Γ' hm =>
+      cases h
+      obtain ⟨υ, rfl, hυ⟩ := CtxS.moveSp_spec hm
+      refine cast_ctx (.allocFrame (byteDisp_toNat hlt) (Num.minus_spec hn)) ?_
+      refine (CtxS.den_sp ρ Γ υ _ _ .known).trans ?_
+      rw [hυ]; rfl
+    · cases h
+  · cases h
+
+theorem freeFrame_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {imm : BitVec 32}
+    {x : CtxS × List CondS} (h : freeFrame Γ imm = some x) :
+    Straight Ψ next (Γ.den ρ) (.alu .add .w64 (.rm_i (.reg .rsp) imm)) (x.1.den ρ) := by
+  unfold freeFrame at h
+  split at h
+  · next hlt =>
+    split at h
+    · next rest Γ' hd hm =>
+      cases h
+      obtain ⟨υ, rfl, hυ⟩ := CtxS.moveSp_spec hm
+      obtain ⟨top, he, hl⟩ := dropPieces_spec ρ (stackTail ρ Γ.stackRest) Γ.stack imm.toNat hd
+      refine cast_ctx (.freeFrame (byteDisp_toNat hlt) (by rw [CtxS.den_stack]; exact he) hl) ?_
+      refine (CtxS.den_sp ρ Γ υ _ _ .known).trans ?_
+      rw [hυ, Num.den_plus]; rfl
+    · cases h
+  · cases h
+
+theorem loadStack_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {r : Reg}
+    {disp : BitVec 32} {x : CtxS × List CondS} (h : loadStack Γ r disp = some x) :
+    Straight Ψ next (Γ.den ρ) (.mov .w64 (.r_m r (.sib (some .rsp) none disp))) (x.1.den ρ) := by
+  unfold loadStack at h
+  split at h
+  · cases h
+  next hc =>
+  have hr : r ≠ .rsp := fun e => hc (.inl e)
+  have hlt : disp.toNat < 2 ^ 31 := Decidable.of_not_not fun e => hc (.inr e)
+  split at h
+  · next k S i sz hp =>
+    obtain ⟨j, _, hj, hoff, hi, hs⟩ := pieceAt_spec ρ _ _ _ _ hp
+    have hat : StackAt (Γ.den ρ).stack j (S.den ρ) disp.toNat i :=
+      ⟨by rw [CtxS.den_stack]; exact denShapes_getElem? ρ _ _ _ _ hj,
+       by rw [CtxS.den_stack]; simpa using hoff⟩
+    split at h
+    · next τ hv =>
+      cases h
+      rw [CtxS.den_setReg]
+      exact .loadStack hr (byteDisp_toNat hlt) hat (ShapeS.den_valAt hv)
+    · split at h
+      · next hsz =>
+        cases h
+        rw [CtxS.den_setReg]
+        exact .loadInt hr (.slot (byteDisp_toNat hlt) hat (by rw [hs]; exact hsz))
+      · cases h
+  · cases h
+
+theorem storeStack_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {s : Reg}
+    {disp : BitVec 32} {x : CtxS × List CondS} (h : storeStack Γ s disp = some x) :
+    Straight Ψ next (Γ.den ρ) (.mov .w64 (.rm_r (.mem (.sib (some .rsp) none disp)) s))
+      (x.1.den ρ) := by
+  unfold storeStack at h
+  split at h
+  · cases h
+  next hc =>
+  have hs : s ≠ .rsp := fun e => hc (.inl e)
+  have hlt : disp.toNat < 2 ^ 31 := Decidable.of_not_not fun e => hc (.inr e)
+  split at h
+  · next k size vals i sz hp =>
+    obtain ⟨j, hk, hj, hoff, hi, hsz⟩ := pieceAt_spec ρ _ _ _ _ hp
+    have hkj : k = j := by omega
+    subst hkj
+    have hat : StackAt (Γ.den ρ).stack k ((ShapeS.mk size vals).den ρ) disp.toNat i :=
+      ⟨by rw [CtxS.den_stack]; exact denShapes_getElem? ρ _ _ _ _ hj,
+       by rw [CtxS.den_stack]; simpa using hoff⟩
+    split at h
+    · next hin =>
+      cases h
+      refine cast_ctx (.storeStack hs (byteDisp_toNat hlt) hat (by rw [hsz]; exact hin)) ?_
+      have e : denShapes ρ (Γ.stack.set k (.mk size (vals.set i (Γ.regs.get s))))
+          (stackTail ρ Γ.stackRest)
+          = (Γ.den ρ).stack.set k (((ShapeS.mk size vals).den ρ).set i ((Γ.den ρ).regs s)) := by
+        rw [denShapes_set ρ _ _ _ _ _ hj, CtxS.den_regs]
+        show List.set _ k (⟨_, (i, _) :: (vals.clear i 8).den ρ⟩ : Shape) = _
+        rw [ValsS.den_clear]; rfl
+      show ({ Γ.den ρ with stack := denShapes ρ (Γ.stack.set k _) _ } : Ctx) = _
+      rw [e]
+    · cases h
+  · cases h
+
+/-- **The checker** for an instruction that goes on to the next. It gives the
 context afterwards and what is left to be shown. -/
 def step (next : BitVec 64) (Γ : CtxS) : Instr → Option (CtxS × List CondS)
   | .nop => some (Γ, [])
@@ -422,6 +914,12 @@ def step (next : BitVec 64) (Γ : CtxS) : Instr → Option (CtxS × List CondS)
   | .movAbs d imm => if d = .rsp then none else some (Γ.setReg d (.eq (.lit imm)), [])
   | .lea .w64 d (.rip disp) =>
     if d = .rsp then none else some (Γ.setReg d (.eq (.lit (next + disp.signExtend 64))), [])
+  | .alu .sub .w64 (.rm_i (.reg .rsp) imm) => allocFrame Γ imm
+  | .alu .add .w64 (.rm_i (.reg .rsp) imm) => freeFrame Γ imm
+  | .mov .w64 (.r_m r (.sib (some .rsp) none disp)) => loadStack Γ r disp
+  | .mov .w64 (.rm_r (.mem (.sib (some .rsp) none disp)) s) => storeStack Γ s disp
+  | .push r => push Γ r
+  | .pop r => pop Γ r
   | .alu op w (.rm_r (.reg d) s) =>
     if d = .rsp then none
     else if op = .xor ∧ d = s then
@@ -503,6 +1001,12 @@ theorem step_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {i : I
   · split at h
     · cases h
     · next hd => cases h; rw [CtxS.den_setReg]; exact .leaRip hd
+  · exact allocFrame_sound h hn
+  · exact freeFrame_sound h
+  · exact loadStack_sound h
+  · exact storeStack_sound h
+  · exact push_sound h hn
+  · exact pop_sound h
   · next op w d s =>
     split at h
     · cases h
@@ -546,7 +1050,7 @@ theorem step_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {i : I
               flags := _ } : Ctx) = _
             rw [Val.den_mk2]; rfl
     · cases h; rw [den_afterAlu]; exact .aluRR hd (carryConds_spec hn)
-  · next op w d imm =>
+  · next op w d imm _ _ =>
     split at h
     · cases h
     next hd =>

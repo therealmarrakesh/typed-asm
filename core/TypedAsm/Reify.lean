@@ -136,6 +136,11 @@ partial def reifyNum (e : Expr) : ReifyM Num := do
     return .sub (← reifyNum e.appFn!.appArg!) (← reifyNum e.appArg!)
   if e.isAppOfArity ``BitVec.toNat 2 then
     if e.appFn!.appArg!.nat? == some 64 then return .toNat (← reifyVal e.appArg!)
+  if e.isAppOfArity ``ShapeOf.size 2 then
+    let s ← get
+    let (i, as) := intern s.shape e.appArg!
+    set { s with shape := as }
+    return .size i
   let s ← get
   let (i, as) := intern s.num e
   set { s with num := as }
@@ -324,6 +329,7 @@ partial def denNum (as : Atoms) : Num → MetaM Expr
   | .mul a b => return natBin ``instHMul ``HMul.hMul ``instMulNat (← denNum as a) (← denNum as b)
   | .sub a b => return natBin ``instHSub ``HSub.hSub ``instSubNat (← denNum as a) (← denNum as b)
   | .toNat v => return mkApp2 (mkConst ``BitVec.toNat) (mkNatLit 64) (← denVal as v)
+  | .size i => return mkApp2 (mkConst ``ShapeOf.size) (mkConst ``Ty) as.shape[i]!
 
 mutual
 
