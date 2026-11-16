@@ -3243,9 +3243,12 @@ def stepUnary (next : BitVec 64) (Γ : CtxS) (op : UnOp) (w : Width) (dst : RM) 
     else match exactly (Γ.regs.get d) with
       | some a => some (Γ.setReg d (.eq (.mk1 (.not w) a)), [])
       | none => some (Γ.setReg d .int, [])
-  | _, _, _ => none
+  | .neg, w, .mem m =>
+    (writes next Γ w.bytes.toNat m).map fun x => ({ x.1 with flags := .known }, x.2)
+  | .not, w, .mem m => writes next Γ w.bytes.toNat m
 
 theorem stepUnary_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
+    (hB : BlocksOk Ψ ρ Γ.blocks)
     
     {x : CtxS × List CondS} (h : stepUnary next Γ op w dst = some x)
     (hn : CondS.all ρ x.2) :
@@ -3274,7 +3277,13 @@ theorem stepUnary_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
           (CtxS.den_setReg_mk1 ρ Γ d (.not w) a)
       · cases h
         exact cast_ctx (.notRM (.reg _) (.reg hd)) (CtxS.den_setReg ρ Γ d .int)
-  · cases h
+  · next m =>
+    obtain ⟨y, hw, rfl⟩ := writes_map h
+    obtain ⟨hwr, hrd⟩ := writes_sound hB (Ψ := Ψ) (next := next) hw hn
+    exact cast_ctx (.negRM hrd hwr) rfl
+  · next m =>
+    obtain ⟨hwr, hrd⟩ := writes_sound hB (Ψ := Ψ) (next := next) h hn
+    exact .notRM hrd hwr
 
 /-- **The checker** for an instruction that goes on to the next. It gives the
 context afterwards and what is left to be shown. -/
@@ -3340,7 +3349,7 @@ theorem step_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
   · exact stepMovsxd_sound hB h hn
   · exact stepMovzx_sound hB h hn
   · exact stepMovsx_sound hB h hn
-  · exact stepUnary_sound h hn
+  · exact stepUnary_sound hB h hn
   · exact stepShift_sound hB h hn
   · exact stepSetcc_sound hB h hn
   · exact stepCmov_sound hB h hn
