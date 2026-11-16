@@ -1770,6 +1770,129 @@ theorem ShapeS.den_free {ρ : Env} {S : ShapeS} {o : Num} {n : Nat} (h : S.free 
     rw [ValsS.den_allClear]; exact h
   · cases h
 
+/-- How many typed values reach into the eight bytes at a place. -/
+def ValsS.hits : ValsS → Nat → Nat
+  | .nil, _ => 0
+  | .cons p _ rest, o => (if p + 8 ≤ o ∨ o + 8 ≤ p then 0 else 1) + rest.hits o
+
+theorem ValsS.den_hits (ρ : Env) : (vs : ValsS) → (o : Nat) →
+    ((vs.den ρ).filter fun p => !ShapeOf.clearOf o 8 p).length = vs.hits o
+  | .nil, _ => rfl
+  | .cons p τ rest, o => by
+    show (List.filter _ ((p, τ.den ρ) :: rest.den ρ)).length = _
+    unfold ValsS.hits
+    by_cases h : p + 8 ≤ o ∨ o + 8 ≤ p
+    · have hc : ShapeOf.clearOf o 8 (p, τ.den ρ) = true := by
+        simp only [ShapeOf.clearOf, Bool.or_eq_true, decide_eq_true_eq]; exact h
+      rw [List.filter_cons_of_neg (by simp [hc])]
+      simp only [h, ↓reduceIte, Nat.zero_add]
+      exact ValsS.den_hits ρ rest o
+    · have hc : ShapeOf.clearOf o 8 (p, τ.den ρ) = false := by
+        simp only [ShapeOf.clearOf, Bool.or_eq_false_iff, decide_eq_false_iff_not]
+        exact ⟨fun h1 => h (.inl h1), fun h2 => h (.inr h2)⟩
+      rw [List.filter_cons_of_pos (by simp [hc])]
+      simp only [h, ↓reduceIte, List.length_cons]
+      rw [ValsS.den_hits ρ rest o]; omega
+
+/-- What is left to be shown for `k` bytes at a byte of an array to be
+plain, where the terms show which element they are in and that they are
+plain in it: that there is such an element. -/
+def ShapeS.elemFree : ShapeS → Num → Nat → Option (List CondS)
+  | .rep n (.mk (.lit es) vals), o, k =>
+    if es = 0 ∨ vals.allFit es = false then none
+    else match o.divMod es with
+      | some (q, f) => if vals.allClear f k = true ∧ f + k ≤ es then some [.lt q n] else none
+      | none => none
+  | _, _, _ => none
+
+theorem ShapeS.elemFree_spec {ρ : Env} {S : ShapeS} {o : Num} {k : Nat} {cs : List CondS}
+    (h : S.elemFree o k = some cs) (hc : CondS.all ρ cs) :
+    (S.den ρ).free (o.den ρ) k = true := by
+  unfold ShapeS.elemFree at h
+  split at h
+  · next n es vals =>
+    split at h
+    · cases h
+    · next hne =>
+      have hes : 0 < es := Nat.pos_of_ne_zero fun e => hne (.inl e)
+      have hfit : vals.allFit es = true := by
+        cases hf : vals.allFit es with
+        | true => rfl
+        | false => exact absurd (.inr hf) hne
+      split at h
+      · next q f hd =>
+        split at h
+        · next hcl =>
+          cases h
+          obtain ⟨ho, _⟩ := Num.divMod_spec ρ hes o hd
+          have hf : ((ShapeS.mk (.lit es) vals).den ρ).fits = true := by
+            show (vals.den ρ).all _ = true
+            rw [ValsS.den_allFit]; exact hfit
+          have hfree : ((ShapeS.mk (.lit es) vals).den ρ).free f k = true := by
+            show (vals.den ρ).all _ = true
+            rw [ValsS.den_allClear]; exact hcl.1
+          have := ShapeOf.free_rep hf (n := n.den ρ) (i := q.den ρ) hc.1 (m := k) hcl.2 hfree
+          rw [ho]; exact this
+        · cases h
+      · cases h
+  · cases h
+
+/-- What is left to be shown for `n` bytes of a shape to be plain: nothing
+where the terms show it outright. -/
+def freeConds (S : ShapeS) (o : Num) (n : Nat) : Option (List CondS) :=
+  if S.free o n then some [] else S.elemFree o n
+
+theorem freeConds_spec {ρ : Env} {S : ShapeS} {o : Num} {n : Nat} {cs : List CondS}
+    (h : freeConds S o n = some cs) (hc : CondS.all ρ cs) :
+    (S.den ρ).free (o.den ρ) n = true := by
+  unfold freeConds at h
+  split at h
+  · next hf => exact ShapeS.den_free hf
+  · exact ShapeS.elemFree_spec h hc
+
+/-- Whether the eight bytes at a byte of an array are seen to be one typed
+value's alone within their element. -/
+def ShapeS.elemSole : ShapeS → Num → Bool
+  | .rep _ (.mk (.lit es) vals), o =>
+    match o.divMod es with
+    | some (_, f) => vals.hits f == 1 && decide (f + 8 ≤ es)
+    | none => false
+  | _, _ => false
+
+theorem ShapeS.elemSole_spec {ρ : Env} {S : ShapeS} {o : Num} {x : TyS × List CondS}
+    (he : S.elem o = some x) (hc : CondS.all ρ x.2) (hs : S.elemSole o = true) :
+    (S.den ρ).sole (o.den ρ) = true := by
+  unfold ShapeS.elem at he
+  unfold ShapeS.elemSole at hs
+  split at he
+  · next n es vals =>
+    split at he
+    · cases he
+    · next hne =>
+      have hes : 0 < es := Nat.pos_of_ne_zero fun e => hne (.inl e)
+      have hfit : vals.allFit es = true := by
+        cases hf : vals.allFit es with
+        | true => rfl
+        | false => exact absurd (.inr hf) hne
+      split at he
+      · next q f hd =>
+        split at he
+        · next τ hτ =>
+          cases he
+          simp only [hd, Bool.and_eq_true, decide_eq_true_eq] at hs
+          obtain ⟨ho, _⟩ := Num.divMod_spec ρ hes o hd
+          have hf : ((ShapeS.mk (.lit es) vals).den ρ).fits = true := by
+            show (vals.den ρ).all _ = true
+            rw [ValsS.den_allFit]; exact hfit
+          have hsole : ((ShapeS.mk (.lit es) vals).den ρ).sole f = true := by
+            show ((vals.den ρ).filter _).length == 1
+            rw [ValsS.den_hits]; exact hs.1
+          have := ShapeOf.sole_rep hf (n := n.den ρ) (i := q.den ρ) hc.1 hs.2 hsole
+          rw [ho]; exact this
+        · cases he
+      · cases he
+  · cases he
+
 /-- What is left to be shown for `n` bytes to be read from an operand. -/
 def reads (next : BitVec 64) (Γ : CtxS) (n : Nat) (m : Mem) : Option (List CondS) :=
   match locate next Γ m with
@@ -1939,8 +2062,14 @@ def writes (next : BitVec 64) (Γ : CtxS) (n : Nat) (m : Mem) : Option (CtxS × 
     match within pl.off n pl.shape.size with
     | some ws =>
       match pl.kind with
-      | .ptr true => if pl.shape.free pl.off n then some (Γ, cs ++ ws) else none
-      | .block true => if pl.shape.free pl.off n then some (Γ, cs ++ ws) else none
+      | .ptr true =>
+        match freeConds pl.shape pl.off n with
+        | some fs => some (Γ, (cs ++ ws) ++ fs)
+        | none => none
+      | .block true =>
+        match freeConds pl.shape pl.off n with
+        | some fs => some (Γ, (cs ++ ws) ++ fs)
+        | none => none
       | .owned k a =>
         match pl.shape.clear pl.off n with
         | some S' => some ({ Γ with owned := Γ.owned.set k (a, S') }, cs ++ ws)
@@ -1971,20 +2100,22 @@ theorem writes_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
       split at h
       · next hk =>
         split at h
-        · next hfree =>
+        · next fs hfree =>
           cases h
-          obtain ⟨hloc, hin⟩ := key (Γ' := Γ) hc
+          obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc
+          obtain ⟨hloc, hin⟩ := key (Γ' := Γ) h₁
           rw [hk] at hloc
-          exact ⟨hloc.writeShared (w := true) (.inl rfl) rfl hin (ShapeS.den_free hfree),
+          exact ⟨hloc.writeShared (w := true) (.inl rfl) rfl hin (freeConds_spec hfree h₂),
             hloc.read hin⟩
         · cases h
       · next hk =>
         split at h
-        · next hfree =>
+        · next fs hfree =>
           cases h
-          obtain ⟨hloc, hin⟩ := key (Γ' := Γ) hc
+          obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc
+          obtain ⟨hloc, hin⟩ := key (Γ' := Γ) h₁
           rw [hk] at hloc
-          exact ⟨hloc.writeShared (w := true) (.inr rfl) rfl hin (ShapeS.den_free hfree),
+          exact ⟨hloc.writeShared (w := true) (.inr rfl) rfl hin (freeConds_spec hfree h₂),
             hloc.read hin⟩
         · cases h
       · next k a hk =>
@@ -2022,30 +2153,6 @@ theorem writes_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
   · cases h
 
 /-! ### Storing a register's eight bytes -/
-
-/-- How many typed values reach into the eight bytes at a place. -/
-def ValsS.hits : ValsS → Nat → Nat
-  | .nil, _ => 0
-  | .cons p _ rest, o => (if p + 8 ≤ o ∨ o + 8 ≤ p then 0 else 1) + rest.hits o
-
-theorem ValsS.den_hits (ρ : Env) : (vs : ValsS) → (o : Nat) →
-    ((vs.den ρ).filter fun p => !ShapeOf.clearOf o 8 p).length = vs.hits o
-  | .nil, _ => rfl
-  | .cons p τ rest, o => by
-    show (List.filter _ ((p, τ.den ρ) :: rest.den ρ)).length = _
-    unfold ValsS.hits
-    by_cases h : p + 8 ≤ o ∨ o + 8 ≤ p
-    · have hc : ShapeOf.clearOf o 8 (p, τ.den ρ) = true := by
-        simp only [ShapeOf.clearOf, Bool.or_eq_true, decide_eq_true_eq]; exact h
-      rw [List.filter_cons_of_neg (by simp [hc])]
-      simp only [h, ↓reduceIte, Nat.zero_add]
-      exact ValsS.den_hits ρ rest o
-    · have hc : ShapeOf.clearOf o 8 (p, τ.den ρ) = false := by
-        simp only [ShapeOf.clearOf, Bool.or_eq_false_iff, decide_eq_false_iff_not]
-        exact ⟨fun h1 => h (.inl h1), fun h2 => h (.inr h2)⟩
-      rw [List.filter_cons_of_pos (by simp [hc])]
-      simp only [h, ↓reduceIte, List.length_cons]
-      rw [ValsS.den_hits ρ rest o]; omega
 
 /-- Whether the eight bytes at a place are seen from the terms to be one
 typed value's alone. -/
@@ -2131,7 +2238,14 @@ def store (next : BitVec 64) (Γ : CtxS) (s : Reg) (m : Mem) : Option (CtxS × L
         | some (some τ) =>
           if pl.shape.sole pl.off then some (Γ, cs ++ subConds (Γ.regs.get s) τ) else none
         | some none => writes next Γ 8 m
-        | none => none
+        | none =>
+          -- an element of an array: a value of the type its elements have there
+          match pl.shape.elem pl.off with
+          | some (τ, es) =>
+            if pl.shape.elemSole pl.off then
+              some (Γ, (cs ++ es) ++ subConds (Γ.regs.get s) τ)
+            else none
+          | none => writes next Γ 8 m
       | .owned k a =>
         match pl.shape.look pl.off with
         | some (some τ) =>
@@ -2199,7 +2313,20 @@ theorem store_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
             (by rw [CtxS.den_regs]; exact subConds_spec h₂)
         · cases h
       · exact .storeInt (writes_sound hB h hc).1
-      · cases h
+      · split at h
+        · next τ es he =>
+          split at h
+          · next hso =>
+            cases h
+            obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc
+            obtain ⟨h₁₁, h₁₂⟩ := CondS.all_append _ _ h₁
+            have hloc := locate_spec hB (Ψ := Ψ) (next := next) hl h₁₁
+            rw [hk] at hloc
+            exact hloc.storePtr hs (ShapeS.elem_typed (x := (τ, es)) he h₁₂)
+              (ShapeS.elemSole_spec (x := (τ, es)) he h₁₂ hso)
+              (by rw [CtxS.den_regs]; exact subConds_spec h₂)
+          · cases h
+        · exact .storeInt (writes_sound hB h hc).1
     · next k a hk =>
       split at h
       · next τ hτ =>
