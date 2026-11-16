@@ -53,9 +53,6 @@ asm_typing At
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   ty_program
-  case start =>
-    -- the instruction after the call is ready for a page at any address
-    ty_call pageSig returning backCtx
   case page saved ret rest room frame above hK =>
     ty_mmap_own as p
     -- an error number is negative: the test sends control to `fail`

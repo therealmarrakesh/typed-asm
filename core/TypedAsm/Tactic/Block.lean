@@ -284,6 +284,7 @@ inductive Finish
 is read from the context declared at the label it calls. -/
 syntax "ty_call_auto" : tactic
 syntax "ty_call_with " term : tactic
+syntax "ty_call_returning " term:max term:max : tactic
 
 /-- Whether a jump goes forward: to the instruction after it or beyond. -/
 def jumpsForward : Instr → Bool
@@ -777,6 +778,60 @@ def closeArith (left : List MVarId) : TacticM (List MVarId) := do
     kept := kept ++ after
   return kept
 
+/-- A direct call to a function whose results depend on a value it chooses,
+typed from the labels alone: the context declared at the function's label is
+`sig.entry …` for a signature `sig` with nothing left open, and the label
+after the call has one context for each value. Nothing is done unless both
+are so and the call then types. -/
+def autoCallEx (goal : MVarId) : TacticM (Option (List MVarId)) := goal.withContext do
+  let before ← saveState
+  try
+    let ty := (← instantiateMVars (← goal.getType)).consumeMData
+    unless ty.isAppOfArity ``BlockOk 6 do return none
+    let Φ := ty.getAppArgs[0]!
+    let some n ← addrNat ty.getAppArgs[4]! | return none
+    let some m ← instrsOf ty.getAppArgs[1]! | return none
+    let some (.call (.rel d), len) := m[n]? | return none
+    let t := (BitVec.ofNat 64 n + len + d.signExtend 64).toNat
+    let next := n + len.toNat
+    let some (_, _, T, labels) ← labelInfo Φ | return none
+    let some (_, lFn) := labels.find? (·.1 == t) | return none
+    let some (_, lRet) := labels.find? (·.1 == next) | return none
+    let .const tn _ := T.getAppFn | return none
+    let some (.inductInfo info) := (← getEnv).find? tn | return none
+    let mut sig? : Option Expr := none
+    let mut rets : Array Expr := #[]
+    for k in info.ctors do
+      let kTy ← inferType (mkConst k)
+      let (s?, r?) ← forallTelescope kTy fun xs body => do
+        let args := body.getAppArgs
+        if args.size < 2 then return (none, none)
+        let l := args[args.size - 2]!
+        let ctx := args[args.size - 1]!
+        if l.isConstOf lFn && ctx.isAppOf ``FnSigEx.entry && ctx.getAppNumArgs ≥ 7 then
+          let sig := ctx.getAppArgs[ctx.getAppNumArgs - 7]!
+          return (if sig.hasFVar then none else some sig, none)
+        if l.isConstOf lRet && xs.size == 1 then
+          unless ← isProp (← inferType xs[0]!) do
+            return (none, some (← mkLambdaFVars xs ctx))
+        return ((none : Option Expr), (none : Option Expr))
+      if let some sg := s? then sig? := some sg
+      if let some r := r? then rets := rets.push r
+    let some sig := sig?
+      | do trace[TypedAsm.fast] "a call: the function's label does not say a signature"; return none
+    unless rets.size == 1 do
+      trace[TypedAsm.fast] "a call: {rets.size} families of contexts at the return point"
+      return none
+    setGoals [goal]
+    let s ← Term.exprToSyntax sig
+    let r ← Term.exprToSyntax rets[0]!
+    Tactic.withoutRecover do evalTactic (← `(tactic| ty_call_returning $s $r))
+    return some (← getGoals)
+  catch e =>
+    trace[TypedAsm.fast] "a call to a function that chooses a value: {e.toMessageData}"
+    before.restore
+    return none
+
 /-- Types a whole block of a labelled program: the straight-line
 instructions, then the control transfer that ends it. Jump targets are found
 by label. Conditional jumps in the middle of the block are followed.
@@ -920,6 +975,12 @@ elab "ty_block" : tactic => do
             before.restore
             pure none
         | _ => pure none
+      -- a direct call to a function that chooses a value as it returns: the
+      -- function's label says its signature, and the label after the call
+      -- the context for each value
+      let auto ← match auto, instr with
+        | none, .call (.rel _) => autoCallEx goal
+        | a, _ => pure a
       match auto with
       | some gs => left := left ++ gs
       | none => stuck := stuck ++ (← getGoals)
@@ -1191,6 +1252,9 @@ elab "ty_call " sig:term " returning " ret:term : tactic => do
   left := left ++ (← runOn (← goalNamed gs `back) (do evalTactic (← `(tactic| (intro x; ctx_sub)))))
   left := left ++ (← runOn (← goalNamed gs `need) (do evalTactic (← `(tactic| first | decide | omega))))
   setGoals (left ++ others)
+
+macro_rules
+  | `(tactic| ty_call_returning $s $r) => `(tactic| ty_call $s returning $r)
 
 /-- `ty_return_as x`: the function's return address is ready for a family of
 contexts, and the function has decided it returns into the one for `x`. From
