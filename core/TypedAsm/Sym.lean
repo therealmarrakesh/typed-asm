@@ -4091,6 +4091,183 @@ theorem CtxS.den_setVal {ρ : Env} {k : Nat} {x : BitVec 64} {Γ : CtxS} (h : Γ
   simp only at e₁ e₂ e₃ e₄ e₅ e₆
   rw [e₁, e₂, e₃, e₄, e₅, e₆]
 
+/-! ## One context standing for another
+
+A block hands over to another, returns, or calls, where the context it has
+reached may stand for the one wanted there: every register's type is one of
+the type wanted, the stack is cut the same way with each piece standing for
+its counterpart, and the rest agrees. On terms this is worked out part by
+part, and what the terms do not show is left to be shown. -/
+
+/-- What is left to be shown for two numbers to be the same. -/
+def eqConds (a b : Num) : List CondS := if a = b then [] else [.eqN a b]
+
+theorem eqConds_spec {ρ : Env} {a b : Num} (h : CondS.all ρ (eqConds a b)) :
+    a.den ρ = b.den ρ := by
+  unfold eqConds at h
+  split at h
+  · next e => rw [e]
+  · exact h.1
+
+/-- What is left to be shown for what is known of the flags one way to be
+known the other. -/
+def flagsConds (fl fl' : FlagsS) : List CondS :=
+  if fl = fl' then []
+  else match fl' with
+    | .any => []
+    | .known => if fl.allDefined then [] else [.flagsSub fl fl']
+    | _ => [.flagsSub fl fl']
+
+theorem flagsConds_spec {ρ : Env} {fl fl' : FlagsS} (h : CondS.all ρ (flagsConds fl fl')) :
+    ∀ f, fl.den ρ f → fl'.den ρ f := by
+  unfold flagsConds at h
+  split at h
+  · next e => rw [e]; exact fun _ hf => hf
+  · split at h
+    · exact fun _ _ => trivial
+    · split at h
+      · next hd => exact fun f hf => FlagsS.allDefined_spec hd f hf
+      · exact h.1
+    · exact h.1
+
+/-- What is left to be shown for every typed value of one list to be found
+in another at the same place, at a type it may stand for. -/
+def valsConds (have' : ValsS) : ValsS → Option (List CondS)
+  | .nil => some []
+  | .cons o τ rest =>
+    match have'.find o, valsConds have' rest with
+    | some υ, some cs => some (subConds υ τ ++ cs)
+    | _, _ => none
+
+theorem ValsS.mem_of_find {ρ : Env} : (vs : ValsS) → {o : Nat} → {τ : TyS} →
+    vs.find o = some τ → (o, τ.den ρ) ∈ vs.den ρ
+  | .nil, _, _, h => by cases h
+  | .cons p υ rest, o, τ, h => by
+    unfold ValsS.find at h
+    show (o, τ.den ρ) ∈ (p, υ.den ρ) :: rest.den ρ
+    by_cases e : (p == o) = true
+    · simp only [e, ↓reduceIte, Option.some.injEq] at h
+      subst h
+      rw [show p = o from by simpa using e]; exact List.mem_cons_self
+    · simp only [e, Bool.false_eq_true, ↓reduceIte] at h
+      exact List.mem_cons_of_mem _ (ValsS.mem_of_find rest h)
+
+theorem valsConds_spec {ρ : Env} {have' : ValsS} : (want : ValsS) → {cs : List CondS} →
+    valsConds have' want = some cs → CondS.all ρ cs →
+    ∀ q ∈ want.den ρ, ∃ p ∈ have'.den ρ, p.1 = q.1 ∧ Sub p.2 q.2
+  | .nil, _, _, _ => fun q hq => by cases hq
+  | .cons o τ rest, cs, h, hc => by
+    unfold valsConds at h
+    split at h
+    · next υ cs' hf hr =>
+      cases h
+      obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc
+      intro q hq
+      rcases List.mem_cons.mp hq with rfl | hq
+      · exact ⟨(o, υ.den ρ), ValsS.mem_of_find _ hf, rfl, subConds_spec h₁⟩
+      · exact valsConds_spec rest hr h₂ q hq
+    · cases h
+
+/-- What is left to be shown for one shape to stand for another. -/
+def shapeConds (S T : ShapeS) : Option (List CondS) :=
+  if S = T then some []
+  else match S, T with
+    | .mk size vals, .mk size' vals' =>
+      (valsConds vals vals').map (eqConds size size' ++ ·)
+    | _, _ => none
+
+theorem shapeConds_spec {ρ : Env} {S T : ShapeS} {cs : List CondS}
+    (h : shapeConds S T = some cs) (hc : CondS.all ρ cs) : SubShape (S.den ρ) (T.den ρ) := by
+  unfold shapeConds at h
+  split at h
+  · next e => rw [e]; exact SubShape.refl _
+  · split at h
+    · obtain ⟨vs, hv, rfl⟩ := Option.map_eq_some_iff.mp h
+      obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc
+      exact ⟨eqConds_spec h₁, valsConds_spec _ hv h₂⟩
+    · cases h
+
+/-- What is left to be shown for one stack to stand for another, piece by piece. -/
+def stackConds : List ShapeS → List ShapeS → Option (List CondS)
+  | [], [] => some []
+  | S :: σ, T :: τ =>
+    match shapeConds S T, stackConds σ τ with
+    | some cs, some ds => some (cs ++ ds)
+    | _, _ => none
+  | _, _ => none
+
+theorem stackConds_spec {ρ : Env} (tail : List Shape) : (σ τ : List ShapeS) →
+    {cs : List CondS} → stackConds σ τ = some cs → CondS.all ρ cs →
+    SubList (denShapes ρ σ tail) (denShapes ρ τ tail)
+  | [], [], _, _, _ => SubList.refl _
+  | S :: σ, T :: τ, cs, h, hc => by
+    unfold stackConds at h
+    split at h
+    · next cs' ds hs hr =>
+      cases h
+      obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc
+      exact .cons (shapeConds_spec hs h₁) (stackConds_spec tail σ τ hr h₂)
+    · cases h
+  | [], _ :: _, _, h, _ => by cases h
+  | _ :: _, [], _, h, _ => by cases h
+
+/-- Every register. -/
+def regList : List Reg :=
+  [.rax, .rcx, .rdx, .rbx, .rsp, .rbp, .rsi, .rdi, .r8, .r9, .r10, .r11, .r12, .r13, .r14, .r15]
+
+theorem mem_regList (r : Reg) : r ∈ regList := by cases r <;> decide
+
+theorem CondS.all_flatMap {ρ : Env} {α : Type} (f : α → List CondS) : (l : List α) →
+    CondS.all ρ (l.flatMap f) → ∀ x ∈ l, CondS.all ρ (f x)
+  | [], _, _, hx => by cases hx
+  | y :: l, h, x, hx => by
+    rw [List.flatMap_cons] at h
+    obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ h
+    rcases List.mem_cons.mp hx with rfl | hx
+    · exact h₁
+    · exact CondS.all_flatMap f l h₂ x hx
+
+/-- What is left to be shown for every register's type in one table to stand
+for its counterpart in another. -/
+def regsConds (m m' : RegMap TyS) : List CondS :=
+  regList.flatMap fun r => subConds (m.get r) (m'.get r)
+
+theorem regsConds_spec {ρ : Env} {m m' : RegMap TyS} (h : CondS.all ρ (regsConds m m'))
+    (r : Reg) : Sub ((m.get r).den ρ) ((m'.get r).den ρ) :=
+  subConds_spec (CondS.all_flatMap _ _ h r (mem_regList r))
+
+/-- **What is left to be shown for one context to stand for another.** The
+stacks must go on as the same thing, and the owned blocks be written the
+same. -/
+def subCtx (Γ Δ : CtxS) : Option (List CondS) :=
+  if Γ.stackRest = Δ.stackRest ∧ Γ.owned = Δ.owned ∧ Γ.ownedRest = Δ.ownedRest then
+    (stackConds Γ.stack Δ.stack).map fun ss =>
+      regsConds Γ.regs Δ.regs ++ (ss ++ (eqConds Γ.room Δ.room ++
+        (flagsConds Γ.flags Δ.flags ++ eqConds Γ.above Δ.above)))
+  else none
+
+theorem subCtx_sound {ρ : Env} {Γ Δ : CtxS} {cs : List CondS} (h : subCtx Γ Δ = some cs)
+    (hc : CondS.all ρ cs) : CtxSub (Γ.den ρ) (Δ.den ρ) := by
+  unfold subCtx at h
+  split at h
+  · next he =>
+    cases hs : stackConds Γ.stack Δ.stack with
+    | none => rw [hs] at h; cases h
+    | some ss =>
+      rw [hs] at h; cases h
+      obtain ⟨hr, hc⟩ := CondS.all_append _ _ hc
+      obtain ⟨hst, hc⟩ := CondS.all_append _ _ hc
+      obtain ⟨hroom, hc⟩ := CondS.all_append _ _ hc
+      obtain ⟨hfl, habove⟩ := CondS.all_append _ _ hc
+      refine ⟨fun r _ => ?_, ?_, eqConds_spec hroom, flagsConds_spec hfl, ?_, ?_,
+        eqConds_spec habove⟩
+      · rw [CtxS.den_regs, CtxS.den_regs]; exact regsConds_spec hr r
+      · rw [CtxS.den_stack, CtxS.den_stack, ← he.1]
+        exact stackConds_spec _ _ _ hs hst
+      · rw [CtxS.den_regs, CtxS.den_regs]; exact regsConds_spec hr .rsp
+      · rw [CtxS.den_owned, CtxS.den_owned, he.2.1, he.2.2]
+  · cases h
+
 /-! ## A walk through a block
 
 The checker taken through one instruction after another as in a run, and
@@ -4119,20 +4296,25 @@ inductive Walk
   rest where the condition held, and where it did not, each with that known
   of the flags. -/
   | branch (fl : FlagsS) (c : Cond) (taken fall : Walk)
+  /-- The block is handed over to a context allowed at an address: what is
+  left to be shown for the context reached to stand for it. -/
+  | enter (t : BitVec 64) (Δ : CtxS) (cs : List CondS)
 
-/-- That a walk's conditions hold, and that `P` holds of where it stopped:
-for every value each name may stand for. -/
-def Walk.holds (P : BitVec 64 → Ctx → Prop) : Walk → Env → Prop
+/-- That a walk's conditions hold, that `P` holds of where it stopped, and
+that `Q` allows each context it was handed over to: for every value each
+name may stand for. -/
+def Walk.holds (Q : CodeTy) (P : BitVec 64 → Ctx → Prop) : Walk → Env → Prop
   | .stop a Γ, ρ => P a (Γ.den ρ)
-  | .conds cs rest, ρ => CondS.all ρ cs ∧ rest.holds P ρ
-  | .name k rest, ρ => ∀ x, rest.holds P (ρ.setVal k x)
-  | .both l r, ρ => l.holds P ρ ∧ r.holds P ρ
-  | .err k l r, ρ => (∀ e, SysErr e → l.holds P (ρ.setVal k e)) ∧ r.holds P ρ
+  | .conds cs rest, ρ => CondS.all ρ cs ∧ rest.holds Q P ρ
+  | .name k rest, ρ => ∀ x, rest.holds Q P (ρ.setVal k x)
+  | .both l r, ρ => l.holds Q P ρ ∧ r.holds Q P ρ
+  | .err k l r, ρ => (∀ e, SysErr e → l.holds Q P (ρ.setVal k e)) ∧ r.holds Q P ρ
   | .byte k zero more, ρ =>
-    zero.holds P ρ ∧ ∀ b : BitVec 64, b ≠ 0 → b < 256 → more.holds P (ρ.setVal k b)
+    zero.holds Q P ρ ∧ ∀ b : BitVec 64, b ≠ 0 → b < 256 → more.holds Q P (ρ.setVal k b)
   | .branch fl c taken fall, ρ =>
-    (∀ f, fl.den ρ f → c.eval f = some true → taken.holds P ρ) ∧
-      (∀ f, fl.den ρ f → c.eval f = some false → fall.holds P ρ)
+    (∀ f, fl.den ρ f → c.eval f = some true → taken.holds Q P ρ) ∧
+      (∀ f, fl.den ρ f → c.eval f = some false → fall.holds Q P ρ)
+  | .enter t Δ cs, ρ => Q t (Δ.den ρ) ∧ CondS.all ρ cs
 
 /-- The first register an instruction needs the value of that the context
 only knows to hold a number. -/
@@ -4165,6 +4347,9 @@ structure Prog where
   /-- The addresses that have contexts of their own: a jump to one of them
   is not followed by the walk. -/
   labels : List (BitVec 64) := []
+  /-- Where a block is handed over: at the instruction at the first address,
+  to the context given, which is one allowed at the second address. -/
+  enters : List (BitVec 64 × BitVec 64 × CtxS) := []
 
 /-- That the blocks said to be of a kind are. -/
 def TagsOk (Ψ : MemTy) : List (BitVec 64 × Nat) → Prop
@@ -4404,6 +4589,83 @@ theorem branchTo_spec {P : Prog} {a len t : BitVec 64} {c : Cond} {i : Instr}
     · cases h
   · cases h
 
+/-- The context a block is handed over to at an instruction, where it is. -/
+def enterAt (P : Prog) (a t : BitVec 64) : Option CtxS :=
+  match P.enters.find? fun e => e.1 == a && e.2.1 == t with
+  | some e => some e.2.2
+  | none => none
+
+/-- Handing over at an instruction to a context allowed at an address: the
+context, and what is left to be shown for the one reached to stand for it. -/
+def handOver (P : Prog) (a t : BitVec 64) (Γ : CtxS) : Option (CtxS × List CondS) :=
+  match enterAt P a t with
+  | some Δ =>
+    match subCtx Γ Δ with
+    | some cs => some (Δ, cs)
+    | none => none
+  | none => none
+
+theorem handOver_sound {Φ : CodeTy} {ρ : Env} {P : Prog} {a t : BitVec 64} {Γ Δ : CtxS}
+    {cs : List CondS} (h : handOver P a t Γ = some (Δ, cs)) (hΦ : Φ t (Δ.den ρ))
+    (hc : CondS.all ρ cs) : Accepts Φ t (Γ.den ρ) := by
+  unfold handOver at h
+  split at h
+  · split at h
+    · next hs => cases h; exact ⟨_, hΦ, subCtx_sound hs hc⟩
+    · cases h
+  · cases h
+
+/-- A jump that hands the block over: to the context allowed where it goes,
+and for a conditional jump also to the one allowed at the next instruction
+if the block is handed over there, the block otherwise going on. -/
+def enterJump (P : Prog) (a len : BitVec 64) (Γ : CtxS) : Instr → Option Walk
+  | .jmp (.rel d) =>
+    match handOver P a (a + len + d.signExtend 64) Γ with
+    | some (Δ, cs) => some (.enter (a + len + d.signExtend 64) Δ cs)
+    | none => none
+  | .jcc c d =>
+    match handOver P a (a + len + d.signExtend 64) Γ with
+    | some (Δ, cs) =>
+      some (.conds (decideConds Γ.flags c)
+        (.branch Γ.flags c (.enter (a + len + d.signExtend 64) Δ cs)
+          (match handOver P a (a + len) Γ with
+            | some (Δ', cs') => .enter (a + len) Δ' cs'
+            | none => .stop (a + len) Γ)))
+    | none => none
+  | _ => none
+
+theorem enterJump_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
+    {P : Prog} {a len : BitVec 64} {Γ : CtxS} {i : Instr} {W : Walk}
+    (hf : fetch a = some (i, len)) (h : enterJump P a len Γ i = some W)
+    (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) ρ) : BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
+  unfold enterJump at h
+  split at h
+  · next d =>
+    split at h
+    · next Δ cs hh =>
+      cases h
+      exact .last hf (.jmp (handOver_sound hh hW.1 hW.2))
+    · cases h
+  · next c d =>
+    split at h
+    · next Δ cs hh =>
+      cases h
+      obtain ⟨hdec, htaken, hfall⟩ := hW
+      have ht : ∀ f, (Γ.den ρ).flags f → c.eval f = some true →
+          Accepts Φ (a + len + d.signExtend 64) (Γ.den ρ) := fun f hfl hc =>
+        handOver_sound hh (htaken f hfl hc).1 (htaken f hfl hc).2
+      cases hf2 : handOver P a (a + len) Γ with
+      | none =>
+        rw [hf2] at hfall
+        exact .branch hf (decideConds_spec hdec) ht (fun f hfl hc => hfall f hfl hc)
+      | some x =>
+        obtain ⟨Δ', cs'⟩ := x
+        rw [hf2] at hfall
+        exact .last hf (.jcc (decideConds_spec hdec) ht (fun f hfl hc =>
+          handOver_sound hf2 (hfall f hfl hc).1 (hfall f hfl hc).2))
+    · cases h
+  · cases h
+
 /-- The checker walked from an address for at most so many moves, `k` being
 a variable no term yet mentions. Before an instruction, a pointer to a block
 of a kind that it reaches through is opened, and a value it needs to speak
@@ -4415,6 +4677,9 @@ def walk (P : Prog) (code : List (BitVec 64 × Instr × BitVec 64)) :
     match lookup code a with
     | none => .stop a Γ
     | some (i, len) =>
+      match enterJump P a len Γ i with
+      | some W => W
+      | none =>
       match jumpTo P a len i with
       | some t => walk P code fuel k t Γ
       | none =>
@@ -4452,7 +4717,11 @@ def walk (P : Prog) (code : List (BitVec 64 × Instr × BitVec 64)) :
           else .stop a Γ
         | none =>
           match step (a + len) { Γ with blocks := P.blocks } i with
-          | some (Γ', cs) => .conds cs (walk P code fuel k (a + len) (castData P Γ' i))
+          | some (Γ', cs) =>
+            -- the next instruction may be where the block is handed over
+            match handOver P a (a + len) Γ' with
+            | some (Δ, cs') => .conds cs (.enter (a + len) Δ cs')
+            | none => .conds cs (walk P code fuel k (a + len) (castData P Γ' i))
           | none => .stop a Γ
 
 /-- **A walk whose conditions hold types the block it started at**, if the
@@ -4460,7 +4729,7 @@ block where it stopped is typed. -/
 theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P : Prog}
     {code : List (BitVec 64 × Instr × BitVec 64)} (hcode : Agrees fetch code) :
     (fuel k : Nat) → (a : BitVec 64) → (Γ : CtxS) → (ρ : Env) → P.Ok Ψ ρ →
-    (walk P code fuel k a Γ).holds (BlockOk Φ fetch sys Ψ) ρ →
+    (walk P code fuel k a Γ).holds Φ (BlockOk Φ fetch sys Ψ) ρ →
     BlockOk Φ fetch sys Ψ a (Γ.den ρ)
   | 0, _, _, _, _, _, h => h
   | fuel + 1, k, a, Γ, ρ, hP, h => by
@@ -4468,6 +4737,9 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
     split at h
     · exact h
     · next i len hl =>
+      split at h
+      · next W hj => exact enterJump_sound (Agrees.lookup code hcode hl) hj h
+      next =>
       split at h
       · next t hj =>
         obtain ⟨d, rfl, rfl⟩ := jumpTo_spec hj
@@ -4558,195 +4830,23 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
           · exact h
         · split at h
           · next Γ' cs hs =>
-            exact .step (Agrees.lookup code hcode hl)
-              (step_sound (Γ := { Γ with blocks := P.blocks }) hP.blocks hs h.1)
-              (castData_sound hP (walk_sound hcode fuel k (a + len) _ ρ hP h.2))
+            have hst := step_sound (Ψ := Ψ) (ρ := ρ) (Γ := { Γ with blocks := P.blocks })
+              hP.blocks hs
+            split at h
+            · next Δ cs' hh =>
+              exact .last (Agrees.lookup code hcode hl)
+                (.straight (hst h.1) (handOver_sound hh h.2.1 h.2.2))
+            · exact .step (Agrees.lookup code hcode hl) (hst h.1)
+                (castData_sound hP (walk_sound hcode fuel k (a + len) _ ρ hP h.2))
           · exact h
 
 /-- The same, from the walk written out. -/
 theorem walk_sound' {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
     {P : Prog} {code : List (BitVec 64 × Instr × BitVec 64)}
     (hP : P.Ok Ψ ρ) (hcode : Agrees fetch code) {fuel k : Nat} {a : BitVec 64} {Γ : CtxS}
-    {W : Walk} (h : walk P code fuel k a Γ = W) (hW : W.holds (BlockOk Φ fetch sys Ψ) ρ) :
+    {W : Walk} (h : walk P code fuel k a Γ = W) (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) ρ) :
     BlockOk Φ fetch sys Ψ a (Γ.den ρ) :=
   walk_sound hcode fuel k a Γ ρ hP (by rw [h]; exact hW)
-
-/-! ## One context standing for another
-
-A block hands over to another, returns, or calls, where the context it has
-reached may stand for the one wanted there: every register's type is one of
-the type wanted, the stack is cut the same way with each piece standing for
-its counterpart, and the rest agrees. On terms this is worked out part by
-part, and what the terms do not show is left to be shown. -/
-
-/-- What is left to be shown for two numbers to be the same. -/
-def eqConds (a b : Num) : List CondS := if a = b then [] else [.eqN a b]
-
-theorem eqConds_spec {ρ : Env} {a b : Num} (h : CondS.all ρ (eqConds a b)) :
-    a.den ρ = b.den ρ := by
-  unfold eqConds at h
-  split at h
-  · next e => rw [e]
-  · exact h.1
-
-/-- What is left to be shown for what is known of the flags one way to be
-known the other. -/
-def flagsConds (fl fl' : FlagsS) : List CondS :=
-  if fl = fl' then []
-  else match fl' with
-    | .any => []
-    | .known => if fl.allDefined then [] else [.flagsSub fl fl']
-    | _ => [.flagsSub fl fl']
-
-theorem flagsConds_spec {ρ : Env} {fl fl' : FlagsS} (h : CondS.all ρ (flagsConds fl fl')) :
-    ∀ f, fl.den ρ f → fl'.den ρ f := by
-  unfold flagsConds at h
-  split at h
-  · next e => rw [e]; exact fun _ hf => hf
-  · split at h
-    · exact fun _ _ => trivial
-    · split at h
-      · next hd => exact fun f hf => FlagsS.allDefined_spec hd f hf
-      · exact h.1
-    · exact h.1
-
-/-- What is left to be shown for every typed value of one list to be found
-in another at the same place, at a type it may stand for. -/
-def valsConds (have' : ValsS) : ValsS → Option (List CondS)
-  | .nil => some []
-  | .cons o τ rest =>
-    match have'.find o, valsConds have' rest with
-    | some υ, some cs => some (subConds υ τ ++ cs)
-    | _, _ => none
-
-theorem ValsS.mem_of_find {ρ : Env} : (vs : ValsS) → {o : Nat} → {τ : TyS} →
-    vs.find o = some τ → (o, τ.den ρ) ∈ vs.den ρ
-  | .nil, _, _, h => by cases h
-  | .cons p υ rest, o, τ, h => by
-    unfold ValsS.find at h
-    show (o, τ.den ρ) ∈ (p, υ.den ρ) :: rest.den ρ
-    by_cases e : (p == o) = true
-    · simp only [e, ↓reduceIte, Option.some.injEq] at h
-      subst h
-      rw [show p = o from by simpa using e]; exact List.mem_cons_self
-    · simp only [e, Bool.false_eq_true, ↓reduceIte] at h
-      exact List.mem_cons_of_mem _ (ValsS.mem_of_find rest h)
-
-theorem valsConds_spec {ρ : Env} {have' : ValsS} : (want : ValsS) → {cs : List CondS} →
-    valsConds have' want = some cs → CondS.all ρ cs →
-    ∀ q ∈ want.den ρ, ∃ p ∈ have'.den ρ, p.1 = q.1 ∧ Sub p.2 q.2
-  | .nil, _, _, _ => fun q hq => by cases hq
-  | .cons o τ rest, cs, h, hc => by
-    unfold valsConds at h
-    split at h
-    · next υ cs' hf hr =>
-      cases h
-      obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc
-      intro q hq
-      rcases List.mem_cons.mp hq with rfl | hq
-      · exact ⟨(o, υ.den ρ), ValsS.mem_of_find _ hf, rfl, subConds_spec h₁⟩
-      · exact valsConds_spec rest hr h₂ q hq
-    · cases h
-
-/-- What is left to be shown for one shape to stand for another. -/
-def shapeConds (S T : ShapeS) : Option (List CondS) :=
-  if S = T then some []
-  else match S, T with
-    | .mk size vals, .mk size' vals' =>
-      (valsConds vals vals').map (eqConds size size' ++ ·)
-    | _, _ => none
-
-theorem shapeConds_spec {ρ : Env} {S T : ShapeS} {cs : List CondS}
-    (h : shapeConds S T = some cs) (hc : CondS.all ρ cs) : SubShape (S.den ρ) (T.den ρ) := by
-  unfold shapeConds at h
-  split at h
-  · next e => rw [e]; exact SubShape.refl _
-  · split at h
-    · obtain ⟨vs, hv, rfl⟩ := Option.map_eq_some_iff.mp h
-      obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc
-      exact ⟨eqConds_spec h₁, valsConds_spec _ hv h₂⟩
-    · cases h
-
-/-- What is left to be shown for one stack to stand for another, piece by piece. -/
-def stackConds : List ShapeS → List ShapeS → Option (List CondS)
-  | [], [] => some []
-  | S :: σ, T :: τ =>
-    match shapeConds S T, stackConds σ τ with
-    | some cs, some ds => some (cs ++ ds)
-    | _, _ => none
-  | _, _ => none
-
-theorem stackConds_spec {ρ : Env} (tail : List Shape) : (σ τ : List ShapeS) →
-    {cs : List CondS} → stackConds σ τ = some cs → CondS.all ρ cs →
-    SubList (denShapes ρ σ tail) (denShapes ρ τ tail)
-  | [], [], _, _, _ => SubList.refl _
-  | S :: σ, T :: τ, cs, h, hc => by
-    unfold stackConds at h
-    split at h
-    · next cs' ds hs hr =>
-      cases h
-      obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc
-      exact .cons (shapeConds_spec hs h₁) (stackConds_spec tail σ τ hr h₂)
-    · cases h
-  | [], _ :: _, _, h, _ => by cases h
-  | _ :: _, [], _, h, _ => by cases h
-
-/-- Every register. -/
-def regList : List Reg :=
-  [.rax, .rcx, .rdx, .rbx, .rsp, .rbp, .rsi, .rdi, .r8, .r9, .r10, .r11, .r12, .r13, .r14, .r15]
-
-theorem mem_regList (r : Reg) : r ∈ regList := by cases r <;> decide
-
-theorem CondS.all_flatMap {ρ : Env} {α : Type} (f : α → List CondS) : (l : List α) →
-    CondS.all ρ (l.flatMap f) → ∀ x ∈ l, CondS.all ρ (f x)
-  | [], _, _, hx => by cases hx
-  | y :: l, h, x, hx => by
-    rw [List.flatMap_cons] at h
-    obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ h
-    rcases List.mem_cons.mp hx with rfl | hx
-    · exact h₁
-    · exact CondS.all_flatMap f l h₂ x hx
-
-/-- What is left to be shown for every register's type in one table to stand
-for its counterpart in another. -/
-def regsConds (m m' : RegMap TyS) : List CondS :=
-  regList.flatMap fun r => subConds (m.get r) (m'.get r)
-
-theorem regsConds_spec {ρ : Env} {m m' : RegMap TyS} (h : CondS.all ρ (regsConds m m'))
-    (r : Reg) : Sub ((m.get r).den ρ) ((m'.get r).den ρ) :=
-  subConds_spec (CondS.all_flatMap _ _ h r (mem_regList r))
-
-/-- **What is left to be shown for one context to stand for another.** The
-stacks must go on as the same thing, and the owned blocks be written the
-same. -/
-def subCtx (Γ Δ : CtxS) : Option (List CondS) :=
-  if Γ.stackRest = Δ.stackRest ∧ Γ.owned = Δ.owned ∧ Γ.ownedRest = Δ.ownedRest then
-    (stackConds Γ.stack Δ.stack).map fun ss =>
-      regsConds Γ.regs Δ.regs ++ (ss ++ (eqConds Γ.room Δ.room ++
-        (flagsConds Γ.flags Δ.flags ++ eqConds Γ.above Δ.above)))
-  else none
-
-theorem subCtx_sound {ρ : Env} {Γ Δ : CtxS} {cs : List CondS} (h : subCtx Γ Δ = some cs)
-    (hc : CondS.all ρ cs) : CtxSub (Γ.den ρ) (Δ.den ρ) := by
-  unfold subCtx at h
-  split at h
-  · next he =>
-    cases hs : stackConds Γ.stack Δ.stack with
-    | none => rw [hs] at h; cases h
-    | some ss =>
-      rw [hs] at h; cases h
-      obtain ⟨hr, hc⟩ := CondS.all_append _ _ hc
-      obtain ⟨hst, hc⟩ := CondS.all_append _ _ hc
-      obtain ⟨hroom, hc⟩ := CondS.all_append _ _ hc
-      obtain ⟨hfl, habove⟩ := CondS.all_append _ _ hc
-      refine ⟨fun r _ => ?_, ?_, eqConds_spec hroom, flagsConds_spec hfl, ?_, ?_,
-        eqConds_spec habove⟩
-      · rw [CtxS.den_regs, CtxS.den_regs]; exact regsConds_spec hr r
-      · rw [CtxS.den_stack, CtxS.den_stack, ← he.1]
-        exact stackConds_spec _ _ _ hs hst
-      · rw [CtxS.den_regs, CtxS.den_regs]; exact regsConds_spec hr .rsp
-      · rw [CtxS.den_owned, CtxS.den_owned, he.2.1, he.2.2]
-  · cases h
 
 /-! ## Why the checker has no answer
 

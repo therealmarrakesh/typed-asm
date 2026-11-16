@@ -82,6 +82,13 @@ theorem Straight.regsEtaAfter {Ψ : MemTy} {next : BitVec 64} {Γ Γ' : Ctx} {i 
   rw [← RegMap.eta] at h
   exact h
 
+/-- Whatever holds of a context holds of it with its register types written
+out as a table. -/
+theorem Ctx.asTable {P : Ctx → Prop} {Γ : Ctx} (h : P Γ) :
+    P { Γ with regs := RegMap.get ⟨Γ.regs .rax, Γ.regs .rcx, Γ.regs .rdx, Γ.regs .rbx, Γ.regs .rsp, Γ.regs .rbp, Γ.regs .rsi, Γ.regs .rdi, Γ.regs .r8, Γ.regs .r9, Γ.regs .r10, Γ.regs .r11, Γ.regs .r12, Γ.regs .r13, Γ.regs .r14, Γ.regs .r15⟩ } := by
+  rw [← RegMap.eta]
+  exact h
+
 /-- The other way: a block typed as it stands is typed with the table. For
 closing a goal the tactics have put in table form with a fact that was not
 stated in it. -/
