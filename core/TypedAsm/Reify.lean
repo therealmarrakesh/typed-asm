@@ -370,6 +370,16 @@ partial def denVal (as : Atoms) : Val → MetaM Expr
   | .app1 (.shift op w c) a => do
     return setWidthE w.bits 64
       (← mkAppM ``ShiftOp.apply #[toExpr op, setWidthE 64 w.bits (← denVal as a), mkNatLit c])
+  | .app1 (.setcc b) a => do
+    let bit ← mkAppM ``ite #[← mkEq (toExpr b) (mkConst ``Bool.true), toExpr (1 : BitVec 8),
+      toExpr (0 : BitVec 8)]
+    let low ← mkAppM ``HAnd.hAnd #[← denVal as a,
+      ← mkAppM ``Complement.complement #[toExpr (0xff : BitVec 64)]]
+    mkAppM ``HOr.hOr #[low, setWidthE 8 64 bit]
+  | .app2 (.cmov w b) x a => do
+    let pick ← mkAppM ``ite #[← mkEq (toExpr b) (mkConst ``Bool.true),
+      setWidthE 64 w.bits (← denVal as a), setWidthE 64 w.bits (← denVal as x)]
+    return setWidthE w.bits 64 pick
   | .app2 (.imul w) a b => do
     let r ← mkAppM ``imulTrunc #[setWidthE 64 w.bits (← denVal as a),
       setWidthE 64 w.bits (← denVal as b)]
@@ -494,6 +504,14 @@ def denCond (as : Atoms) : CondS → MetaM Expr
   | .le a b => do mkLe (← denNum as a) (← denNum as b)
   | .lt a b => do mkLt (← denNum as a) (← denNum as b)
   | .sub τ υ => do return mkApp2 (mkConst ``Sub) (← denTy as τ) (← denTy as υ)
+  | .decides fl c => do
+    let P ← denFlags as fl
+    withLocalDeclD `f (mkConst ``Flags) fun f => do
+      let hyp := (mkApp P f).headBeta
+      let ev ← mkAppM ``Cond.eval #[f, toExpr c]
+      let concl ← withLocalDeclD `b (mkConst ``Bool) fun b => do
+        mkAppM ``Exists #[← mkLambdaFVars #[b] (← mkEq ev (← mkAppM ``Option.some #[b]))]
+      mkForallFVars #[f] (← mkArrow hyp concl)
   | .cf fl => do
     let P ← denFlags as fl
     withLocalDeclD `f (mkConst ``Flags) fun f => do

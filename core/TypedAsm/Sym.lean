@@ -47,6 +47,8 @@ inductive Op1
   | sx (w : Width) (sw : NarrowW)
   /-- Shifted or rotated by a number of bits, at a width. -/
   | shift (op : ShiftOp) (w : Width) (c : Nat)
+  /-- The low byte set from a condition that came out this way. -/
+  | setcc (b : Bool)
   deriving DecidableEq, Repr
 
 /-- An operation of two values, likewise. -/
@@ -55,6 +57,8 @@ inductive Op2
   | alu (op : AluOp) (w : Width)
   /-- The low half of a signed product at a width. -/
   | imul (w : Width)
+  /-- The second value if a condition came out true, else the first, at a width. -/
+  | cmov (w : Width) (b : Bool)
   deriving DecidableEq, Repr
 
 def Op1.den : Op1 → BitVec 64 → BitVec 64
@@ -69,11 +73,13 @@ def Op1.den : Op1 → BitVec 64 → BitVec 64
   | .zx w sw, a => ((a.setWidth sw.bits).setWidth w.bits).setWidth 64
   | .sx w sw, a => ((a.setWidth sw.bits).signExtend w.bits).setWidth 64
   | .shift op w c, a => (op.apply (a.setWidth w.bits) c).setWidth 64
+  | .setcc b, x => (x &&& ~~~0xff) ||| (if b then (1 : BitVec 8) else 0).setWidth 64
 
 def Op2.den : Op2 → BitVec 64 → BitVec 64 → BitVec 64
   | .alu op .w64, a, b => (op.apply a b).1
   | .alu op .w32, a, b => (op.apply (a.setWidth 32) (b.setWidth 32)).1.setWidth 64
   | .imul w, a, b => (imulTrunc (a.setWidth w.bits) (b.setWidth w.bits)).1.setWidth 64
+  | .cmov w b, x, a => (if b then a.setWidth w.bits else x.setWidth w.bits).setWidth 64
 
 /-- A 64-bit value as a term. -/
 inductive Val
@@ -424,12 +430,15 @@ inductive CondS
   | cf (fl : FlagsS)
   /-- A value of one type is one of another. -/
   | sub (τ υ : TyS)
+  /-- Flags of which this is known decide a condition. -/
+  | decides (fl : FlagsS) (c : Cond)
 
 def CondS.den (ρ : Env) : CondS → Prop
   | .le a b => a.den ρ ≤ b.den ρ
   | .lt a b => a.den ρ < b.den ρ
   | .cf fl => ∀ f, fl.den ρ f → f.cf.isSome = true
   | .sub τ υ => Sub (τ.den ρ) (υ.den ρ)
+  | .decides fl c => ∀ f, fl.den ρ f → ∃ b, c.eval f = some b
 
 /-- All of a list of things left to be shown. -/
 def CondS.all (ρ : Env) : List CondS → Prop
@@ -1090,6 +1099,7 @@ theorem Val.den_summands (ρ : Env) : (v : Val) → v.den ρ = sumV ρ v.summand
       simp only [Val.den, Op2.den, sumV_append, AluOp.apply, addCarry_fst]
       rw [iha, ihb]; ac_rfl
     | imul w => simp [Val.summands, sumV]
+    | cmov w b => simp [Val.summands, sumV]
 
 /-- A list of terms with one occurrence of a term taken out. -/
 def removeV (a : Val) : List Val → Option (List Val)
@@ -1993,6 +2003,149 @@ theorem reads_map {Γ : CtxS} {n : Nat} {m : Mem} {f : List CondS → CtxS × Li
   | none => rw [hr] at h; cases h
   | some cs => rw [hr] at h; cases h; exact ⟨cs, rfl, rfl⟩
 
+theorem writes_map {Γ : CtxS} {n : Nat} {m : Mem} {f : CtxS × List CondS → CtxS × List CondS}
+    {x : CtxS × List CondS} (h : (writes Γ n m).map f = some x) :
+    ∃ y, writes Γ n m = some y ∧ x = f y := by
+  cases hw : writes Γ n m with
+  | none => rw [hw] at h; cases h
+  | some y => rw [hw] at h; cases h; exact ⟨y, rfl, rfl⟩
+
+/-! ### What the flags say of a condition -/
+
+/-- Whether flags known this way have all four defined. -/
+def FlagsS.allDefined : FlagsS → Bool
+  | .known => true
+  | .alu _ _ _ _ => true
+  | .test _ _ => true
+  | .neg _ _ => true
+  | .popcnt _ _ => true
+  | .lit f => f.defined
+  | _ => false
+
+theorem FlagsS.allDefined_spec {ρ : Env} {fl : FlagsS} (h : fl.allDefined = true) :
+    ∀ f, fl.den ρ f → f.defined = true := by
+  intro f hf
+  cases fl with
+  | known => exact hf
+  | alu op w a b => cases w <;> (rw [show f = _ from hf]; exact AluOp.apply_defined _ _ _)
+  | test a b => rw [show f = _ from hf]; exact Flags.ofResult_defined _ _ _
+  | neg w a => rw [show f = _ from hf]; exact subBorrow_defined _ _ _
+  | popcnt w a => rw [show f = _ from hf]; rfl
+  | lit g => rw [show f = g from hf]; exact h
+  | any => cases h
+  | defined _ _ _ _ => cases h
+  | imul _ _ _ => cases h
+  | atom _ => cases h
+
+/-- What is left to be shown for the flags to decide a condition: nothing
+where they are all defined. -/
+def decideConds (fl : FlagsS) (c : Cond) : List CondS :=
+  if fl.allDefined then [] else [.decides fl c]
+
+theorem decideConds_spec {ρ : Env} {fl : FlagsS} {c : Cond}
+    (h : CondS.all ρ (decideConds fl c)) : ∀ f, fl.den ρ f → ∃ b, c.eval f = some b := by
+  unfold decideConds at h
+  split at h
+  · next hd => exact fun f hf => Cond.eval_some (FlagsS.allDefined_spec hd f hf) c
+  · exact h.1
+
+/-- What the flags make of a condition, where they are exactly known from
+values that are numbers. -/
+def FlagsS.eval? : FlagsS → Cond → Option Bool
+  | .lit f, c => c.eval f
+  | .alu op .w64 (.lit a) (.lit b), c => c.eval (op.apply a b).2
+  | .alu op .w32 (.lit a) (.lit b), c => c.eval (op.apply (a.setWidth 32) (b.setWidth 32)).2
+  | .test (.lit a) (.lit b), c => c.eval (Flags.ofResult (a &&& b) false false)
+  | _, _ => none
+
+theorem FlagsS.eval?_spec {ρ : Env} {fl : FlagsS} {c : Cond} {b : Bool}
+    (h : fl.eval? c = some b) : ∀ f, fl.den ρ f → c.eval f = some b := by
+  intro f hf
+  unfold FlagsS.eval? at h
+  split at h
+  · rw [show f = _ from hf]; exact h
+  · rw [show f = _ from hf]; exact h
+  · rw [show f = _ from hf]; exact h
+  · rw [show f = _ from hf]; exact h
+  · cases h
+
+/-- The checker for `setcc`. -/
+def stepSetcc (Γ : CtxS) (c : Cond) (dst : RM) : Option (CtxS × List CondS) :=
+  match dst with
+  | .mem m => (writes Γ 1 m).map fun x => (x.1, x.2 ++ decideConds Γ.flags c)
+  | .reg d =>
+    if d = .rsp then none
+    else match exactly (Γ.regs.get d), Γ.flags.eval? c with
+      | some v, some b => some (Γ.setReg d (.eq (.mk1 (.setcc b) v)), [])
+      | _, _ => some (Γ.setReg d .int, decideConds Γ.flags c)
+
+theorem stepSetcc_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {c : Cond} {dst : RM}
+    {x : CtxS × List CondS} (h : stepSetcc Γ c dst = some x) (hn : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) (.setcc c dst) (x.1.den ρ) := by
+  unfold stepSetcc at h
+  split at h
+  · next m =>
+    obtain ⟨y, hw, rfl⟩ := writes_map h
+    obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hn
+    exact .setccRM (writes_sound hw h₁).1 (decideConds_spec h₂)
+  · next d =>
+    split at h
+    · cases h
+    · next hd =>
+      split at h
+      · next v b hv hb =>
+        cases h
+        exact cast_ctx (.setccExact hd (by rw [CtxS.den_regs, exactly_den hv])
+          (FlagsS.eval?_spec hb)) (CtxS.den_setReg_mk1 ρ Γ d (.setcc b) v)
+      · cases h
+        rw [CtxS.den_setReg]
+        exact .setccRM (.reg hd) (decideConds_spec hn)
+
+/-- The checker for `cmov`. -/
+def stepCmov (Γ : CtxS) (c : Cond) (w : Width) (d : Reg) (src : RM) :
+    Option (CtxS × List CondS) :=
+  if d = .rsp then none
+  else match src with
+    | .mem m =>
+      (reads Γ w.bytes.toNat m).map fun cs => (Γ.setReg d .int, cs ++ decideConds Γ.flags c)
+    | .reg r =>
+      match exactly (Γ.regs.get d), exactly (Γ.regs.get r), Γ.flags.eval? c with
+      | some v, some a, some b =>
+        if r = .rsp then some (Γ.setReg d .int, decideConds Γ.flags c)
+        else some (Γ.setReg d (.eq (.mk2 (.cmov w b) v a)), [])
+      | _, _, _ => some (Γ.setReg d .int, decideConds Γ.flags c)
+
+theorem stepCmov_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {c : Cond} {w : Width}
+    {d : Reg} {src : RM} {x : CtxS × List CondS} (h : stepCmov Γ c w d src = some x)
+    (hn : CondS.all ρ x.2) : Straight Ψ next (Γ.den ρ) (.cmov c w d src) (x.1.den ρ) := by
+  unfold stepCmov at h
+  split at h
+  · cases h
+  next hd =>
+  split at h
+  · next m =>
+    obtain ⟨cs, hr, rfl⟩ := reads_map h
+    obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hn
+    rw [CtxS.den_setReg]
+    exact .cmovRM hd (reads_sound hr h₁) (decideConds_spec h₂)
+  · next r =>
+    split at h
+    · next v a b hv ha hb =>
+      split at h
+      · cases h
+        rw [CtxS.den_setReg]
+        exact .cmovRM hd (.reg _) (decideConds_spec hn)
+      · next hr =>
+        cases h
+        refine cast_ctx (.cmovExact hd hr (by rw [CtxS.den_regs, exactly_den hv])
+          (by rw [CtxS.den_regs, exactly_den ha]) (FlagsS.eval?_spec hb)) ?_
+        rw [CtxS.den_setReg]
+        show CtxOf.setReg _ _ (.eq ((Val.mk2 (.cmov w b) v a).den ρ)) = _
+        rw [Val.den_mk2]; rfl
+    · cases h
+      rw [CtxS.den_setReg]
+      exact .cmovRM hd (.reg _) (decideConds_spec hn)
+
 /-- What is known of the flags after a shift or rotate by a number of bits. -/
 def flagsAfterS (op : ShiftOp) (c : Nat) (fl : FlagsS) : FlagsS :=
   if c = 0 then fl
@@ -2025,13 +2178,6 @@ def stepShift (Γ : CtxS) (op : ShiftOp) (w : Width) (dst : RM) (c : Count) :
     (writes Γ w.bytes.toNat m).map fun x =>
       ({ x.1 with flags := flagsAfterS op (n.toNat % w.bits) Γ.flags }, x.2)
   | .mem m, .cl => (writes Γ w.bytes.toNat m).map fun x => ({ x.1 with flags := .any }, x.2)
-
-theorem writes_map {Γ : CtxS} {n : Nat} {m : Mem} {f : CtxS × List CondS → CtxS × List CondS}
-    {x : CtxS × List CondS} (h : (writes Γ n m).map f = some x) :
-    ∃ y, writes Γ n m = some y ∧ x = f y := by
-  cases hw : writes Γ n m with
-  | none => rw [hw] at h; cases h
-  | some y => rw [hw] at h; cases h; exact ⟨y, rfl, rfl⟩
 
 theorem stepShift_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {op : ShiftOp}
     {w : Width} {dst : RM} {c : Count} {x : CtxS × List CondS}
@@ -2756,6 +2902,8 @@ def step (next : BitVec 64) (Γ : CtxS) : Instr → Option (CtxS × List CondS)
   | .movsx w d sw src => stepMovsx next Γ w d sw src
   | .unary op w dst => stepUnary next Γ op w dst
   | .shift op w dst c => stepShift Γ op w dst c
+  | .setcc c dst => stepSetcc Γ c dst
+  | .cmov c w d src => stepCmov Γ c w d src
   | .mulDiv op w src => stepMulDiv Γ op w src
   | .bswap w r =>
     if r = .rsp then none
@@ -2798,6 +2946,8 @@ theorem step_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {i : I
   · exact stepMovsx_sound h hn
   · exact stepUnary_sound h hn
   · exact stepShift_sound h hn
+  · exact stepSetcc_sound h hn
+  · exact stepCmov_sound h hn
   · exact stepMulDiv_sound h hn
   · next w r =>
     split at h
