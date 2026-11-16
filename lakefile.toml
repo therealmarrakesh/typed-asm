@@ -1,6 +1,6 @@
 name = "typed-assembly"
 version = "0.1.0"
-defaultTargets = ["TypedAsm", "Sum", "Swap", "Frame", "Ops", "Index", "Echo", "Table", "Dispatch", "List", "Fact", "Buffer", "Keep", "Alloc", "Cat", "Stat", "Args", "Own", "Double", "Fresh", "Pair", "Lend", "Random", "Rejected", "sum", "swap", "frame", "ops", "index", "echo", "table", "dispatch", "list", "fact", "buffer", "keep", "alloc", "cat", "stat", "args", "own", "double", "fresh", "pair", "lend", "random"]
+defaultTargets = ["TypedAsm", "Sum", "Swap", "Frame", "Ops", "Index", "Echo", "Table", "Dispatch", "List", "Fact", "Buffer", "Keep", "Alloc", "Cat", "Stat", "Args", "Own", "Double", "Fresh", "Pair", "Lend", "Random", "Pick", "Rejected", "sum", "swap", "frame", "ops", "index", "echo", "table", "dispatch", "list", "fact", "buffer", "keep", "alloc", "cat", "stat", "args", "own", "double", "fresh", "pair", "lend", "random", "pick"]
 testDriver = "tests"
 
 # The core library: machine model, instruction set, semantics, type system.
@@ -240,6 +240,16 @@ roots = ["Pair", "PairProgram"]
 name = "pair"
 root = "PairMain"
 srcDir = "examples/Pair"
+
+[[lean_lib]]
+name = "Pick"
+srcDir = "examples/Pick"
+roots = ["Pick", "PickProgram"]
+
+[[lean_exe]]
+name = "pick"
+root = "PickMain"
+srcDir = "examples/Pick"
 
 [[lean_lib]]
 name = "Rejected"

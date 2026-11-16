@@ -20,6 +20,7 @@ import DoubleProgram
 import FreshProgram
 import PairProgram
 import LendProgram
+import PickProgram
 
 /-!
 # Whole programs, against a real machine
@@ -100,7 +101,10 @@ def cases : List Case := [
   { label := "fresh-short", program := Fresh.program, input := pattern 100 },
   { label := "fresh-page", program := Fresh.program, input := pattern 4096 },
   { label := "fresh-more", program := Fresh.program, input := pattern 5000 },
-  { label := "pair", program := Pair.program }]
+  { label := "pair", program := Pair.program },
+  { label := "pick-none", program := Pick.program },
+  { label := "pick-two", program := Pick.program, args := ["a", "b"] },
+  { label := "pick-many", program := Pick.program, args := ["a", "b", "c", "d"] }]
 
 /-- A run as it is recorded: the exit status as Linux reports it, then what
 was written to standard output. -/

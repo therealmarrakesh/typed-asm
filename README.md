@@ -25,7 +25,7 @@ What exists and is checked today:
   `clock_gettime`, `getrandom`). Where the kernel has a choice the model has
   it too: a call may hand over fewer bytes than were asked for, or fail, and
   what a program may conclude from a result is stated and proved.
-- Twenty-two example programs in `examples/`, each built into an executable
+- Twenty-three example programs in `examples/`, each built into an executable
   whose safety theorem depends only on Lean's three standard axioms.
 - Tests against real tools: 79,628 instructions against the GNU assembler,
   13,579 instruction sequences against a real processor, including which
@@ -46,7 +46,7 @@ jumped back to, called or returned to, and three commands:
 - `asm_safety At.start` proves the program well typed and, from that, safe
   from every state meeting the contract, whatever the outside world does.
 
-Each instruction is typed without being told how. Eleven of the twenty-two
+Each instruction is typed without being told how. Twelve of the twenty-three
 examples need nothing more than this. In the others, a label's block says
 what cannot be read off the program: which context a loop is entered in,
 which of a family of signatures a call is to, where an owned block is split,

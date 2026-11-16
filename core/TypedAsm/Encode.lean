@@ -203,86 +203,92 @@ def Instr.length (i : Instr) : Nat :=
 /-! ## Aiming an instruction at a place
 
 An instruction that reaches memory relative to `rip` names the place by its
-distance from the next instruction. `aim` sets that distance, leaving the
-instruction otherwise as it is; an instruction with no such operand is left
-alone. A program names the place by a label, and the distance is worked out
-from where the instruction and the label end up. -/
+distance from the next instruction, and one whose operand has no base
+register names it by its address. `aim` sets whichever of the two the
+instruction has, leaving it otherwise as it is; an instruction with neither
+is left alone. A program names the place by a label, and the distance or the
+address is worked out from where the instruction and the label end up. -/
 
-/-- The address expression with its distance from `rip` set, if it is one
-relative to `rip`. -/
-def Mem.aim (d : BitVec 32) : Mem → Mem
+/-- The address expression with its distance from `rip` set to `d`, if it is
+one relative to `rip`, or its address set to `e`, if it has no base register. -/
+def Mem.aim (d e : BitVec 32) : Mem → Mem
   | .rip _ => .rip d
+  | .sib none i _ => .sib none i e
   | m => m
 
-def RM.aim (d : BitVec 32) : RM → RM
-  | .mem m => .mem (m.aim d)
+def RM.aim (d e : BitVec 32) : RM → RM
+  | .mem m => .mem (m.aim d e)
   | rm => rm
 
-def Operands.aim (d : BitVec 32) : Operands → Operands
-  | .rm_r dst src => .rm_r (dst.aim d) src
-  | .r_m dst src => .r_m dst (src.aim d)
-  | .rm_i dst imm => .rm_i (dst.aim d) imm
+def Operands.aim (d e : BitVec 32) : Operands → Operands
+  | .rm_r dst src => .rm_r (dst.aim d e) src
+  | .r_m dst src => .r_m dst (src.aim d e)
+  | .rm_i dst imm => .rm_i (dst.aim d e) imm
 
-def Target.aim (d : BitVec 32) : Target → Target
-  | .ind rm => .ind (rm.aim d)
+def Target.aim (d e : BitVec 32) : Target → Target
+  | .ind rm => .ind (rm.aim d e)
   | t => t
 
-/-- The instruction with the distance of its `rip`-relative operand set. -/
-def Instr.aim (d : BitVec 32) : Instr → Instr
-  | .alu op w ops => .alu op w (ops.aim d)
-  | .test w dst src => .test w (dst.aim d) src
-  | .unary op w dst => .unary op w (dst.aim d)
-  | .shift op w dst c => .shift op w (dst.aim d) c
-  | .mulDiv op w src => .mulDiv op w (src.aim d)
-  | .imul2 w dst src => .imul2 w dst (src.aim d)
-  | .imul3 w dst src imm => .imul3 w dst (src.aim d) imm
-  | .popcnt w dst src => .popcnt w dst (src.aim d)
-  | .mov w ops => .mov w (ops.aim d)
-  | .store8 dst src => .store8 (dst.aim d) src
-  | .store16 dst src => .store16 (dst.aim d) src
-  | .movzx w dst sw src => .movzx w dst sw (src.aim d)
-  | .movsx w dst sw src => .movsx w dst sw (src.aim d)
-  | .movsxd dst src => .movsxd dst (src.aim d)
-  | .lea w dst addr => .lea w dst (addr.aim d)
-  | .cmov c w dst src => .cmov c w dst (src.aim d)
-  | .setcc c dst => .setcc c (dst.aim d)
-  | .jmp t => .jmp (t.aim d)
-  | .call t => .call (t.aim d)
+/-- The instruction with the distance of its `rip`-relative operand set, or
+the address of its operand with no base register. -/
+def Instr.aim (d e : BitVec 32) : Instr → Instr
+  | .alu op w ops => .alu op w (ops.aim d e)
+  | .test w dst src => .test w (dst.aim d e) src
+  | .unary op w dst => .unary op w (dst.aim d e)
+  | .shift op w dst c => .shift op w (dst.aim d e) c
+  | .mulDiv op w src => .mulDiv op w (src.aim d e)
+  | .imul2 w dst src => .imul2 w dst (src.aim d e)
+  | .imul3 w dst src imm => .imul3 w dst (src.aim d e) imm
+  | .popcnt w dst src => .popcnt w dst (src.aim d e)
+  | .mov w ops => .mov w (ops.aim d e)
+  | .store8 dst src => .store8 (dst.aim d e) src
+  | .store16 dst src => .store16 (dst.aim d e) src
+  | .movzx w dst sw src => .movzx w dst sw (src.aim d e)
+  | .movsx w dst sw src => .movsx w dst sw (src.aim d e)
+  | .movsxd dst src => .movsxd dst (src.aim d e)
+  | .lea w dst addr => .lea w dst (addr.aim d e)
+  | .cmov c w dst src => .cmov c w dst (src.aim d e)
+  | .setcc c dst => .setcc c (dst.aim d e)
+  | .jmp t => .jmp (t.aim d e)
+  | .call t => .call (t.aim d e)
   | i => i
 
-theorem Mem.encode_aim (reg : Nat) (m : Mem) (d : BitVec 32) :
-    ((m.aim d).encode reg).x = (m.encode reg).x ∧ ((m.aim d).encode reg).b = (m.encode reg).b ∧
-      ((m.aim d).encode reg).bytes.length = (m.encode reg).bytes.length := by
+theorem Mem.encode_aim (reg : Nat) (m : Mem) (d e : BitVec 32) :
+    ((m.aim d e).encode reg).x = (m.encode reg).x ∧ ((m.aim d e).encode reg).b = (m.encode reg).b ∧
+      ((m.aim d e).encode reg).bytes.length = (m.encode reg).bytes.length := by
   cases m with
-  | rip e => exact ⟨rfl, rfl, rfl⟩
-  | sib b i e => exact ⟨rfl, rfl, rfl⟩
+  | rip _ => exact ⟨rfl, rfl, rfl⟩
+  | sib b i _ =>
+    cases b with
+    | some b => exact ⟨rfl, rfl, rfl⟩
+    | none => cases i <;> exact ⟨rfl, rfl, rfl⟩
 
-theorem RM.encode_aim (reg : Nat) (rm : RM) (d : BitVec 32) :
-    ((rm.aim d).encode reg).x = (rm.encode reg).x ∧ ((rm.aim d).encode reg).b = (rm.encode reg).b ∧
-      ((rm.aim d).encode reg).bytes.length = (rm.encode reg).bytes.length := by
+theorem RM.encode_aim (reg : Nat) (rm : RM) (d e : BitVec 32) :
+    ((rm.aim d e).encode reg).x = (rm.encode reg).x ∧ ((rm.aim d e).encode reg).b = (rm.encode reg).b ∧
+      ((rm.aim d e).encode reg).bytes.length = (rm.encode reg).bytes.length := by
   cases rm with
   | reg r => exact ⟨rfl, rfl, rfl⟩
-  | mem m => exact Mem.encode_aim reg m d
+  | mem m => exact Mem.encode_aim reg m d e
 
 theorem encodeOp_aim (w : Bool) (opcode : List Byte) (reg : Nat) (regExt : Bool) (rm : RM)
-    (force : Bool) (pre : List Byte) (d : BitVec 32) :
-    (encodeOp w opcode reg regExt (rm.aim d) force pre).length
+    (force : Bool) (pre : List Byte) (d e : BitVec 32) :
+    (encodeOp w opcode reg regExt (rm.aim d e) force pre).length
       = (encodeOp w opcode reg regExt rm force pre).length := by
-  obtain ⟨hx, hb, hl⟩ := RM.encode_aim reg rm d
+  obtain ⟨hx, hb, hl⟩ := RM.encode_aim reg rm d e
   simp only [encodeOp, List.length_append, hx, hb, hl]
 
-theorem RM.aim_eq_reg (rm : RM) (d : BitVec 32) (r : Reg) : rm.aim d = .reg r ↔ rm = .reg r := by
+theorem RM.aim_eq_reg (rm : RM) (d e : BitVec 32) (r : Reg) : rm.aim d e = .reg r ↔ rm = .reg r := by
   cases rm <;> simp [RM.aim]
 
-theorem RM.byteNeedsRex_aim (rm : RM) (d : BitVec 32) : (rm.aim d).byteNeedsRex = rm.byteNeedsRex := by
+theorem RM.byteNeedsRex_aim (rm : RM) (d e : BitVec 32) : (rm.aim d e).byteNeedsRex = rm.byteNeedsRex := by
   cases rm <;> rfl
 
 /-- **Aiming an instruction does not change how many bytes it takes.** So
 where everything after it lands does not depend on where it is aimed. -/
-theorem Instr.length_aim (i : Instr) (d : BitVec 32) : (i.aim d).length = i.length := by
-  have eo := fun w op reg ext rm force pre => encodeOp_aim w op reg ext rm force pre d
-  have er : ∀ rm : RM, (rm.aim d = RM.reg .rax) = (rm = RM.reg .rax) :=
-    fun rm => propext (RM.aim_eq_reg rm d .rax)
+theorem Instr.length_aim (i : Instr) (d e : BitVec 32) : (i.aim d e).length = i.length := by
+  have eo := fun w op reg ext rm force pre => encodeOp_aim w op reg ext rm force pre d e
+  have er : ∀ rm : RM, (rm.aim d e = RM.reg .rax) = (rm = RM.reg .rax) :=
+    fun rm => propext (RM.aim_eq_reg rm d e .rax)
   cases i with
   | alu op w ops =>
     cases ops with

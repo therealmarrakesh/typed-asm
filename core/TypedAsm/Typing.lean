@@ -216,6 +216,12 @@ inductive EaIs (Γ : Ctx) : Mem → BitVec 64 → Prop
   | indexed {b : Reg} {x : IndexReg} {sc : Scale} {v c : BitVec 64} {disp : BitVec 32} :
     b ≠ .rsp → Γ.regs b = .eq v → Γ.regs x.toReg = .eq c →
     EaIs Γ (.sib (some b) (some (x, sc)) disp) (v + (c <<< sc.shift) + disp.signExtend 64)
+  /-- With no base register the address is the displacement itself. -/
+  | abs {disp : BitVec 32} : EaIs Γ (.sib none none disp) (disp.signExtend 64)
+  /-- With no base register and an index: a place in a table at a fixed address. -/
+  | absIndexed {x : IndexReg} {sc : Scale} {c : BitVec 64} {disp : BitVec 32} :
+    Γ.regs x.toReg = .eq c →
+    EaIs Γ (.sib none (some (x, sc)) disp) ((c <<< sc.shift) + disp.signExtend 64)
 
 /-- As `OwnedAt.mk`, for a search among several blocks: the offset is also
 shown to fall inside the block, so that a block the address is not in is
@@ -281,6 +287,12 @@ inductive ReadOk (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) (n : Nat) : RM → P
   | owned {m : Mem} {k : Nat} {a p off : BitVec 64} {S : Shape} :
     EaIs Γ m p → OwnedAt Γ.owned k a S p off → off.toNat + n ≤ S.size →
     ReadOk Ψ next Γ n (.mem m)
+  /-- Bytes of one of the program's blocks, at an address that is exactly
+  known: an operand with no base register, or one whose registers hold
+  exactly known values. -/
+  | placed {m : Mem} {p base : BitVec 64} {l : Layout} {d : Nat} :
+    EaIs Γ m p → Ψ base = some l → p = base + BitVec.ofNat 64 d → d + n ≤ l.shape.size →
+    ReadOk Ψ next Γ n (.mem m)
 
 /-- `WriteIntOk Ψ next Γ n rm Γ'`: overwriting `n` bytes of `rm` with an arbitrary
 value is safe and leaves a state matching `Γ'`. A register or stack slot
@@ -326,6 +338,11 @@ inductive WriteIntOk (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) (n : Nat) : RM �
     EaIs Γ m p → OwnedAt Γ.owned k a S p off → off.toNat + n ≤ S.size →
     WriteIntOk Ψ next Γ n (.mem m)
       { Γ with owned := Γ.owned.set k (a, S.clear off.toNat n) }
+  /-- Plain bytes of one of the program's writable blocks, at an address
+  that is exactly known. -/
+  | placed {m : Mem} {p base : BitVec 64} {l : Layout} {d : Nat} :
+    EaIs Γ m p → Ψ base = some l → l.writable = true → p = base + BitVec.ofNat 64 d →
+    d + n ≤ l.shape.size → l.shape.free d n = true → WriteIntOk Ψ next Γ n (.mem m) Γ
 
 /-- `Holds Ψ next Γ rm τ`: `rm` is a register, a typed value of a block or a
 typed value on the stack, holding a value of type `τ`. -/
@@ -347,6 +364,11 @@ inductive Holds (Ψ : MemTy) (next : BitVec 64) (Γ : Ctx) : RM → Ty → Prop
   | slot {d k i : Nat} {S : Shape} {disp : BitVec 32} {τ : Ty} :
     byteDisp d disp → StackAt Γ.stack k S d i → S.valAt i = some τ →
     Holds Ψ next Γ (.mem (.sib (some .rsp) none disp)) τ
+  /-- A typed value of one of the program's blocks, at an address that is
+  exactly known. -/
+  | placed {m : Mem} {p base : BitVec 64} {l : Layout} {d : Nat} {τ : Ty} :
+    EaIs Γ m p → Ψ base = some l → p = base + BitVec.ofNat 64 d →
+    l.shape.valAt d = some τ → Holds Ψ next Γ (.mem m) τ
 
 /-- At least the named flags are defined. -/
 def Flags.Defined (cf zf sf of : Bool) : Flags → Prop :=
@@ -727,6 +749,11 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
     Straight Ψ next Γ (.mulDiv op w (.mem m))
       { (Γ.setReg .rax (.eq (lo.setWidth 64))).setReg .rdx (.eq (hi.setWidth 64)) with
         flags := (· = fl) }
+  /-- A load of a typed value from wherever one is held in memory: the
+  register has its type afterwards. -/
+  | loadHeld {Γ : Ctx} {d : Reg} {m : Mem} {τ : Ty} :
+    d ≠ .rsp → Holds Ψ next Γ (.mem m) τ →
+    Straight Ψ next Γ (.mov .w64 (.r_m d m)) (Γ.setReg d τ)
   | cdqExact {Γ : Ctx} {a : BitVec 64} : Γ.regs .rax = .eq a →
     Straight Ψ next Γ .cdq (Γ.setReg .rdx (.eq ((signFill (a.setWidth 32)).setWidth 64)))
   | cqoExact {Γ : Ctx} {a : BitVec 64} : Γ.regs .rax = .eq a →
@@ -774,6 +801,7 @@ theorem ReadOk.ext {Ψ Ψ' : MemTy} {next : BitVec 64} {Γ : Ctx} {n : Nat} {rm 
     (h : ReadOk Ψ next Γ n rm) (he : Ψ.Ext Ψ') : ReadOk Ψ' next Γ n rm := by
   cases h with
   | global hl => apply ReadOk.global (he.blocks _ _ hl) <;> assumption
+  | placed hm hl => apply ReadOk.placed hm (he.blocks _ _ hl) <;> assumption
   | _ =>
     first
     | exact .reg _
@@ -788,6 +816,7 @@ theorem WriteIntOk.ext {Ψ Ψ' : MemTy} {next : BitVec 64} {Γ Γ' : Ctx} {n : N
     (h : WriteIntOk Ψ next Γ n rm Γ') (he : Ψ.Ext Ψ') : WriteIntOk Ψ' next Γ n rm Γ' := by
   cases h with
   | global hl => apply WriteIntOk.global (he.blocks _ _ hl) <;> assumption
+  | placed hm hl => apply WriteIntOk.placed hm (he.blocks _ _ hl) <;> assumption
   | _ =>
     first
     | (apply WriteIntOk.reg <;> assumption)
@@ -802,6 +831,7 @@ theorem Holds.ext {Ψ Ψ' : MemTy} {next : BitVec 64} {Γ : Ctx} {rm : RM} {τ :
     (h : Holds Ψ next Γ rm τ) (he : Ψ.Ext Ψ') : Holds Ψ' next Γ rm τ := by
   cases h with
   | global hl => apply Holds.global (he.blocks _ _ hl) <;> assumption
+  | placed hm hl => apply Holds.placed hm (he.blocks _ _ hl) <;> assumption
   | _ =>
     first
     | (apply Holds.reg <;> assumption)
@@ -890,6 +920,7 @@ local macro "ext_rule" : tactic =>
     | (apply Straight.imul3Exact <;> ext_premise)
     | (apply Straight.mulDivExact <;> ext_premise)
     | (apply Straight.mulDivHeld <;> ext_premise)
+    | (apply Straight.loadHeld <;> ext_premise)
     | (apply Straight.cdqExact <;> ext_premise)
     | (apply Straight.cqoExact <;> ext_premise)
     | (apply Straight.movsxdExact <;> ext_premise)

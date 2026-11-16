@@ -32,7 +32,8 @@ inductive Asm (L : Type)
   /-- An instruction that reaches memory relative to `rip`, aimed at a label
   or so many bytes past it: `mov rax, [table]`, `lea rdi, [buffer]`,
   `add dword ptr [record + 12], 1`. The distance is worked out from where the
-  two end up. -/
+  two end up. An instruction whose operand has no base register is aimed
+  the same way, and is given the address itself: `mov rax, [table + rcx*8]`. -/
   | ref (i : Instr) (l : L) (past : BitVec 64 := 0)
   /-- The start of a segment with the given permission: `.rx` for
   instructions, `.ro` for data that is only read, `.rw` for data that is
@@ -111,6 +112,17 @@ def offset (next target : BitVec 64) : BitVec 32 :=
 def reaches (next target : BitVec 64) : Bool :=
   next + (offset next target).signExtend 64 == target
 
+/-- Whether an address can be written in an operand with no base register:
+whether its low 32 bits, extended by their sign, give it back. -/
+def fitsAbs (target : BitVec 64) : Bool :=
+  (target.setWidth 32).signExtend 64 == target
+
+/-- Whether an instruction aimed at `target` from `next` gets there: by the
+distance, if it has an operand relative to `rip`, and by the address, if it
+has one with no base register. Which it has is seen by aiming it two ways. -/
+def aimReaches (i : Instr) (next target : BitVec 64) : Bool :=
+  (i.aim 0 0 == i.aim 1 0 || reaches next target) && (i.aim 0 0 == i.aim 0 1 || fitsAbs target)
+
 /-- The instruction a line stands for, if it is one, with its label replaced
 by the offset from `nxt`, where the line after it starts. -/
 def instr (target : L → BitVec 64) (nxt : BitVec 64) : Asm L → Option Instr
@@ -118,7 +130,7 @@ def instr (target : L → BitVec 64) (nxt : BitVec 64) : Asm L → Option Instr
   | .jmp l => some (.jmp (.rel (offset nxt (target l))))
   | .jcc c l => some (.jcc c (offset nxt (target l)))
   | .call l => some (.call (.rel (offset nxt (target l))))
-  | .ref i l past => some (i.aim (offset nxt (target l + past)))
+  | .ref i l past => some (i.aim (offset nxt (target l + past)) ((target l + past).setWidth 32))
   | _ => none
 
 /-- The bytes a line starting at `a` comes to: an instruction's encoding,
@@ -200,7 +212,7 @@ def offsetsFitFrom (target : L → BitVec 64) : Nat → List (Asm L) → Bool
     let nxt := next a x
     (match x with
       | .jmp l | .jcc _ l | .call l => reaches (BitVec.ofNat 64 nxt) (target l)
-      | .ref _ l past => reaches (BitVec.ofNat 64 nxt) (target l + past)
+      | .ref i l past => aimReaches i (BitVec.ofNat 64 nxt) (target l + past)
       | _ => true) && offsetsFitFrom target nxt rest
 
 /-- Whether every jump, call and reference to data in a program loaded at

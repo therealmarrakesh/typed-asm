@@ -171,6 +171,71 @@ theorem Holds.global_of
     Holds (MemTy.ofList bs kinds) next Γ (.mem (.rip disp)) τ :=
   .global hl haddr hi
 
+/-- Bytes at an exactly known address, which is found among the program's
+blocks. -/
+theorem ReadOk.placed_of {m : Mem} {p : BitVec 64} (he : EaIs Γ m p)
+    (_ : MemTy.locate bs p = some (base, d))
+    (hl : MemTy.ofList bs kinds base = some l) (haddr : p = base + BitVec.ofNat 64 d)
+    (hin : d + n ≤ l.shape.size) : ReadOk (MemTy.ofList bs kinds) next Γ n (.mem m) :=
+  .placed he hl haddr hin
+
+theorem WriteIntOk.placed_of {m : Mem} {p : BitVec 64} (he : EaIs Γ m p)
+    (_ : MemTy.locate bs p = some (base, d))
+    (hl : MemTy.ofList bs kinds base = some l) (hw : l.writable = true)
+    (haddr : p = base + BitVec.ofNat 64 d)
+    (hin : d + n ≤ l.shape.size) (hfree : l.shape.free d n = true) :
+    WriteIntOk (MemTy.ofList bs kinds) next Γ n (.mem m) Γ :=
+  .placed he hl hw haddr hin hfree
+
+theorem Holds.placed_of {m : Mem} {p : BitVec 64} (he : EaIs Γ m p)
+    (_ : MemTy.locate bs p = some (base, d))
+    (hl : MemTy.ofList bs kinds base = some l) (haddr : p = base + BitVec.ofNat 64 d)
+    (hi : l.shape.valAt d = some τ) : Holds (MemTy.ofList bs kinds) next Γ (.mem m) τ :=
+  .placed he hl haddr hi
+
+/-- Where an index into a table at a fixed address lands: `k` bytes on from
+the table, which is `off` bytes into its block. -/
+theorem table_addr {c base : BitVec 64} {sc : Scale} {off k : Nat}
+    (hd : disp.signExtend 64 = base + BitVec.ofNat 64 off)
+    (hk : (c <<< sc.shift) + (0 : BitVec 32).signExtend 64 = BitVec.ofNat 64 k) :
+    (c <<< sc.shift) + disp.signExtend 64 = base + BitVec.ofNat 64 (off + k) := by
+  have hk' : c <<< sc.shift = BitVec.ofNat 64 k := by simpa using hk
+  rw [hk', hd, BitVec.ofNat_add]
+  ac_rfl
+
+/-- Bytes of a table at a fixed address, reached through an index that holds
+an exactly known value: the table is found among the program's blocks, and
+the index is shown to land inside it. -/
+theorem ReadOk.table_of {x : IndexReg} {sc : Scale} {c : BitVec 64} {off k : Nat}
+    (hx : Γ.regs x.toReg = .eq c)
+    (_ : MemTy.locate bs (disp.signExtend 64) = some (base, off))
+    (hl : MemTy.ofList bs kinds base = some l)
+    (hd : disp.signExtend 64 = base + BitVec.ofNat 64 off)
+    (hk : (c <<< sc.shift) + (0 : BitVec 32).signExtend 64 = BitVec.ofNat 64 k)
+    (hin : off + k + n ≤ l.shape.size) :
+    ReadOk (MemTy.ofList bs kinds) next Γ n (.mem (.sib none (some (x, sc)) disp)) :=
+  .placed (.absIndexed hx) hl (table_addr hd hk) hin
+
+theorem WriteIntOk.table_of {x : IndexReg} {sc : Scale} {c : BitVec 64} {off k : Nat}
+    (hx : Γ.regs x.toReg = .eq c)
+    (_ : MemTy.locate bs (disp.signExtend 64) = some (base, off))
+    (hl : MemTy.ofList bs kinds base = some l) (hw : l.writable = true)
+    (hd : disp.signExtend 64 = base + BitVec.ofNat 64 off)
+    (hk : (c <<< sc.shift) + (0 : BitVec 32).signExtend 64 = BitVec.ofNat 64 k)
+    (hin : off + k + n ≤ l.shape.size) (hfree : l.shape.free (off + k) n = true) :
+    WriteIntOk (MemTy.ofList bs kinds) next Γ n (.mem (.sib none (some (x, sc)) disp)) Γ :=
+  .placed (.absIndexed hx) hl hw (table_addr hd hk) hin hfree
+
+theorem Holds.table_of {x : IndexReg} {sc : Scale} {c : BitVec 64} {off k : Nat}
+    (hx : Γ.regs x.toReg = .eq c)
+    (_ : MemTy.locate bs (disp.signExtend 64) = some (base, off))
+    (hl : MemTy.ofList bs kinds base = some l)
+    (hd : disp.signExtend 64 = base + BitVec.ofNat 64 off)
+    (hk : (c <<< sc.shift) + (0 : BitVec 32).signExtend 64 = BitVec.ofNat 64 k)
+    (hi : l.shape.valAt (off + k) = some τ) :
+    Holds (MemTy.ofList bs kinds) next Γ (.mem (.sib none (some (x, sc)) disp)) τ :=
+  .placed (.absIndexed hx) hl (table_addr hd hk) hi
+
 theorem Straight.loadGlobal_of {r : Reg} (hd : r ≠ .rsp)
     (_ : MemTy.locate bs (next + disp.signExtend 64) = some (base, d))
     (hl : MemTy.ofList bs kinds base = some l)
@@ -760,7 +825,10 @@ macro "ty_operand_any" : tactic =>
     | ty_rule_ordered WriteIntOk.field | ty_rule_ordered WriteIntOk.indexed
     | ty_rule_ordered WriteIntOk.global_of
     | ty_rule_ordered Holds.reg | ty_rule_ordered Holds.slot | ty_rule_ordered Holds.field
-    | ty_rule_ordered Holds.indexed | ty_rule_ordered Holds.global_of)
+    | ty_rule_ordered Holds.indexed | ty_rule_ordered Holds.global_of
+    | ty_rule_ordered ReadOk.table_of | ty_rule_ordered ReadOk.placed_of
+    | ty_rule_ordered WriteIntOk.table_of | ty_rule_ordered WriteIntOk.placed_of
+    | ty_rule_ordered Holds.table_of | ty_rule_ordered Holds.placed_of)
 
 open Lean Meta Elab Tactic in
 /-- Proves that an operand can be read, can be written, or holds a value of
@@ -787,7 +855,11 @@ elab "ty_operand" : tactic => withMainContext do
       else if m.isAppOfArity ``Mem.sib 3 then
         let base ← whnfR m.getAppArgs[0]!
         let index ← whnfR m.getAppArgs[1]!
-        if !(base.isAppOfArity ``Option.some 2) then pure none
+        if base.isAppOfArity ``Option.none 1 then
+          if index.isAppOfArity ``Option.some 2 then pure (some "absIndex")
+          else if index.isAppOfArity ``Option.none 1 then pure (some "abs")
+          else pure none
+        else if !(base.isAppOfArity ``Option.some 2) then pure none
         else
           let b ← whnfR base.appArg!
           let indexed := index.isAppOfArity ``Option.some 2
@@ -817,6 +889,12 @@ elab "ty_operand" : tactic => withMainContext do
       [``WriteIntOk.owned, ``WriteIntOk.ownedAt, ``WriteIntOk.ownedClear, ``WriteIntOk.indexed]
     | ``WriteIntOk, "rip" =>
       [``WriteIntOk.owned, ``WriteIntOk.ownedAt, ``WriteIntOk.ownedClear, ``WriteIntOk.global_of]
+    | ``ReadOk, "abs" => [``ReadOk.placed_of]
+    | ``ReadOk, "absIndex" => [``ReadOk.table_of, ``ReadOk.placed_of]
+    | ``WriteIntOk, "abs" => [``WriteIntOk.placed_of]
+    | ``WriteIntOk, "absIndex" => [``WriteIntOk.table_of, ``WriteIntOk.placed_of]
+    | ``Holds, "abs" => [``Holds.placed_of]
+    | ``Holds, "absIndex" => [``Holds.table_of, ``Holds.placed_of]
     | ``Holds, "reg" => [``Holds.reg]
     | ``Holds, "sp" => [``Holds.slot]
     | ``Holds, "base" => [``Holds.field]
@@ -907,6 +985,31 @@ elab "ty_prop_only" : tactic => do
   unless ← isProp (← getMainTarget) do
     throwError "not a proposition"
 
+open Lean Meta Elab Tactic in
+private unsafe def evalLocateUnsafe (e : Expr) : MetaM (Option (BitVec 64 × Nat)) := do
+  evalExpr (Option (BitVec 64 × Nat)) (← inferType e) e
+
+open Lean Meta Elab Tactic in
+/-- The block a closed address is found in, and how far into it. -/
+@[implemented_by evalLocateUnsafe]
+private opaque evalLocate (e : Expr) : MetaM (Option (BitVec 64 × Nat))
+
+open Lean Meta Elab Tactic in
+/-- Finds the block an address is in, for a closed address: the search is
+run, and the block's address and the distance into it are written out as
+numbers. Left to `rfl` they would stand as the search itself, and every
+later premise that mentions them would have to work it out again. -/
+elab "ty_locate" : tactic => withMainContext do
+  let g ← getMainGoal
+  let t ← instantiateMVars (← g.getType)
+  let some (_, lhs, rhs) := t.eq? | throwError "not an equation"
+  unless lhs.isAppOf ``MemTy.locate do throwError "not a search for a block"
+  if lhs.hasFVar || lhs.hasExprMVar then throwError "the address is not closed"
+  let lit := toExpr (← evalLocate lhs)
+  unless ← isDefEq rhs lit do throwError "no block is found there"
+  g.assign (← mkExpectedTypeHint (← mkEqRefl lhs) (← mkEq lhs lit))
+  replaceMainGoal []
+
 /-- The alternatives of `ty_side`, for a goal that is not settled by
 computation alone. -/
 syntax "ty_side_search" : tactic
@@ -928,12 +1031,26 @@ elab "ty_side_core" : tactic => withMainContext do
   -- does not apply fails on just such an equation.
   let lhsIs (n : Name) : Bool := t.isAppOfArity ``Eq 3 && t.getAppArgs[1]!.isAppOf n
   let narrow? : Option (TSyntax `tactic) ←
-    if lhsIs ``CtxOf.regs || lhsIs ``MulDivOp.eval || lhsIs ``MemTy.locate || lhsIs ``Ty.isInt then
+    if lhsIs ``MemTy.locate then
+      -- an address with a variable in it is in no block that can be found
+      -- by searching, and the search would run until its depth is used up
+      if t.getAppArgs[1]!.hasFVar then pure (some (← `(tactic| ty_known)))
+      else pure (some (← `(tactic| first | ty_locate | exact rfl | ty_known)))
+    else if lhsIs ``CtxOf.regs || lhsIs ``MulDivOp.eval || lhsIs ``Ty.isInt then
       pure (some (← `(tactic| first | exact rfl | ty_known)))
     else if lhsIs ``CtxOf.room then
       pure (some (← `(tactic| first | exact rfl | omega | ty_known)))
     else if lhsIs ``ShapeOf.valAt || lhsIs ``ShapeOf.sole then
-      pure (some (← `(tactic| first | exact rfl | ty_val | ty_known)))
+      -- at a place that turns on a variable the lookup cannot be worked
+      -- out, and trying runs it until the depth allowed is used up
+      let place := t.getAppArgs[1]!.appArg!
+      let known ← if !place.hasFVar then pure true else
+        try
+          let v ← whnf place
+          pure (v.isRawNatLit || v.nat?.isSome || v.isConstOf ``Nat.zero)
+        catch _ => pure true
+      if known then pure (some (← `(tactic| first | exact rfl | ty_val | ty_known)))
+      else pure (some (← `(tactic| first | ty_val | ty_known)))
     else pure none
   if yesNo && !t.hasFVar then
     evalTactic (← `(tactic| decide +kernel))
@@ -955,6 +1072,8 @@ elab "ty_side_core" : tactic => withMainContext do
     evalTactic (← `(tactic| first
       | exact EaIs.base (by decide) rfl
       | exact EaIs.indexed (by decide) rfl rfl
+      | exact EaIs.abs
+      | exact EaIs.absIndexed rfl
       | ty_known))
   else if t.isAppOf ``Sub then
     evalTactic (← `(tactic| first | ty_sub | ty_known))
@@ -978,6 +1097,8 @@ macro_rules
       | decide
       | exact EaIs.base (by decide) rfl
       | exact EaIs.indexed (by decide) rfl rfl
+      | exact EaIs.abs
+      | exact EaIs.absIndexed rfl
       | ty_owned_at
       | ty_owned_byte
       | ty_stack_at
@@ -1225,7 +1346,8 @@ def orderedRules : List Name := [``Straight.loadGlobal_of, ``Straight.storeGloba
   ``ReadOk.global_of, ``ReadOk.text, ``ReadOk.owned, ``WriteIntOk.owned,
   ``WriteIntOk.reg, ``WriteIntOk.slot, ``WriteIntOk.slotIndexed, ``WriteIntOk.field,
   ``WriteIntOk.indexed, ``WriteIntOk.global_of, ``Holds.reg, ``Holds.slot, ``Holds.field, ``Holds.indexed,
-  ``Holds.global_of]
+  ``Holds.global_of, ``ReadOk.placed_of, ``ReadOk.table_of, ``WriteIntOk.placed_of,
+  ``WriteIntOk.table_of, ``Holds.placed_of, ``Holds.table_of]
 
 /-- The straight-line rules that can type an instruction of this shape, most
 informative first. An empty list means the type system has no rule for it. -/
@@ -1250,6 +1372,8 @@ def Instr.rules : Instr → List Name
     [``Straight.loadStackIndexed, ``Straight.loadInt]
   | .mov .w64 (.r_m _ (.sib (some _) (some _) _)) =>
     [``Straight.loadIndexed, ``Straight.loadOwned, ``Straight.loadInt]
+  -- with no base register: a place at a fixed address, or in a table at one
+  | .mov .w64 (.r_m _ (.sib none _ _)) => [``Straight.loadHeld, ``Straight.loadInt]
   | .mov _ (.r_m _ _) => [``Straight.loadInt]
   | .movzx _ _ _ (.reg _) => [``Straight.movzxExact, ``Straight.movzxRM]
   | .movzx _ _ _ _ => [``Straight.movzxRM]
@@ -1410,7 +1534,7 @@ def Instr.endsBlock : Instr → Bool
   | _ => false
 
 /-- Every straight-line rule, for instructions whose shape is not known. -/
-def allStraightRules : List Name := sharpeningRules ++ [``Straight.movRR64, ``Straight.movRR32, ``Straight.movRI, ``Straight.movAbs, ``Straight.leaRip, ``Straight.lea, ``Straight.loadStack, ``Straight.loadField, ``Straight.storeStack, ``Straight.storeField, ``Straight.push, ``Straight.pop, ``Straight.allocFrame, ``Straight.freeFrame', ``Straight.aluExact, ``Straight.aluExactRR, ``Straight.addPtr, ``Straight.aluRR, ``Straight.aluRI, ``Straight.testExact, ``Straight.nop, ``Straight.aluStoreR, ``Straight.aluStoreI, ``Straight.cmpR, ``Straight.cmpI, ``Straight.aluLoad, ``Straight.testRM, ``Straight.negRM, ``Straight.notRM, ``Straight.shiftImm, ``Straight.shiftCl, ``Straight.mulRM, ``Straight.imulRM, ``Straight.divSafe, ``Straight.idivSafe, ``Straight.divHeld, ``Straight.idivHeld, ``Straight.imul2RM, ``Straight.imul3RM, ``Straight.popcntRM, ``Straight.bswap, ``Straight.cdq, ``Straight.cqo, ``Straight.movsxdRM, ``Straight.cmovRM, ``Straight.setccRM, ``Straight.movzxRM, ``Straight.movsxRM, ``Straight.loadInt, ``Straight.storeInt, ``Straight.storeImm, ``Straight.store8RM, ``Straight.store16RM, ``Straight.loadGlobal_of, ``Straight.storeGlobal_of, ``Straight.xorSelf,
+def allStraightRules : List Name := sharpeningRules ++ [``Straight.movRR64, ``Straight.movRR32, ``Straight.movRI, ``Straight.movAbs, ``Straight.leaRip, ``Straight.lea, ``Straight.loadStack, ``Straight.loadField, ``Straight.storeStack, ``Straight.storeField, ``Straight.push, ``Straight.pop, ``Straight.allocFrame, ``Straight.freeFrame', ``Straight.aluExact, ``Straight.aluExactRR, ``Straight.addPtr, ``Straight.aluRR, ``Straight.aluRI, ``Straight.testExact, ``Straight.nop, ``Straight.aluStoreR, ``Straight.aluStoreI, ``Straight.cmpR, ``Straight.cmpI, ``Straight.aluLoad, ``Straight.testRM, ``Straight.negRM, ``Straight.notRM, ``Straight.shiftImm, ``Straight.shiftCl, ``Straight.mulRM, ``Straight.imulRM, ``Straight.divSafe, ``Straight.idivSafe, ``Straight.divHeld, ``Straight.idivHeld, ``Straight.imul2RM, ``Straight.imul3RM, ``Straight.popcntRM, ``Straight.bswap, ``Straight.cdq, ``Straight.cqo, ``Straight.movsxdRM, ``Straight.cmovRM, ``Straight.setccRM, ``Straight.movzxRM, ``Straight.movsxRM, ``Straight.loadInt, ``Straight.storeInt, ``Straight.storeImm, ``Straight.store8RM, ``Straight.store16RM, ``Straight.loadGlobal_of, ``Straight.storeGlobal_of, ``Straight.loadHeld, ``Straight.xorSelf,
   ``Straight.loadIndexed, ``Straight.storeIndexed, ``Straight.loadStackIndexed,
   ``Straight.loadOwned, ``Straight.storeOwnedTyped, ``Straight.storeOwnedKeep]
 
@@ -1941,15 +2065,19 @@ def deep {α : Type} (x : TacticM α) : TacticM α :=
 /-- Tries one rule on the main goal, undoing everything if it does not finish. -/
 private def tryRule (rule : Name) : TacticM Bool := deep do
   let saved ← saveState
-  try
-    if orderedRules.contains rule then
-      evalTactic (← `(tactic| ty_rule_ordered $(mkIdent rule)))
-    else
-      evalTactic (← `(tactic| ty_rule $(mkIdent rule)))
-    return true
-  catch _ =>
-    saved.restore
-    return false
+  -- A rule that does not apply may fail by running out of depth, where a
+  -- premise has something worked out that cannot be: that is a failure of
+  -- the rule like any other.
+  tryCatchRuntimeEx
+    (do
+      if orderedRules.contains rule then
+        evalTactic (← `(tactic| ty_rule_ordered $(mkIdent rule)))
+      else
+        evalTactic (← `(tactic| ty_rule $(mkIdent rule)))
+      return true)
+    (fun _ => do
+      saved.restore
+      return false)
 
 /-- Shows a term without the internal names of unknowns. -/
 private def ppClean (e : Expr) : MetaM String := do

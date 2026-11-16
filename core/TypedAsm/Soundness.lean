@@ -1394,6 +1394,8 @@ theorem EaIs.sound {m : Mem} {p : BitVec 64} (he : EaIs Γ m p)
   | base hb hΓ => rw [State.ea_base, h.eqReg hb hΓ]
   | @indexed b x sc v c disp hb hΓ hΓx =>
     simp only [State.ea, h.eqReg hb hΓ, h.eqReg x.toReg_ne_rsp hΓx]
+  | abs => simp [State.ea]
+  | @absIndexed x sc c disp hΓx => simp [State.ea, h.eqReg x.toReg_ne_rsp hΓx]
 
 /-- Bytes inside an owned block may be written. -/
 theorem WellTyped.canWrite_owned {k : Nat} {a off : BitVec 64} {S : Shape} {m : Nat}
@@ -1446,6 +1448,9 @@ theorem ReadOk.canRead {n : Nat} {m : Mem} (hr : ReadOk Ψ next Γ n (.mem m))
     have hea : s.ea (.rip disp) = base + BitVec.ofNat 64 d := by
       simp only [State.ea, hrip, haddr]
     rw [hea]
+    exact h.canRead_bytes hl hin
+  | @placed m p base l d hm hl hp hin =>
+    rw [hm.sound h, hp]
     exact h.canRead_bytes hl hin
   | @indexed b x sc S writable off d disp c hb hΓ hΓx hD hin =>
     have hp := h.regs b hb
@@ -1526,6 +1531,15 @@ theorem WriteIntOk.writeRM {w : Width} {rm : RM} {Γ' : Ctx}
   | @global base l d disp hl hwr haddr hin hfree =>
     have hea : s.ea (.rip disp) = base + BitVec.ofNat 64 d := by
       simp only [State.ea, hrip, haddr]
+    have hc := h.canWrite_bytes (m := w.bytes.toNat) hl hwr hin
+    refine ⟨s.store w (base + BitVec.ofNat 64 d) v, ?_, State.rip_store _ _ _ _,
+      h.writeHeapFree hΨ hl hin hfree (State.regs_store _ _ _ _) (State.flags_store _ _ _ _)
+        (State.perm_store _ _ _ _)
+        (fun y hd => State.load64_store_range s w v hd)
+        (fun x hx => State.mem_store_range s w v hx)⟩
+    simp only [State.writeRM, hea, State.write, hc, ite_true, Result.through_next]
+  | @placed m p base l d hm hl hwr hp hin hfree =>
+    have hea : s.ea m = base + BitVec.ofNat 64 d := by rw [hm.sound h, hp]
     have hc := h.canWrite_bytes (m := w.bytes.toNat) hl hwr hin
     refine ⟨s.store w (base + BitVec.ofNat 64 d) v, ?_, State.rip_store _ _ _ _,
       h.writeHeapFree hΨ hl hin hfree (State.regs_store _ _ _ _) (State.flags_store _ _ _ _)
@@ -1618,6 +1632,14 @@ theorem WriteIntOk.writeRM8 {rm : RM} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 1 
         (fun y hd => State.load64_store8_range s v hd)
         (fun x hx => State.mem_store8_range s v hx)⟩
     simp only [State.writeRM8, hea, State.write8, hc, ite_true, Result.through_next]
+  | @placed m p base l d hm hl hwr hp hin hfree =>
+    have hea : s.ea m = base + BitVec.ofNat 64 d := by rw [hm.sound h, hp]
+    have hc := h.canWrite_bytes (m := 1) hl hwr hin
+    refine ⟨s.store8 (base + BitVec.ofNat 64 d) v, ?_, rfl,
+      h.writeHeapFree hΨ hl hin hfree rfl rfl rfl
+        (fun y hd => State.load64_store8_range s v hd)
+        (fun x hx => State.mem_store8_range s v hx)⟩
+    simp only [State.writeRM8, hea, State.write8, hc, ite_true, Result.through_next]
   | @owned m k a p off S hm hat hin hfree =>
     obtain ⟨hk, hoff⟩ := hat
     have hea : s.ea m = a + off := by rw [hm.sound h, hoff]
@@ -1693,6 +1715,14 @@ theorem WriteIntOk.write16 {m : Mem} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 2 (
   | @global base l d disp hl hwr haddr hin hfree =>
     have hea : s.ea (.rip disp) = base + BitVec.ofNat 64 d := by
       simp only [State.ea, hrip, haddr]
+    have hc := h.canWrite_bytes (m := 2) hl hwr hin
+    refine ⟨s.store16 (base + BitVec.ofNat 64 d) v, ?_, rfl,
+      h.writeHeapFree hΨ hl hin hfree rfl rfl rfl
+        (fun y hd => State.load64_store16_range s v hd)
+        (fun x hx => State.mem_store16_range s v hx)⟩
+    simp only [hea, State.write16, hc, ite_true]
+  | @placed m p base l d hm hl hwr hp hin hfree =>
+    have hea : s.ea m = base + BitVec.ofNat 64 d := by rw [hm.sound h, hp]
     have hc := h.canWrite_bytes (m := 2) hl hwr hin
     refine ⟨s.store16 (base + BitVec.ofNat 64 d) v, ?_, rfl,
       h.writeHeapFree hΨ hl hin hfree rfl rfl rfl
@@ -1777,6 +1807,11 @@ theorem Holds.sound {rm : RM} {τ : Ty} (hc : Holds Ψ next Γ rm τ)
   | @reg r Δ hr hΓ =>
     refine ⟨s.getReg r, ?_, by have := h.regs r hr; rwa [hΓ] at this⟩
     simp [State.readRM, State.readReg_w64]
+  | @placed m p base l d Δ hm hl hp hi =>
+    have hmm := ShapeOf.mem_of_valAt hi
+    have hea : s.ea m = base + BitVec.ofNat 64 d := by rw [hm.sound h, hp]
+    refine ⟨s.load64 (base + BitVec.ofNat 64 d), ?_, h.heap _ l hl _ hmm⟩
+    simp [State.readRM, hea, State.read_w64 (h.canRead_bytes hl (hΨ.fits _ l hl _ hmm))]
   | @field b S writable off d disp Δ hb hΓ hdisp hi =>
     have hp := h.regs b hb
     rw [hΓ] at hp
@@ -2076,6 +2111,11 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
   | @imulRM w src hr => exact mulDiv_next hr h hrip (fun _ => ⟨_, rfl, Flags.ofMul_defined _⟩)
   | mulDivExact hr hΓa hΓd hΓr hev => exact mulDivExact_next h hr hΓa hΓd hΓr hev
   | mulDivHeld hm hΓa hΓd hev => exact mulDivHeld_next h hΨ hrip hm hΓa hΓd hev
+  | @loadHeld d m τ hd hm =>
+    obtain ⟨v, hv, hty⟩ := hm.sound h hΨ hrip
+    refine ⟨s.setReg d v, ?_, rfl, h.setReg hd hty⟩
+    have hv' : Result.through m (s.read .w64 (s.ea m)) = .next v := hv
+    simp [exec, State.writeRM, Operands.src, Operands.dst, hv', State.writeReg]
   | @xorSelf w d hd =>
     refine ⟨{ s.setReg d 0 with flags := .ofResult (0 : BitVec w.bits) false false }, ?_, rfl,
       (h.setReg hd (hasTy_eq.mpr rfl)).setFlags (P := (· = _)) rfl⟩
