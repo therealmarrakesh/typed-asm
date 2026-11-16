@@ -2724,6 +2724,9 @@ the last block to pass an address is the one remembered. -/
 initialize trailRef :
     IO.Ref (Std.HashMap (UInt64 × Nat) (Std.HashMap String (Nat × String))) ← IO.mkRef {}
 
+/-- Arithmetic left to be shown by the steps of a run, not yet settled. -/
+initialize arithLeft : IO.Ref (Array MVarId) ← IO.mkRef #[]
+
 /-- The addresses the walk of a block is to stop before going past: those
 with a context of their own to hand over to. Set while a block is walked to
 its end; where it is not set, the checker takes one instruction at a time. -/
@@ -2813,9 +2816,12 @@ private partial def closeNeeds (env : Environment) (lctx : LocalContext)
     (leaf.isAppOfArity ``LE.le 4 || leaf.isAppOfArity ``LT.lt 4 || leaf.isAppOfArity ``Eq 3)
   let goalTy ← if arith then normLeaf kwhnf leaf else pure leaf
   let g ← mkFreshExprSyntheticOpaqueMVar goalTy
+  -- arithmetic is set aside, to be settled with the rest of its kind at once
+  if arith then
+    arithLeft.modify (·.push g.mvarId!)
+    return g
   let left ← runOn g.mvarId! do
-    if arith then evalTactic (← `(tactic| first | omega | bv_omega | ty_side))
-    else evalTactic (← `(tactic| first
+    evalTactic (← `(tactic| first
       | trivial
       -- flags known to be defined have the carry flag defined
       | exact fun _ hf => Flags.cf_isSome_of_known hf
@@ -2823,6 +2829,47 @@ private partial def closeNeeds (env : Environment) (lctx : LocalContext)
       | ty_side))
   unless left.isEmpty do throwError "left over"
   return g
+
+/-- Settles the arithmetic `closeNeeds` set aside: all of it by one call
+where that succeeds, and otherwise each part by itself. -/
+private def closeArithLeft : TacticM Unit := do
+  let gs ← arithLeft.modifyGet fun gs => (gs, #[])
+  if gs.isEmpty then return
+  let each : TacticM Unit := do
+    for g in gs do
+      if ← g.isAssigned then continue
+      let left ← runOn g do evalTactic (← `(tactic| first | omega | bv_omega | ty_side))
+      unless left.isEmpty do throwError "left over"
+  if gs.size == 1 then
+    each
+    return
+  let tys ← gs.mapM fun g => do instantiateMVars (← g.getType)
+  -- the parts as one conjunction, the last innermost
+  let n := tys.size
+  let mut conj := tys[n - 1]!
+  let mut tails : Array Expr := #[conj]
+  for i in [1:n] do
+    conj := mkApp2 (mkConst ``And) tys[n - 1 - i]! conj
+    tails := tails.push conj
+  let all ← (gs[0]!).withContext do mkFreshExprSyntheticOpaqueMVar conj
+  let saved ← saveState
+  let ok ← try
+      let left ← runOn all.mvarId! do evalTactic (← `(tactic| first | omega | bv_omega))
+      pure left.isEmpty
+    catch _ => pure false
+  unless ok do
+    saved.restore
+    each
+    return
+  -- each part from the whole
+  let mut h := all
+  for i in [0:n] do
+    if i == n - 1 then
+      gs[i]!.assign h
+    else
+      let rest := tails[n - 2 - i]!
+      gs[i]!.assign (mkApp3 (mkConst ``And.left) tys[i]! rest h)
+      h := mkApp3 (mkConst ``And.right) tys[i]! rest h
 
 /-- One instruction that goes on to the next, typed without the tactic
 framework where the checker covers it: the instruction is read from the
@@ -3057,11 +3104,13 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     -- what is left to be shown, each part as the proposition it is
     let mut hn := mkConst ``True.intro
     let mut allE := mkConst ``True
+    arithLeft.set #[]
     for c in conds.reverse do
       let leaf ← Sym.denCond atoms c
       let h ← closeNeeds env lctx kwhnf pure #[] leaf
       hn := mkApp4 (mkConst ``And.intro) leaf allE h hn
       allE := mkApp2 (mkConst ``And) leaf allE
+    closeArithLeft
     let Γ' ← Sym.denCtx atoms S'
     let aEnd := toExpr (BitVec.ofNat 64 atEnd)
     let fuelE := mkNatLit steps.size
