@@ -479,6 +479,9 @@ inductive CondS
   | eqN (a b : Num)
   /-- What is known of the flags one way is known the other. -/
   | flagsSub (fl fl' : FlagsS)
+  /-- Two lists of owned blocks, each going on as it does, are the same. -/
+  | ownedEq (a : List (Val × ShapeS)) (ar : Option Nat) (b : List (Val × ShapeS))
+      (br : Option Nat)
   /-- A value is zero, or is not, at a width. -/
   | zeroW (w : Width) (v : Val)
   | nonzeroW (w : Width) (v : Val)
@@ -495,6 +498,7 @@ def CondS.den (ρ : Env) : CondS → Prop
   | .decides fl c => ∀ f, fl.den ρ f → ∃ b, c.eval f = some b
   | .eqN a b => a.den ρ = b.den ρ
   | .flagsSub fl fl' => ∀ f, fl.den ρ f → fl'.den ρ f
+  | .ownedEq a ar b br => denOwned ρ a (ownedTail ρ ar) = denOwned ρ b (ownedTail ρ br)
   | .zeroW w v => (v.den ρ).setWidth w.bits = 0
   | .nonzeroW w v => (v.den ρ).setWidth w.bits ≠ 0
   | .sfill w d a => (d.den ρ).setWidth w.bits = signFill ((a.den ρ).setWidth w.bits)
@@ -4236,14 +4240,28 @@ theorem regsConds_spec {ρ : Env} {m m' : RegMap TyS} (h : CondS.all ρ (regsCon
     (r : Reg) : Sub ((m.get r).den ρ) ((m'.get r).den ρ) :=
   subConds_spec (CondS.all_flatMap _ _ h r (mem_regList r))
 
+/-- What is left to be shown for the blocks two contexts own to be the same:
+nothing where they are written the same. -/
+def ownedConds (Γ Δ : CtxS) : List CondS :=
+  if Γ.owned = Δ.owned ∧ Γ.ownedRest = Δ.ownedRest then []
+  else [.ownedEq Γ.owned Γ.ownedRest Δ.owned Δ.ownedRest]
+
+theorem ownedConds_spec {ρ : Env} {Γ Δ : CtxS} (h : CondS.all ρ (ownedConds Γ Δ)) :
+    (Γ.den ρ).owned = (Δ.den ρ).owned := by
+  unfold ownedConds at h
+  rw [CtxS.den_owned, CtxS.den_owned]
+  split at h
+  · next he => rw [he.1, he.2]
+  · exact h.1
+
 /-- **What is left to be shown for one context to stand for another.** The
 stacks must go on as the same thing, and the owned blocks be written the
 same. -/
 def subCtx (Γ Δ : CtxS) : Option (List CondS) :=
-  if Γ.stackRest = Δ.stackRest ∧ Γ.owned = Δ.owned ∧ Γ.ownedRest = Δ.ownedRest then
+  if Γ.stackRest = Δ.stackRest then
     (stackConds Γ.stack Δ.stack).map fun ss =>
       regsConds Γ.regs Δ.regs ++ (ss ++ (eqConds Γ.room Δ.room ++
-        (flagsConds Γ.flags Δ.flags ++ eqConds Γ.above Δ.above)))
+        (flagsConds Γ.flags Δ.flags ++ (eqConds Γ.above Δ.above ++ ownedConds Γ Δ))))
   else none
 
 theorem subCtx_sound {ρ : Env} {Γ Δ : CtxS} {cs : List CondS} (h : subCtx Γ Δ = some cs)
@@ -4258,14 +4276,15 @@ theorem subCtx_sound {ρ : Env} {Γ Δ : CtxS} {cs : List CondS} (h : subCtx Γ 
       obtain ⟨hr, hc⟩ := CondS.all_append _ _ hc
       obtain ⟨hst, hc⟩ := CondS.all_append _ _ hc
       obtain ⟨hroom, hc⟩ := CondS.all_append _ _ hc
-      obtain ⟨hfl, habove⟩ := CondS.all_append _ _ hc
+      obtain ⟨hfl, hc⟩ := CondS.all_append _ _ hc
+      obtain ⟨habove, hown⟩ := CondS.all_append _ _ hc
       refine ⟨fun r _ => ?_, ?_, eqConds_spec hroom, flagsConds_spec hfl, ?_, ?_,
         eqConds_spec habove⟩
       · rw [CtxS.den_regs, CtxS.den_regs]; exact regsConds_spec hr r
-      · rw [CtxS.den_stack, CtxS.den_stack, ← he.1]
+      · rw [CtxS.den_stack, CtxS.den_stack, ← he]
         exact stackConds_spec _ _ _ hs hst
       · rw [CtxS.den_regs, CtxS.den_regs]; exact regsConds_spec hr .rsp
-      · rw [CtxS.den_owned, CtxS.den_owned, he.2.1, he.2.2]
+      · exact ownedConds_spec hown
   · cases h
 
 /-! ## A walk through a block
@@ -4299,6 +4318,12 @@ inductive Walk
   /-- The block is handed over to a context allowed at an address: what is
   left to be shown for the context reached to stand for it. -/
   | enter (t : BitVec 64) (Δ : CtxS) (cs : List CondS)
+  /-- The block returns: the type on top of the stack, a variable, is that
+  of code wanting a context that `Δ` may stand for, and this is what is left
+  to be shown for the context the return leaves to stand for `Δ`. For a
+  function, `Δ` is what its signature says it returns with, and the caller's
+  requirement is what makes that stand for the context returned to. -/
+  | leave (i : Nat) (Δ : CtxS) (cs : List CondS)
 
 /-- That a walk's conditions hold, that `P` holds of where it stopped, and
 that `Q` allows each context it was handed over to: for every value each
@@ -4315,6 +4340,8 @@ def Walk.holds (Q : CodeTy) (P : BitVec 64 → Ctx → Prop) : Walk → Env → 
     (∀ f, fl.den ρ f → c.eval f = some true → taken.holds Q P ρ) ∧
       (∀ f, fl.den ρ f → c.eval f = some false → fall.holds Q P ρ)
   | .enter t Δ cs, ρ => Q t (Δ.den ρ) ∧ CondS.all ρ cs
+  | .leave i Δ cs, ρ =>
+    (∃ D, (TyS.atom i).den ρ = .code D ∧ CtxSub (Δ.den ρ) D) ∧ CondS.all ρ cs
 
 /-- The first register an instruction needs the value of that the context
 only knows to hold a number. -/
@@ -4350,6 +4377,9 @@ structure Prog where
   /-- Where a block is handed over: at the instruction at the first address,
   to the context given, which is one allowed at the second address. -/
   enters : List (BitVec 64 × BitVec 64 × CtxS) := []
+  /-- Where a block returns: at the instruction at the address, to code
+  wanting the context given. -/
+  leaves : List (BitVec 64 × CtxS) := []
 
 /-- That the blocks said to be of a kind are. -/
 def TagsOk (Ψ : MemTy) : List (BitVec 64 × Nat) → Prop
@@ -4666,6 +4696,61 @@ theorem enterJump_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemT
     · cases h
   · cases h
 
+/-- What a return leaves: the return address, whose type is a variable,
+popped. The variable, and the context. -/
+def afterRet (Γ : CtxS) : Option (Nat × CtxS) :=
+  match Γ.moveSp 8, Γ.stack with
+  | some Γ', .mk (.lit 8) (.cons 0 (.atom i) .nil) :: σ =>
+    some (i, { Γ' with stack := σ, room := Γ.room.plus (.lit 8) })
+  | _, _ => none
+
+/-- A return, where the context wanted by the code returned to was given:
+what is left to be shown for the context the return leaves to stand for it. -/
+def leaveAt (P : Prog) (a : BitVec 64) (Γ : CtxS) : Instr → Option Walk
+  | .ret =>
+    match P.leaves.find? (·.1 == a), afterRet Γ with
+    | some e, some (i, Γ') =>
+      match subCtx Γ' e.2 with
+      | some cs => some (.leave i e.2 cs)
+      | none => none
+    | _, _ => none
+  | _ => none
+
+theorem leaveAt_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
+    {P : Prog} {a len : BitVec 64} {Γ : CtxS} {i : Instr} {W : Walk}
+    (hf : fetch a = some (i, len)) (h : leaveAt P a Γ i = some W)
+    (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) ρ) : BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
+  unfold leaveAt at h
+  split at h
+  · split at h
+    · next e j Γ' _ hr =>
+      split at h
+      · next cs hs =>
+        cases h
+        obtain ⟨⟨D, hty, hD⟩, hcs⟩ := hW
+        unfold afterRet at hr
+        split at hr
+        · next Γ'' j' σ hm hst =>
+          cases hr
+          obtain ⟨υ, rfl, hυ⟩ := CtxS.moveSp_spec hm
+          have hsub := subCtx_sound hs hcs
+          have e₁ : ({ Γ.setReg .rsp υ with stack := σ, room := Γ.room.plus (.lit 8) } : CtxS).den ρ
+              = { (Γ.den ρ).moveSp 8 with
+                  stack := denShapes ρ σ (stackTail ρ Γ.stackRest),
+                  room := (Γ.den ρ).room + 8 } := by
+            refine (CtxS.den_sp ρ Γ υ σ _ Γ.flags).trans ?_
+            rw [hυ, Num.den_plus]; rfl
+          rw [e₁] at hsub
+          refine .last hf (.ret (Δ := D) (σ := denShapes ρ σ (stackTail ρ Γ.stackRest))
+            ?_ (hsub.trans hD))
+          rw [CtxS.den_stack, hst]
+          show ShapeOf.mk 8 [(0, (TyS.atom j).den ρ)] :: _ = _
+          rw [hty]; rfl
+        · cases hr
+      · cases h
+    · cases h
+  · cases h
+
 /-- The checker walked from an address for at most so many moves, `k` being
 a variable no term yet mentions. Before an instruction, a pointer to a block
 of a kind that it reaches through is opened, and a value it needs to speak
@@ -4677,6 +4762,9 @@ def walk (P : Prog) (code : List (BitVec 64 × Instr × BitVec 64)) :
     match lookup code a with
     | none => .stop a Γ
     | some (i, len) =>
+      match leaveAt P a Γ i with
+      | some W => W
+      | none =>
       match enterJump P a len Γ i with
       | some W => W
       | none =>
@@ -4737,6 +4825,9 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
     split at h
     · exact h
     · next i len hl =>
+      split at h
+      · next W hj => exact leaveAt_sound (Agrees.lookup code hcode hl) hj h
+      next =>
       split at h
       · next W hj => exact enterJump_sound (Agrees.lookup code hcode hl) hj h
       next =>

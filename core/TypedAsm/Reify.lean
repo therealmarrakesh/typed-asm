@@ -577,6 +577,16 @@ def denCond (as : Atoms) : CondS → MetaM Expr
   | .lt a b => do mkLt (← denNum as a) (← denNum as b)
   | .sub τ υ => do return mkApp2 (mkConst ``Sub) (← denTy as τ) (← denTy as υ)
   | .eqN a b => do mkEq (← denNum as a) (← denNum as b)
+  | .ownedEq a ar b br => do
+    let shape := mkApp (mkConst ``ShapeOf) (mkConst ``Ty)
+    let block := mkApp2 (mkConst ``Prod [Level.zero, Level.zero]) bv64 shape
+    let side (l : List (Val × ShapeS)) (r : Option Nat) : MetaM Expr := do
+      return listE block
+        (← l.toArray.mapM fun (x, S) => do
+          return mkApp4 (mkConst ``Prod.mk [Level.zero, Level.zero]) bv64 shape (← denVal as x)
+            (← denShape as S))
+        (r.map (as.owned[·]!))
+    mkEq (← side a ar) (← side b br)
   | .flagsSub fl fl' => do
     let P ← denFlags as fl
     let Q ← denFlags as fl'

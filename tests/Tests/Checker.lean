@@ -236,8 +236,8 @@ example : needs { base with stack := [.mk (.lit 16) .nil] }
 -- room that is written differently is left to be shown the same
 example : needs { base with room := .var 0 } { base with room := .add (.var 1) (.lit 8) }
     = some 1 := by decide
--- the owned blocks must be written the same
-example : needs { base with owned := [(v 5, .mk (.lit 32) .nil)] } base = none := by decide
+-- owned blocks written differently are left to be shown the same
+example : needs { base with owned := [(v 5, .mk (.lit 32) .nil)] } base = some 1 := by decide
 
 /-! ## Past a piece of the stack whose length is not a number written out -/
 

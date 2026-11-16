@@ -116,6 +116,22 @@ theorem SubList.refl : ∀ σ : List Shape, SubList σ σ
 theorem CtxSub.refl (Γ : Ctx) : CtxSub Γ Γ :=
   ⟨fun _ _ => .refl _, .refl _, rfl, fun _ h => h, .refl _, rfl, rfl⟩
 
+theorem SubShape.trans {S T U : Shape} (h₁ : SubShape S T) (h₂ : SubShape T U) : SubShape S U :=
+  ⟨h₁.size.trans h₂.size, fun q hq => by
+    obtain ⟨p, hp, hpq, hsub⟩ := h₂.vals q hq
+    obtain ⟨o, ho, hop, hsub'⟩ := h₁.vals p hp
+    exact ⟨o, ho, hop.trans hpq, hsub'.trans hsub⟩⟩
+
+theorem SubList.trans : ∀ {σ τ υ : List Shape}, SubList σ τ → SubList τ υ → SubList σ υ
+  | _, _, _, .nil, .nil => .nil
+  | _, _, _, .cons h₁ t₁, .cons h₂ t₂ => .cons (h₁.trans h₂) (SubList.trans t₁ t₂)
+
+/-- A context that stands for one that stands for a third stands for it. -/
+theorem CtxSub.trans {Γ Δ Θ : Ctx} (h₁ : CtxSub Γ Δ) (h₂ : CtxSub Δ Θ) : CtxSub Γ Θ :=
+  ⟨fun r hr => (h₁.regs r hr).trans (h₂.regs r hr), h₁.stack.trans h₂.stack,
+    h₁.room.trans h₂.room, fun f hf => h₂.flags f (h₁.flags f hf), h₁.sp.trans h₂.sp,
+    h₁.owned.trans h₂.owned, h₁.above.trans h₂.above⟩
+
 /-- The code at `a` may be entered from a state matching `Γ`: one of the
 contexts allowed there is `Γ` or weaker. -/
 def Accepts (Φ : CodeTy) (a : BitVec 64) (Γ : Ctx) : Prop :=
