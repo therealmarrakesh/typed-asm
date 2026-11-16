@@ -657,9 +657,7 @@ elab "ty_elem_goal" : tactic => do
   if ← isProp (← getMainTarget) then
     evalTactic (← `(tactic| ty_elem))
 
-/-- Proves which typed value an array has at a place in one of its elements,
-that it is the only one there, or that bytes of an element are plain. -/
-macro "ty_val" : tactic =>
+macro "ty_val_core" : tactic =>
   `(tactic| first
     | (refine' ShapeOf.valAt_rep_elem ?_ ?_ ?_ ?_ <;> ty_elem_goal)
     | (refine' ShapeOf.sole_rep_elem ?_ ?_ ?_ ?_ ?_ <;> ty_elem_goal)
@@ -669,6 +667,54 @@ macro "ty_val" : tactic =>
     | (refine' ShapeOf.valAt_rep_at ?_ ?_ ?_ <;> ty_elem_goal)
     | (refine' ShapeOf.sole_rep_at ?_ ?_ ?_ ?_ <;> ty_elem_goal)
     | (refine' ShapeOf.free_rep_at ?_ ?_ ?_ ?_ <;> ty_elem_goal))
+
+open Lean Meta Elab Tactic in
+/-- Proves which typed value an array has at a place in one of its elements,
+that it is the only one there, or that bytes of an element are plain. A goal
+about a shape that is not an array is refused at once: matched against the
+lemmas for arrays, the shape would be worked out in full by each of them
+before the mismatch showed. -/
+elab "ty_val" : tactic => withMainContext do
+  let t ← instantiateMVars (← getMainTarget)
+  let isRep (e : Expr) : Bool := (e.find? (·.isConstOf ``ShapeOf.rep)).isSome
+  let mut found := isRep t
+  unless found do
+    -- the shape may be named by a definition: look a few definitions deep
+    let fns := [``ShapeOf.valAt, ``ShapeOf.sole, ``ShapeOf.free]
+    if let some app := t.find? (fun e => e.isApp && fns.any e.getAppFn.isConstOf) then
+      if app.getAppNumArgs ≥ 2 then
+        let mut S := app.getAppArgs[1]!
+        for _ in [0:4] do
+          if isRep S then found := true; break
+          match ← unfoldDefinition? S with
+          | some S' => S := S'
+          | none => break
+        -- A shape still unknown is passed over: the premise that settles
+        -- it comes first, and this one is come back to.
+  unless found do throwError "not an array"
+  evalTactic (← `(tactic| ty_val_core))
+
+/-- The alternatives of `ty_side`, for a goal that is not settled by
+computation alone. -/
+syntax "ty_side_search" : tactic
+
+open Lean Meta Elab Tactic in
+/-- A side condition that is a closed yes-or-no computation, such as whether
+some bytes of a shape are plain, has the kernel work it out, and that is the
+end of it either way: if the answer is no, nothing else will prove it, and
+trying would have the unifier work the same computation out many times
+over. One with a variable in it is tried the same way first, since the
+answer may not turn on the variable, and goes on to the search if that does
+not settle it. Anything else goes straight to the search. -/
+elab "ty_side_core" : tactic => withMainContext do
+  let t ← instantiateMVars (← getMainTarget)
+  let yesNo := t.isAppOfArity ``Eq 3 && t.getAppArgs[0]!.isConstOf ``Bool && !t.hasExprMVar
+  if yesNo && !t.hasFVar then
+    evalTactic (← `(tactic| decide +kernel))
+  else if yesNo then
+    evalTactic (← `(tactic| first | decide +kernel | ty_side_search))
+  else
+    evalTactic (← `(tactic| ty_side_search))
 
 /-- Proves a fact with no unknowns in it from the hypotheses: the fact
 itself, or one side of an "or". A goal with unknowns is refused, since a
@@ -780,8 +826,9 @@ elab "ty_prop_only" : tactic => do
     throwError "not a proposition"
 
 macro_rules
-  | `(tactic| ty_side) =>
-    `(tactic| ty_prop_only; first
+  | `(tactic| ty_side) => `(tactic| ty_prop_only; ty_side_core)
+  | `(tactic| ty_side_search) =>
+    `(tactic| first
       -- which byte an index lands on, before anything else: left to `rfl`,
       -- the byte would be found as an unevaluated sum of the two addresses
       | ty_index
