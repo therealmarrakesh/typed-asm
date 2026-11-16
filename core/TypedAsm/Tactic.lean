@@ -2717,6 +2717,22 @@ private def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
 
 initialize registerTraceClass `TypedAsm.fast
 
+/-- For each address a block has been typed up to: which instruction last
+gave each register, and the flags, what the context says of them there. It is
+what lets a rejection say where a type came from. It is kept by address, and
+the last block to pass an address is the one remembered. -/
+initialize trailRef :
+    IO.Ref (Std.HashMap (UInt64 × Nat) (Std.HashMap String (Nat × String))) ← IO.mkRef {}
+
+/-- The addresses the walk of a block is to stop before going past: those
+with a context of their own to hand over to. Set while a block is walked to
+its end; where it is not set, the checker takes one instruction at a time. -/
+initialize runStops : IO.Ref (Option (Array Nat)) ← IO.mkRef none
+
+/-- Set when a run has recorded for itself which instruction gave each
+register what it holds. -/
+initialize trailDone : IO.Ref Bool ← IO.mkRef false
+
 /-- The context the checker's last step left, as it is written and as a
 term, with what the term's variables stand for. -/
 initialize symKept : IO.Ref (Option (Expr × Sym.CtxS × Sym.Atoms)) ← IO.mkRef none
@@ -2940,12 +2956,7 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
   -- asked to confirm: that the term means this context, and that the checker
   -- comes to that answer.
   let symStep : TacticM (Option MVarId) := do
-    -- the program's blocks are read too where the operand is not reached
-    -- through a register, so that it can be found in one of them
-    let inBlock := listed && (match instr.memOperand? with
-      | some (.rip _) | some (.sib none _ _) => true
-      | _ => false)
-    -- The context the last step left is the one this step starts from, as a
+    -- The context the last run left is the one this one starts from, as a
     -- rule: its term is kept, with what its variables stand for, and is not
     -- read again. It is used only if all it mentions is still in scope.
     let kept? : Option (Sym.CtxS × Sym.Atoms) ← (do
@@ -2956,53 +2967,129 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       unless (ac.val ++ ac.num ++ ac.ty ++ ac.shape ++ ac.flags ++ ac.stack ++ ac.owned).all inScope
         && ac.tyNames.all (inScope ·.2) && ac.shapeNames.all (inScope ·.2) do return none
       return some (Sc, ac))
-    let ((S?, blocks?), atoms) ← (do
-      let blocks? ← if inBlock then Sym.reifyBlocks Ψ'.appFn!.appArg! else pure none
-      let S? ← match kept? with
+    -- Where the block is being walked to its end, the checker is run on from
+    -- instruction to instruction for as long as it has an answer and nothing
+    -- else is to be done first: a label to hand over to, a value to name, a
+    -- pointer to open. The kernel then confirms the whole run at once.
+    let stops? ← runStops.get
+    let needsBlocks (i : Instr) : Bool := listed && (match i.memOperand? with
+      | some (.rip _) | some (.sib none _ _) => true
+      | _ => false)
+    -- whether something is to be done before an instruction that is not the first
+    let waits (S : Sym.CtxS) (i : Instr) (at' next' : Nat) : Bool :=
+      i.endsBlock || (stops?.getD #[]).contains next' || (stops?.getD #[]).contains at' ||
+      (match i with
+        | .lea .w64 _ (.rip _) => true
+        | .test _ (.reg r) (.reg r') =>
+          r == r' && (match S.regs.get r with
+            | .nullable _ | .orErr _ => true
+            | _ => false)
+        | .movzx _ _ .w8 (.mem (.sib (some b) none _)) =>
+          (match S.regs.get b with
+            | .str _ => true
+            | _ => false)
+        | _ => false) ||
+      (match i with
+        | .alu .add .w64 (.rm_i (.reg d) _) => (match S.regs.get d with | .ref .. => true | _ => false)
+        | i => match i.memOperand? with
+          | some (.sib (some b) _ _) => (match S.regs.get b with | .ref .. => true | _ => false)
+          | _ => false) ||
+      i.wantsNamed.any fun r => (match S.regs.get r with | .int => true | _ => false)
+    let ((result, blocks?), atoms) ← (do
+      let some S₀ ← (match kept? with
         | some (Sc, _) => pure (some Sc)
-        | none => Sym.reifyCtx Γ
-      return (S?, blocks?) : Sym.ReifyM _).run ((kept?.map (·.2)).getD {})
-    let S? := S?.map fun S => { S with blocks := (blocks?.map (·.1)).getD [] }
-    if let some S := S? then
-      if let some (S', conds) := Sym.step (BitVec.ofNat 64 (n + len.toNat)) S instr then
-        let ρ := atoms.env
-        let SE := toExpr S
-        -- that the blocks read are the memory typing's: each by looking
-        let mut hB := mkApp2 (mkConst ``Sym.BlocksOk.nil) Ψ ρ
-        let mut restL : List (BitVec 64 × Sym.ShapeS × Bool) := []
-        if let some (bl, lays) := blocks? then
-          for ((base, Sb, w), lay) in (bl.zip lays.toList).reverse do
-            let h₁ ← mkEqRefl (← mkAppM ``Option.some #[lay])
-            let h₂ ← mkEqRefl (← mkAppM ``Layout.shape #[lay])
-            let h₃ ← mkEqRefl (toExpr w)
-            hB := mkAppN (mkConst ``Sym.BlocksOk.cons)
-              #[Ψ, ρ, toExpr base, toExpr Sb, toExpr w, toExpr restL, lay, h₁, h₂, h₃, hB]
-            restL := (base, Sb, w) :: restL
-        if kept?.isNone then
-          unless Kernel.isDefEqGuarded env lctx Γ (mkApp2 (mkConst ``Sym.CtxS.den) ρ SE) do
-            trace[TypedAsm.fast] "the term read from the context does not mean it"
-            return none
-        let xE := toExpr (S', conds)
-        let stepE := mkApp3 (mkConst ``Sym.step) next SE iE
-        let hstep ← mkExpectedTypeHint (← mkEqRefl stepE) (← mkEq stepE (← mkAppM ``Option.some #[xE]))
-        -- what is left to be shown, each part as the proposition it is
-        let mut hn := mkConst ``True.intro
-        let mut allE := mkConst ``True
-        for c in conds.reverse do
-          let leaf ← Sym.denCond atoms c
-          let h ← closeNeeds env lctx kwhnf pure #[] leaf
-          hn := mkApp4 (mkConst ``And.intro) leaf allE h hn
-          allE := mkApp2 (mkConst ``And) leaf allE
-        let Γ' ← Sym.denCtx atoms S'
-        let hf ← fetchProof (mkApp fetch a) (toExpr (some (instr, len)))
-        let hs := mkAppN (mkConst ``Sym.step_sound) #[Ψ, next, ρ, SE, hB, iE, xE, hstep, hn]
-        let rest ← mkFreshExprSyntheticOpaqueMVar
-          (mkAppN ty.getAppFn #[Φ, fetch, sys, Ψ, nextLit, Γ']) (← goal.getTag)
-        goal.assign (mkAppN (mkConst ``BlockOk.step)
-          #[Φ, fetch, sys, Ψ, a, Γ, Γ', iE, lenE, hf, hs, rest])
-        symKept.set (some (Γ', { S' with blocks := [] }, atoms))
-        return some rest.mvarId!
-    return none
+        | none => Sym.reifyCtx Γ) | return (none, none)
+      let mut blocks? : Option (List (BitVec 64 × Sym.ShapeS × Bool) × Array Expr) := none
+      let mut cur := S₀
+      let mut at' := n
+      let mut steps : Array (Nat × Instr × BitVec 64 × Sym.CtxS × List Sym.CondS) := #[]
+      let limit := if stops?.isSome then 4096 else 1
+      for j in [0:limit] do
+        let some (i, len') := instrs[at']? | break
+        let next' := at' + len'.toNat
+        if j > 0 && waits cur i at' next' then break
+        if needsBlocks i && blocks?.isNone then
+          blocks? ← Sym.reifyBlocks Ψ'.appFn!.appArg!
+        let B := (blocks?.map (·.1)).getD []
+        let some (S', cs) := Sym.step (BitVec.ofNat 64 at' + len') { cur with blocks := B } i
+          | break
+        steps := steps.push (at', i, len', cur, cs)
+        cur := S'
+        at' := next'
+        if i matches .lea .w64 _ (.rip _) then break
+      if steps.isEmpty then return (none, blocks?)
+      return (some (S₀, steps, cur, at'), blocks?) : Sym.ReifyM _).run ((kept?.map (·.2)).getD {})
+    let some (S₀, steps, cur, atEnd) := result | return none
+    let B := (blocks?.map (·.1)).getD []
+    let S := { S₀ with blocks := [] }
+    let S' := { cur with blocks := B }
+    let conds := steps.toList.flatMap (·.2.2.2.2)
+    let ρ := atoms.env
+    let SE := toExpr S
+    -- that the blocks read are the memory typing's: each by looking
+    let mut hB := mkApp2 (mkConst ``Sym.BlocksOk.nil) Ψ ρ
+    let mut restL : List (BitVec 64 × Sym.ShapeS × Bool) := []
+    if let some (bl, lays) := blocks? then
+      for ((base, Sb, w), lay) in (bl.zip lays.toList).reverse do
+        let h₁ ← mkEqRefl (← mkAppM ``Option.some #[lay])
+        let h₂ ← mkEqRefl (← mkAppM ``Layout.shape #[lay])
+        let h₃ ← mkEqRefl (toExpr w)
+        hB := mkAppN (mkConst ``Sym.BlocksOk.cons)
+          #[Ψ, ρ, toExpr base, toExpr Sb, toExpr w, toExpr restL, lay, h₁, h₂, h₃, hB]
+        restL := (base, Sb, w) :: restL
+    if kept?.isNone then
+      unless Kernel.isDefEqGuarded env lctx Γ (mkApp2 (mkConst ``Sym.CtxS.den) ρ SE) do
+        trace[TypedAsm.fast] "the term read from the context does not mean it"
+        return none
+    -- the instructions of the run, and that they are the program's
+    let code : List (BitVec 64 × Instr × BitVec 64) :=
+      steps.toList.map fun (at', i, len', _, _) => (BitVec.ofNat 64 at', i, len')
+    let codeE := toExpr code
+    let mut hcode := mkConst ``True.intro
+    let mut restCode : List (BitVec 64 × Instr × BitVec 64) := []
+    for (at', i, len') in code.reverse do
+      let lhs := mkApp fetch (toExpr at')
+      let found := toExpr (some (i, len'))
+      let hf ← fetchProof lhs found
+      hcode := mkApp4 (mkConst ``And.intro) (← mkEq lhs found)
+        (mkApp2 (mkConst ``Sym.Agrees) fetch (toExpr restCode)) hf hcode
+      restCode := (at', i, len') :: restCode
+    -- what is left to be shown, each part as the proposition it is
+    let mut hn := mkConst ``True.intro
+    let mut allE := mkConst ``True
+    for c in conds.reverse do
+      let leaf ← Sym.denCond atoms c
+      let h ← closeNeeds env lctx kwhnf pure #[] leaf
+      hn := mkApp4 (mkConst ``And.intro) leaf allE h hn
+      allE := mkApp2 (mkConst ``And) leaf allE
+    let Γ' ← Sym.denCtx atoms S'
+    let aEnd := toExpr (BitVec.ofNat 64 atEnd)
+    let fuelE := mkNatLit steps.size
+    let BE := toExpr B
+    let S'E := toExpr S'
+    let condsE := toExpr conds
+    let runE := mkAppN (mkConst ``Sym.run) #[BE, codeE, fuelE, a, SE]
+    let hrun ← mkExpectedTypeHint (← mkEqRefl runE)
+      (← mkEq runE (← mkAppM ``Prod.mk #[aEnd, ← mkAppM ``Prod.mk #[S'E, condsE]]))
+    let rest ← mkFreshExprSyntheticOpaqueMVar
+      (mkAppN ty.getAppFn #[Φ, fetch, sys, Ψ, aEnd, Γ']) (← goal.getTag)
+    goal.assign (mkAppN (mkConst ``Sym.run_sound')
+      #[Φ, fetch, sys, Ψ, ρ, BE, codeE, hB, hcode, fuelE, a, aEnd, SE, S'E, condsE, hrun, hn, rest])
+    symKept.set (some (Γ', { S' with blocks := [] }, atoms))
+    -- which instruction of the run gave each register, and the flags, what
+    -- the context says of them at its end
+    if steps.size > 1 then
+      let key₀ := (fetch.hash, n)
+      let mut t := (← trailRef.get)[key₀]?.getD {}
+      let afters := (steps.toList.drop 1).map (·.2.2.2.1) ++ [cur]
+      for ((at', i, _, before, _), after) in steps.toList.zip afters do
+        for r in allRegs do
+          unless before.regs.get r == after.regs.get r do
+            t := t.insert r.name64 (at', i.toAsm)
+        unless before.flags == after.flags do t := t.insert "flags" (at', i.toAsm)
+      trailRef.modify (·.insert (fetch.hash, atEnd) t)
+      trailDone.set true
+    return some rest.mvarId!
   if let some (d, v) := leaReg? then
     unless listed do return none
     let bsE := Ψ'.appFn!.appArg!
@@ -3110,13 +3197,6 @@ private def codePtrTactic (Φ : Expr) (v : Nat) (reg : Ident) :
   if let some ctx := code? then
     return some (← `(tactic| ty_code_ptr_fwd $reg to $(← Term.exprToSyntax ctx)))
   return none
-
-/-- For each address a block has been typed up to: which instruction last
-gave each register, and the flags, what the context says of them there. It is
-what lets a rejection say where a type came from. It is kept by address, and
-the last block to pass an address is the one remembered. -/
-initialize trailRef :
-    IO.Ref (Std.HashMap (UInt64 × Nat) (Std.HashMap String (Nat × String))) ← IO.mkRef {}
 
 /-- A block goal's program and address, and what its context says of each
 register and of the flags, where the context is written out as a table. -/
@@ -3393,6 +3473,9 @@ private def typeStep (named : Bool := false) : TacticM StepResult := do
         let note ← trailNote key (← e.toMessageData.toString)
         if note == "" then throw e else throwError "{e.toMessageData}{note}"
       | none => throw e
+  if ← trailDone.get then
+    trailDone.set false
+    return r
   if let (.stepped, some (key, fetch, old)) := (r, before) then
     try
       let some (key', _, new) ← trailKey (← getMainGoal) | return r
@@ -4292,7 +4375,9 @@ elab "ty_block" : tactic => do
             pure ls
         else pure #[]
       if ← tryInto labels then entered := true; break
-      match ← typeStep with
+      runStops.set (some labels)
+      let r ← try typeStep finally runStops.set none
+      match r with
       | .stepped => continue
       | .endOfBlock instr => endInstr? := some instr; break
       | .notABlock => break

@@ -3616,6 +3616,85 @@ theorem step_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
     · cases h; exact cast_ctx .cqo (CtxS.den_setReg ρ Γ .rdx .int)
   · cases h
 
+/-! ## A run of instructions
+
+The checker taken through one instruction after another, for as long as it
+has an answer: the context at the end, and all that the steps left to be
+shown. One evaluation gives the whole run. -/
+
+/-- The instruction listed at an address. -/
+def lookup : List (BitVec 64 × Instr × BitVec 64) → BitVec 64 → Option (Instr × BitVec 64)
+  | [], _ => none
+  | (a, x) :: rest, b => if a = b then some x else lookup rest b
+
+/-- That the instructions listed are the ones the program has there. -/
+def Agrees (fetch : Fetch) : List (BitVec 64 × Instr × BitVec 64) → Prop
+  | [] => True
+  | (a, x) :: rest => fetch a = some x ∧ Agrees fetch rest
+
+theorem Agrees.lookup {fetch : Fetch} : (code : List (BitVec 64 × Instr × BitVec 64)) →
+    Agrees fetch code → {a : BitVec 64} → {x : Instr × BitVec 64} → lookup code a = some x →
+    fetch a = some x
+  | [], _, _, _, h => by cases h
+  | (b, y) :: rest, hc, a, x, h => by
+    unfold Sym.lookup at h
+    split at h
+    · next e => cases h; subst e; exact hc.1
+    · exact Agrees.lookup rest hc.2 h
+
+/-- The checker run from an address for at most so many instructions, with
+the program's blocks at hand: where it stops, the context there, and what is
+left to be shown. It stops where no instruction is listed or it has no answer. -/
+def run (B : List (BitVec 64 × ShapeS × Bool)) (code : List (BitVec 64 × Instr × BitVec 64)) :
+    Nat → BitVec 64 → CtxS → BitVec 64 × CtxS × List CondS
+  | 0, a, Γ => (a, Γ, [])
+  | fuel + 1, a, Γ =>
+    match lookup code a with
+    | some (i, len) =>
+      match step (a + len) { Γ with blocks := B } i with
+      | some (Γ', cs) =>
+        ((run B code fuel (a + len) Γ').1, (run B code fuel (a + len) Γ').2.1,
+          cs ++ (run B code fuel (a + len) Γ').2.2)
+      | none => (a, Γ, [])
+    | none => (a, Γ, [])
+
+/-- **A run the checker has an answer for is typed**: the block at the
+start is well typed if the block where the run stops is. -/
+theorem run_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
+    {B : List (BitVec 64 × ShapeS × Bool)} {code : List (BitVec 64 × Instr × BitVec 64)}
+    (hB : BlocksOk Ψ ρ B) (hcode : Agrees fetch code) : (fuel : Nat) → (a : BitVec 64) →
+    (Γ : CtxS) → CondS.all ρ (run B code fuel a Γ).2.2 →
+    BlockOk Φ fetch sys Ψ (run B code fuel a Γ).1 ((run B code fuel a Γ).2.1.den ρ) →
+    BlockOk Φ fetch sys Ψ a (Γ.den ρ)
+  | 0, _, _, _, h => h
+  | fuel + 1, a, Γ, hc, h => by
+    unfold run at hc h
+    split at hc
+    · next i len hl =>
+      split at hc
+      · next Γ' cs hs =>
+        rw [hl] at h
+        simp only [hs] at h
+        obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc
+        exact .step (Agrees.lookup code hcode hl)
+          (step_sound (Γ := { Γ with blocks := B }) hB hs h₁)
+          (run_sound hB hcode fuel (a + len) Γ' h₂ h)
+      · rw [hl] at h
+        simp only [*] at h
+        exact h
+    · simp only [*] at h
+      exact h
+
+/-- The same, from the checker's answer written out: one evaluation shows the
+answer is that, and the rest speaks of it as written. -/
+theorem run_sound' {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
+    {B : List (BitVec 64 × ShapeS × Bool)} {code : List (BitVec 64 × Instr × BitVec 64)}
+    (hB : BlocksOk Ψ ρ B) (hcode : Agrees fetch code) {fuel : Nat} {a a' : BitVec 64}
+    {Γ Γ' : CtxS} {cs : List CondS} (h : run B code fuel a Γ = (a', Γ', cs))
+    (hc : CondS.all ρ cs) (hrest : BlockOk Φ fetch sys Ψ a' (Γ'.den ρ)) :
+    BlockOk Φ fetch sys Ψ a (Γ.den ρ) :=
+  run_sound hB hcode fuel a Γ (by rw [h]; exact hc) (by rw [h]; exact hrest)
+
 end Sym
 
 end TypedAsm
