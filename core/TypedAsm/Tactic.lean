@@ -1755,6 +1755,29 @@ private partial def stripProjs (e : Expr) : Expr :=
       if x.isAppOfArity ``CtxOf.mk 7 then some (stripProjs x.getAppArgs[i + 1]!) else none
     | _ => none
 
+/-- A field taken of a context, followed in through whatever the context is
+built by until the field itself is reached: the kernel's evaluator opens
+each context on the way, and nothing else is worked out. -/
+private def peelField (env : Environment) (lctx : LocalContext) (e : Expr) : Expr := Id.run do
+  let mut e := e
+  for _ in [0:64] do
+    let (i?, c) := match e with
+      | .app f x =>
+        if f.isApp && f.appFn!.isConst then
+          (match f.appFn!.constName! with
+            | ``CtxOf.regs => some 1 | ``CtxOf.stack => some 2 | ``CtxOf.room => some 3
+            | ``CtxOf.flags => some 4 | ``CtxOf.owned => some 5 | ``CtxOf.above => some 6
+            | _ => none, x)
+        else (none, x)
+      | .proj ``CtxOf i x => (some (i + 1), x)
+      | _ => (none, e)
+    let some i := i? | break
+    match Kernel.whnf env lctx c with
+    | .ok cw =>
+      if cw.isAppOfArity ``CtxOf.mk 7 then e := cw.getAppArgs[i]! else break
+    | .error _ => break
+  return e
+
 /-- Whether a term is a constructor applied, or something applied that
 cannot be looked into: the forms a register's type is kept in. -/
 private def settledHead (env : Environment) (e : Expr) : Bool :=
@@ -1789,7 +1812,9 @@ private def fastNormalize (g : MVarId) (t : Expr) : TacticM Bool := g.withContex
     tbl := tbl.push (← tidy (if settledHead env e then e else raw.headBeta))
   let mut ctxN := mkAppN ctxW.getAppFn #[τ,
     mkApp2 (mkConst ``RegMap.get) τ (mkAppN (mkConst ``RegMap.mk) tbl),
-    ← tidy nargs[2]!, ← tidy nargs[3]!, ← tidy nargs[4]!, ← tidy nargs[5]!, ← tidy nargs[6]!]
+    ← tidy (peelField env lctx nargs[2]!), ← tidy (peelField env lctx nargs[3]!),
+    ← tidy (peelField env lctx nargs[4]!), ← tidy (peelField env lctx nargs[5]!),
+    ← tidy (peelField env lctx nargs[6]!)]
   if let some c ← workOutCtx ctxN then ctxN ← tidy c
   let a := args[4]!
   let aN ← if isAddrLit a then pure a else
@@ -2560,7 +2585,7 @@ private def fastStep (goal : MVarId) (ty : Expr) (named : Bool) : TacticM (Optio
       unless settledHead env e do return none
       out := out.set! j (← tidy e)
   let field (j : Nat) : MetaM Expr := do
-    let new := nargs[j]!
+    let new := peelField env lctx nargs[j]!
     if new == cargs[j]! then return cargs[j]!
     if Kernel.isDefEqGuarded env lctx new cargs[j]! then return cargs[j]!
     tidy new
