@@ -99,3 +99,42 @@ example : BlocksOk Φ fetch
   ty_program
 
 end Rejected.Longer
+
+/-! A byte stored into a word the program pushed: the word is still exactly
+known, with that byte replaced, and so is what is then written. -/
+
+namespace Rejected.Poke
+
+inductive Label
+  | start
+  deriving DecidableEq
+
+def code : List (Asm Label) := [
+  .label .start,
+  -- 'H' 'i' '?' and a new line
+  .ins (.mov .w32 (.rm_i (.reg .rax) 0x0a3f6948)),
+  .ins (.push .rax),
+  -- the third byte becomes '!'
+  .ins (.mov .w32 (.rm_i (.reg .rcx) 0x21)),
+  .ins (.store8 (.sib (some .rsp) none 2) .rcx),
+  .ins (.mov .w32 (.rm_i (.reg .rdi) 1)),
+  .ins (.lea .w64 .rsi (.sib (some .rsp) none 0)),
+  .ins (.mov .w32 (.rm_i (.reg .rdx) 4)),
+  .ins (.mov .w32 (.rm_i (.reg .rax) 1)),
+  .ins .syscall,
+  .ins (.mov .w32 (.rm_i (.reg .rax) 60)),
+  .ins (.alu .xor .w32 (.rm_r (.reg .rdi) .rdi)),
+  .ins .syscall]
+
+asm_program code start .start stack 1
+
+inductive At : Label → Ctx → Prop
+  | start : At .start (entryCtx 1)
+
+asm_typing At
+
+example : BlocksOk Φ fetch
+    (linux.writesOnly fun fd bytes => fd = 1 ∧ bytes = [0x48, 0x69, 0x21, 0x0a]) Ψ := by
+  ty_program
+
+end Rejected.Poke

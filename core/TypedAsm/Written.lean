@@ -1,4 +1,5 @@
 import TypedAsm.Linux
+import TypedAsm.Bytes
 import TypedAsm.Output
 import TypedAsm.Encode
 
@@ -14,35 +15,6 @@ those values. These are the rules for that, for the system that lets a
 -/
 
 namespace TypedAsm
-
-/-- Eight bytes put together as a value, taken apart again, are the bytes. -/
-theorem le64_of_bytes (b0 b1 b2 b3 b4 b5 b6 b7 : BitVec 8) :
-    le64 (((b7 ++ b6) ++ (b5 ++ b4)) ++ ((b3 ++ b2) ++ (b1 ++ b0)))
-      = [b0, b1, b2, b3, b4, b5, b6, b7] := by
-  simp only [le64, le32, List.cons_append, List.nil_append, List.cons.injEq, and_true]
-  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;>
-    (ext i hi
-     have key : ∀ (b : BitVec 8) (j : Nat), j = i → b.getLsbD j = b[i] := by
-       rintro b _ rfl; exact BitVec.getLsbD_eq_getElem _
-     simp only [BitVec.getElem_extractLsb', BitVec.getLsbD_extractLsb', BitVec.getLsbD_append]
-     repeat' split
-     all_goals first
-       | exact key _ _ (by omega)
-       | (rw [decide_eq_true (by omega), Bool.true_and]; exact key _ _ (by omega))
-       | (exfalso; omega))
-
-/-- The eight bytes in memory at an address are the bytes of the value loaded
-from there. -/
-theorem State.loadBytes_eight (s : State) (a : BitVec 64) : s.loadBytes a 8 = le64 (s.load64 a) := by
-  have e : s.loadBytes a 8 = [s.mem a, s.mem (a + 1), s.mem (a + 2), s.mem (a + 3), s.mem (a + 4),
-      s.mem (a + 5), s.mem (a + 6), s.mem (a + 7)] := by
-    simp [State.loadBytes, List.range, List.range.loop]
-  rw [e]
-  have h : s.load64 a = ((s.mem (a + 7) ++ s.mem (a + 6)) ++ (s.mem (a + 5) ++ s.mem (a + 4))) ++
-      ((s.mem (a + 3) ++ s.mem (a + 2)) ++ (s.mem (a + 1) ++ s.mem a)) := by
-    simp only [State.load64, State.load32, State.load16, State.load8, BitVec.add_assoc]
-    rfl
-  rw [h, le64_of_bytes]
 
 /-- Bytes in memory, in two runs. -/
 theorem State.loadBytes_append (s : State) (a : BitVec 64) (m n : Nat) :

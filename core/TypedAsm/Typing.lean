@@ -1,5 +1,6 @@
 import TypedAsm.Types
 import TypedAsm.Safety
+import TypedAsm.Bytes
 
 /-!
 # Typing rules
@@ -487,6 +488,17 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
     s ≠ .rsp → EaIs Γ m p → OwnedAt Γ.owned k a S p off → off.toNat + 8 ≤ S.size →
     Straight Ψ next Γ (.mov .w64 (.rm_r (.mem m) s))
       { Γ with owned := Γ.owned.set k (a, S.set off.toNat (Γ.regs s)) }
+  /-- Store one byte into an 8-byte field of an owned block that holds an
+  exactly known value, from a register that holds one: the field then holds
+  exactly the value with that byte replaced. So what a program builds a byte
+  at a time stays known. -/
+  | store8Owned {Γ : Ctx} {s : Reg} {m : Mem} {k : Nat} {a p off v x : BitVec 64} {S : Shape}
+      {f : Nat} :
+    s ≠ .rsp → EaIs Γ m p → OwnedAt Γ.owned k a S p off → f ≤ off.toNat → off.toNat < f + 8 →
+    S.valAt f = some (.eq v) → Γ.regs s = .eq x →
+    Straight Ψ next Γ (.store8 m s)
+      { Γ with
+        owned := Γ.owned.set k (a, S.set f (.eq (setByte v (off.toNat - f) (x.setWidth 8)))) }
   /-- Store over a typed value of an owned block a value of the type it has
   already: the context stays as it is. This is the store to use where the
   place is not known exactly, as in a loop over an array of addresses. -/
@@ -550,6 +562,15 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
     s ≠ .rsp → byteDisp d disp → StackAt Γ.stack k S d i → i + 8 ≤ S.size →
     Straight Ψ next Γ (.mov .w64 (.rm_r (.mem (.sib (some .rsp) none disp)) s))
       { Γ with stack := Γ.stack.set k (S.set i (Γ.regs s)) }
+  /-- Store one byte into an 8-byte field of a piece of the stack that holds
+  an exactly known value, from a register that holds one: the field then
+  holds exactly the value with that byte replaced. -/
+  | store8Slot {Γ : Ctx} {s : Reg} {d k i f : Nat} {S : Shape} {disp : BitVec 32}
+      {v x : BitVec 64} :
+    s ≠ .rsp → byteDisp d disp → StackAt Γ.stack k S d i → f ≤ i → i < f + 8 →
+    S.valAt f = some (.eq v) → Γ.regs s = .eq x →
+    Straight Ψ next Γ (.store8 (.sib (some .rsp) none disp) s)
+      { Γ with stack := Γ.stack.set k (S.set f (.eq (setByte v (i - f) (x.setWidth 8)))) }
   | push {Γ : Ctx} {r : Reg} {n : Nat} : r ≠ .rsp → Γ.room = n + 8 →
     Straight Ψ next Γ (.push r)
       { Γ.moveSp (-8) with stack := .slot (Γ.regs r) :: Γ.stack, room := n }
@@ -931,6 +952,8 @@ local macro "ext_rule" : tactic =>
     | (apply Straight.storeInt <;> ext_premise)
     | (apply Straight.storeImm <;> ext_premise)
     | (apply Straight.store8RM <;> ext_premise)
+    | (apply Straight.store8Owned <;> ext_premise)
+    | (apply Straight.store8Slot <;> ext_premise)
     | (apply Straight.store16RM <;> ext_premise)
     | (apply Straight.xorSelf <;> ext_premise)
     | (apply Straight.mov32Exact <;> ext_premise)

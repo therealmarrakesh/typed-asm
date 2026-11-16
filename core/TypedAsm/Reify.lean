@@ -124,6 +124,13 @@ partial def reifyVal (e : Expr) : ReifyM Val := do
       if let some (32, op, a, b) := aluApply? inner.appArg! then
         if let (some a, some b) := (low? a, low? b) then
           return .app2 (.alu op .w32) (← reifyVal a) (← reifyVal b)
+  -- a value with one byte replaced by the low byte of another
+  if e.isAppOfArity ``TypedAsm.setByte 3 then
+    let a := e.getAppArgs
+    if let some i := natLit? a[1]! then
+      if a[2]!.isAppOfArity ``BitVec.setWidth 3 && natLit? a[2]!.getAppArgs[0]! == some 64
+          && natLit? a[2]!.getAppArgs[1]! == some 8 then
+        return .app2 (.setByte i) (← reifyVal a[0]!) (← reifyVal a[2]!.appArg!)
   if e.isAppOfArity ``HAdd.hAdd 6 then
     return .add (← reifyVal e.appFn!.appArg!) (← reifyVal e.appArg!)
   if e.isAppOfArity ``HShiftLeft.hShiftLeft 6 then
@@ -445,6 +452,9 @@ partial def denVal (as : Atoms) : Val → MetaM Expr
     let low ← mkAppM ``HAnd.hAnd #[← denVal as a,
       ← mkAppM ``Complement.complement #[toExpr (0xff : BitVec 64)]]
     mkAppM ``HOr.hOr #[low, setWidthE 8 64 bit]
+  | .app2 (.setByte i) v x => do
+    return mkApp3 (mkConst ``TypedAsm.setByte) (← denVal as v) (mkNatLit i)
+      (setWidthE 64 8 (← denVal as x))
   | .app2 (.cmov w b) x a => do
     let pick ← mkAppM ``ite #[← mkEq (toExpr b) (mkConst ``Bool.true),
       setWidthE 64 w.bits (← denVal as a), setWidthE 64 w.bits (← denVal as x)]

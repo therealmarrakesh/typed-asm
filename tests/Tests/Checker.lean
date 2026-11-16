@@ -443,6 +443,27 @@ example : offered { reg (pushed 8) .rsi (.eq (.add (v 7) (.lit 8))) with
 example : offered { reg (pushed 8) .rsi (.eq (v 7)) with
     owned := [(v 7, .mk (.lit 24) (.cons 8 (.eq (v 2)) .nil))] } = none := by decide
 
+/-! ## A byte stored into a field that holds an exactly known value -/
+
+/-- A pushed word on top of the stack, `rcx` holding exactly a value. -/
+def word : CtxS :=
+  { reg (reg base .rsp (.eq (v 0))) .rcx (.eq (.lit 0x21)) with
+    stack := [.mk (.lit 8) (.cons 0 (.eq (.lit 0x0a3f6948)) .nil)] }
+
+/-- What the top piece of the stack holds after a step. -/
+def top (Γ : CtxS) (i : Instr) : Option (List ShapeS) := (step 0x1000 Γ i).map (·.1.stack)
+
+-- the third byte replaced: the word is still exactly known, and worked out
+example : top word (.store8 (.sib (some .rsp) none 2) .rcx)
+    = some [.mk (.lit 8) (.cons 0 (.eq (.lit 0x0a216948)) .nil)] := by decide
+-- from a register whose value is not written out, the word is known as a term
+example : top (reg word .rcx (.eq (v 4))) (.store8 (.sib (some .rsp) none 0) .rcx)
+    = some [.mk (.lit 8) (.cons 0 (.eq (.app2 (.setByte 0) (.lit 0x0a3f6948) (v 4))) .nil)] := by
+  decide
+-- from a register that holds no exactly known value, the word is forgotten
+example : top (reg word .rcx .int) (.store8 (.sib (some .rsp) none 2) .rcx)
+    = some [.mk (.lit 8) .nil] := by decide
+
 /-! ## Why an instruction is refused -/
 
 def isReason (Γ : CtxS) (i : Instr) (p : Reject → Bool) : Bool :=

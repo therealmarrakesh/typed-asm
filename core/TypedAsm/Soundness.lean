@@ -2483,6 +2483,50 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
           · exact .inl (ShapeOf.mem_clear hp))⟩
     simp [exec, State.writeRM, Operands.src, Operands.dst, hea,
       State.readReg_w64, State.write_w64 _ hc]
+  | @store8Owned src m k a p off v x S f hs hm hat hlo hhi hv hx =>
+    obtain ⟨hk, hoff⟩ := hat
+    obtain ⟨hklt, hkeq⟩ := List.getElem?_eq_some_iff.mp hk
+    have hin : (a, S) ∈ Γ.owned := hkeq ▸ List.getElem_mem hklt
+    have hmemf := ShapeOf.mem_of_valAt hv
+    have hfit := h.owned.fits _ hin _ hmemf
+    simp only at hfit
+    have hea : s.ea m = a + off := by rw [hm.sound h, hoff]
+    have hc : s.canWrite (a + off) 1 = true := h.canWrite_owned hk (by omega)
+    have hold : s.load64 (a + BitVec.ofNat 64 f) = v := hasTy_eq.mp (h.owned.vals _ hin _ hmemf)
+    have hxr : s.getReg src = x := h.eqReg hs hx
+    -- the byte's address, from the field's
+    have haddr : a + off = a + BitVec.ofNat 64 f + BitVec.ofNat 64 (off.toNat - f) := by
+      rw [BitVec.add_assoc, ← BitVec.ofNat_add]
+      have e : f + (off.toNat - f) = off.toNat := by omega
+      rw [e]; simp
+    have hi : off.toNat - f < 8 := by omega
+    refine ⟨s.store8 (a + off) ((s.getReg src).setWidth 8), ?_, rfl,
+      h.writeOwned hΨ hk (S' := S.set f (.eq (setByte v (off.toNat - f) (x.setWidth 8))))
+        (lo := f) (cnt := 8) hfit rfl
+        (fun q hq => by
+          rcases List.mem_cons.mp hq with rfl | hq
+          · exact hfit
+          · exact h.owned.fits _ hin q (ShapeOf.mem_clear hq).1)
+        rfl rfl rfl
+        (fun y hd => by
+          rw [haddr]
+          refine State.load64_store8_disjoint s _ ?_
+          obtain ⟨h₁, h₂⟩ := hd.of_pos (by decide) (by decide)
+          generalize a + BitVec.ofNat 64 f = A at h₁ h₂ ⊢
+          bv_omega)
+        (fun z hz => by
+          rw [haddr, State.mem_store8]
+          have : z ≠ a + BitVec.ofNat 64 f + BitVec.ofNat 64 (off.toNat - f) := by
+            generalize a + BitVec.ofNat 64 f = A at hz ⊢
+            intro e; subst e; bv_omega
+          simp [this])
+        (fun q hq => by
+          rcases List.mem_cons.mp hq with rfl | hq
+          · right
+            show HasTy fetch sys _ _ (.eq _) _
+            rw [hasTy_eq, haddr, State.load64_store8 s _ hi, hold, hxr]
+          · exact .inl (ShapeOf.mem_clear hq))⟩
+    simp [exec, hea, State.write8, hc]
   | @storeOwnedKeep src m k a p off S τ hs hm hat hv hsole hsub =>
     obtain ⟨hk, hoff⟩ := hat
     obtain ⟨hklt, hkeq⟩ := List.getElem?_eq_some_iff.mp hk
@@ -2590,6 +2634,50 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
       State.store64_rip _ _ _, h.storeStack hΨ hk hle (h.regs src hs)⟩
     simp [exec, State.writeRM, Operands.src, Operands.dst, State.ea_byte s .rsp hdisp,
       State.readReg_w64, State.write_w64 _ (h.canWrite_piece hk hle)]
+  | @store8Slot src d k i f S disp v x hs hdisp hat hlo hhi hv hx =>
+    obtain ⟨hk, rfl⟩ := hat
+    have hmemf := ShapeOf.mem_of_valAt hv
+    have hfit := h.stackFits S (List.mem_of_getElem? hk) _ hmemf
+    simp only at hfit
+    have hold : s.load64 (s.getReg .rsp + BitVec.ofNat 64 (stackOff Γ.stack k + f)) = v :=
+      hasTy_eq.mp (h.stack k S hk _ hmemf)
+    have hxr : s.getReg src = x := h.eqReg hs hx
+    have hi : i - f < 8 := by omega
+    -- the byte's address, from the field's
+    have haddr : s.getReg .rsp + BitVec.ofNat 64 (stackOff Γ.stack k + i)
+        = s.getReg .rsp + BitVec.ofNat 64 (stackOff Γ.stack k + f) + BitVec.ofNat 64 (i - f) := by
+      rw [BitVec.add_assoc, ← BitVec.ofNat_add]
+      congr 2; omega
+    refine ⟨s.store8 (s.getReg .rsp + BitVec.ofNat 64 (stackOff Γ.stack k + i))
+        ((s.getReg src).setWidth 8), ?_, rfl,
+      h.writeStack hΨ hk (S' := S.set f (.eq (setByte v (i - f) (x.setWidth 8))))
+        (i := f) (cnt := 8) hfit rfl
+        (fun q hq => by
+          rcases List.mem_cons.mp hq with rfl | hq
+          · exact hfit
+          · exact h.stackFits S (List.mem_of_getElem? hk) q (ShapeOf.mem_clear hq).1)
+        rfl rfl rfl
+        (fun y hd => by
+          rw [haddr]
+          refine State.load64_store8_disjoint s _ ?_
+          obtain ⟨h₁, h₂⟩ := hd.of_pos (by decide) (by decide)
+          generalize s.getReg .rsp + BitVec.ofNat 64 (stackOff Γ.stack k + f) = A at h₁ h₂ ⊢
+          bv_omega)
+        (fun z hz => by
+          rw [haddr, State.mem_store8]
+          have : z ≠ s.getReg .rsp + BitVec.ofNat 64 (stackOff Γ.stack k + f)
+              + BitVec.ofNat 64 (i - f) := by
+            generalize s.getReg .rsp + BitVec.ofNat 64 (stackOff Γ.stack k + f) = A at hz ⊢
+            intro e; subst e; bv_omega
+          simp [this])
+        (fun q hq => by
+          rcases List.mem_cons.mp hq with rfl | hq
+          · right
+            show HasTy fetch sys _ _ (.eq _) _
+            rw [hasTy_eq, haddr, State.load64_store8 s _ hi, hold, hxr]
+          · exact .inl (ShapeOf.mem_clear hq))⟩
+    simp [exec, State.ea_byte s .rsp hdisp, State.write8,
+      h.canWrite_piece hk (show i + 1 ≤ S.size by omega)]
   | @push r n hr hroom =>
     have hw : (s.setReg .rsp (s.getReg .rsp - 8)).canWrite (s.getReg .rsp - 8) 8 = true :=
       h.canWrite_push hroom

@@ -142,6 +142,33 @@ theorem storeOwned {k : Nat} {a : BitVec 64} {s : Reg} (h : Loc Ψ next Γ m (.o
     rw [e] at this
     exact this
 
+/-- One byte stored into an 8-byte field of a block the context owns that
+holds an exactly known value, from a register that holds one: the field
+holds the value with that byte replaced. -/
+theorem store8Owned {k : Nat} {a v x : BitVec 64} {s : Reg} {f : Nat}
+    (h : Loc Ψ next Γ m (.owned k a) S o) (hs : s ≠ .rsp) (hlo : f ≤ o) (hhi : o < f + 8)
+    (hv : S.valAt f = some (.eq v)) (hx : Γ.regs s = .eq x) :
+    Straight Ψ next Γ (.store8 m s)
+      { Γ with
+        owned := Γ.owned.set k (a, S.set f (.eq (setByte v (o - f) (x.setWidth 8)))) } := by
+  cases h with
+  | owned he ho hp hj =>
+    have e := toNat_ofNat_lt hj
+    have := Straight.store8Owned (Ψ := Ψ) (next := next) hs he ⟨ho, hp⟩ (by rw [e]; exact hlo)
+      (by rw [e]; exact hhi) hv hx
+    rw [e] at this
+    exact this
+
+/-- The same for a field of a piece of the stack, reached from the stack
+pointer by a displacement. -/
+theorem store8Piece {k : Nat} {v x : BitVec 64} {s : Reg} {f : Nat} {disp : BitVec 32}
+    (h : Loc Ψ next Γ (.sib (some .rsp) none disp) (.piece k) S o) (hs : s ≠ .rsp)
+    (hlo : f ≤ o) (hhi : o < f + 8) (hv : S.valAt f = some (.eq v)) (hx : Γ.regs s = .eq x) :
+    Straight Ψ next Γ (.store8 (.sib (some .rsp) none disp) s)
+      { Γ with stack := Γ.stack.set k (S.set f (.eq (setByte v (o - f) (x.setWidth 8)))) } := by
+  cases h with
+  | slot hd hat => exact .store8Slot hs hd hat hlo hhi hv hx
+
 /-- A 64-bit store over a typed value reached through a writable pointer: a
 value of the type that is there. -/
 theorem storePtr {s : Reg} {τ : Ty} (h : Loc Ψ next Γ m (.ptr true) S o) (hs : s ≠ .rsp)

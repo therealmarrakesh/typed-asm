@@ -96,6 +96,9 @@ inductive Op2
   | urem (w : Width)
   | sdiv (w : Width)
   | srem (w : Width)
+  /-- The first value with the byte at this place among its eight replaced
+  by the low byte of the second: what a byte stored into a field leaves. -/
+  | setByte (i : Nat)
   deriving DecidableEq, Repr
 
 def Op1.den : Op1 → BitVec 64 → BitVec 64
@@ -121,6 +124,7 @@ def Op2.den : Op2 → BitVec 64 → BitVec 64 → BitVec 64
   | .urem w, a, b => (a.setWidth w.bits % b.setWidth w.bits).setWidth 64
   | .sdiv w, a, b => ((a.setWidth w.bits).sdiv (b.setWidth w.bits)).setWidth 64
   | .srem w, a, b => ((a.setWidth w.bits).srem (b.setWidth w.bits)).setWidth 64
+  | .setByte i, v, x => TypedAsm.setByte v i (x.setWidth 8)
 
 /-- A 64-bit value as a term. -/
 inductive Val
@@ -1178,6 +1182,7 @@ theorem Val.den_summands (ρ : Env) : (v : Val) → v.den ρ = sumV ρ v.summand
     | urem w => simp [Val.summands, sumV]
     | sdiv w => simp [Val.summands, sumV]
     | srem w => simp [Val.summands, sumV]
+    | setByte i => simp [Val.summands, sumV]
 
 /-- A list of terms with one occurrence of a term taken out. -/
 def removeV (a : Val) : List Val → Option (List Val)
@@ -2503,6 +2508,127 @@ def store (next : BitVec 64) (Γ : CtxS) (s : Reg) (m : Mem) : Option (CtxS × L
       | _ => none
     | none => none
 
+/-- The 8-byte field holding an exactly known value that a byte falls in:
+where it starts, and the value. The fields that could hold the byte are
+looked at from the one that starts at it down to the one that ends at it. -/
+def fieldOver (S : ShapeS) (j : Nat) : Nat → Option (Nat × Val)
+  | 0 => none
+  | n + 1 =>
+    if 7 - n ≤ j then
+      match S.look (.lit (j - (7 - n))) with
+      | some (some (.eq v)) => some (j - (7 - n), v)
+      | _ => fieldOver S j n
+    else none
+
+theorem fieldOver_spec {S : ShapeS} {j : Nat} : (n : Nat) → {f : Nat} → {v : Val} →
+    fieldOver S j n = some (f, v) →
+    f ≤ j ∧ j < f + 8 ∧ S.look (.lit f) = some (some (.eq v))
+  | 0, _, _, h => by cases h
+  | n + 1, f, v, h => by
+    unfold fieldOver at h
+    split at h
+    · next hle =>
+      split at h
+      · next w hw => cases h; exact ⟨by omega, by omega, hw⟩
+      · exact fieldOver_spec n h
+    · cases h
+
+/-- One byte stored from a register that holds an exactly known value into a
+field of a block the context owns that holds one: the field then holds the
+value with that byte replaced. -/
+def storeByte (next : BitVec 64) (Γ : CtxS) (s : Reg) (m : Mem) : Option (CtxS × List CondS) :=
+  if s = .rsp then none
+  else match locate next Γ m, Γ.regs.get s with
+    | some (pl, cs), .eq x =>
+      match pl.kind, pl.off.folded with
+      | .owned k a, .lit j =>
+        match fieldOver pl.shape j 8 with
+        | some (f, v) =>
+          match pl.shape.set (.lit f) (.eq (.mk2 (.setByte (j - f)) v x)) with
+          | some S' => some ({ Γ with owned := Γ.owned.set k (a, S') }, cs)
+          | none => none
+        | none => none
+      | .piece k, .lit j =>
+        -- a piece of the stack, reached from the stack pointer
+        match m with
+        | .sib (some .rsp) none _ =>
+          match fieldOver pl.shape j 8 with
+          | some (f, v) =>
+            match pl.shape.set (.lit f) (.eq (.mk2 (.setByte (j - f)) v x)) with
+            | some S' => some ({ Γ with stack := Γ.stack.set k S' }, cs)
+            | none => none
+          | none => none
+        | _ => none
+      | _, _ => none
+    | _, _ => none
+
+theorem storeByte_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
+    (hB : BlocksOk Ψ ρ Γ.blocks) {s : Reg} {m : Mem} {x : CtxS × List CondS}
+    (h : storeByte next Γ s m = some x) (hc : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) (.store8 m s) (x.1.den ρ) := by
+  unfold storeByte at h
+  split at h
+  · cases h
+  next hs =>
+  split at h
+  · next pl cs xv hl hx =>
+    split at h
+    · next k a j hk hj =>
+      split at h
+      · next f v hf =>
+        split at h
+        · next S' hset =>
+          cases h
+          obtain ⟨hlo, hhi, hv⟩ := fieldOver_spec 8 hf
+          have hloc := locate_spec hB (Ψ := Ψ) (next := next) hl hc
+          rw [hk] at hloc
+          have hoff : pl.off.den ρ = j := by rw [← Num.den_folded ρ pl.off, hj]; rfl
+          rw [hoff] at hloc
+          have := hloc.store8Owned (f := f) (v := v.den ρ) (x := xv.den ρ) hs hlo hhi
+            (ShapeS.look_typed hv) (by rw [CtxS.den_regs, hx]; rfl)
+          have e₀ : S'.den ρ = (pl.shape.den ρ).set f
+              (.eq (setByte (v.den ρ) (j - f) ((xv.den ρ).setWidth 8))) := by
+            rw [ShapeS.den_set hset]
+            show ShapeOf.set _ f (Ty.eq ((Val.mk2 (.setByte (j - f)) v xv).den ρ)) = _
+            rw [Val.den_mk2]; rfl
+          have e : CtxS.den ρ { Γ with owned := Γ.owned.set k (a, S') }
+              = { Γ.den ρ with owned := (Γ.den ρ).owned.set k (a.den ρ, S'.den ρ) } := by
+            show ({ Γ.den ρ with owned := denOwned ρ (Γ.owned.set k (a, S')) _ } : Ctx) = _
+            rw [denOwned_set ρ _ _ _ _ _ ((locate_listed hl).1 k a hk)]; rfl
+          rw [e, e₀]; exact this
+        · cases h
+      · cases h
+    · next k j hk hj =>
+      split at h
+      · next disp =>
+        split at h
+        · next f v hf =>
+          split at h
+          · next S' hset =>
+            cases h
+            obtain ⟨hlo, hhi, hv⟩ := fieldOver_spec 8 hf
+            have hloc := locate_spec hB (Ψ := Ψ) (next := next) hl hc
+            rw [hk] at hloc
+            have hoff : pl.off.den ρ = j := by rw [← Num.den_folded ρ pl.off, hj]; rfl
+            rw [hoff] at hloc
+            have := hloc.store8Piece (f := f) (v := v.den ρ) (x := xv.den ρ) hs hlo hhi
+              (ShapeS.look_typed hv) (by rw [CtxS.den_regs, hx]; rfl)
+            have e₀ : S'.den ρ = (pl.shape.den ρ).set f
+                (.eq (setByte (v.den ρ) (j - f) ((xv.den ρ).setWidth 8))) := by
+              rw [ShapeS.den_set hset]
+              show ShapeOf.set _ f (Ty.eq ((Val.mk2 (.setByte (j - f)) v xv).den ρ)) = _
+              rw [Val.den_mk2]; rfl
+            have e : CtxS.den ρ { Γ with stack := Γ.stack.set k S' }
+                = { Γ.den ρ with stack := (Γ.den ρ).stack.set k (S'.den ρ) } := by
+              show ({ Γ.den ρ with stack := denShapes ρ (Γ.stack.set k S') _ } : Ctx) = _
+              rw [denShapes_set ρ _ _ _ _ _ ((locate_listed hl).2 k hk)]; rfl
+            rw [e, e₀]; exact this
+          · cases h
+        · cases h
+      · cases h
+    · cases h
+  · cases h
+
 theorem storeOwnedNew_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
     (hB : BlocksOk Ψ ρ Γ.blocks) {s : Reg}
     {m : Mem} {pl : PlaceS} {cs : List CondS} {k : Nat} {a : Val} {x : CtxS × List CondS}
@@ -3767,7 +3893,10 @@ def step (next : BitVec 64) (Γ : CtxS) : Instr → Option (CtxS × List CondS)
   | .alu op w ops => stepAlu next Γ op w ops
   | .push r => push Γ r
   | .pop r => pop Γ r
-  | .store8 m _ => writes next Γ 1 m
+  | .store8 m s =>
+    match storeByte next Γ s m with
+    | some x => some x
+    | none => writes next Γ 1 m
   | .store16 m _ => writes next Γ 2 m
   | .test w dst src => stepTest next Γ w dst src
   | .imul2 w d src => stepImul2 next Γ w d src
@@ -3812,7 +3941,9 @@ theorem step_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
   · exact stepAlu_sound hB h hn
   · exact push_sound h hn
   · exact pop_sound h
-  · exact .store8RM (writes_sound hB h hn).1
+  · split at h
+    · next y hy => cases h; exact storeByte_sound hB hy hn
+    · exact .store8RM (writes_sound hB h hn).1
   · exact .store16RM (writes_sound hB h hn).1
   · exact stepTest_sound hB h hn
   · exact stepImul2_sound hB h hn

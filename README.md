@@ -43,9 +43,10 @@ What exists and is checked today:
   end with 0 and to write its message and nothing else, on standard output.
   The bytes may also be ones the program made: a value it stored on its
   stack or in a block it owns, exactly known, is its eight bytes, least
-  significant first, and a `write` from such fields offers those bytes. A
-  byte stored by itself, and what a program read and then writes back, are
-  not yet followed.
+  significant first, and a `write` from such fields offers those bytes; a
+  byte the program then stores into such a field leaves it exactly known,
+  with that byte replaced. What a program read and then writes back is not
+  yet followed.
 - An assembler with labels for code and data. A program can have any number
   of segments, in any order. Each segment is executable, read-only or
   writable, and can be aligned.
