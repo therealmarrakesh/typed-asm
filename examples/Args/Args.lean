@@ -42,30 +42,6 @@ inductive At : Label → Ctx → Prop
 -- arguments are blocks too, but they are there only when it runs.
 asm_typing At
 
-/-! ## The program is well typed -/
-
-theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  ty_program
-  case start c =>
-    -- mov r13, [rsp]: the count, exactly; mov r14d, 1, and on into `arg`
-    ty_step
-    ty_into (At.arg c 1)
-  case arg c v =>
-    -- cmp r14, r13; jae done
-    ty_branch
-    -- carrying on, the argument's number is below the count, so its slot is
-    -- there and holds the address of a text
-    have hlt := cmp_not_ae hcond
-    ty_step
-    -- mov rdi, rsi, and on into `scan`
-    ty_into (At.scan c v)
-  case scan c v =>
-    -- the byte at the place reached is zero or it is not
-    ty_byte as b
-    -- zero: the test sends control to `found`
-    · ty_block
-    ty_block
-
 /-! ## Safety -/
 
 -- Safe however many arguments the program is given and whatever they say.

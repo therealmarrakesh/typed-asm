@@ -62,7 +62,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     · ty_block
     -- a page at `p`: that is the address the function returns with
     · ty_step
-      ty_branch
       ty_return_as p
       ty_block
 

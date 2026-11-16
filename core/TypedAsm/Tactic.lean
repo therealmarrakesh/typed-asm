@@ -2726,6 +2726,8 @@ private def fastStep (goal : MVarId) (ty : Expr) (named : Bool) : TacticM (Optio
   if let .lea .w64 _ (.rip _) := instr then return none
   let typeOf (r : Reg) : MetaM Expr := whnf tbl[1 + regIdx r]!
   -- where a register is looked into or named first, that is done the long way
+  if let .movzx _ _ .w8 (.mem (.sib (some b) none _)) := instr then
+    if (← typeOf b).isAppOf ``Ty.str then return none
   unless named do
     match instr with
     | .test _ (.reg r) (.reg r') =>
@@ -2887,6 +2889,16 @@ private partial def typeStep (named : Bool := false) : TacticM StepResult :=
       let typeOf (r : Reg) : TacticM Expr := goal.withContext do
         whnf (← mkAppM ``CtxOf.regs #[ctx, mkConst (Name.str ``Reg r.name64)])
       let regId (r : Reg) := mkIdent (Name.str ``Reg r.name64)
+      -- A byte loaded through a pointer into text is zero or it is not, and
+      -- which it is says whether the text goes on: the block goes on once
+      -- for each, with the load typed.
+      if let .movzx _ _ .w8 (.mem (.sib (some b) none _)) := instr then
+        if (← typeOf b).isAppOf ``Ty.str then
+          saved.restore
+          setGoals [goal]
+          evalTactic (← `(tactic| ty_byte as $(mkIdent `b)))
+          setGoals ((← getGoals) ++ others)
+          return .stepped
       let look? : Option (TSyntax `tactic) ← match instr with
         | .test _ (.reg r) (.reg r') =>
           if r == r' then do
@@ -3331,6 +3343,7 @@ private inductive Finish
 /-- Types a direct `call` that ends a block, to a function whose signature
 is read from the context declared at the label it calls. -/
 syntax "ty_call_auto" : tactic
+syntax "ty_call_with " term : tactic
 
 /-- Whether a jump goes forward: to the instruction after it or beyond. -/
 private def jumpsForward : Instr → Bool
@@ -3579,6 +3592,100 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
   | _ =>
     return .needsHelp m!"`{instr.toAsm}` is not handled by `ty_block`"
 
+/-- The addresses of the labels a labelled code typing declares a context
+at: where a block may hand over to another. -/
+private def declaredLabels (Φ : Expr) : MetaM (Array Nat) := do
+  let mut f := Φ
+  for _ in [0:4] do
+    if f.isAppOf ``CodeTy.ofLabels then break
+    let some f' ← unfoldDefinition? f | return #[]
+    f := f'.headBeta
+  unless f.isAppOf ``CodeTy.ofLabels && f.getAppNumArgs ≥ 3 do return #[]
+  let args := f.getAppArgs
+  let T := args[args.size - 1]!
+  let base := args[args.size - 2]!
+  let prog := args[args.size - 3]!
+  let .const tn _ := T.getAppFn | return #[]
+  let some (.inductInfo info) := (← getEnv).find? tn | return #[]
+  let mut labels : Array Name := #[]
+  for c in info.ctors do
+    let some ci := (← getEnv).find? c | continue
+    let l ← forallTelescope ci.type fun _ body => do
+      let xs := body.getAppArgs
+      if xs.size ≥ 2 then pure xs[xs.size - 2]!.getAppFn.constName? else pure none
+    if let some l := l then
+      unless labels.contains l do labels := labels.push l
+  let mut out : Array Nat := #[]
+  for l in labels do
+    try
+      if let some n ← addrNat (← mkAppM ``Asm.addr #[prog, base, mkConst l]) then
+        out := out.push n
+    catch _ => pure ()
+  return out
+
+/-- Where the instruction after the one here is at a label with a context
+of its own, the block is ended with this instruction and handed over to
+that label, if some context declared there accepts the one reached and asks
+nothing more. Otherwise nothing is done, and the block goes on through the
+label as it would have. -/
+private def tryInto (labels : Array Nat) : TacticM Bool := do
+  let goal ← getMainGoal
+  let ty := (← instantiateMVars (← goal.getType)).consumeMData
+  unless ty.isAppOfArity ``BlockOk 6 do return false
+  if labels.isEmpty then return false
+  let some n ← addrNat ty.getAppArgs[4]! | return false
+  let some m ← instrsOf ty.getAppArgs[1]! | return false
+  let some (i, len) := m[n]? | return false
+  if i.endsBlock then return false
+  unless labels.contains (n + len.toNat) do return false
+  let others := (← getGoals).drop 1
+  let saved ← saveState
+  try
+    let gs ← runOn goal (do evalTactic (← `(tactic|
+      refine BlockOk.last (by ty_fetch) (HasType.straight (Γ' := ?_) ?st ?acc))))
+    let st ← goalNamed gs `st
+    let acc ← goalNamed gs `acc
+    unless (← runOn st (do evalTactic (← `(tactic| ty_straight)))).isEmpty do
+      throwError "left over"
+    unless (← proveAccepts acc).isEmpty do throwError "left over"
+    setGoals others
+    return true
+  catch _ =>
+    saved.restore
+    return false
+
+/-- The signature of the function an operand points to, where the operand's
+type says it is a pointer to a function. -/
+private def pointerSig (goal : MVarId) (rm : RM) : TacticM (Option Expr) := goal.withContext do
+  let ty := (← instantiateMVars (← goal.getType)).consumeMData
+  unless ty.isAppOfArity ``BlockOk 6 do return none
+  let args := ty.getAppArgs
+  let τ0 ← match rm with
+    | .reg r => instantiateMVars (← whnfR (← mkAppM ``CtxOf.regs #[args[5]!, toExpr r]))
+    | .mem _ =>
+      let a := args[4]!
+      unless isAddrLit a do return none
+      let some n := a.appArg!.nat? | return none
+      let some m ← instrsOf args[1]! | return none
+      let some (_, len) := m[n]? | return none
+      let next := toExpr (BitVec.ofNat 64 (n + len.toNat))
+      let τ ← mkFreshExprMVar (mkConst ``Ty)
+      let g ← mkFreshExprSyntheticOpaqueMVar
+        (mkAppN (mkConst ``Holds) #[args[3]!, next, args[5]!, toExpr rm, τ])
+      let saved ← saveState
+      let ok ← try
+          pure (← runOn g.mvarId! (do evalTactic (← `(tactic| ty_operand)))).isEmpty
+        catch _ => pure false
+      let τ ← instantiateMVars τ
+      saved.restore
+      unless ok do return none
+      pure τ
+  if τ0.isAppOfArity ``FnSig.ty 1 then return some τ0.appArg!
+  let τ ← whnf τ0
+  if τ.isAppOfArity ``FnSig.ty 1 then return some τ.appArg!
+  if τ.isAppOfArity ``Ty.fn 6 then return some (mkAppN (mkConst ``FnSig.mk) τ.getAppArgs)
+  return none
+
 /-- Types a whole block of a labelled program: the straight-line
 instructions, then the control transfer that ends it. Jump targets are found
 by label. Conditional jumps in the middle of the block are followed.
@@ -3594,16 +3701,36 @@ elab "ty_block" : tactic => do
   -- leads to; and the ones the tactic could not carry further
   let mut work : List MVarId := [← getMainGoal]
   let mut stuck : List MVarId := []
+  let mut labelsOf : Array (Expr × Array Nat) := #[]
   repeat
     let g :: more := work | break
     work := more
     setGoals [g]
     let mut endInstr? : Option Instr := none
+    let mut entered := false
     repeat
+      -- where the next instruction is at a label with a context of its own
+      -- that accepts the one reached, the block hands over to it
+      let labels ← do
+        let ty := (← instantiateMVars (← (← getMainGoal).getType)).consumeMData
+        if ty.isAppOfArity ``BlockOk 6 then
+          let Φ := ty.getAppArgs[0]!
+          match labelsOf.find? (·.1 == Φ) with
+          | some (_, ls) => pure ls
+          | none =>
+            let ls ← declaredLabels Φ
+            labelsOf := labelsOf.push (Φ, ls)
+            pure ls
+        else pure #[]
+      if ← tryInto labels then entered := true; break
       match ← typeStep with
       | .stepped => continue
       | .endOfBlock instr => endInstr? := some instr; break
       | .notABlock => break
+    if entered then
+      -- a step that told two cases apart left the other case behind this one
+      work := (← getGoals).take ((← getGoals).length - others.length) ++ work
+      continue
     let some instr := endInstr? | stuck := stuck ++ (← getGoals); continue
     let goal ← getMainGoal
     -- a step that told two cases apart left the other case behind this one
@@ -3632,6 +3759,24 @@ elab "ty_block" : tactic => do
             for g in gs do
               unless ← isProp (← g.getType) do open_ := true
             if open_ then before.restore; pure none else pure (some gs)
+          catch _ =>
+            before.restore
+            pure none
+        -- a call through a pointer to a function is typed with the signature
+        -- the pointer's type gives
+        | .call (.ind rm) =>
+          try
+            match ← pointerSig goal rm with
+            | none => pure none
+            | some sig =>
+              setGoals [goal]
+              let stx ← Term.exprToSyntax sig
+              Tactic.withoutRecover do evalTactic (← `(tactic| ty_call_with $stx))
+              let gs ← getGoals
+              let mut open_ := false
+              for g in gs do
+                unless ← isProp (← g.getType) do open_ := true
+              if open_ then before.restore; pure none else pure (some gs)
           catch _ =>
             before.restore
             pure none
@@ -3815,6 +3960,7 @@ elab "ty_call " sig:term : tactic => do
 
 macro_rules
   | `(tactic| ty_call_auto) => `(tactic| ty_call ?_)
+  | `(tactic| ty_call_with $s) => `(tactic| ty_call $s)
 
 /-- `ty_call sig returning ret` types a `call` that ends a block, direct or
 through a pointer, to
