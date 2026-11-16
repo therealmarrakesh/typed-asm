@@ -5552,13 +5552,19 @@ open Lean Elab Command in
 elab_rules : command
   | `(asm_safety $start $[values $v?]? $[exits $q?]?) => do
     let id (n : Name) := mkIdent n
+    -- The system the program is typed against: `linux`, or, where what the
+    -- program ends with is to be shown, `linux` refusing any other status.
+    -- Safety under `linux` follows from the typing either way.
+    let os ← match q? with
+      | some q => `(Syscall.exitsOnly linux $q)
+      | none => `(linux)
     let fields ← match v? with
       | some v => `($v)
       | none => `(by
           first
           | exact Entry.plain (plain_of_check (by decide))
           | exact fun n => Entry.valuesOk_of
-              (P := HasTy $(id `fetch) linux $(id `Ψ) n) h (by ty_values $(id `blocksOk)))
+              (P := HasTy $(id `fetch) $os $(id `Ψ) n) h (by ty_values $(id `blocksOk)))
     -- Where the program has not been proved well typed, it is proved here,
     -- which it can be if no label's block needs anything said.
     let ns ← getCurrNamespace
@@ -5566,16 +5572,21 @@ elab_rules : command
       elabCommand (← `(
         /-- The program is well typed: the block at each label types, with nothing
         said. -/
-        theorem $(id `blocksOk) : BlocksOk $(id `Φ) $(id `fetch) linux $(id `Ψ) := by
+        theorem $(id `blocksOk) : BlocksOk $(id `Φ) $(id `fetch) $os $(id `Ψ) := by
           ty_program))
     let kind := ((← liftTermElabM do entryKindOf start).map (·.1)).getD .plain
+    let mut exits : Option Term := none
     if kind == .plain then
       elabCommand (← `(
         /-- **From any state meeting the entry contract, the program is safe on the
         machine that fetches instructions by decoding memory.** It never gets stuck and
         never faults. -/
         theorem $(id `safeMem_of_entry) {s : State} (h : $(id `Entry) s) : SafeMem linux s :=
-          h.safeMem $(id `blocksOk) $(id `memOk) $start $fields))
+          $(← match q? with
+            | some _ => `((h.safeMem_exits $(id `blocksOk) $(id `memOk) $start $fields).1)
+            | none => `(h.safeMem $(id `blocksOk) $(id `memOk) $start $fields))))
+      if q?.isSome then
+        exits := some (← `((h.safeMem_exits $(id `blocksOk) $(id `memOk) $start $fields).2))
       elabCommand (← `(
         /-- The starting state used by the simulator meets the entry contract. -/
         theorem $(id `start_entry) : $(id `Entry) $(id `start) := by ty_loaded))
@@ -5591,9 +5602,14 @@ elab_rules : command
           $(id `safeMem_of_entry) (($(id `start_entry)).withWorld w)))
     else
       -- a program that looks at its arguments: for every number of them
-      let safe ← if kind == .args then
+      let both ← if kind == .args then
+          `(h.safeMem_exits $(id `blocksOk) $(id `memOk) $start (plain_of_check (by decide)))
+        else `(h.safeMem_exits $(id `blocksOk) rfl $start (plain_of_check (by decide)))
+      let safe ← if q?.isSome then `(($both).1)
+        else if kind == .args then
           `(h.safeMem $(id `blocksOk) $(id `memOk) $start (plain_of_check (by decide)))
         else `(h.safeMem $(id `blocksOk) rfl $start (plain_of_check (by decide)))
+      if q?.isSome then exits := some (← `(($both).2))
       elabCommand (← `(
         /-- **From any state meeting the entry contract, however many arguments the
         program was given and whatever they are, it is safe on the machine that
@@ -5617,43 +5633,18 @@ elab_rules : command
         theorem $(id `safeMem_world) (args : List (List Byte)) (w : World) :
             SafeMem linux { $(id `startArgs) args with world := w } :=
           $(id `safeMem_of_entry) (($(id `start_entry) args).withWorld w)))
-    -- What the program ends with: it is typed once more, against the system
-    -- that refuses any other status, and that it is safe there says it ends
-    -- only so.
-    if let some q := q? then
-      elabCommand (← `(
-        /-- The program is well typed where the operating system lets it end only
-        with a status that is as wanted. -/
-        theorem $(id `exitsOk) :
-            BlocksOk $(id `Φ) $(id `fetch) (Syscall.exitsOnly linux $q) $(id `Ψ) := by
-          ty_program))
-      let safe ← if kind == .plain then
-          `(h.safe $(id `exitsOk) $(id `memOk) $start (by
-              first
-              | exact Entry.plain (plain_of_check (by decide))
-              | exact fun n => Entry.valuesOk_of
-                  (P := HasTy $(id `fetch) (Syscall.exitsOnly linux $q) $(id `Ψ) n) h
-                  (by ty_values $(id `exitsOk))))
-        else if kind == .args then
-          `(h.safe $(id `exitsOk) $(id `memOk) $start (plain_of_check (by decide)))
-        else `(h.safe $(id `exitsOk) rfl $start (plain_of_check (by decide)))
+    let mut thms := [`safeMem_of_entry, `safeMem_world]
+    if let (some q, some pf) := (q?, exits) then
       elabCommand (← `(
         /-- **From any state meeting the entry contract, the program ends only with
         a status that is as wanted**: wherever it reaches a system call that ends
-        it, the status satisfies the condition given. This is on the machine that
-        looks instructions up in the program. -/
+        it. This is on the machine that looks instructions up in the program. -/
         theorem $(id `exits_of_entry) {s : State} (h : $(id `Entry) s) :
-            ∀ s', Steps $(id `fetch) linux s s' → ∀ len c,
-              $(id `fetch) s'.rip = some (.syscall, len) →
-              linux { s' with rip := s'.rip + len } = .exit c → $q c :=
-          (Safe.of_exitsOnly $safe).2))
-      let axs ← Lean.collectAxioms (ns ++ `exits_of_entry)
-      for a in axs do
-        unless [``propext, ``Classical.choice, ``Quot.sound].contains a do
-          throwError "`{ns ++ `exits_of_entry}` depends on the axiom `{a}`, which is not one \
-            of Lean's three standard axioms"
+            ExitsOnly $(id `fetch) $q s :=
+          $pf))
+      thms := thms ++ [`exits_of_entry]
     -- the proofs rest on Lean's three standard axioms and nothing else
-    for thm in [`safeMem_of_entry, `safeMem_world] do
+    for thm in thms do
       let axs ← Lean.collectAxioms (ns ++ thm)
       for a in axs do
         unless [``propext, ``Classical.choice, ``Quot.sound].contains a do

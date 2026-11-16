@@ -113,6 +113,52 @@ theorem EntryTexts.safeMem
     SafeMem linux s :=
   .of_safe linux_frame (Asm.loaded h.choose_spec.1.loaded) (h.safe hty hkinds hstart hfields)
 
+/-! ## Safe, and ending only as wanted
+
+A program typed against the system that lets it end only with a status
+satisfying `Q` is safe under `linux`, and ends only with such a status:
+wherever it reaches a system call that ends it. One typing gives both. The
+second is said of the machine that looks instructions up in the program. -/
+
+/-- What it is for the program started in `s` to end only with a status
+satisfying `Q`. -/
+def ExitsOnly (fetch : Fetch) (Q : BitVec 32 → Prop) (s : State) : Prop :=
+  ∀ s', Steps fetch linux s s' → ∀ len c, fetch s'.rip = some (.syscall, len) →
+    linux { s' with rip := s'.rip + len } = .exit c → Q c
+
+theorem Entry.safeMem_exits {Q : BitVec 32 → Prop}
+    (h : Entry (Asm.addr code base start) (Asm.parts base code) blocks room 0 s)
+    (hty : BlocksOk (.ofLabels code base At) (Asm.fetch base code) (linux.exitsOnly Q)
+      (.ofList blocks kinds))
+    (hwf : (MemTy.ofList blocks kinds).WF) (hstart : At start (entryCtx room))
+    (hfields : ∀ n, ∀ x ∈ blocks, ∀ p ∈ x.2.shape.vals,
+      HasTy (Asm.fetch base code) (linux.exitsOnly Q) (.ofList blocks kinds) n p.2
+        (s.load64 (x.1 + BitVec.ofNat 64 p.1))) :
+    SafeMem linux s ∧ ExitsOnly (Asm.fetch base code) Q s :=
+  have hs := Safe.of_exitsOnly (h.safe hty hwf hstart hfields)
+  ⟨.of_safe linux_frame (Asm.loaded h.loaded) hs.1, hs.2⟩
+
+theorem EntryArgs.safeMem_exits {Q : BitVec 32 → Prop}
+    (h : EntryArgs (Asm.addr code base start) (Asm.parts base code) blocks room s)
+    (hty : BlocksOk (.ofLabels code base At) (Asm.fetch base code) (linux.exitsOnly Q)
+      (.ofList blocks kinds))
+    (hwf : (MemTy.ofList blocks kinds).WF) (hstart : ∀ c, At start (argsCtx room c))
+    (hfields : ∀ x ∈ blocks, x.2.shape.vals = []) :
+    SafeMem linux s ∧ ExitsOnly (Asm.fetch base code) Q s :=
+  have hs := Safe.of_exitsOnly (h.safe hty hwf hstart hfields)
+  ⟨.of_safe linux_frame (Asm.loaded h.choose_spec.1.loaded) hs.1, hs.2⟩
+
+theorem EntryTexts.safeMem_exits {Q : BitVec 32 → Prop}
+    (h : EntryTexts (Asm.addr code base start) (Asm.parts base code) blocks room s)
+    (hty : BlocksOk (.ofLabels code base At) (Asm.fetch base code) (linux.exitsOnly Q)
+      (.ofList blocks kinds))
+    (hkinds : MemTy.declared kinds blocks = MemTy.actual blocks)
+    (hstart : ∀ c, At start (textsCtx room c))
+    (hfields : ∀ x ∈ blocks, x.2.shape.vals = []) :
+    SafeMem linux s ∧ ExitsOnly (Asm.fetch base code) Q s :=
+  have hs := Safe.of_exitsOnly (h.safe hty hkinds hstart hfields)
+  ⟨.of_safe linux_frame (Asm.loaded h.choose_spec.1.loaded) hs.1, hs.2⟩
+
 /-! These rest on Lean's three standard axioms and nothing else: no proof in
 the library is taken on trust from a solver or from compiled code. -/
 
