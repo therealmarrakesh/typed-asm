@@ -495,7 +495,7 @@ def maps : List (Asm Map) :=
   [.label .noKind] ++ mmapCall 16 0x22 ++ [.ins .ud2] ++
   -- the address asked for left as whatever `rdi` held
   [.label .noHint] ++ (mmapCall 16 0x22).drop 1 ++ [.ins .ud2] ++
-  -- an address asked for that no program can have memory at
+  -- an address asked for, where only the kernel's choice is modelled
   [.label .highHint, .ins (.movAbs .rdi 0x800000000000)] ++ (mmapCall 16 0x22).drop 1 ++
     [.ins .ud2]
 
@@ -533,13 +533,13 @@ example : BlockOk Φy mapFetch linux Ψ (Asm.addr maps 0 .noKind) bare := by
   ty_steps
   ty_mmap_kind 7
 
-/-- error: `mmap` needs the address asked for in `rdi` to be exactly known (zero leaves the choice to the kernel), but its type is `int` -/
+/-- error: `mmap` is typed only where the kernel chooses the place: `rdi` must hold exactly 0, but its type is `int`. Asked for an address, the kernel may put the memory where it would not of its own accord, such as in the reach of the stack -/
 #guard_msgs in
 example : BlockOk Φy mapFetch linux Ψ (Asm.addr maps 0 .noHint) bare := by
   ty_steps
   ty_mmap (.raw 16)
 
-/-- error: `mmap`: the address asked for in `rdi` is above every address a program can have memory at, and the model does not say what the kernel does then -/
+/-- error: `mmap` is typed only where the kernel chooses the place: `rdi` must hold exactly 0, but its type is `exactly 0x800000000000`. Asked for an address, the kernel may put the memory where it would not of its own accord, such as in the reach of the stack -/
 #guard_msgs in
 example : BlockOk Φy mapFetch linux Ψ (Asm.addr maps 0 .highHint) bare := by
   ty_steps

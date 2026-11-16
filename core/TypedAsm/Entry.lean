@@ -97,6 +97,14 @@ theorem State.mem_of_partsByte {s : State} {parts : List (Nat × Perm × List By
 be executed, each memory block has its permissions, and the stack is there: `room` writable slots below `rsp` and `above` at and above
 it, overlapping no block.
 
+The room below `rsp` is asked for as writable memory. Linux does not have
+all of a stack in memory to begin with: it keeps the addresses below the
+stack clear, up to the limit on the stack's size, and puts memory there when
+the program first touches it. A program cannot tell the difference, so room
+within that limit meets this contract. The kernel keeps those addresses
+clear of the memory it chooses for `mmap`, which is why `mmap` is modelled
+only where the kernel chooses.
+
 The slots at and above `rsp` are where the program's arguments are. Linux
 starts a program with the number of arguments at `[rsp]`, the address of
 each argument's text in the slots after it, then a zero, then the

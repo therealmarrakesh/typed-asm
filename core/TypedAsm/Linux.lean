@@ -263,9 +263,12 @@ def getrandom (s : State) : State :=
 
 /-- `mmap(addr, length, prot, flags, fd, offset)`, for fresh memory only:
 `prot` must be 3 (read and write) and `flags` 0x22 (private, not backed by a
-file). The kernel ignores `addr` and `fd` in this form, apart from treating
-`addr` as a hint; a hint above `addrTop` is not modelled at all, since that is
-how a program asks for memory above it, and `linux` says nothing then.
+file). The kernel ignores `fd` in this form, and treats `addr` as a hint of
+where the memory should go. Only zero is modelled, which leaves the choice
+to the kernel, and `linux` says nothing of any other. A hint is how a
+program gets memory where the kernel would not put it of its own accord:
+above `addrTop`, on a processor with 57-bit addresses, or in the reach of
+the stack, which the kernel keeps clear so that the stack can grow.
 `offset` must be a multiple of the page size. The length
 is rounded up to whole pages. The world proposes where the memory goes; a
 place that is not page-aligned, not within reach of a program, or not
@@ -312,9 +315,8 @@ def linux : Syscall := fun s =>
   else if s.getReg .rax = 1 then .next (Linux.write s)
   else if s.getReg .rax = 0 then .next (Linux.read s)
   else if s.getReg .rax = 9 then
-    -- Asked for an address above any the model has, a kernel on a processor
-    -- with 57-bit addresses may give memory there. The model does not say.
-    if (s.getReg .rdi).toNat ≤ addrTop then .next (Linux.mmap s) else .stuck
+    -- Only where the kernel chooses the place; see `Linux.mmap`.
+    if s.getReg .rdi = 0 then .next (Linux.mmap s) else .stuck
   else if s.getReg .rax = 11 then .next (Linux.munmap s)
   else if s.getReg .rax = 3 then .next (Linux.close s)
   else if s.getReg .rax = 5 then .next (Linux.fstat s)
@@ -1370,15 +1372,15 @@ theorem linux_getrandom_owned {k lo : Nat} {a v : BitVec 64} {S : Shape} {len : 
     hf.ok_owned h hΨ (by decide) hbuf hat hle⟩
 
 /-- `mmap` for a block of a given shape: with 9 in `rax`, the length in
-`rsi`, 3 in `rdx`, 0x22 in `r10` and in `rdi` a hint that is not above any
-address a program can have memory at, the call returns an error number or a
+`rsi`, 3 in `rdx`, 0x22 in `r10` and zero in `rdi`, which leaves the place to
+the kernel, the call returns an error number or a
 writable pointer to a new block of that shape. The shape must fit in the
 length and each of its typed values must admit zero, since that is what fresh
 memory holds. -/
-theorem linux_mmap {len hint : BitVec 64} {S : Shape} (hΓ : Γ.regs .rax = .eq 9)
+theorem linux_mmap {len : BitVec 64} {S : Shape} (hΓ : Γ.regs .rax = .eq 9)
     (hlen : Γ.regs .rsi = .eq len) (hprot : Γ.regs .rdx = .eq 3)
-    (hflags : Γ.regs .r10 = .eq 0x22) (hhint : Γ.regs .rdi = .eq hint)
-    (hlow : hint.toNat ≤ addrTop) (hfit : S.size ≤ len.toNat)
+    (hflags : Γ.regs .r10 = .eq 0x22) (hhint : Γ.regs .rdi = .eq 0)
+    (hfit : S.size ≤ len.toNat)
     (hne : 0 < S.size) (hin : S.fits = true)
     (hzero : S.vals.all (fun p => p.2.zeroOk) = true) :
     SysReturns fetch linux Ψ Γ (Γ.afterSyscall.setReg .rax (.orErr (.ptr S true 0))) := by
@@ -1390,17 +1392,17 @@ theorem linux_mmap {len hint : BitVec 64} {S : Shape} (hΓ : Γ.regs .rax = .eq 
       show a = a + BitVec.ofNat 64 0
       simp⟩)
   have hdi := h.eqReg (by decide) hhint
-  exact ⟨Linux.mmap s, by simp [linux, hax, hdi, hlow], Linux.mmap_rip s, Ψ₂, he₂, hΨ₂, hw⟩
+  exact ⟨Linux.mmap s, by simp [linux, hax, hdi], Linux.mmap_rip s, Ψ₂, he₂, hΨ₂, hw⟩
 
 /-- `mmap` for a block of a declared kind: as `linux_mmap`, but the new
 block is of kind `tag`, has that kind's shape, and the result is a pointer
 to a block of that kind. This is how a record that points to others of its
 kind is allocated. -/
-theorem linux_mmap_kind {len hint : BitVec 64} {tag : Nat} {S : Shape}
+theorem linux_mmap_kind {len : BitVec 64} {tag : Nat} {S : Shape}
     (hΓ : Γ.regs .rax = .eq 9) (hkind : Ψ.kinds tag = some S)
     (hlen : Γ.regs .rsi = .eq len) (hprot : Γ.regs .rdx = .eq 3)
-    (hflags : Γ.regs .r10 = .eq 0x22) (hhint : Γ.regs .rdi = .eq hint)
-    (hlow : hint.toNat ≤ addrTop) (hfit : S.size ≤ len.toNat)
+    (hflags : Γ.regs .r10 = .eq 0x22) (hhint : Γ.regs .rdi = .eq 0)
+    (hfit : S.size ≤ len.toNat)
     (hne : 0 < S.size) (hin : S.fits = true)
     (hzero : S.vals.all (fun p => p.2.zeroOk) = true) :
     SysReturns fetch linux Ψ Γ (Γ.afterSyscall.setReg .rax (.orErr (.ref tag true 0))) := by
@@ -1413,22 +1415,21 @@ theorem linux_mmap_kind {len hint : BitVec 64} {tag : Nat} {S : Shape}
       show a = a + BitVec.ofNat 64 0
       simp⟩)
   have hdi := h.eqReg (by decide) hhint
-  exact ⟨Linux.mmap s, by simp [linux, hax, hdi, hlow], Linux.mmap_rip s, Ψ₂, he₂, hΨ₂, hw⟩
+  exact ⟨Linux.mmap s, by simp [linux, hax, hdi], Linux.mmap_rip s, Ψ₂, he₂, hΨ₂, hw⟩
 
 /-- `mmap` for memory the program is to own: with 9 in `rax`, the length in
 `rsi`, 3 in `rdx` and 0x22 in `r10`, the call continues with an error number
 in `rax`, or with the address of whole pages that the context now owns as a
 block of integers. -/
-theorem linux_mmap_own {next : BitVec 64} {len hint : BitVec 64} (hΓ : Γ.regs .rax = .eq 9)
+theorem linux_mmap_own {next : BitVec 64} {len : BitVec 64} (hΓ : Γ.regs .rax = .eq 9)
     (hlen : Γ.regs .rsi = .eq len) (hprot : Γ.regs .rdx = .eq 3)
-    (hflags : Γ.regs .r10 = .eq 0x22) (hhint : Γ.regs .rdi = .eq hint)
-    (hlow : hint.toNat ≤ addrTop) :
+    (hflags : Γ.regs .r10 = .eq 0x22) (hhint : Γ.regs .rdi = .eq 0) :
     StepsTo fetch linux Ψ next Γ .syscall (Linux.mmapOwnCtx Γ len) := by
   intro Ψ₁ _ hΨ n s h _
   have hax := h.eqReg (by decide) hΓ
   obtain ⟨x, hw⟩ := Linux.mmapOwn_ok h hΨ hlen hprot hflags
   have hdi := h.eqReg (by decide) hhint
-  exact ⟨Linux.mmap s, x, by show linux s = _; simp [linux, hax, hdi, hlow], Linux.mmap_rip s, Ψ₁,
+  exact ⟨Linux.mmap s, x, by show linux s = _; simp [linux, hax, hdi], Linux.mmap_rip s, Ψ₁,
     .refl _,
     hΨ, hw⟩
 
