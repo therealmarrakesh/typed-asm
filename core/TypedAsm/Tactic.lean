@@ -353,6 +353,17 @@ theorem cmp_not_less {a b : BitVec 64} (h : Cond.eval (AluOp.apply .cmp a b).2 .
   rw [cmp_less_iff] at h
   simpa using h
 
+/-- The low half of a signed multiply is the product: what `imul` leaves in
+its destination. -/
+theorem imulTrunc_fst (a b : BitVec 64) : (imulTrunc a b).1 = a * b := by
+  have lo : ∀ x : BitVec 64, BitVec.setWidth 64 (BitVec.signExtend 128 x) = x := by
+    intro x
+    ext i hi
+    simp [BitVec.getElem_setWidth, BitVec.getLsbD_signExtend, hi]
+    omega
+  simp only [imulTrunc]
+  rw [BitVec.setWidth_mul _ _ (by omega), lo, lo]
+
 /-- The zero flag after any two-operand operation says whether its result
 is zero. -/
 theorem AluOp.apply_zf {n : Nat} (op : AluOp) (a b : BitVec n) :
@@ -3414,8 +3425,8 @@ elab_rules : tactic
       hyps := hyps.push (mkIdent d.userName)
     let defs := names.map mkIdent
     evalTactic (← `(tactic|
-      (try simp only [$[$defs:ident],*, AluOp.apply, subBorrow_fst, addCarry_fst, BitVec.and_self,
-          BitVec.reduceSignExtend] at $[$hyps:ident]* ⊢
+      (try simp only [$[$defs:ident],*, AluOp.apply, subBorrow_fst, addCarry_fst, imulTrunc_fst,
+          BitVec.and_self, BitVec.setWidth_eq, BitVec.reduceSignExtend] at $[$hyps:ident]* ⊢
        first | omega | bv_omega)))
 
 /-- Introduces the flags hypotheses of one side of a conditional jump. When
@@ -4002,7 +4013,10 @@ private def closeArith (left : List MVarId) : TacticM (List MVarId) := do
     let after ← try
         if t.hasExprMVar then pure [g]
         else if t.isAppOfArity ``Sub 2 then
-          runOn g (do evalTactic (← `(tactic| exact Sub.of_eq (by ty_arith))))
+          -- not `Sub.of_eq (by …)`: a tactic block inside a term reports its
+          -- own failure and gives the goal up, where this one is to fail
+          let [eq] ← runOn g (do evalTactic (← `(tactic| refine Sub.of_eq ?_))) | pure [g]
+          runOn eq (do evalTactic (← `(tactic| ty_arith)))
         else if isComparison t && !t.hasExprMVar then
           runOn g (do evalTactic (← `(tactic| ty_arith)))
         else pure [g]
@@ -4101,9 +4115,8 @@ elab "ty_block" : tactic => do
                 -- known which member it was about
                 let after ← try
                     runOn g (do
-                      if settled then
-                        evalTactic (← `(tactic| first | assumption | decide | omega | ty_side | sub_regs))
-                      else evalTactic (← `(tactic| first | assumption | decide | omega)))
+                      evalTactic (← `(tactic|
+                        first | assumption | decide | omega | exact Sub.refl _ | ty_side | sub_regs)))
                   catch _ => pure [g]
                 rest := rest ++ after
               else rest := rest ++ [g]
