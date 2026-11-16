@@ -126,4 +126,38 @@ theorem divide_ok : BlocksOk Φd divideFetch linux Ψ := by
   | .fault .generalProtection => true
   | _ => false
 
+/-! A fact the checker is given. The field holds exactly `n * (n + 1)`, and
+what is stored there is exactly twice the sum of the numbers up to `n`.
+That the two are the same is no arithmetic the checker does for itself: it
+is a theorem, marked for it to use. Without the mark the store is refused. -/
+
+/-- The sum of the numbers up to `n`. -/
+def tri : Nat → Nat
+  | 0 => 0
+  | n + 1 => tri n + (n + 1)
+
+theorem tri_twice (n : Nat) : tri n * 2 = n * (n + 1) := by
+  induction n with
+  | zero => rfl
+  | succ k ih => simp only [tri, Nat.add_mul, ih]; simp only [Nat.mul_add]; omega
+
+/-- `rdi` points to a record whose second field is exactly `n * (n + 1)`,
+and `rax` holds exactly twice the sum up to `n`. -/
+def summed (n : Nat) : Ctx :=
+  ⟨fun r => if r = .rdi then .ptr ⟨16, [(8, .eq (BitVec.ofNat 64 (n * (n + 1))))]⟩ true 0
+    else if r = .rax then .eq (BitVec.ofNat 64 (tri n * 2)) else .int, [], 0, Flags.Any, [], 0⟩
+
+/-- error: cannot type `mov qword ptr [rdi+8], rax` in the current context
+• a value of type `exactly BitVec.ofNat 64 (tri n * 2)` cannot be stored where `exactly BitVec.ofNat 64 (n * (n + 1))` is required. The memory would no longer hold what its type says, and a later use of the value there could fault -/
+#guard_msgs in
+example (n : Nat) : ∃ Γ', Straight Ψ 10 (summed n)
+    (.mov .w64 (.rm_r (.mem (.sib (some .rdi) none 8)) .rax)) Γ' :=
+  ⟨_, by ty_straight⟩
+
+attribute [asm_fact] tri_twice
+
+example (n : Nat) : ∃ Γ', Straight Ψ 10 (summed n)
+    (.mov .w64 (.rm_r (.mem (.sib (some .rdi) none 8)) .rax)) Γ' :=
+  ⟨_, by ty_straight⟩
+
 end Rejected

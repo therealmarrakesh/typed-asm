@@ -2423,6 +2423,15 @@ private def normLeaf (kwhnf : Expr → MetaM Expr) (e : Expr) : MetaM Expr :=
         catch _ => pure ()
     return .continue)
 
+/-- Whether the user has marked any fact of their own for the checker: the
+library's own are not counted. -/
+private def hasUserFacts : MetaM Bool := do
+  let some ext ← Meta.getSimpExtension? `asm_fact | return false
+  let thms ← ext.getTheorems
+  return thms.lemmaNames.toList.any fun
+    | .decl n .. => n != ``imulTrunc_fst
+    | _ => true
+
 /-- Proves what the checker leaves to be shown. It is taken apart into its
 parts, and each is settled the cheapest way that does: by one of the proofs
 offered with what the checker was told, by the two sides being the same, by
@@ -2486,14 +2495,26 @@ private partial def closeNeeds (env : Environment) (lctx : LocalContext)
   if arith then
     arithLeft.modify (·.push g.mvarId!)
     return g
-  let left ← runOn g.mvarId! do
-    evalTactic (← `(tactic| first
-      | trivial
-      -- flags known to be defined have the carry flag defined
-      | exact fun _ hf => Flags.cf_isSome_of_known hf
-      | ty_decided
-      | ty_side))
-  unless left.isEmpty do throwError "left over"
+  let saved ← saveState
+  let settled ← try
+      let left ← runOn g.mvarId! do
+        evalTactic (← `(tactic| first
+          | trivial
+          -- flags known to be defined have the carry flag defined
+          | exact fun _ hf => Flags.cf_isSome_of_known hf
+          | ty_decided
+          | ty_side))
+      pure left.isEmpty
+    catch _ => pure false
+  unless settled do
+    saved.restore
+    -- by the facts the user has marked for the checker, with what is known here
+    unless ← hasUserFacts do throwError "left over"
+    let left ← runOn g.mvarId! do
+      evalTactic (← `(tactic| first
+        | (simp [asm_fact, *]; done)
+        | (refine Sub.of_eq ?_; simp [asm_fact, *]; done)))
+    unless left.isEmpty do throwError "left over"
   return g
 
 /-- Settles the arithmetic `closeNeeds` set aside: all of it by one call
@@ -4346,15 +4367,6 @@ private def pointerSig (goal : MVarId) (rm : RM) : TacticM (Option Expr) := goal
   if τ.isAppOfArity ``FnSig.ty 1 then return some τ.appArg!
   if τ.isAppOfArity ``Ty.fn 6 then return some (mkAppN (mkConst ``FnSig.mk) τ.getAppArgs)
   return none
-
-/-- Whether the user has marked any fact of their own for the checker: the
-library's own are not counted. -/
-private def hasUserFacts : MetaM Bool := do
-  let some ext ← Meta.getSimpExtension? `asm_fact | return false
-  let thms ← ext.getTheorems
-  return thms.lemmaNames.toList.any fun
-    | .decl n .. => n != ``imulTrunc_fst
-    | _ => true
 
 /-- What a block or a call left to be shown, tried as arithmetic: a
 comparison, or two exactly known values that are to be the same; and then,
