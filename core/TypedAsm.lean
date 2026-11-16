@@ -27,6 +27,7 @@ import TypedAsm.ArgText
 import TypedAsm.Owned
 import TypedAsm.RegMap
 import TypedAsm.Output
+import TypedAsm.Written
 import TypedAsm.EndToEnd
 import TypedAsm.Lookup
 import TypedAsm.FnEx
