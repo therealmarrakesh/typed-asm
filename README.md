@@ -33,5 +33,21 @@ What exists and is checked today:
   same programs run as Linux executables. The memory each program starts
   with in the model is checked to be its executable file, byte for byte.
 
-The example programs are written as Lean constructor terms, and their typing
-is done by tactics.
+The example programs are written as Lean constructor terms. What an author
+writes beyond the program is the context that holds at each label that is
+jumped back to, called or returned to, and three commands:
+
+- `asm_program code start .l` lays the program out and defines what it puts
+  in memory and the state it starts in.
+- `asm_typing At` takes those contexts and works out the rest of the typing:
+  the program's blocks of memory from its labelled data, the stack it needs
+  and whether it takes arguments from the entry label's context, and the
+  contract with whatever loads it.
+- `asm_safety At.start` proves the program well typed and, from that, safe
+  from every state meeting the contract, whatever the outside world does.
+
+Each instruction is typed without being told how. Eleven of the twenty-two
+examples need nothing more than this. In the others, a label's block says
+what cannot be read off the program: which context a loop is entered in,
+which of a family of signatures a call is to, where an owned block is split,
+or a fact of arithmetic.
