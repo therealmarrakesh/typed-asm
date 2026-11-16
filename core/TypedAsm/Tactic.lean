@@ -551,9 +551,20 @@ in it is refused at once: matching it against the lemmas for one would have
 the two sides worked out at length before the mismatch showed. -/
 elab "ty_index" : tactic => withMainContext do
   let t ← instantiateMVars (← getMainTarget)
-  unless (t.find? (·.isConstOf ``HShiftLeft.hShiftLeft)).isSome do
-    throwError "no scaled index here"
-  evalTactic (← `(tactic| ty_index_core))
+  let some sh := t.find? (·.isAppOfArity ``HShiftLeft.hShiftLeft 6)
+    | throwError "no scaled index here"
+  -- The lemma for whole eight-byte cells is tried only on an index scaled
+  -- by eight: on another scale it fails, but only after the two sides have
+  -- been worked out at length.
+  let by8 ← try
+      let n ← whnf sh.appArg!
+      let k? := match n with
+        | .lit (.natVal k) => some k
+        | _ => if n.isConstOf ``Nat.zero then some 0 else n.nat?
+      pure (k?.isNone || k? == some 3)
+    catch _ => pure true
+  if by8 then evalTactic (← `(tactic| ty_index_core))
+  else evalTactic (← `(tactic| (refine index_bytes _ _ _ ?_; decide)))
 
 open Lean Meta Elab Tactic in
 /-- Writes out a shape that the goal asks the size or the typed values of,
@@ -888,8 +899,24 @@ not settle it. Anything else goes straight to the search. -/
 elab "ty_side_core" : tactic => withMainContext do
   let t ← instantiateMVars (← getMainTarget)
   let yesNo := t.isAppOfArity ``Eq 3 && t.getAppArgs[0]!.isConstOf ``Bool && !t.hasExprMVar
+  -- An equation whose left side is one of these is proved by working the
+  -- side out, or by the one tactic that knows of it, or is among the
+  -- hypotheses. Nothing else in the search could prove it, and a rule that
+  -- does not apply fails on just such an equation.
+  let lhsIs (n : Name) : Bool := t.isAppOfArity ``Eq 3 && t.getAppArgs[1]!.isAppOf n
+  let narrow? : Option (TSyntax `tactic) ←
+    if lhsIs ``CtxOf.regs || lhsIs ``MulDivOp.eval || lhsIs ``MemTy.locate || lhsIs ``Ty.isInt then
+      pure (some (← `(tactic| first | exact rfl | ty_known)))
+    else if lhsIs ``CtxOf.room then
+      pure (some (← `(tactic| first | exact rfl | omega | ty_known)))
+    else if lhsIs ``ShapeOf.valAt || lhsIs ``ShapeOf.sole then
+      pure (some (← `(tactic| first | exact rfl | ty_val | ty_known)))
+    else pure none
   if yesNo && !t.hasFVar then
     evalTactic (← `(tactic| decide +kernel))
+  else if let some narrow := narrow? then
+    if yesNo then evalTactic (← `(tactic| first | decide +kernel | ($narrow:tactic)))
+    else evalTactic narrow
   else if yesNo then
     evalTactic (← `(tactic| first | decide +kernel | ty_side_search))
   -- A judgment with a tactic of its own goes to that tactic, or is found
