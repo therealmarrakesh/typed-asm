@@ -105,9 +105,8 @@ theorem divide_ok : BlocksOk Φd divideFetch linux Ψ := by
     ty_step
     ty_name .rcx as v
     ty_name .rax as a
-    ty_block
     -- entering `start`: the test found `v` not to be zero
-    simpa [Cond.eval, Flags.ofResult] using hcond
+    ty_block
   -- the divisor is not zero: the tactic finds `hv` among the hypotheses
   | start a v hv => ty_block
   | out => ty_block

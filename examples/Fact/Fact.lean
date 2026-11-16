@@ -47,32 +47,16 @@ inductive At : Label → Ctx → Prop
 
 asm_typing At
 
-/-! ## Arithmetic facts the recursion relies on -/
-
-/-- One less than a number that is not zero. -/
-theorem decr {n : Nat} (hn : 0 < n) :
-    (AluOp.apply .sub (num n) ((1 : BitVec 32).signExtend 64)).1 = num (n - 1) := by
-  have h1 : ((1 : BitVec 32).signExtend 64) = 1 := by decide
-  simp only [AluOp.apply, subBorrow_fst, h1, num]
-  bv_omega
-
 /-! ## The program is well typed -/
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   ty_program
-  case fact n saved ret rest room hK =>
-    ty_block
-    -- going on to recurse: the test found the argument not to be zero
-    refine Nat.pos_of_ne_zero (fun h0 => ?_)
-    subst h0
-    simp [Cond.eval, Flags.ofResult, num] at hcond
   case again n saved ret rest room hK hn =>
     -- the argument is not zero, so the caller left at least sixteen bytes
     have hroom : 16 * n ≤ room := hK.room
     obtain ⟨m, rfl⟩ : ∃ m, room = m + 16 := ⟨room - 16, by omega⟩
-    ty_call (factSig (n - 1))
     -- the inner call gets exactly one less
-    exact Sub.of_eq (decr hn)
+    ty_call (factSig (n - 1))
 
 /-! ## Safety -/
 

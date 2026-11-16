@@ -53,41 +53,6 @@ inductive At : Label → Ctx → Prop
 
 asm_typing At
 
-/-! ## Arithmetic facts the loop relies on -/
-
-theorem left_ne_zero {n i : Nat} (h : left n i ≠ 0) : i < n := by
-  apply Nat.lt_of_sub_ne_zero
-  intro h0
-  exact h (by simp [left, h0])
-
-/-- Decrementing the counter gives the counter for one more element consumed. -/
-theorem decr {n i : Nat} (hi : i < n) :
-    (AluOp.apply .sub (left n i) ((1 : BitVec 32).signExtend 64)).1 = left n (i + 1) := by
-  have h1 : ((1 : BitVec 32).signExtend 64) = 1 := by decide
-  simp only [AluOp.apply, subBorrow_fst, h1, left]
-  bv_omega
-
-/-! ## The program is well typed -/
-
-theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  ty_program
-  case sum n saved ret rest room hK =>
-    ty_block
-    -- entering the loop: the count is not zero, so the invariant holds with `i = 0`
-    apply left_ne_zero
-    intro h0
-    simp [Cond.eval, Flags.ofResult, h0] at hcond
-  case loop n i saved ret rest room hK hi =>
-    ty_block
-    -- going round again: the counter is the one for `i + 1` elements consumed,
-    · exact Sub.of_eq (decr hi)
-    -- and it is not zero, so `i + 1 < n`
-    · apply left_ne_zero
-      intro h0
-      rw [← decr hi] at h0
-      simp [Cond.eval, AluOp.apply, subBorrow_zf] at hcond
-      exact hcond (by simpa [AluOp.apply] using h0)
-
 /-! ## Safety -/
 
 asm_safety At.start

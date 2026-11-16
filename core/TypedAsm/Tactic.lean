@@ -353,6 +353,56 @@ theorem cmp_not_less {a b : BitVec 64} (h : Cond.eval (AluOp.apply .cmp a b).2 .
   rw [cmp_less_iff] at h
   simpa using h
 
+/-- The zero flag after any two-operand operation says whether its result
+is zero. -/
+theorem AluOp.apply_zf {n : Nat} (op : AluOp) (a b : BitVec n) :
+    (op.apply a b).2.zf = some ((op.apply a b).1 == 0) := by
+  cases op <;> rfl
+
+/-- "Equal" holding after an operation means its result was zero; and so on
+for the three other ways a test of the zero flag can go. For a comparison
+the result is the difference. -/
+theorem zero_of_e {n : Nat} {op : AluOp} {a b : BitVec n}
+    (h : Cond.eval (op.apply a b).2 .e = some true) : (op.apply a b).1 = 0 := by
+  have e : Cond.eval (op.apply a b).2 .e = (op.apply a b).2.zf := rfl
+  rw [e, AluOp.apply_zf] at h
+  simpa using h
+
+theorem ne_zero_of_not_e {n : Nat} {op : AluOp} {a b : BitVec n}
+    (h : Cond.eval (op.apply a b).2 .e = some false) : (op.apply a b).1 ≠ 0 := by
+  have e : Cond.eval (op.apply a b).2 .e = (op.apply a b).2.zf := rfl
+  rw [e, AluOp.apply_zf] at h
+  simpa using h
+
+theorem ne_zero_of_ne {n : Nat} {op : AluOp} {a b : BitVec n}
+    (h : Cond.eval (op.apply a b).2 .ne = some true) : (op.apply a b).1 ≠ 0 := by
+  have e : Cond.eval (op.apply a b).2 .ne = (op.apply a b).2.zf.map (!·) := rfl
+  rw [e, AluOp.apply_zf] at h
+  simpa using h
+
+theorem zero_of_not_ne {n : Nat} {op : AluOp} {a b : BitVec n}
+    (h : Cond.eval (op.apply a b).2 .ne = some false) : (op.apply a b).1 = 0 := by
+  have e : Cond.eval (op.apply a b).2 .ne = (op.apply a b).2.zf.map (!·) := rfl
+  rw [e, AluOp.apply_zf] at h
+  simpa using h
+
+/-- The same for flags set from a result directly, as a `test` sets them. -/
+theorem zero_of_e' {n : Nat} {r : BitVec n} {c o : Bool}
+    (h : Cond.eval (Flags.ofResult r c o) .e = some true) : r = 0 := by
+  simpa [Cond.eval, Flags.ofResult] using h
+
+theorem ne_zero_of_not_e' {n : Nat} {r : BitVec n} {c o : Bool}
+    (h : Cond.eval (Flags.ofResult r c o) .e = some false) : r ≠ 0 := by
+  simpa [Cond.eval, Flags.ofResult] using h
+
+theorem ne_zero_of_ne' {n : Nat} {r : BitVec n} {c o : Bool}
+    (h : Cond.eval (Flags.ofResult r c o) .ne = some true) : r ≠ 0 := by
+  simpa [Cond.eval, Flags.ofResult] using h
+
+theorem zero_of_not_ne' {n : Nat} {r : BitVec n} {c o : Bool}
+    (h : Cond.eval (Flags.ofResult r c o) .ne = some false) : r = 0 := by
+  simpa [Cond.eval, Flags.ofResult] using h
+
 /-- After `cmp a, b`, "above or equal" failing means `a` is less than `b` as
 unsigned numbers: the way a loop over a count carries on. -/
 theorem cmp_not_ae {a b : BitVec 64}
@@ -801,6 +851,13 @@ syntax "ty_known" : tactic
 
 /-- Proves a side condition of a typing rule, or fails. -/
 syntax "ty_side" : tactic
+
+/-- Proves a fact of arithmetic about the numbers a program computes with:
+a bound, or that two exactly known values are the same. The definitions of
+the file at hand that the fact and the comparisons among the hypotheses
+mention are opened, and what an operation's result is is written out; the
+rest is left to `omega` and `bv_omega`. -/
+syntax "ty_arith" : tactic
 
 /-- Applies one typing rule and proves all its premises, or fails. The
 premises are attempted in order and then again, because proving one can
@@ -3124,7 +3181,7 @@ private def proveAtLabel (g : MVarId) (check : TacticM (List MVarId)) :
           if ← p.isAssigned then continue
           unless ← isProp (← p.getType) do continue
           let after ← try
-              runOn p (do evalTactic (← `(tactic| first | assumption | omega | decide)))
+              runOn p (do evalTactic (← `(tactic| first | assumption | omega | decide | ty_arith)))
             catch _ => pure [p]
           rest := rest ++ after
         -- Parameters nothing determined are left for the user to supply.
@@ -3205,6 +3262,31 @@ elab "ty_label" : tactic => do
   let left ← proveAccepts goal
   setGoals (left ++ others)
 
+elab_rules : tactic
+  | `(tactic| ty_arith) => withMainContext do
+    let env ← getEnv
+    let own (e : Expr) (acc : Array Name) : Array Name :=
+      e.foldConsts acc fun c acc =>
+        if acc.contains c || c.isInternal || (env.getModuleIdxFor? c).isSome then acc
+        else match env.find? c with
+          | some (.defnInfo _) => acc.push c
+          | _ => acc
+    let mut names := own (← instantiateMVars (← getMainTarget)) #[]
+    let mut hyps : Array Ident := #[]
+    for d in ← getLCtx do
+      if d.isImplementationDetail then continue
+      let ty ← instantiateMVars d.type
+      unless isComparison ty do continue
+      -- the condition itself is not one: what it says is among the others
+      if ty.find? (·.isConstOf ``Cond.eval) |>.isSome then continue
+      names := own ty names
+      hyps := hyps.push (mkIdent d.userName)
+    let defs := names.map mkIdent
+    evalTactic (← `(tactic|
+      (try simp only [$[$defs:ident],*, AluOp.apply, subBorrow_fst, addCarry_fst, BitVec.and_self,
+          BitVec.reduceSignExtend] at $[$hyps:ident]* ⊢
+       first | omega | bv_omega)))
+
 /-- Introduces the flags hypotheses of one side of a conditional jump. When
 the flags are known exactly they are substituted. The fact about which way
 the condition went is named `hcond`. -/
@@ -3244,6 +3326,37 @@ private def introBranch : TacticM Unit := do
     Tactic.withoutRecover do evalTactic (← `(tactic|
       (have $name := $(mkIdent lem) $hcond
        try simp only [BitVec.toNat_ofNat, Nat.reduceMod, Nat.reducePow] at $name:ident)))
+  catch _ => pure ()
+  -- What a test of the zero flag says of the result the flag was set from
+  -- is put among the hypotheses as `hz`, that it is zero, or `hnz`, that it
+  -- is not: for a comparison the result is the difference.
+  let zero? : Option (Name × Bool) ← withMainContext do
+    let some d := (← getLCtx).findFromUserName? `hcond | pure none
+    let t ← instantiateMVars d.type
+    let some (_, lhs, rhs) := t.eq? | pure none
+    unless lhs.isAppOfArity ``Cond.eval 2 do return none
+    let c := lhs.appArg!
+    let F := lhs.appFn!.appArg!
+    let went := rhs.isAppOfArity ``Option.some 2 && rhs.appArg!.isConstOf ``Bool.true
+    let wentNot := rhs.isAppOfArity ``Option.some 2 && rhs.appArg!.isConstOf ``Bool.false
+    let direct := F.isAppOf ``Flags.ofResult
+    let ofOp := F.isAppOfArity ``Prod.snd 3 && F.appArg!.isAppOf ``AluOp.apply
+    unless direct || ofOp do return none
+    if c.isConstOf ``Cond.e && went then
+      pure (some (if direct then ``zero_of_e' else ``zero_of_e, true))
+    else if c.isConstOf ``Cond.e && wentNot then
+      pure (some (if direct then ``ne_zero_of_not_e' else ``ne_zero_of_not_e, false))
+    else if c.isConstOf ``Cond.ne && went then
+      pure (some (if direct then ``ne_zero_of_ne' else ``ne_zero_of_ne, false))
+    else if c.isConstOf ``Cond.ne && wentNot then
+      pure (some (if direct then ``zero_of_not_ne' else ``zero_of_not_ne, true))
+    else pure none
+  if let some (lem, isZero) := zero? then try
+    let name := mkIdent (if isZero then `hz else `hnz)
+    Tactic.withoutRecover do evalTactic (← `(tactic|
+      (have $name := $(mkIdent lem) $hcond
+       try simp only [AluOp.apply, subBorrow_fst, addCarry_fst, BitVec.and_self, BitVec.or_self]
+         at $name:ident)))
   catch _ => pure ()
 
 /-- Closes a goal reached under an assumption about a condition that the
@@ -3686,6 +3799,25 @@ private def pointerSig (goal : MVarId) (rm : RM) : TacticM (Option Expr) := goal
   if τ.isAppOfArity ``Ty.fn 6 then return some (mkAppN (mkConst ``FnSig.mk) τ.getAppArgs)
   return none
 
+/-- What a block or a call left to be shown, tried as arithmetic: a
+comparison, or two exactly known values that are to be the same. Returns
+what is still left. -/
+private def closeArith (left : List MVarId) : TacticM (List MVarId) := do
+  let mut kept : List MVarId := []
+  for g in left do
+    if ← g.isAssigned then continue
+    let t ← instantiateMVars (← g.getType)
+    let after ← try
+        if t.hasExprMVar then pure [g]
+        else if t.isAppOfArity ``Sub 2 then
+          runOn g (do evalTactic (← `(tactic| exact Sub.of_eq (by ty_arith))))
+        else if isComparison t && !t.hasExprMVar then
+          runOn g (do evalTactic (← `(tactic| ty_arith)))
+        else pure [g]
+      catch _ => pure [g]
+    kept := kept ++ after
+  return kept
+
 /-- Types a whole block of a labelled program: the straight-line
 instructions, then the control transfer that ends it. Jump targets are found
 by label. Conditional jumps in the middle of the block are followed.
@@ -3813,7 +3945,7 @@ elab "ty_block" : tactic => do
       match auto with
       | some gs => left := left ++ gs
       | none => stuck := stuck ++ (← getGoals)
-  setGoals (stuck ++ left ++ others)
+  setGoals (stuck ++ (← closeArith left) ++ others)
 
 /-- Types a conditional jump in the middle of a block. The side that jumps
 is settled as `ty_block` would settle it; the side that carries on is left
@@ -3989,7 +4121,7 @@ elab "ty_call " sig:term : tactic => do
             catch _ => throw e
           | none => throw e
       left := left ++ after
-  setGoals (left ++ others)
+  setGoals ((← closeArith left) ++ others)
 
 macro_rules
   | `(tactic| ty_call_auto) => `(tactic| ty_call ?_)
