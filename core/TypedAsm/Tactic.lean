@@ -283,11 +283,6 @@ end Globals
 index, since addresses wrap; what needs a bound on the index is the byte
 being inside the block. -/
 
-theorem sext_toNat {disp : BitVec 32} (hd : disp.toNat < 2 ^ 31) :
-    disp.signExtend 64 = BitVec.ofNat 64 disp.toNat := by
-  have h := sext_small hd
-  rwa [BitVec.ofNat_toNat, BitVec.setWidth_eq] at h
-
 /-- An index scaled by 8 with a displacement that is a multiple of 8 lands
 on a whole eight-byte cell. -/
 theorem index8_slot (c : BitVec 64) (disp : BitVec 32)
@@ -298,16 +293,6 @@ theorem index8_slot (c : BitVec 64) (disp : BitVec 32)
   rw [sext_toNat hd]
   simp only [BitVec.toNat_add, BitVec.toNat_shiftLeft, BitVec.toNat_ofNat, Nat.shiftLeft_eq,
     Scale.shift]
-  omega
-
-/-- An index with any scale and displacement, as a number of bytes. -/
-theorem index_bytes (c : BitVec 64) (sc : Scale) (disp : BitVec 32) (hd : disp.toNat < 2 ^ 31) :
-    (c <<< sc.shift) + disp.signExtend 64
-      = BitVec.ofNat 64 (c.toNat * 2 ^ sc.shift + disp.toNat) := by
-  apply BitVec.eq_of_toNat_eq
-  rw [sext_toNat hd]
-  simp only [BitVec.toNat_add, BitVec.toNat_shiftLeft, BitVec.toNat_ofNat, Nat.shiftLeft_eq]
-  generalize c.toNat * 2 ^ sc.shift = m
   omega
 
 /-- After `cmp a, b`, "below" holds exactly when `a` is less than `b` as
@@ -2763,6 +2748,379 @@ private def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
   evalTactic (← `(tactic| ty_normalize))
   setGoals ((← getGoals) ++ left)
 
+initialize registerTraceClass `TypedAsm.fast
+
+/-- What the checker is to be told of an instruction, with proofs of what
+that leaves to be shown: each is used where it proves what is asked. -/
+private structure HintPlan where
+  hint : Expr
+  offered : Array Expr := #[]
+  /-- Whether the store was planned to keep the type that is there. -/
+  keep : Bool := false
+
+/-- The cells of a list as far as it is written out. -/
+private def listCells (e : Expr) : MetaM (Array Expr) := do
+  let mut out := #[]
+  let mut e ← whnf e
+  for _ in [0:64] do
+    unless e.isAppOfArity ``List.cons 3 do break
+    out := out.push e.getAppArgs[1]!
+    e ← whnf e.appArg!
+  return out
+
+/-- A shape that is an array, looked for a few definitions deep: how many
+elements it has, and their shape. -/
+private def repOf? (S : Expr) : MetaM (Option (Expr × Expr)) := do
+  let mut S := S
+  for _ in [0:5] do
+    if S.isAppOfArity ``ShapeOf.rep 3 then return some (S.getAppArgs[1]!, S.getAppArgs[2]!)
+    match ← unfoldDefinition? S with
+    | some S' => S := S'.headBeta
+    | none => return none
+  return none
+
+private def bvNat (c : Expr) : Expr := mkApp2 (mkConst ``BitVec.toNat) (mkNatLit 64) c
+
+private def sizeOfShape (S : Expr) : Expr := mkApp2 (mkConst ``ShapeOf.size) (mkConst ``Ty) S
+
+private def mkHintE (place : Expr) (elem? : Option Expr) (keep : Bool)
+    (taken : Option Bool := none) : Expr :=
+  let elemTy := mkConst ``Check.Elem
+  let el := match elem? with
+    | some e => mkApp2 (mkConst ``Option.some [Level.zero]) elemTy e
+    | none => mkApp (mkConst ``Option.none [Level.zero]) elemTy
+  mkApp4 (mkConst ``Check.Hint.mk) place el (toExpr keep) (toExpr taken)
+
+/-- Works out what to tell the checker of an instruction whose operand the
+context does not place by evaluation, from the instruction and the context
+as they are written: the block the context owns whose address the base
+register's value is written from, the piece of the stack an index runs over,
+the element of an array. Nothing is proved here but what one lemma gives;
+bounds are left to be shown with the rest. Returns nothing where the checker
+needs no telling, or where there is nothing to tell it. -/
+private def planHint (instr : Instr) (typeOf : Reg → MetaM Expr) (stack owned flags : Expr)
+    (bs : Expr) (kwhnf : Expr → MetaM Expr) (allowKeep : Bool) : MetaM (Option HintPlan) := do
+  -- a number, where working the expression out gives one: it may mention
+  -- variables that the number does not turn on, as the size of a slot does
+  -- the type of what it holds
+  let evalNat (e : Expr) : MetaM (Option Nat) := do
+    if e.hasExprMVar then return none
+    match ← (try kwhnf e catch _ => pure e) with
+    | .lit (.natVal k) => return some k
+    | _ => return none
+  -- what the flags make of a condition, where they are exactly known
+  let takenBy (c : Cond) : MetaM (Option HintPlan) := do
+    -- flags that do not say: the result is a number, whichever way it went
+    let unknown : Option HintPlan := some { hint := mkHintE (mkConst ``Check.Where.reg) none false }
+    let fl ← whnfR flags
+    let .lam _ _ body _ := fl | return unknown
+    let some (_, lhs, rhs) := body.eq? | return unknown
+    unless lhs == .bvar 0 && !rhs.hasLooseBVars && !rhs.hasFVar do return unknown
+    let ev := mkApp2 (mkConst ``Cond.eval) rhs (toExpr c)
+    let r ← kwhnf ev
+    unless r.isAppOfArity ``Option.some 2 do return unknown
+    let b ← kwhnf r.appArg!
+    let taken ← if b.isConstOf ``Bool.true then pure true
+      else if b.isConstOf ``Bool.false then pure false else return unknown
+    let bE := toExpr taken
+    let h ← mkExpectedTypeHint (← mkEqRefl ev)
+      (← mkEq ev (mkApp2 (mkConst ``Option.some [Level.zero]) (mkConst ``Bool) bE))
+    return some { hint := mkHintE (mkConst ``Check.Where.reg) none false (some taken),
+                  offered := #[mkApp4 (mkConst ``Check.eval_exact) (toExpr c) rhs bE h] }
+  let exact (r : Reg) : MetaM (Option Expr) := do
+    let τ ← typeOf r
+    return if τ.isAppOfArity ``Ty.eq 1 then some τ.appArg! else none
+  let some m := instr.memOperand? | do
+    match instr with
+    | .mulDiv .div _ (.reg r) | .mulDiv .idiv _ (.reg r) =>
+      let some a ← exact .rax | return none
+      let some d ← exact .rdx | return none
+      let some b ← exact r | return none
+      -- values with no variable in them are divided by working it out
+      unless a.hasFVar || d.hasFVar || b.hasFVar do return none
+      return some { hint := mkHintE (mkConst ``Check.Where.reg) none false }
+    | .cmov c _ d (.reg r) =>
+      unless (← exact d).isSome && (← exact r).isSome do return none
+      takenBy c
+    | .setcc c (.reg d) =>
+      unless (← exact d).isSome do return none
+      takenBy c
+    | _ => return none
+  let .sib base ix disp := m | return none
+  let D := disp.toNat
+  -- the index: the value its register holds, and that value scaled
+  let idx? ← match ix with
+    | none => pure none
+    | some (x, sc) =>
+      let some c ← exact x.toReg | return none
+      pure (some (c, sc, mkNatMul (bvNat c) (mkNatLit (2 ^ sc.shift))))
+  let dispLt : MetaM Expr := do
+    mkDecideProof (← mkLt (mkApp2 (mkConst ``BitVec.toNat) (mkNatLit 32) (toExpr disp))
+      (mkNatLit (2 ^ 31)))
+  -- the element of an array of `n` copies of `E` that byte `L + x * 2^s + D`
+  -- is in, where the index is scaled by the size of an element
+  -- `tot` is how far past the indexed byte's element start the operand
+  -- reaches, counted from the array's start; `ptrAt` is how far into its
+  -- block a pointer is, where the array is reached through one
+  let elemOf (S n E : Expr) (tot : Nat) (ptrAt : Option Nat) :
+      MetaM (Option (Expr × Array Expr)) := do
+    let some es ← evalNat (sizeOfShape E) | return none
+    if es == 0 then return none
+    let q := tot / es
+    let f := tot % es
+    let some (c, sc, _) := idx?
+      | -- no index: a fixed element
+        return some (mkApp4 (mkConst ``Check.Elem.mk) n E (mkNatLit q) (mkNatLit f),
+          #[← mkEqRefl S])
+    unless 2 ^ sc.shift == es do return none
+    let x := bvNat c
+    let i := if q == 0 then x else mkNatAdd x (mkNatLit q)
+    let e := mkApp4 (mkConst ``Check.Elem.mk) n E i (mkNatLit f)
+    let mut offered := #[← mkEqRefl S]
+    -- which lemma says the byte is that of the element, by how the byte is written
+    let esE := mkNatLit es
+    let rfl' ← mkEqRefl (mkNatLit tot)
+    match ptrAt with
+    | some L =>
+      offered := offered.push (if q == 0 then
+          mkAppN (mkConst ``Check.elem_idx0) #[x, esE, mkNatLit L, mkNatLit D, mkNatLit f, rfl']
+        else mkAppN (mkConst ``Check.elem_idx)
+          #[x, esE, mkNatLit L, mkNatLit D, mkNatLit q, mkNatLit f, rfl'])
+    | none =>
+      if q != 0 then
+        offered := offered.push (mkAppN (mkConst ``Check.elem_at)
+          #[x, esE, mkNatLit q, mkNatLit f, mkNatLit tot, rfl'])
+    return some (e, offered)
+  match base with
+  | some .rsp =>
+    -- only an index needs telling of: a place a fixed way up is found by looking
+    let some (_, _, scaled) := idx? | return none
+    unless D < 2 ^ 31 do return none
+    let cells ← listCells stack
+    let mut P := 0
+    let mut k := 0
+    for cell in cells do
+      let rep? ← repOf? cell
+      let size? ← evalNat (sizeOfShape cell)
+      let here : Bool := match rep?, size? with
+        | some _, _ => decide (P ≤ D)
+        | none, some sz => decide (P ≤ D) && decide (D < P + sz)
+        | none, none => false
+      if here then
+        let R := D - P
+        let i := if R == 0 then scaled else mkNatAdd scaled (mkNatLit R)
+        let dRefl ← mkEqRefl (mkNatLit D)
+        let pr := if R == 0 then mkApp2 (mkConst ``Check.piece_at0) scaled (mkNatLit D)
+          else mkApp5 (mkConst ``Check.piece_at) scaled (mkNatLit D) (mkNatLit P) (mkNatLit R)
+            dRefl
+        let mut offered := #[pr]
+        let mut elem? := none
+        if let some (n, E) := rep? then
+          -- the piece's own bytes are counted from its start
+          if let some (e, more) ← elemOf cell n E R none then
+            elem? := some e
+            offered := offered ++ more
+        return some { hint := mkHintE (mkApp2 (mkConst ``Check.Where.piece) (mkNatLit k) i)
+                        elem? false, offered }
+      let some sz := size? | return none
+      P := P + sz
+      k := k + 1
+    return none
+  | some b =>
+    let τ ← typeOf b
+    if τ.isAppOfArity ``Ty.ptr 3 then
+      let S := τ.getAppArgs[0]!
+      let off := τ.getAppArgs[2]!
+      let offLit? ← evalNat off
+      -- a pointer a known way into a block with nothing unknown about it is
+      -- followed by looking
+      if idx?.isNone && offLit?.isSome && !S.hasFVar then return none
+      let mut elem? := none
+      let mut offered := #[]
+      if let some (n, E) ← repOf? S then
+        if let some L := offLit? then
+          if let some (e, more) ← elemOf S n E (L + D) (some L) then
+            elem? := some e
+            offered := more
+        else if idx?.isNone then
+          -- a pointer stepped along the array: `a * k` or `k * a` bytes in
+          if let some es ← evalNat (sizeOfShape E) then
+            if off.isAppOfArity ``HMul.hMul 6 && D < es then
+              let l := off.appFn!.appArg!
+              let r := off.appArg!
+              if (← evalNat l) == some es then
+                elem? := some (mkApp4 (mkConst ``Check.Elem.mk) n E r (mkNatLit D))
+                offered := #[← mkEqRefl S, mkApp3 (mkConst ``Check.elem_comm) l r (mkNatLit D)]
+              else if (← evalNat r) == some es then
+                elem? := some (mkApp4 (mkConst ``Check.Elem.mk) n E l (mkNatLit D))
+                offered := #[← mkEqRefl S]
+      return some { hint := mkHintE (mkConst ``Check.Where.ptr) elem? false, offered }
+    else if τ.isAppOfArity ``Ty.eq 1 then
+      let v := τ.appArg!
+      let cells ← listCells owned
+      let mut k := 0
+      for cell in cells do
+        let cell ← whnfR cell
+        unless cell.isAppOfArity ``Prod.mk 4 do return none
+        let a := cell.getAppArgs[2]!
+        let S := cell.getAppArgs[3]!
+        -- the value is the block's address, or that with something added
+        let t? : Option (Option Expr) :=
+          if v == a then some none
+          else if v.isAppOfArity ``HAdd.hAdd 6 && v.appFn!.appArg! == a then some (some v.appArg!)
+          else none
+        if let some t? := t? then
+          let dispE := toExpr disp
+          let (j, pr) ← match t?, idx? with
+            | none, none =>
+              pure (mkNatLit (disp.signExtend 64).toNat, mkApp2 (mkConst ``Check.own0) a dispE)
+            | some t, none =>
+              let jE := bvNat (← mkAppM ``HAdd.hAdd
+                #[t, mkApp3 (mkConst ``BitVec.signExtend) (mkNatLit 32) (mkNatLit 64) dispE])
+              let j := match ← evalNat jE with
+                | some n => mkNatLit n
+                | none => jE
+              pure (j, mkApp3 (mkConst ``Check.own1) a t dispE)
+            | none, some (c, sc, scaled) =>
+              unless D < 2 ^ 31 do return none
+              pure (if D == 0 then scaled else mkNatAdd scaled (mkNatLit D),
+                mkApp5 (mkConst ``Check.ownI0) a c (toExpr sc) dispE (← dispLt))
+            | some t, some (c, sc, scaled) =>
+              unless D < 2 ^ 31 do return none
+              let tn := match ← evalNat (bvNat t) with
+                | some n => mkNatLit n
+                | none => bvNat t
+              pure (mkNatAdd tn (mkNatAdd scaled (mkNatLit D)),
+                mkApp6 (mkConst ``Check.ownI1) a t c (toExpr sc) dispE (← dispLt))
+          let mut offered := #[pr]
+          let mut elem? := none
+          if t?.isNone then
+            if let some (n, E) ← repOf? S then
+              if let some (e, more) ← elemOf S n E D none then
+                elem? := some e
+                offered := offered ++ more
+          -- a store over a typed value keeps the type where the value stored has it
+          let mut keep := false
+          if allowKeep then
+            if let .mov .w64 (.rm_r (.mem _) _) := instr then
+              if elem?.isSome then keep := true
+              else
+                let at' ← kwhnf (mkApp3 (mkConst ``ShapeOf.valAt) (mkConst ``Ty) S j)
+                keep := at'.isAppOfArity ``Option.some 2
+          return some { hint := mkHintE (mkApp2 (mkConst ``Check.Where.owned) (mkNatLit k) j)
+                          elem? keep, offered, keep }
+        k := k + 1
+      return none
+    else return none
+  | none =>
+    -- a fixed address: the block of the program it is in
+    let addr := toExpr (disp.signExtend 64)
+    let found ← try evalLocate (mkApp2 (mkConst ``MemTy.locate) bs addr) catch _ => return none
+    let some (baseV, d0) := found | return none
+    let baseE := toExpr baseV
+    match idx? with
+    | none =>
+      return some { hint := mkHintE (mkApp2 (mkConst ``Check.Where.block) baseE (mkNatLit d0))
+                      none false }
+    | some (c, sc, scaled) =>
+      let dispE := toExpr disp
+      let lhs := mkApp3 (mkConst ``BitVec.signExtend) (mkNatLit 32) (mkNatLit 64) dispE
+      let rhs ← mkAppM ``HAdd.hAdd
+        #[baseE, mkApp2 (mkConst ``BitVec.ofNat) (mkNatLit 64) (mkNatLit d0)]
+      let h ← mkExpectedTypeHint (← mkEqRefl lhs) (← mkEq lhs rhs)
+      let d := if d0 == 0 then scaled else mkNatAdd scaled (mkNatLit d0)
+      return some { hint := mkHintE (mkApp2 (mkConst ``Check.Where.block) baseE d) none false,
+                    offered := #[mkApp6 (mkConst ``Check.block_idx) c (toExpr sc) dispE baseE
+                      (mkNatLit d0) h] }
+
+/-- Shapes' sizes written out, and what has no variable in it worked out, in
+something left to be shown: so that arithmetic sees numbers. -/
+private def normLeaf (kwhnf : Expr → MetaM Expr) (e : Expr) : MetaM Expr :=
+  Meta.transform e (pre := fun e => do
+    if e.isAppOfArity ``ShapeOf.size 2 then
+      let S ← whnf e.appArg!
+      if S.isAppOfArity ``ShapeOf.mk 3 then return .visit S.getAppArgs[1]!
+      return .continue
+    if e.isApp && !e.hasFVar && !e.hasExprMVar && !e.hasLooseBVars then
+      let f := e.getAppFn
+      if f.isConst && [``HAdd.hAdd, ``HMul.hMul, ``HPow.hPow, ``HSub.hSub, ``BitVec.toNat,
+          ``stackOff, ``Scale.shift, ``NarrowW.bytes].contains f.constName! then
+        try
+          if let .lit (.natVal k) ← kwhnf e then return .done (mkNatLit k)
+        catch _ => pure ()
+    return .continue)
+
+/-- Proves what the checker leaves to be shown. It is taken apart into its
+parts, and each is settled the cheapest way that does: by one of the proofs
+offered with what the checker was told, by the two sides being the same, by
+working out a comparison of numbers; and only what is left after that goes to
+a tactic, arithmetic to `omega` and the rest to the side-condition search. -/
+private partial def closeNeeds (env : Environment) (lctx : LocalContext)
+    (kwhnf tidy : Expr → MetaM Expr) (offered : Array Expr) (P : Expr) : TacticM Expr := do
+  let known (e : Expr) : Bool :=
+    e.isForall || (match e.getAppFn with
+      | .const n _ => [``And, ``True, ``Eq, ``LE.le, ``LT.lt, ``Ne, ``Not, ``Sub, ``Or,
+          ``Check.carryNeeds, ``Check.decides].contains n
+      | _ => false)
+  let P ← if known P then pure P else kwhnf P
+  if P.isAppOfArity ``And 2 then
+    let a := P.appFn!.appArg!
+    let b := P.appArg!
+    return mkApp4 (mkConst ``And.intro) a b (← closeNeeds env lctx kwhnf tidy offered a)
+      (← closeNeeds env lctx kwhnf tidy offered b)
+  if P.isConstOf ``True then return mkConst ``True.intro
+  for pr in offered do
+    if Kernel.isDefEqGuarded env lctx (← inferType pr) P then return pr
+  if let some (_, lhs, rhs) := P.eq? then
+    if Kernel.isDefEqGuarded env lctx lhs rhs then
+      return ← mkExpectedTypeHint (← mkEqRefl lhs) P
+  let leaf ← tidy P
+  if leaf.isConstOf ``True then return mkConst ``True.intro
+  if leaf.isAppOfArity ``Check.carryNeeds 2 then
+    let op := leaf.appArg!
+    let reads ← kwhnf (mkApp (mkConst ``AluOp.readsCarry) op)
+    if reads.isConstOf ``Bool.false then
+      return mkApp3 (mkConst ``Check.carryNeeds_of_false) leaf.appFn!.appArg! op
+        (← mkEqRefl (mkConst ``Bool.false))
+  let natLit (e : Expr) : MetaM (Option Nat) := do
+    if e.hasFVar || e.hasExprMVar then return none
+    match ← kwhnf e with
+    | .lit (.natVal k) => return some k
+    | _ => return none
+  let ble (a b : Expr) : MetaM Expr := do
+    return mkApp3 (mkConst ``Nat.le_of_ble_eq_true) a b (← mkEqRefl (mkConst ``Bool.true))
+  let overNat := leaf.getAppNumArgs ≥ 1 && leaf.getAppArgs[0]!.isConstOf ``Nat
+  if leaf.isAppOfArity ``LE.le 4 && overNat then
+    let a := leaf.appFn!.appArg!
+    let b := leaf.appArg!
+    if let some x ← natLit a then
+      if let some y ← natLit b then
+        if x ≤ y then return ← ble a b
+      else if b.isAppOfArity ``HAdd.hAdd 6 then
+        let m := b.appFn!.appArg!
+        let c := b.appArg!
+        if let some y ← natLit c then
+          if x ≤ y then
+            return mkApp5 (mkConst ``Nat.le_trans) a c b (← ble a c)
+              (mkApp2 (mkConst ``Nat.le_add_left) c m)
+  if leaf.isAppOfArity ``LT.lt 4 && overNat then
+    let a := leaf.appFn!.appArg!
+    let b := leaf.appArg!
+    if let some x ← natLit a then
+      if let some y ← natLit b then
+        if x < y then
+          return ← mkExpectedTypeHint (← ble (mkNatAdd a (mkNatLit 1)) b) leaf
+  -- left for a tactic: arithmetic with the sizes written out, to `omega`
+  let arith := overNat &&
+    (leaf.isAppOfArity ``LE.le 4 || leaf.isAppOfArity ``LT.lt 4 || leaf.isAppOfArity ``Eq 3)
+  let goalTy ← if arith then normLeaf kwhnf leaf else pure leaf
+  let g ← mkFreshExprSyntheticOpaqueMVar goalTy
+  let left ← runOn g.mvarId! do
+    if arith then evalTactic (← `(tactic| first | omega | bv_omega | ty_side))
+    else evalTactic (← `(tactic| first | trivial | ty_side))
+  unless left.isEmpty do throwError "left over"
+  return g
+
 /-- One instruction that goes on to the next, typed without the tactic
 framework where the checker covers it: the instruction is read from the
 program's table, the checker is run by the kernel's evaluator, and of the
@@ -2770,7 +3128,8 @@ context it gives only what changed is tidied. The proof is put together
 directly and checked by the kernel with the rest. Returns the goal for the
 rest of the block, or nothing where this does not apply, and then the step is
 taken the long way. -/
-private def fastStep (goal : MVarId) (ty : Expr) (named : Bool) : TacticM (Option MVarId) :=
+private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
+    TacticM (Option MVarId) :=
     goal.withContext do
   unless ty.isAppOfArity ``BlockOk 6 do return none
   if ty.hasExprMVar then return none
@@ -2795,6 +3154,38 @@ private def fastStep (goal : MVarId) (ty : Expr) (named : Bool) : TacticM (Optio
   -- the address of data makes a pointer, which the long way sees to
   if let .lea .w64 _ (.rip _) := instr then return none
   let typeOf (r : Reg) : MetaM Expr := whnf tbl[1 + regIdx r]!
+  -- A pointer to a block of a kind is opened where it is reached through or
+  -- moved on: it becomes a pointer to a block of the shape that kind has.
+  let toOpen? : Option Reg := match instr with
+    | .alu .add .w64 (.rm_i (.reg d) _) => some d
+    | i => match i.memOperand? with
+      | some (.sib (some b) _ _) => some b
+      | _ => none
+  if let some b := toOpen? then
+    let τ ← typeOf b
+    if τ.isAppOfArity ``Ty.ref 3 && b != .rsp then
+      let tag := τ.getAppArgs[0]!
+      let w := τ.getAppArgs[1]!
+      let i := τ.getAppArgs[2]!
+      let kindsE := mkApp2 (mkConst ``MemTy.kinds) Ψ tag
+      let k ← ofExceptKernelException (Kernel.whnf (← getEnv) (← getLCtx) kindsE)
+      unless k.isAppOfArity ``Option.some 2 do return none
+      let S := k.appArg!
+      let newTy := mkApp3 (mkConst ``Ty.ptr) S w i
+      let Γ' := mkAppN Γ.getAppFn (cargs.set! 1
+        (mkApp regs.appFn! (mkAppN regs.appArg!.getAppFn (tbl.set! (1 + regIdx b) newTy))))
+      let ty' := mkAppN ty.getAppFn #[Φ, fetch, sys, Ψ, a, Γ']
+      let rest ← mkFreshExprSyntheticOpaqueMVar ty' (← goal.getTag)
+      let rE := toExpr b
+      let raw := mkApp3 (mkConst ``CtxOf.setReg) Γ rE newTy
+      let eta := mkAppN (mkConst ``BlockOk.regsEta) #[Φ, fetch, sys, Ψ, a, raw, rest]
+      let hr ← mkDecideProof (← mkAppM ``Ne #[rE, mkConst ``Reg.rsp])
+      let regsb := mkApp3 (mkConst ``CtxOf.regs) (mkConst ``Ty) Γ rE
+      let hΓ ← mkExpectedTypeHint (← mkEqRefl τ) (← mkEq regsb τ)
+      let ht ← mkExpectedTypeHint (← mkEqRefl k) (← mkEq kindsE k)
+      goal.assign (mkAppN (mkConst ``BlockOk.openRef)
+        #[Φ, fetch, sys, Ψ, a, Γ, rE, tag, w, i, S, hr, hΓ, ht, eta])
+      return ← fastStep rest.mvarId! ty' named
   -- where a register is looked into or named first, that is done the long way
   if let .movzx _ _ .w8 (.mem (.sib (some b) none _)) := instr then
     if (← typeOf b).isAppOf ``Ty.str then return none
@@ -2804,9 +3195,7 @@ private def fastStep (goal : MVarId) (ty : Expr) (named : Bool) : TacticM (Optio
       if r == r' then
         let τ ← typeOf r
         if τ.isAppOf ``Ty.nullable || τ.isAppOf ``Ty.orErr then return none
-    | i =>
-      if let some (.sib (some b) _ _) := i.memOperand? then
-        if (← typeOf b).isAppOf ``Ty.ref then return none
+    | _ => pure ()
     for r in instr.wantsNamed do
       if (← typeOf r).isConstOf ``Ty.int then return none
   let iE := toExpr instr
@@ -2820,96 +3209,84 @@ private def fastStep (goal : MVarId) (ty : Expr) (named : Bool) : TacticM (Optio
     let some u ← unfoldDefinition? Ψ' | break
     Ψ' := u.headBeta
   let listed := Ψ'.isAppOfArity ``MemTy.ofList 2
-  let chk := if listed then mkApp4 (mkConst ``Check.check) Ψ'.appFn!.appArg! next Γ iE
-    else mkApp3 (mkConst ``Check.straight) next Γ iE
   let env ← getEnv
   let lctx ← getLCtx
   let kwhnf (e : Expr) : MetaM Expr := ofExceptKernelException (Kernel.whnf env lctx e)
-  let r ← kwhnf chk
-  unless r.isAppOfArity ``Option.some 2 do return none
-  let st := r.appArg!
-  let stW ← kwhnf st
-  unless stW.isAppOfArity ``Check.Step.mk 2 do return none
-  let ctxW ← kwhnf stW.appFn!.appArg!
-  unless ctxW.isAppOfArity ``CtxOf.mk 7 do return none
-  let nargs := ctxW.getAppArgs
-  let (sctx, sprocs) ← ctxSimp
-  let tidy (e : Expr) : MetaM Expr := do return (← Meta.dsimp (stripProjs e) sctx sprocs).1
-  -- each register's type: what it was, or what the instruction made it
-  let mut out := tbl
-  for r in allRegs do
-    let j := 1 + regIdx r
-    let e ← kwhnf (mkApp nargs[1]! (toExpr r))
-    unless e == tbl[j]! do
-      unless settledHead env e do return none
-      out := out.set! j (← tidy e)
-  let field (j : Nat) : MetaM Expr := do
-    let new := peelField env lctx nargs[j]!
-    if new == cargs[j]! then return cargs[j]!
-    if Kernel.isDefEqGuarded env lctx new cargs[j]! then return cargs[j]!
-    tidy new
-  let mut ctxN := mkAppN Γ.getAppFn #[cargs[0]!,
-    mkApp regs.appFn! (mkAppN regs.appArg!.getAppFn out),
-    ← field 2, ← field 3, ← field 4, ← field 5, ← field 6]
-  if let some c ← workOutCtx ctxN then ctxN ← tidy c
-  -- anything of the checker's left standing means the tidying fell short
-  if (ctxN.find? fun e => e.isConst && (`TypedAsm.Check).isPrefixOf e.constName!).isSome then
-    return none
-  let needsN ← tidy stW.appArg!
-  let hf ← fetchProof (mkApp fetch a) (toExpr (some (instr, len)))
-  let hc ← mkExpectedTypeHint (← mkEqRefl r) (← mkEq chk r)
-  -- What is left to be shown is most often one of three things that are
-  -- settled by looking: that an operation which does not read the carry flag
-  -- asks nothing of it, a comparison of two numbers, and that there is room
-  -- on a stack known to have some amount more than a number.
-  let natLit (e : Expr) : MetaM (Option Nat) := do
-    if e.hasFVar || e.hasExprMVar then return none
-    match ← kwhnf e with
-    | .lit (.natVal k) => return some k
-    | _ => return none
-  let quick? : Option Expr ← (do
-    if needsN.isConstOf ``True then return some (mkConst ``True.intro)
-    if needsN.isAppOfArity ``Check.carryNeeds 2 then
-      let op := needsN.appArg!
-      let reads ← kwhnf (mkApp (mkConst ``AluOp.readsCarry) op)
-      if reads.isConstOf ``Bool.false then
-        return some (mkApp3 (mkConst ``Check.carryNeeds_of_false) needsN.appFn!.appArg! op
-          (← mkEqRefl (mkConst ``Bool.false)))
+  let run (plan? : Option HintPlan) : TacticM (Option MVarId) := do
+    let chk := match plan? with
+      | some p => mkApp4 (mkConst ``Check.hinted) Ψ'.appFn!.appArg! Γ p.hint iE
+      | none =>
+        if listed then mkApp4 (mkConst ``Check.check) Ψ'.appFn!.appArg! next Γ iE
+        else mkApp3 (mkConst ``Check.straight) next Γ iE
+    let env ← getEnv
+    let lctx ← getLCtx
+    let kwhnf (e : Expr) : MetaM Expr := ofExceptKernelException (Kernel.whnf env lctx e)
+    let r ← kwhnf chk
+    unless r.isAppOfArity ``Option.some 2 do
+      trace[TypedAsm.fast] "the checker has no answer{if plan?.isSome then " (told)" else ""}: {r}"
       return none
-    if needsN.isAppOfArity ``LE.le 4 && needsN.getAppArgs[0]!.isConstOf ``Nat then
-      let a := needsN.appFn!.appArg!
-      let b := needsN.appArg!
-      let some x ← natLit a | return none
-      let ble (a b : Expr) : MetaM Expr := do
-        return mkApp3 (mkConst ``Nat.le_of_ble_eq_true) a b (← mkEqRefl (mkConst ``Bool.true))
-      if let some y ← natLit b then
-        if x ≤ y then return some (← ble a b) else return none
-      if b.isAppOfArity ``HAdd.hAdd 6 then
-        let m := b.appFn!.appArg!
-        let c := b.appArg!
-        if let some y ← natLit c then
-          if x ≤ y then
-            return some (mkApp5 (mkConst ``Nat.le_trans) a c b (← ble a c)
-              (mkApp2 (mkConst ``Nat.le_add_left) c m))
+    let st := r.appArg!
+    let stW ← kwhnf st
+    unless stW.isAppOfArity ``Check.Step.mk 2 do return none
+    let ctxW ← kwhnf stW.appFn!.appArg!
+    unless ctxW.isAppOfArity ``CtxOf.mk 7 do return none
+    let nargs := ctxW.getAppArgs
+    let (sctx, sprocs) ← ctxSimp
+    let tidy (e : Expr) : MetaM Expr := do return (← Meta.dsimp (stripProjs e) sctx sprocs).1
+    -- each register's type: what it was, or what the instruction made it
+    let mut out := tbl
+    for r in allRegs do
+      let j := 1 + regIdx r
+      let e ← kwhnf (mkApp nargs[1]! (toExpr r))
+      unless e == tbl[j]! do
+        unless settledHead env e do return none
+        out := out.set! j (← tidy e)
+    let field (j : Nat) : MetaM Expr := do
+      let new := peelField env lctx nargs[j]!
+      if new == cargs[j]! then return cargs[j]!
+      if Kernel.isDefEqGuarded env lctx new cargs[j]! then return cargs[j]!
+      tidy new
+    let mut ctxN := mkAppN Γ.getAppFn #[cargs[0]!,
+      mkApp regs.appFn! (mkAppN regs.appArg!.getAppFn out),
+      ← field 2, ← field 3, ← field 4, ← field 5, ← field 6]
+    if let some c ← workOutCtx ctxN then ctxN ← tidy c
+    -- anything of the checker's left standing means the tidying fell short
+    if (ctxN.find? fun e => e.isConst && (`TypedAsm.Check).isPrefixOf e.constName!).isSome then
       return none
-    return none : MetaM (Option Expr))
-  let hn ← match quick? with
-    | some h => pure h
-    | none =>
-      let g ← mkFreshExprSyntheticOpaqueMVar needsN
-      let left ← runOn g.mvarId! do evalTactic (← `(tactic| first | trivial | ty_side))
-      unless left.isEmpty do throwError "left over"
-      pure g
-  let rest ← mkFreshExprSyntheticOpaqueMVar
-    (mkAppN ty.getAppFn #[Φ, fetch, sys, Ψ, nextLit, ctxN]) (← goal.getTag)
-  let stCtx := mkApp (mkConst ``Check.Step.ctx) st
-  let hs := if listed then
-      mkAppN (mkConst ``Check.check_sound)
-        #[next, Γ, Ψ'.appFn!.appArg!, Ψ'.appArg!, iE, st, hc, hn]
-    else mkAppN (mkConst ``Check.straight_sound) #[Ψ, next, Γ, iE, st, hc, hn]
-  let eta := mkAppN (mkConst ``BlockOk.regsEta) #[Φ, fetch, sys, Ψ, next, stCtx, rest]
-  goal.assign (mkAppN (mkConst ``BlockOk.step) #[Φ, fetch, sys, Ψ, a, Γ, stCtx, iE, lenE, hf, hs, eta])
-  return some rest.mvarId!
+    let hf ← fetchProof (mkApp fetch a) (toExpr (some (instr, len)))
+    let hc ← mkExpectedTypeHint (← mkEqRefl r) (← mkEq chk r)
+    let hn ← closeNeeds env lctx kwhnf tidy ((plan?.map (·.offered)).getD #[]) stW.appArg!
+    let rest ← mkFreshExprSyntheticOpaqueMVar
+      (mkAppN ty.getAppFn #[Φ, fetch, sys, Ψ, nextLit, ctxN]) (← goal.getTag)
+    let stCtx := mkApp (mkConst ``Check.Step.ctx) st
+    let hs := match plan? with
+      | some p =>
+        mkAppN (mkConst ``Check.hinted_sound)
+          #[next, Γ, Ψ'.appFn!.appArg!, Ψ'.appArg!, p.hint, iE, st, hc, hn]
+      | none =>
+        if listed then
+          mkAppN (mkConst ``Check.check_sound)
+            #[next, Γ, Ψ'.appFn!.appArg!, Ψ'.appArg!, iE, st, hc, hn]
+        else mkAppN (mkConst ``Check.straight_sound) #[Ψ, next, Γ, iE, st, hc, hn]
+    let eta := mkAppN (mkConst ``BlockOk.regsEta) #[Φ, fetch, sys, Ψ, next, stCtx, rest]
+    goal.assign (mkAppN (mkConst ``BlockOk.step) #[Φ, fetch, sys, Ψ, a, Γ, stCtx, iE, lenE, hf, hs, eta])
+    return some rest.mvarId!
+  -- told where the operand is, where looking does not say
+  let plan (allowKeep : Bool) : MetaM (Option HintPlan) := do
+    if listed then
+      planHint instr typeOf cargs[2]! cargs[5]! cargs[4]! Ψ'.appFn!.appArg! kwhnf allowKeep
+    else pure none
+  let plan? ← plan true
+  if (plan?.map (·.keep)).getD false then
+    -- keeping the type that is there, if what is stored has it; else giving
+    -- the bytes the type of what is stored
+    let s ← saveState
+    try
+      if let some g ← run plan? then return some g
+    catch _ => pure ()
+    s.restore
+    return ← run (← plan false)
+  run plan?
 
 /-- What a register holding the address `v` may be made a pointer to, where
 `v` is the address of a label with one declared context: a function, where
@@ -3027,7 +3404,10 @@ private partial def typeStepCore (named : Bool := false) : TacticM StepResult :=
   -- what is saved, to go back to, is the block with its address written out
   setGoals (goal :: others)
   let saved ← saveState
-  let fast? ← try fastStep goal ty named catch _ => do saved.restore; pure none
+  let fast? ← try fastStep goal ty named catch e => do
+    saved.restore
+    trace[TypedAsm.fast] "the checker's step failed: {e.toMessageData}"
+    pure none
   if let some rest := fast? then
     setGoals (rest :: others)
     return .stepped
@@ -3040,6 +3420,14 @@ private partial def typeStepCore (named : Bool := false) : TacticM StepResult :=
     let some m ← instrsOf ty.getAppArgs[1]! | return none
     let some (i, _) := m[n]? | return none
     return if i.endsBlock then some i else none) <|> pure none
+  -- `set_option trace.TypedAsm.fast true` lists the steps the checker did not take
+  if ended?.isNone then
+    trace[TypedAsm.fast] "by the rules: {(← (do
+      let a := ty.getAppArgs[4]!
+      unless isAddrLit a do return none
+      let some n := a.appArg!.nat? | return none
+      let some m ← instrsOf ty.getAppArgs[1]! | return none
+      return (m[n]?).map (·.1.toAsm)) <|> pure none).getD "?"}"
   if let some instr := ended? then
     if let .syscall := instr then
       if let some nr ← syscallNumber ty.getAppArgs[5]! then

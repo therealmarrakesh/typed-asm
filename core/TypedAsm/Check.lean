@@ -52,6 +52,16 @@ def carryNeeds (Γ : Ctx) (op : AluOp) : Prop :=
 theorem carryNeeds_of_false (Γ : Ctx) (op : AluOp) (h : op.readsCarry = false) :
     carryNeeds Γ op := fun h' => absurd h' (by rw [h]; decide)
 
+/-- The displacement of a memory operand, where it reaches forward. -/
+def dispOf (disp : BitVec 32) : Option Nat :=
+  if disp.toNat < 2 ^ 31 then some disp.toNat else none
+
+theorem dispOf_spec {disp : BitVec 32} {d : Nat} (h : dispOf disp = some d) : byteDisp d disp := by
+  unfold dispOf at h
+  split at h
+  · next hlt => cases h; exact ⟨by simp, hlt⟩
+  · cases h
+
 /-- A 32-bit copy between registers. -/
 def mov32 (Γ : Ctx) (d s : Reg) : Option Step :=
   if d = .rsp then none
@@ -95,6 +105,19 @@ def aluRI (Γ : Ctx) (op : AluOp) (w : Width) (d : Reg) (imm : BitVec 32) : Opti
             else Γ) with
             flags := (· = (op.apply (a.setWidth 32) (imm.signExtend 32)).2) }, True⟩
     | .int => some ⟨Γ.afterAlu op d, carryNeeds Γ op⟩
+    | .ptr S wr off =>
+      -- a pointer moved on stays a pointer into its block, that much further in
+      match op, w, dispOf imm with
+      | .add, .w64, some k =>
+        some ⟨{ Γ.setReg d (.ptr S wr (off + k)) with flags := Flags.Known }, True⟩
+      | _, _, _ => none
+    | .str true =>
+      -- on from a byte of a text that is not its last
+      match op, w with
+      | .add, .w64 =>
+        if imm = 1 then some ⟨{ Γ.setReg d (.str false) with flags := Flags.Known }, True⟩
+        else none
+      | _, _ => none
     | _ => none
 
 /-- A `test` of one register against another. -/
@@ -146,16 +169,6 @@ theorem pieceAt_spec : ∀ (σ : List Shape) (k₀ d : Nat) {k : Nat} {S : Shape
       refine ⟨j + 1, by omega, hj, ?_, hi⟩
       show d = T.size + stackOff σ j + i
       omega
-
-/-- The displacement of a memory operand, where it reaches forward. -/
-def dispOf (disp : BitVec 32) : Option Nat :=
-  if disp.toNat < 2 ^ 31 then some disp.toNat else none
-
-theorem dispOf_spec {disp : BitVec 32} {d : Nat} (h : dispOf disp = some d) : byteDisp d disp := by
-  unfold dispOf at h
-  split at h
-  · next hlt => cases h; exact ⟨by simp, hlt⟩
-  · cases h
 
 /-- Loading the typed value at a place on the stack. -/
 def loadStack (Γ : Ctx) (r : Reg) (disp : BitVec 32) : Option Step :=
@@ -372,6 +385,16 @@ theorem aluRI_sound {op : AluOp} {w : Width} {d : Reg} {imm : BitVec 32} {st : S
         · cases h; exact .aluExact hd ha hcarry
         · cases h; exact .aluExact32 hd ha hcarry
     · cases h; exact .aluRI hd hn
+    · next S wr off hΓ =>
+      split at h
+      · next k hk => cases h; exact .addPtr hd hΓ (dispOf_spec hk)
+      · cases h
+    · next hΓ =>
+      split at h
+      · split at h
+        · next hi => cases h; subst hi; exact .strNext hd hΓ
+        · cases h
+      · cases h
     · cases h
 
 theorem testRR_sound {r r' : Reg} {st : Step} (h : testRR Γ r r' = some st) :
@@ -1333,7 +1356,903 @@ theorem check_sound {i : Instr} {st : Step} (h : check bs next Γ i = some st) (
   · next st' hs => cases h; exact straight_sound hs hn
   · exact more_sound h hn
 
+/-! ## Operands the context does not place by evaluation
+
+A pointer some unknown number of bytes into its block, an index that is not
+a number, a block the context owns at an address that is a variable: for
+these, looking does not say where the operand's bytes are, since that turns
+on a comparison between things that are not numbers. So the checker is told
+where they are, and checks it: what it is told picks the block and the byte,
+and what cannot be settled by evaluation, an equation between addresses or a
+bound, is left to be shown with the rest. Being told wrongly costs nothing
+but the step: the conditions left then do not hold. -/
+
+/-- Where the bytes of a memory operand are. -/
+inductive Where
+  /-- In the block the base register points into. -/
+  | ptr
+  /-- Byte `j` of the block the context owns at place `k`. -/
+  | owned (k j : Nat)
+  /-- Byte `i` of piece `k` of the stack. -/
+  | piece (k i : Nat)
+  /-- Byte `d` of the program's block at `base`. -/
+  | block (base : BitVec 64) (d : Nat)
+  /-- The instruction has no operand in memory. -/
+  | reg
+
+/-- Which element of an array a byte is in: the block is `n` copies of
+`shape`, and the byte is byte `f` of copy `i`. -/
+structure Elem where
+  n : Nat
+  shape : Shape
+  i : Nat
+  f : Nat
+
+/-- What the checker is told about an instruction. -/
+structure Hint where
+  place : Where
+  /-- The element of an array the operand is in, where the block is one. -/
+  elem : Option Elem := none
+  /-- For a store over a typed value of an owned block: keep the type it has. -/
+  keep : Bool := false
+  /-- What the flags make of the instruction's condition, where they say. -/
+  taken : Option Bool := none
+
+/-- The address a memory operand names, where the registers it is computed
+from hold exactly known values. -/
+def ea (Γ : Ctx) : Mem → Option (BitVec 64)
+  | .sib (some b) none disp =>
+    if b = .rsp then none
+    else match exactly (Γ.regs b) with
+      | some v => some (v + disp.signExtend 64)
+      | none => none
+  | .sib (some b) (some (x, sc)) disp =>
+    if b = .rsp then none
+    else match exactly (Γ.regs b), exactly (Γ.regs x.toReg) with
+      | some v, some c => some (v + (c <<< sc.shift) + disp.signExtend 64)
+      | _, _ => none
+  | .sib none none disp => some (disp.signExtend 64)
+  | .sib none (some (x, sc)) disp =>
+    match exactly (Γ.regs x.toReg) with
+    | some c => some ((c <<< sc.shift) + disp.signExtend 64)
+    | none => none
+  | .rip _ => none
+
+theorem ea_spec {m : Mem} {p : BitVec 64} (h : ea Γ m = some p) : EaIs Γ m p := by
+  unfold ea at h
+  split at h
+  · split at h
+    · cases h
+    · next hb =>
+      split at h
+      · next v hv => cases h; exact .base hb (exactly_eq hv)
+      · cases h
+  · split at h
+    · cases h
+    · next hb =>
+      split at h
+      · next v c hv hc => cases h; exact .indexed hb (exactly_eq hv) (exactly_eq hc)
+      · cases h
+  · cases h; exact .abs
+  · split at h
+    · next c hc => cases h; exact .absIndexed (exactly_eq hc)
+    · cases h
+  · cases h
+
+/-- How many bytes on from its base an operand reaches: its displacement,
+and with an index that holds an exactly known value, that value scaled. -/
+def reach (Γ : Ctx) : Option (IndexReg × Scale) → BitVec 32 → Option Nat
+  | none, disp => dispOf disp
+  | some (x, sc), disp =>
+    match exactly (Γ.regs x.toReg), dispOf disp with
+    | some c, some d => some (c.toNat * 2 ^ sc.shift + d)
+    | _, _ => none
+
+theorem sext_toNat {disp : BitVec 32} (hd : disp.toNat < 2 ^ 31) :
+    disp.signExtend 64 = BitVec.ofNat 64 disp.toNat := by
+  have h := sext_small hd
+  rwa [BitVec.ofNat_toNat, BitVec.setWidth_eq] at h
+
+/-- The byte a scaled index and a displacement reach. It holds for any
+index, since addresses wrap. -/
+theorem index_bytes (c : BitVec 64) (sc : Scale) (disp : BitVec 32) (hd : disp.toNat < 2 ^ 31) :
+    (c <<< sc.shift) + disp.signExtend 64
+      = BitVec.ofNat 64 (c.toNat * 2 ^ sc.shift + disp.toNat) := by
+  apply BitVec.eq_of_toNat_eq
+  rw [sext_toNat hd]
+  simp only [BitVec.toNat_add, BitVec.toNat_shiftLeft, BitVec.toNat_ofNat, Nat.shiftLeft_eq]
+  generalize c.toNat * 2 ^ sc.shift = m
+  omega
+
+theorem dispOf_toNat {disp : BitVec 32} {d : Nat} (h : dispOf disp = some d) :
+    d = disp.toNat ∧ disp.toNat < 2 ^ 31 := by
+  unfold dispOf at h
+  split at h
+  · next hlt => cases h; exact ⟨rfl, hlt⟩
+  · cases h
+
+theorem reach_index {x : IndexReg} {sc : Scale} {disp : BitVec 32} {d : Nat}
+    (h : reach Γ (some (x, sc)) disp = some d) :
+    ∃ c, Γ.regs x.toReg = .eq c ∧ (c <<< sc.shift) + disp.signExtend 64 = BitVec.ofNat 64 d := by
+  simp only [reach] at h
+  split at h
+  · next c k hc hk =>
+    cases h
+    obtain ⟨rfl, hlt⟩ := dispOf_toNat hk
+    exact ⟨c, exactly_eq hc, index_bytes c sc disp hlt⟩
+  · cases h
+
+/-- That byte `o` of `S` is the byte of the element of an array that the
+checker was told of, where it was told of one. -/
+def inElem (S : Shape) (o : Nat) : Option Elem → Prop
+  | none => True
+  | some e => S = e.shape.rep e.n ∧ e.i < e.n ∧ o = e.i * e.shape.size + e.f
+
+/-- The typed value at a byte of a block: looked up, or for an element of an
+array, looked up in the element. -/
+def typeAt (S : Shape) (o : Nat) : Option Elem → Option Ty
+  | none => S.valAt o
+  | some e => if e.shape.fits then e.shape.valAt e.f else none
+
+/-- Whether the eight bytes at a byte of a block are one typed value's alone. -/
+def soleAt (S : Shape) (o : Nat) : Option Elem → Bool
+  | none => S.sole o
+  | some e => e.shape.fits && (e.shape.sole e.f && decide (e.f + 8 ≤ e.shape.size))
+
+/-- Whether `n` bytes of a block are plain. -/
+def freeAt (S : Shape) (o n : Nat) : Option Elem → Bool
+  | none => S.free o n
+  | some e => e.shape.fits && (e.shape.free e.f n && decide (e.f + n ≤ e.shape.size))
+
+theorem typeAt_spec {S : Shape} {o : Nat} {e : Option Elem} {τ : Ty}
+    (h : typeAt S o e = some τ) (he : inElem S o e) : S.valAt o = some τ := by
+  cases e with
+  | none => exact h
+  | some e =>
+    obtain ⟨rfl, hi, rfl⟩ := he
+    simp only [typeAt] at h
+    split at h
+    · next hf => exact ShapeOf.valAt_rep hf hi h
+    · cases h
+
+theorem soleAt_spec {S : Shape} {o : Nat} {e : Option Elem}
+    (h : soleAt S o e = true) (he : inElem S o e) : S.sole o = true := by
+  cases e with
+  | none => exact h
+  | some e =>
+    obtain ⟨rfl, hi, rfl⟩ := he
+    simp only [soleAt, Bool.and_eq_true, decide_eq_true_eq] at h
+    exact ShapeOf.sole_rep h.1 hi h.2.2 h.2.1
+
+theorem freeAt_spec {S : Shape} {o n : Nat} {e : Option Elem}
+    (h : freeAt S o n e = true) (he : inElem S o e) : S.free o n = true := by
+  cases e with
+  | none => exact h
+  | some e =>
+    obtain ⟨rfl, hi, rfl⟩ := he
+    simp only [freeAt, Bool.and_eq_true, decide_eq_true_eq] at h
+    exact ShapeOf.free_rep h.1 hi h.2.2 h.2.1
+
+theorem toNat_ofNat_lt {j : Nat} (h : j < 2 ^ 64) : (BitVec.ofNat 64 j).toNat = j := by
+  rw [BitVec.toNat_ofNat]; exact Nat.mod_eq_of_lt h
+
+theorem toNat_ofNat_add_le {j n m : Nat} (h : j + n ≤ m) : (BitVec.ofNat 64 j).toNat + n ≤ m := by
+  rw [BitVec.toNat_ofNat]
+  exact Nat.le_trans (Nat.add_le_add_right (Nat.mod_le _ _) _) h
+
+variable {bs : List (BitVec 64 × Layout)} {kinds : List (Nat × Shape)}
+
+/-- What is left to be shown for `n` bytes to be read from an operand that
+is where the checker was told. -/
+def readsAt (bs : List (BitVec 64 × Layout)) (Γ : Ctx) (w : Where) (n : Nat) (m : Mem) :
+    Option Prop :=
+  match w, m with
+  | .ptr, .sib (some b) ix disp =>
+    if b = .rsp then none
+    else match Γ.regs b, reach Γ ix disp with
+      | .ptr S _ off, some d => some (off + d + n ≤ S.size)
+      | _, _ => none
+  | .owned k j, m =>
+    match ea Γ m, Γ.owned[k]? with
+    | some p, some (a, S) => some (p = a + BitVec.ofNat 64 j ∧ j + n ≤ S.size)
+    | _, _ => none
+  | .piece k i, .sib (some .rsp) ix disp =>
+    match reach Γ ix disp, Γ.stack[k]? with
+    | some d, some S => some (d = stackOff Γ.stack k + i ∧ i + n ≤ S.size)
+    | _, _ => none
+  | .block base d, m =>
+    match ea Γ m, bs.find? (·.1 = base) with
+    | some p, some y => some (p = base + BitVec.ofNat 64 d ∧ d + n ≤ y.2.shape.size)
+    | _, _ => none
+  | _, _ => none
+
+theorem readsAt_sound {w : Where} {n : Nat} {m : Mem} {P : Prop}
+    (h : readsAt bs Γ w n m = some P) (hp : P) :
+    ReadOk (MemTy.ofList bs kinds) next Γ n (.mem m) := by
+  unfold readsAt at h
+  split at h
+  · next b ix disp =>
+    split at h
+    · cases h
+    · next hb =>
+      split at h
+      · next S wr off d hΓ hr =>
+        cases h
+        cases ix with
+        | none => exact .field hb hΓ (dispOf_spec hr) hp
+        | some xs =>
+          obtain ⟨c, hx, he⟩ := reach_index (x := xs.1) (sc := xs.2) hr
+          exact .indexed hb hΓ hx he hp
+      · cases h
+  · next k j m =>
+    split at h
+    · next p a S hea ho =>
+      cases h
+      exact .owned (ea_spec hea) ⟨ho, hp.1⟩ (toNat_ofNat_add_le hp.2)
+    · cases h
+  · next k i ix disp =>
+    split at h
+    · next d S hr hs =>
+      cases h
+      cases ix with
+      | none => exact .slot (dispOf_spec hr) ⟨hs, hp.1⟩ hp.2
+      | some xs =>
+        obtain ⟨c, hx, he⟩ := reach_index (x := xs.1) (sc := xs.2) hr
+        exact .slotIndexed hx he ⟨hs, hp.1⟩ hp.2
+    · cases h
+  · split at h
+    · next p y hea hy =>
+      cases h
+      refine .placed (ea_spec hea) (l := y.2) ?_ hp.1 hp.2
+      show (bs.find? _).map (·.2) = some y.2
+      rw [hy]; rfl
+    · cases h
+  · cases h
+
+/-- The context after `n` plain bytes are stored to an operand that is where
+the checker was told, and what is left to be shown. -/
+def writesAt (bs : List (BitVec 64 × Layout)) (Γ : Ctx) (h : Hint) (n : Nat) (m : Mem) :
+    Option (Ctx × Prop) :=
+  match h.place, m with
+  | .ptr, .sib (some b) ix disp =>
+    if b = .rsp then none
+    else match Γ.regs b, reach Γ ix disp with
+      | .ptr S true off, some d =>
+        if freeAt S (off + d) n h.elem then
+          some (Γ, off + d + n ≤ S.size ∧ inElem S (off + d) h.elem)
+        else none
+      | _, _ => none
+  | .owned k j, m =>
+    match ea Γ m, Γ.owned[k]? with
+    | some p, some (a, S) =>
+      if freeAt S j n h.elem then
+        some (Γ, (p = a + BitVec.ofNat 64 j ∧ j + n ≤ S.size) ∧ j < 2 ^ 64 ∧ inElem S j h.elem)
+      else
+        some ({ Γ with owned := Γ.owned.set k (a, S.clear j n) },
+          (p = a + BitVec.ofNat 64 j ∧ j + n ≤ S.size) ∧ j < 2 ^ 64)
+    | _, _ => none
+  | .piece k i, .sib (some .rsp) ix disp =>
+    match reach Γ ix disp, Γ.stack[k]? with
+    | some d, some S =>
+      some ({ Γ with stack := Γ.stack.set k (S.clear i n) },
+        d = stackOff Γ.stack k + i ∧ i + n ≤ S.size)
+    | _, _ => none
+  | .block base d, m =>
+    match ea Γ m, bs.find? (·.1 = base) with
+    | some p, some y =>
+      if y.2.writable ∧ freeAt y.2.shape d n h.elem then
+        some (Γ, (p = base + BitVec.ofNat 64 d ∧ d + n ≤ y.2.shape.size) ∧
+          inElem y.2.shape d h.elem)
+      else none
+    | _, _ => none
+  | _, _ => none
+
+theorem writesAt_sound {hint : Hint} {n : Nat} {m : Mem} {x : Ctx × Prop}
+    (h : writesAt bs Γ hint n m = some x) (hp : x.2) :
+    WriteIntOk (MemTy.ofList bs kinds) next Γ n (.mem m) x.1 := by
+  unfold writesAt at h
+  split at h
+  · next b ix disp _ =>
+    split at h
+    · cases h
+    · next hb =>
+      split at h
+      · next S off d hΓ hr =>
+        split at h
+        · next hfree =>
+          cases h
+          have hf := freeAt_spec hfree hp.2
+          cases ix with
+          | none => exact .field hb hΓ (dispOf_spec hr) hp.1 hf
+          | some xs =>
+            obtain ⟨c, hx, he⟩ := reach_index (x := xs.1) (sc := xs.2) hr
+            exact .indexed hb hΓ hx he hp.1 hf
+        · cases h
+      · cases h
+  · next k j m _ =>
+    split at h
+    · next p a S hea ho =>
+      split at h
+      · next hfree =>
+        cases h
+        have e := toNat_ofNat_lt hp.2.1
+        exact .owned (ea_spec hea) ⟨ho, hp.1.1⟩ (by rw [e]; exact hp.1.2)
+          (by rw [e]; exact freeAt_spec hfree hp.2.2)
+      · cases h
+        have e := toNat_ofNat_lt hp.2
+        have := WriteIntOk.ownedClear (Ψ := MemTy.ofList bs kinds) (next := next) (n := n)
+          (ea_spec hea) ⟨ho, hp.1.1⟩ (by rw [e]; exact hp.1.2)
+        rw [e] at this
+        exact this
+    · cases h
+  · next k i ix disp _ =>
+    split at h
+    · next d S hr hs =>
+      cases h
+      cases ix with
+      | none => exact .slot (dispOf_spec hr) ⟨hs, hp.1⟩ hp.2
+      | some xs =>
+        obtain ⟨c, hx, he⟩ := reach_index (x := xs.1) (sc := xs.2) hr
+        exact .slotIndexed hx he ⟨hs, hp.1⟩ hp.2
+    · cases h
+  · split at h
+    · next p y hea hy =>
+      split at h
+      · next hc =>
+        cases h
+        refine .placed (ea_spec hea) (l := y.2) ?_ hc.1 hp.1.1 hp.1.2 (freeAt_spec hc.2 hp.2)
+        show (bs.find? _).map (·.2) = some y.2
+        rw [hy]; rfl
+      · cases h
+    · cases h
+  · cases h
+
+/-- What lets bytes be stored also lets them be read. -/
+theorem writesAt_reads {hint : Hint} {n : Nat} {m : Mem} {x : Ctx × Prop}
+    (h : writesAt bs Γ hint n m = some x) (hp : x.2) :
+    ReadOk (MemTy.ofList bs kinds) next Γ n (.mem m) := by
+  obtain ⟨Γ', P⟩ := x
+  have hw := writesAt_sound (kinds := kinds) (next := next) h hp
+  cases hw with
+  | field hb hΓ hd hin _ => exact .field hb hΓ hd hin
+  | slot hd hat hin => exact .slot hd hat hin
+  | slotIndexed hx he hat hin => exact .slotIndexed hx he hat hin
+  | indexed hb hΓ hx he hin _ => exact .indexed hb hΓ hx he hin
+  | global hl _ ha hin _ => exact .global hl ha hin
+  | owned he hat hin _ => exact .owned he hat hin
+  | ownedClear he hat hin => exact .owned he hat hin
+  | placed he hl _ ha hin _ => exact .placed he hl ha hin
+
+theorem find_ofList {base : BitVec 64} {y : BitVec 64 × Layout}
+    (hy : bs.find? (·.1 = base) = some y) : MemTy.ofList bs kinds base = some y.2 := by
+  show (bs.find? _).map (·.2) = some y.2
+  rw [hy]; rfl
+
+/-- A 64-bit load from an operand that is where the checker was told: the
+typed value there, or a number where the bytes are plain. -/
+def loadAt (bs : List (BitVec 64 × Layout)) (Γ : Ctx) (h : Hint) (d : Reg) (m : Mem) :
+    Option Step :=
+  if d = .rsp then none
+  else match h.place, m with
+    | .ptr, .sib (some b) ix disp =>
+      if b = .rsp then none
+      else match Γ.regs b, reach Γ ix disp with
+        | .ptr S _ off, some k =>
+          match typeAt S (off + k) h.elem with
+          | some τ => some ⟨Γ.setReg d τ, inElem S (off + k) h.elem⟩
+          | none => some ⟨Γ.setReg d .int, off + k + 8 ≤ S.size⟩
+        | _, _ => none
+    | .owned k j, m =>
+      match ea Γ m, Γ.owned[k]? with
+      | some p, some (a, S) =>
+        match typeAt S j h.elem with
+        | some τ =>
+          some ⟨Γ.setReg d τ, p = a + BitVec.ofNat 64 j ∧ j < 2 ^ 64 ∧ inElem S j h.elem⟩
+        | none => some ⟨Γ.setReg d .int, p = a + BitVec.ofNat 64 j ∧ j + 8 ≤ S.size⟩
+      | _, _ => none
+    | .piece k i, .sib (some .rsp) ix disp =>
+      match reach Γ ix disp, Γ.stack[k]? with
+      | some dd, some S =>
+        match typeAt S i h.elem with
+        | some τ => some ⟨Γ.setReg d τ, dd = stackOff Γ.stack k + i ∧ inElem S i h.elem⟩
+        | none => some ⟨Γ.setReg d .int, dd = stackOff Γ.stack k + i ∧ i + 8 ≤ S.size⟩
+      | _, _ => none
+    | .block base dd, m =>
+      match ea Γ m, bs.find? (·.1 = base) with
+      | some p, some y =>
+        match typeAt y.2.shape dd h.elem with
+        | some τ =>
+          some ⟨Γ.setReg d τ, p = base + BitVec.ofNat 64 dd ∧ inElem y.2.shape dd h.elem⟩
+        | none =>
+          some ⟨Γ.setReg d .int, p = base + BitVec.ofNat 64 dd ∧ dd + 8 ≤ y.2.shape.size⟩
+      | _, _ => none
+    | _, _ => none
+
+theorem loadAt_sound {hint : Hint} {d : Reg} {m : Mem} {st : Step}
+    (h : loadAt bs Γ hint d m = some st) (hn : st.needs) :
+    Straight (MemTy.ofList bs kinds) next Γ (.mov .w64 (.r_m d m)) st.ctx := by
+  unfold loadAt at h
+  split at h
+  · cases h
+  next hd =>
+  split at h
+  · next b ix disp _ =>
+    split at h
+    · cases h
+    next hb =>
+    split at h
+    · next S wr off k hΓ hr =>
+      split at h
+      · next τ hτ =>
+        cases h
+        have hv := typeAt_spec hτ hn
+        cases ix with
+        | none => exact .loadField hd hb hΓ (dispOf_spec hr) hv
+        | some xs =>
+          obtain ⟨c, hx, he⟩ := reach_index (x := xs.1) (sc := xs.2) hr
+          exact .loadIndexed hd hb hΓ hx he hv
+      · cases h
+        cases ix with
+        | none => exact .loadInt hd (.field hb hΓ (dispOf_spec hr) hn)
+        | some xs =>
+          obtain ⟨c, hx, he⟩ := reach_index (x := xs.1) (sc := xs.2) hr
+          exact .loadInt hd (.indexed hb hΓ hx he hn)
+    · cases h
+  · split at h
+    · next p a S hea ho =>
+      split at h
+      · next τ hτ =>
+        cases h
+        have hv := typeAt_spec hτ hn.2.2
+        rw [← toNat_ofNat_lt hn.2.1] at hv
+        exact .loadOwned hd (ea_spec hea) ⟨ho, hn.1⟩ hv
+      · cases h
+        exact .loadInt hd (.owned (ea_spec hea) ⟨ho, hn.1⟩ (toNat_ofNat_add_le hn.2))
+    · cases h
+  · next k i ix disp _ =>
+    split at h
+    · next dd S hr hs =>
+      split at h
+      · next τ hτ =>
+        cases h
+        have hv := typeAt_spec hτ hn.2
+        cases ix with
+        | none => exact .loadStack hd (dispOf_spec hr) ⟨hs, hn.1⟩ hv
+        | some xs =>
+          obtain ⟨c, hx, he⟩ := reach_index (x := xs.1) (sc := xs.2) hr
+          exact .loadStackIndexed hd hx he ⟨hs, hn.1⟩ hv
+      · cases h
+        cases ix with
+        | none => exact .loadInt hd (.slot (dispOf_spec hr) ⟨hs, hn.1⟩ hn.2)
+        | some xs =>
+          obtain ⟨c, hx, he⟩ := reach_index (x := xs.1) (sc := xs.2) hr
+          exact .loadInt hd (.slotIndexed hx he ⟨hs, hn.1⟩ hn.2)
+    · cases h
+  · split at h
+    · next p y hea hy =>
+      split at h
+      · next τ hτ =>
+        cases h
+        exact .loadHeld hd (.placed (ea_spec hea) (find_ofList hy) hn.1 (typeAt_spec hτ hn.2))
+      · cases h
+        exact .loadInt hd (.placed (ea_spec hea) (find_ofList hy) hn.1 hn.2)
+    · cases h
+  · cases h
+
+/-- A 64-bit store to an operand that is where the checker was told. Over a
+typed value of a block that others may point into, a value of its type;
+into a block the context owns or a piece of the stack, anything, and the
+bytes take its type. -/
+def storeAt (bs : List (BitVec 64 × Layout)) (Γ : Ctx) (h : Hint) (s : Reg) (m : Mem) :
+    Option Step :=
+  if s = .rsp then none
+  else match h.place, m with
+    | .ptr, .sib (some b) ix disp =>
+      if b = .rsp then none
+      else match Γ.regs b, reach Γ ix disp with
+        | .ptr S true off, some k =>
+          match typeAt S (off + k) h.elem with
+          | some τ =>
+            if soleAt S (off + k) h.elem then
+              some ⟨Γ, inElem S (off + k) h.elem ∧ Sub (Γ.regs s) τ⟩
+            else none
+          | none => (writesAt bs Γ h 8 (.sib (some b) ix disp)).map fun x => ⟨x.1, x.2⟩
+        | _, _ => none
+    | .owned k j, m =>
+      match ea Γ m, Γ.owned[k]? with
+      | some p, some (a, S) =>
+        if h.keep then
+          match typeAt S j h.elem with
+          | some τ =>
+            if soleAt S j h.elem then
+              some ⟨Γ, (p = a + BitVec.ofNat 64 j ∧ j < 2 ^ 64) ∧ inElem S j h.elem ∧
+                Sub (Γ.regs s) τ⟩
+            else none
+          | none => none
+        else if (Γ.regs s).isInt then (writesAt bs Γ h 8 m).map fun x => ⟨x.1, x.2⟩
+        else
+          some ⟨{ Γ with owned := Γ.owned.set k (a, S.set j (Γ.regs s)) },
+            (p = a + BitVec.ofNat 64 j ∧ j + 8 ≤ S.size) ∧ j < 2 ^ 64⟩
+      | _, _ => none
+    | .piece k i, .sib (some .rsp) none disp =>
+      match dispOf disp, Γ.stack[k]? with
+      | some dd, some S =>
+        some ⟨{ Γ with stack := Γ.stack.set k (S.set i (Γ.regs s)) },
+          dd = stackOff Γ.stack k + i ∧ i + 8 ≤ S.size⟩
+      | _, _ => none
+    | _, m => (writesAt bs Γ h 8 m).map fun x => ⟨x.1, x.2⟩
+
+theorem writesAt_step {hint : Hint} {n : Nat} {m : Mem} {st : Step}
+    (h : (writesAt bs Γ hint n m).map (fun x => (⟨x.1, x.2⟩ : Step)) = some st) (hn : st.needs) :
+    WriteIntOk (MemTy.ofList bs kinds) next Γ n (.mem m) st.ctx := by
+  cases hw : writesAt bs Γ hint n m with
+  | none => rw [hw] at h; cases h
+  | some x => rw [hw] at h; cases h; exact writesAt_sound hw hn
+
+theorem storeAt_sound {hint : Hint} {s : Reg} {m : Mem} {st : Step}
+    (h : storeAt bs Γ hint s m = some st) (hn : st.needs) :
+    Straight (MemTy.ofList bs kinds) next Γ (.mov .w64 (.rm_r (.mem m) s)) st.ctx := by
+  unfold storeAt at h
+  split at h
+  · cases h
+  next hs =>
+  split at h
+  · next b ix disp _ =>
+    split at h
+    · cases h
+    next hb =>
+    split at h
+    · next S off k hΓ hr =>
+      split at h
+      · next τ hτ =>
+        split at h
+        · next hso =>
+          cases h
+          have hv := typeAt_spec hτ hn.1
+          have hso' := soleAt_spec hso hn.1
+          cases ix with
+          | none => exact .storeField hb hs hΓ (dispOf_spec hr) hv hso' hn.2
+          | some xs =>
+            obtain ⟨c, hx, he⟩ := reach_index (x := xs.1) (sc := xs.2) hr
+            exact .storeIndexed hb hs hΓ hx he hv hso' hn.2
+        · cases h
+      · exact .storeInt (writesAt_step h hn)
+    · cases h
+  · split at h
+    · next p a S hea ho =>
+      split at h
+      · split at h
+        · next τ hτ =>
+          split at h
+          · next hso =>
+            cases h
+            have e := toNat_ofNat_lt hn.1.2
+            exact .storeOwnedKeep hs (ea_spec hea) ⟨ho, hn.1.1⟩
+              (by rw [e]; exact typeAt_spec hτ hn.2.1) (by rw [e]; exact soleAt_spec hso hn.2.1)
+              hn.2.2
+          · cases h
+        · cases h
+      · split at h
+        · exact .storeInt (writesAt_step h hn)
+        · cases h
+          have e := toNat_ofNat_lt hn.2
+          have := Straight.storeOwned (Ψ := MemTy.ofList bs kinds) (next := next) hs
+            (ea_spec hea) ⟨ho, hn.1.1⟩ (by rw [e]; exact hn.1.2)
+          rw [e] at this
+          exact this
+    · cases h
+  · next k i disp _ =>
+    split at h
+    · next dd S hr hs' =>
+      cases h
+      exact .storeStack hs (dispOf_spec hr) ⟨hs', hn.1⟩ hn.2
+    · cases h
+  · exact .storeInt (writesAt_step h hn)
+
+/-- **The checker for an instruction it is told something about**: where the
+operand in memory is, or what the flags make of a condition. -/
+def hinted (bs : List (BitVec 64 × Layout)) (Γ : Ctx) (h : Hint) : Instr → Option Step
+  | .mov .w64 (.r_m d m) => loadAt bs Γ h d m
+  | .mov .w64 (.rm_r (.mem m) s) => storeAt bs Γ h s m
+  | .mov w (.r_m d m) =>
+    if d = .rsp then none
+    else (readsAt bs Γ h.place w.bytes.toNat m).map fun P => ⟨Γ.setReg d .int, P⟩
+  | .mov w (.rm_r (.mem m) _) => (writesAt bs Γ h w.bytes.toNat m).map fun x => ⟨x.1, x.2⟩
+  | .mov w (.rm_i (.mem m) _) => (writesAt bs Γ h w.bytes.toNat m).map fun x => ⟨x.1, x.2⟩
+  | .store8 m _ => (writesAt bs Γ h 1 m).map fun x => ⟨x.1, x.2⟩
+  | .store16 m _ => (writesAt bs Γ h 2 m).map fun x => ⟨x.1, x.2⟩
+  | .alu op w (.r_m d m) =>
+    if d = .rsp then none
+    else (readsAt bs Γ h.place w.bytes.toNat m).map fun P =>
+      ⟨Γ.afterAlu op d, P ∧ carryNeeds Γ op⟩
+  | .alu op w (.rm_r (.mem m) _) | .alu op w (.rm_i (.mem m) _) =>
+    if op.writesDst then
+      (writesAt bs Γ h w.bytes.toNat m).map fun x =>
+        ⟨{ x.1 with flags := Flags.Known }, x.2 ∧ carryNeeds Γ op⟩
+    else (readsAt bs Γ h.place w.bytes.toNat m).map fun P =>
+      ⟨{ Γ with flags := Flags.Known }, P⟩
+  | .test w (.mem m) _ =>
+    (readsAt bs Γ h.place w.bytes.toNat m).map fun P => ⟨{ Γ with flags := Flags.Known }, P⟩
+  | .unary .neg w (.mem m) =>
+    (writesAt bs Γ h w.bytes.toNat m).map fun x => ⟨{ x.1 with flags := Flags.Known }, x.2⟩
+  | .unary .not w (.mem m) => (writesAt bs Γ h w.bytes.toNat m).map fun x => ⟨x.1, x.2⟩
+  | .shift op w (.mem m) (.imm n) =>
+    (writesAt bs Γ h w.bytes.toNat m).map fun x =>
+      ⟨{ x.1 with flags := op.flagsAfter (n.toNat % w.bits) Γ.flags }, x.2⟩
+  | .shift _ w (.mem m) .cl =>
+    (writesAt bs Γ h w.bytes.toNat m).map fun x => ⟨{ x.1 with flags := Flags.Any }, x.2⟩
+  | .mulDiv .mul w (.mem m) =>
+    (readsAt bs Γ h.place w.bytes.toNat m).map fun P => ⟨Γ.afterMulDiv Flags.AfterMul, P⟩
+  | .mulDiv .imul w (.mem m) =>
+    (readsAt bs Γ h.place w.bytes.toNat m).map fun P => ⟨Γ.afterMulDiv Flags.AfterMul, P⟩
+  -- a divide of exactly known values that are not numbers: it is typed where
+  -- it is shown not to fault
+  | .mulDiv .div w (.reg r) =>
+    if r = .rsp then none
+    else match exactly (Γ.regs .rax), exactly (Γ.regs .rdx), exactly (Γ.regs r) with
+      | some a, some d, some b =>
+        some ⟨{ (Γ.setReg .rax (.eq ((a.setWidth w.bits / b.setWidth w.bits).setWidth 64))).setReg
+            .rdx (.eq ((a.setWidth w.bits % b.setWidth w.bits).setWidth 64)) with
+          flags := (· = Flags.unknown) },
+          d.setWidth w.bits = 0 ∧ b.setWidth w.bits ≠ 0⟩
+      | _, _, _ => none
+  | .mulDiv .idiv w (.reg r) =>
+    if r = .rsp then none
+    else match exactly (Γ.regs .rax), exactly (Γ.regs .rdx), exactly (Γ.regs r) with
+      | some a, some d, some b =>
+        some ⟨{ (Γ.setReg .rax
+            (.eq (((a.setWidth w.bits).sdiv (b.setWidth w.bits)).setWidth 64))).setReg
+            .rdx (.eq (((a.setWidth w.bits).srem (b.setWidth w.bits)).setWidth 64)) with
+          flags := (· = Flags.unknown) },
+          d.setWidth w.bits = signFill (a.setWidth w.bits) ∧ b.setWidth w.bits ≠ 0 ∧
+            (a.setWidth w.bits ≠ BitVec.intMin w.bits ∨ b.setWidth w.bits ≠ -1#w.bits)⟩
+      | _, _, _ => none
+  | .imul2 w d (.mem m) =>
+    if d = .rsp then none
+    else (readsAt bs Γ h.place w.bytes.toNat m).map fun P =>
+      ⟨{ Γ.setReg d .int with flags := Flags.AfterMul }, P⟩
+  | .imul3 w d (.mem m) _ =>
+    if d = .rsp then none
+    else (readsAt bs Γ h.place w.bytes.toNat m).map fun P =>
+      ⟨{ Γ.setReg d .int with flags := Flags.AfterMul }, P⟩
+  | .popcnt w d (.mem m) =>
+    if d = .rsp then none
+    else (readsAt bs Γ h.place w.bytes.toNat m).map fun P =>
+      ⟨{ Γ.setReg d .int with flags := Flags.Known }, P⟩
+  | .movsxd d (.mem m) =>
+    if d = .rsp then none
+    else (readsAt bs Γ h.place 4 m).map fun P => ⟨Γ.setReg d .int, P⟩
+  | .movzx _ d sw (.mem m) =>
+    if d = .rsp then none
+    else (readsAt bs Γ h.place sw.bytes m).map fun P => ⟨Γ.setReg d .int, P⟩
+  | .movsx _ d sw (.mem m) =>
+    if d = .rsp then none
+    else (readsAt bs Γ h.place sw.bytes m).map fun P => ⟨Γ.setReg d .int, P⟩
+  | .cmov c w d (.mem m) =>
+    if d = .rsp then none
+    else (readsAt bs Γ h.place w.bytes.toNat m).map fun P =>
+      ⟨Γ.setReg d .int, P ∧ decides Γ c⟩
+  -- between exactly known values, where the flags say which way it goes
+  | .cmov c w d (.reg r) =>
+    if d = .rsp ∨ r = .rsp then none
+    else match h.taken, exactly (Γ.regs d), exactly (Γ.regs r) with
+      | some t, some x, some a =>
+        some ⟨Γ.setReg d
+          (.eq ((if t then a.setWidth w.bits else x.setWidth w.bits).setWidth 64)),
+          ∀ f, Γ.flags f → c.eval f = some t⟩
+      | _, _, _ => some ⟨Γ.setReg d .int, decides Γ c⟩
+  | .setcc c (.mem m) => (writesAt bs Γ h 1 m).map fun x => ⟨x.1, x.2 ∧ decides Γ c⟩
+  | .setcc c (.reg d) =>
+    if d = .rsp then none
+    else match h.taken, exactly (Γ.regs d) with
+      | some t, some x =>
+        some ⟨Γ.setReg d
+          (.eq ((x &&& ~~~0xff) ||| (if t then (1 : BitVec 8) else 0).setWidth 64)),
+          ∀ f, Γ.flags f → c.eval f = some t⟩
+      | _, _ => some ⟨Γ.setReg d .int, decides Γ c⟩
+  | _ => none
+
+theorem readsAt_step {w : Where} {n : Nat} {m : Mem} {f : Prop → Step} {st : Step}
+    (h : (readsAt bs Γ w n m).map f = some st) :
+    ∃ P, readsAt bs Γ w n m = some P ∧ st = f P := by
+  cases hr : readsAt bs Γ w n m with
+  | none => rw [hr] at h; cases h
+  | some P => rw [hr] at h; cases h; exact ⟨P, rfl, rfl⟩
+
+theorem writesAt_map {hint : Hint} {n : Nat} {m : Mem} {f : Ctx × Prop → Step} {st : Step}
+    (h : (writesAt bs Γ hint n m).map f = some st) :
+    ∃ x, writesAt bs Γ hint n m = some x ∧ st = f x := by
+  cases hw : writesAt bs Γ hint n m with
+  | none => rw [hw] at h; cases h
+  | some x => rw [hw] at h; cases h; exact ⟨x, rfl, rfl⟩
+
+/-- **What the checker works out from what it is told is a typing step.** -/
+theorem hinted_sound {hint : Hint} {i : Instr} {st : Step}
+    (h : hinted bs Γ hint i = some st) (hn : st.needs) :
+    Straight (MemTy.ofList bs kinds) next Γ i st.ctx := by
+  unfold hinted at h
+  split at h
+  · exact loadAt_sound h hn
+  · exact storeAt_sound h hn
+  · split at h
+    · cases h
+    · next hd =>
+      obtain ⟨P, hr, rfl⟩ := readsAt_step h
+      exact .loadInt hd (readsAt_sound hr hn)
+  · exact .storeInt (writesAt_step h hn)
+  · exact .storeImm (writesAt_step h hn)
+  · exact .store8RM (writesAt_step h hn)
+  · exact .store16RM (writesAt_step h hn)
+  · split at h
+    · cases h
+    · next hd =>
+      obtain ⟨P, hr, rfl⟩ := readsAt_step h
+      exact .aluLoad hd (readsAt_sound hr hn.1) hn.2
+  · split at h
+    · next hwd =>
+      obtain ⟨x, hw, rfl⟩ := writesAt_map h
+      exact .aluStoreR hwd (writesAt_reads hw hn.1) (writesAt_sound hw hn.1) hn.2
+    · next hwd =>
+      obtain ⟨P, hr, rfl⟩ := readsAt_step h
+      exact .cmpR ((Bool.not_eq_true _).mp hwd) (readsAt_sound hr hn)
+  · split at h
+    · next hwd =>
+      obtain ⟨x, hw, rfl⟩ := writesAt_map h
+      exact .aluStoreI hwd (writesAt_reads hw hn.1) (writesAt_sound hw hn.1) hn.2
+    · next hwd =>
+      obtain ⟨P, hr, rfl⟩ := readsAt_step h
+      exact .cmpI ((Bool.not_eq_true _).mp hwd) (readsAt_sound hr hn)
+  · obtain ⟨P, hr, rfl⟩ := readsAt_step h
+    exact .testRM (readsAt_sound hr hn)
+  · obtain ⟨x, hw, rfl⟩ := writesAt_map h
+    exact .negRM (writesAt_reads hw hn) (writesAt_sound hw hn)
+  · obtain ⟨x, hw, rfl⟩ := writesAt_map h
+    exact .notRM (writesAt_reads hw hn) (writesAt_sound hw hn)
+  · obtain ⟨x, hw, rfl⟩ := writesAt_map h
+    exact .shiftImm (writesAt_reads hw hn) (writesAt_sound hw hn)
+  · obtain ⟨x, hw, rfl⟩ := writesAt_map h
+    exact .shiftCl (writesAt_reads hw hn) (writesAt_sound hw hn)
+  · obtain ⟨P, hr, rfl⟩ := readsAt_step h
+    exact .mulRM (readsAt_sound hr hn)
+  · obtain ⟨P, hr, rfl⟩ := readsAt_step h
+    exact .imulRM (readsAt_sound hr hn)
+  · split at h
+    · cases h
+    · next hr =>
+      split at h
+      · next a d b ha hd hb =>
+        cases h
+        exact .mulDivExact hr (exactly_eq ha) (exactly_eq hd) (exactly_eq hb)
+          (by rw [hn.1]; exact MulDivOp.eval_div _ _ hn.2)
+      · cases h
+  · split at h
+    · cases h
+    · next hr =>
+      split at h
+      · next a d b ha hd hb =>
+        cases h
+        exact .mulDivExact hr (exactly_eq ha) (exactly_eq hd) (exactly_eq hb)
+          (by rw [hn.1]; exact MulDivOp.eval_idiv _ _ hn.2.1 hn.2.2)
+      · cases h
+  · split at h
+    · cases h
+    · next hd =>
+      obtain ⟨P, hr, rfl⟩ := readsAt_step h
+      exact .imul2RM hd (readsAt_sound hr hn)
+  · split at h
+    · cases h
+    · next hd =>
+      obtain ⟨P, hr, rfl⟩ := readsAt_step h
+      exact .imul3RM hd (readsAt_sound hr hn)
+  · split at h
+    · cases h
+    · next hd =>
+      obtain ⟨P, hr, rfl⟩ := readsAt_step h
+      exact .popcntRM hd (readsAt_sound hr hn)
+  · split at h
+    · cases h
+    · next hd =>
+      obtain ⟨P, hr, rfl⟩ := readsAt_step h
+      exact .movsxdRM hd (readsAt_sound hr hn)
+  · split at h
+    · cases h
+    · next hd =>
+      obtain ⟨P, hr, rfl⟩ := readsAt_step h
+      exact .movzxRM hd (readsAt_sound hr hn)
+  · split at h
+    · cases h
+    · next hd =>
+      obtain ⟨P, hr, rfl⟩ := readsAt_step h
+      exact .movsxRM hd (readsAt_sound hr hn)
+  · split at h
+    · cases h
+    · next hd =>
+      obtain ⟨P, hr, rfl⟩ := readsAt_step h
+      exact .cmovRM hd (readsAt_sound hr hn.1) hn.2
+  · split at h
+    · cases h
+    · next hc =>
+      split at h
+      · next t x a _ hx ha =>
+        cases h
+        exact .cmovExact (fun e => hc (.inl e)) (fun e => hc (.inr e)) (exactly_eq hx)
+          (exactly_eq ha) hn
+      · cases h; exact .cmovRM (fun e => hc (.inl e)) (.reg _) hn
+  · obtain ⟨x, hw, rfl⟩ := writesAt_map h
+    exact .setccRM (writesAt_sound hw hn.1) hn.2
+  · split at h
+    · cases h
+    · next hd =>
+      split at h
+      · next t x _ hx => cases h; exact .setccExact hd (exactly_eq hx) hn
+      · cases h; exact .setccRM (.reg hd) hn
+  · cases h
+
+/-- A block that begins with an instruction the checker has worked out from
+what it was told. -/
+theorem hinted_block {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {a : BitVec 64} {i : Instr}
+    {len : BitVec 64} {hint : Hint} {st : Step} (hf : fetch a = some (i, len))
+    (hc : hinted bs Γ hint i = some st) (hn : st.needs)
+    (hrest : BlockOk Φ fetch sys (MemTy.ofList bs kinds) (a + len) st.ctx) :
+    BlockOk Φ fetch sys (MemTy.ofList bs kinds) a Γ :=
+  .step hf (hinted_sound hc hn) hrest
+
+/-! What the driver shows of the places it tells the checker of: each is
+one lemma applied, with nothing searched for. -/
+
+theorem own0 (a : BitVec 64) (disp : BitVec 32) :
+    a + disp.signExtend 64 = a + BitVec.ofNat 64 (disp.signExtend 64).toNat := by simp
+
+theorem own1 (a t : BitVec 64) (disp : BitVec 32) :
+    a + t + disp.signExtend 64 = a + BitVec.ofNat 64 (t + disp.signExtend 64).toNat := by
+  rw [BitVec.add_assoc, BitVec.ofNat_toNat, BitVec.setWidth_eq]
+
+theorem ownI0 (a c : BitVec 64) (sc : Scale) (disp : BitVec 32) (hd : disp.toNat < 2 ^ 31) :
+    a + (c <<< sc.shift) + disp.signExtend 64
+      = a + BitVec.ofNat 64 (c.toNat * 2 ^ sc.shift + disp.toNat) := by
+  rw [BitVec.add_assoc, index_bytes c sc disp hd]
+
+theorem ownI1 (a t c : BitVec 64) (sc : Scale) (disp : BitVec 32) (hd : disp.toNat < 2 ^ 31) :
+    a + t + (c <<< sc.shift) + disp.signExtend 64
+      = a + BitVec.ofNat 64 (t.toNat + (c.toNat * 2 ^ sc.shift + disp.toNat)) := by
+  rw [BitVec.add_assoc, BitVec.add_assoc, index_bytes c sc disp hd,
+    BitVec.ofNat_add (x := t.toNat), BitVec.ofNat_toNat, BitVec.setWidth_eq]
+
+theorem block_idx (c : BitVec 64) (sc : Scale) (disp : BitVec 32) (base : BitVec 64) (d : Nat)
+    (h : disp.signExtend 64 = base + BitVec.ofNat 64 d) :
+    (c <<< sc.shift) + disp.signExtend 64
+      = base + BitVec.ofNat 64 (c.toNat * 2 ^ sc.shift + d) := by
+  have hc : c <<< sc.shift = BitVec.ofNat 64 (c.toNat * 2 ^ sc.shift) := by
+    apply BitVec.eq_of_toNat_eq
+    simp only [BitVec.toNat_shiftLeft, BitVec.toNat_ofNat, Nat.shiftLeft_eq]
+  rw [h, hc, BitVec.ofNat_add]
+  ac_rfl
+
+theorem piece_at (x D P R : Nat) (h : D = P + R) : x + D = P + (x + R) := by omega
+
+theorem piece_at0 (x D : Nat) : x + D = D + x := Nat.add_comm x D
+
+theorem elem_at (x es q f R : Nat) (h : R = q * es + f) : x * es + R = (x + q) * es + f := by
+  rw [h, Nat.add_mul]; omega
+
+theorem elem_at0 (x es q : Nat) : x * es + q * es = (x + q) * es + 0 := by
+  rw [Nat.add_mul]; rfl
+
+theorem elem_comm (a k D : Nat) : a * k + D = k * a + D := by rw [Nat.mul_comm]
+
+theorem elem_idx (x es L D q f : Nat) (h : L + D = q * es + f) :
+    L + (x * es + D) = (x + q) * es + f := by
+  rw [Nat.add_mul]; omega
+
+theorem elem_idx0 (x es L D f : Nat) (h : L + D = f) : L + (x * es + D) = x * es + f := by
+  omega
+
+theorem eval_exact (c : Cond) (fl : Flags) (b : Bool) (h : c.eval fl = some b) :
+    ∀ f, f = fl → c.eval f = some b := fun _ hf => hf ▸ h
+
 end Check
+
+export Check (sext_toNat index_bytes)
 
 /-- A block that begins with an instruction the checker has worked out. -/
 theorem BlockOk.checked {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
