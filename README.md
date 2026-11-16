@@ -46,7 +46,7 @@ jumped back to, called or returned to, and three commands:
 - `asm_safety At.start` proves the program well typed and, from that, safe
   from every state meeting the contract, whatever the outside world does.
 
-Each instruction is typed without being told how. Fourteen of the twenty-three
+Each instruction is typed without being told how. Fifteen of the twenty-three
 examples need nothing more than this. In the others, a label's block says
 what cannot be read off the program: which context a loop is entered in,
 which of a family of signatures a call is to, where an owned block is split,

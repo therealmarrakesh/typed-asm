@@ -39,14 +39,6 @@ inductive At : Label → Ctx → Prop
 
 asm_typing At
 
-/-! ## The program is well typed -/
-
-theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  ty_program
-  case start =>
-    -- lea rdi, [rip + array]
-    ty_call (getSig 5)
-
 /-! ## Safety -/
 
 asm_safety At.start

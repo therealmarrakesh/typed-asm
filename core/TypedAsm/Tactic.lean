@@ -3755,10 +3755,39 @@ elab "ty_block" : tactic => do
             setGoals [goal]
             Tactic.withoutRecover do evalTactic (← `(tactic| ty_call_auto))
             let gs ← getGoals
-            let mut open_ := false
+            -- Which of a family of signatures is meant may be settled by what
+            -- the argument registers hold: a register holding exactly 5 meets
+            -- the member that asks for exactly `n` only when `n` is 5. What
+            -- that leaves known is then proved as it would have been.
+            let mut settled := false
             for g in gs do
+              if ← g.isAssigned then continue
+              let ty ← instantiateMVars (← g.getType)
+              unless ty.isAppOfArity ``Sub 2 && ty.hasExprMVar do continue
+              try
+                discard <| runOn g (do evalTactic (← `(tactic| exact Sub.refl _)))
+                settled := true
+              catch _ => pure ()
+            let mut rest : List MVarId := []
+            for g in gs do
+              if ← g.isAssigned then continue
+              let ty ← instantiateMVars (← g.getType)
+              if (← isProp ty) && !ty.hasExprMVar then
+                -- a fact the callee's context asks, left when it was not yet
+                -- known which member it was about
+                let after ← try
+                    runOn g (do
+                      if settled then
+                        evalTactic (← `(tactic| first | assumption | decide | omega | ty_side | sub_regs))
+                      else evalTactic (← `(tactic| first | assumption | decide | omega)))
+                  catch _ => pure [g]
+                rest := rest ++ after
+              else rest := rest ++ [g]
+            let mut open_ := false
+            for g in rest do
               unless ← isProp (← g.getType) do open_ := true
-            if open_ then before.restore; pure none else pure (some gs)
+            if open_ || (settled && !rest.isEmpty) then before.restore; pure none
+            else pure (some rest)
           catch _ =>
             before.restore
             pure none
@@ -3941,6 +3970,10 @@ elab "ty_call " sig:term : tactic => do
       left := left ++ (← runOn g (do evalTactic (← `(tactic| sub_regs))))
     else if t.isAppOf ``Sub then
       left := left ++ (← runOn g (do evalTactic (← `(tactic| ty_sub))))
+    else if t.isAppOf ``LE.le && t.hasExprMVar then
+      -- which signature it is has not been settled: the room it needs is
+      -- left to be compared once it has
+      left := left ++ [g]
     else if t.isAppOf ``LE.le then
       -- The stack the function needs is a field of its signature: the
       -- signature is unfolded so that arithmetic can see the number.

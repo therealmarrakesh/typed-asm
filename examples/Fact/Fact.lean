@@ -60,8 +60,6 @@ theorem decr {n : Nat} (hn : 0 < n) :
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   ty_program
-  case start =>
-    ty_call (factSig 5)
   case fact n saved ret rest room hK =>
     ty_block
     -- going on to recurse: the test found the argument not to be zero

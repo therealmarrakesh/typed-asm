@@ -71,9 +71,6 @@ theorem decr {n i : Nat} (hi : i < n) :
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   ty_program
-  case start =>
-    -- lea rdi, [rip + array]; mov esi, 5
-    ty_call (sumSig 5)
   case sum n saved ret rest room hK =>
     ty_block
     -- entering the loop: the count is not zero, so the invariant holds with `i = 0`
