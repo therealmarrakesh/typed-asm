@@ -1,4 +1,14 @@
-import Lean
+import Lean.Elab.Command
+import Lean.Elab.Tactic.Basic
+import Lean.Elab.Tactic.ElabTerm
+import Lean.Elab.Tactic.Simp
+import Lean.Elab.Tactic.Omega
+import Lean.Elab.Tactic.RCases
+import Lean.Meta.Tactic.Simp.RegisterCommand
+import Lean.Elab.Deriving.ToExpr
+import Lean.Util.CollectAxioms
+import Lean.Meta.Eval
+import Std.Data.HashMap
 import TypedAsm.Addr
 import TypedAsm.Facts
 import TypedAsm.Reify

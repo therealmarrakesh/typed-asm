@@ -1,4 +1,6 @@
-import Lean
+import Lean.Meta.Basic
+import Lean.Elab.Deriving.ToExpr
+import Lean.ToExpr
 import TypedAsm.Sym
 
 /-!

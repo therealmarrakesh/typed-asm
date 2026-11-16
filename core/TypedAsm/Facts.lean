@@ -1,4 +1,4 @@
-import Lean
+import Lean.Meta.Tactic.Simp.RegisterCommand
 
 /-!
 # Facts given to the checker
