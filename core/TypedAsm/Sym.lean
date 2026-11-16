@@ -4003,6 +4003,9 @@ inductive Walk
   /-- What a system call handed back: the rest with it an error number,
   named `k`, and with it a value. -/
   | err (k : Nat) (l r : Walk)
+  /-- A byte of text was loaded: the rest with it zero, and with it some
+  other byte, named `k`. -/
+  | byte (k : Nat) (zero more : Walk)
 
 /-- That a walk's conditions hold, and that `P` holds of where it stopped:
 for every value each name may stand for. -/
@@ -4012,6 +4015,8 @@ def Walk.holds (P : BitVec 64 → Ctx → Prop) : Walk → Env → Prop
   | .name k rest, ρ => ∀ x, rest.holds P (ρ.setVal k x)
   | .both l r, ρ => l.holds P ρ ∧ r.holds P ρ
   | .err k l r, ρ => (∀ e, SysErr e → l.holds P (ρ.setVal k e)) ∧ r.holds P ρ
+  | .byte k zero more, ρ =>
+    zero.holds P ρ ∧ ∀ b : BitVec 64, b ≠ 0 → b < 256 → more.holds P (ρ.setVal k b)
 
 /-- The first register an instruction needs the value of that the context
 only knows to hold a number. -/
@@ -4210,6 +4215,34 @@ theorem toSplit_spec {Γ : CtxS} {i : Instr} {r : Reg} {τ : TyS} {e : Bool}
     · cases h
   · cases h
 
+/-- The registers of a load of the byte of text a pointer points at: where
+the byte goes, and the pointer. -/
+def toByte (Γ : CtxS) : Instr → Option (Reg × Reg)
+  | .movzx _ d .w8 (.mem (.sib (some r) none disp)) =>
+    if disp = 0 ∧ d ≠ .rsp ∧ r ≠ .rsp ∧ d ≠ r then
+      match Γ.regs.get r with
+      | .str _ => some (d, r)
+      | _ => none
+    else none
+  | _ => none
+
+theorem toByte_spec {Γ : CtxS} {i : Instr} {d r : Reg} (h : toByte Γ i = some (d, r)) :
+    (∃ w, i = .movzx w d .w8 (.mem (.sib (some r) none 0))) ∧ d ≠ .rsp ∧ r ≠ .rsp ∧ d ≠ r ∧
+      ∃ more, Γ.regs.get r = .str more := by
+  unfold toByte at h
+  split at h
+  · next w d' r' disp =>
+    split at h
+    · next hc =>
+      split at h
+      · next more hΓ =>
+        cases h
+        obtain ⟨rfl, hd, hr, hdr⟩ := hc
+        exact ⟨⟨w, rfl⟩, hd, hr, hdr, more, hΓ⟩
+      · cases h
+    · cases h
+  · cases h
+
 /-- The checker walked from an address for at most so many moves, `k` being
 a variable no term yet mentions. Before an instruction, a pointer to a block
 of a kind that it reaches through is opened, and a value it needs to speak
@@ -4227,6 +4260,13 @@ def walk (P : Prog) (code : List (BitVec 64 × Instr × BitVec 64)) :
       | some (r, τ, true) =>
         if Γ.under k then
           .err k (.stop a (Γ.setReg r (.eq (.var k)))) (.stop a (Γ.setReg r τ))
+        else .stop a Γ
+      | none =>
+      match toByte Γ i with
+      | some (d, r) =>
+        if Γ.under k then
+          .byte k (.stop (a + len) (Γ.setReg d (.eq (.lit 0))))
+            (.stop (a + len) ((Γ.setReg d (.eq (.var k))).setReg r (.str true)))
         else .stop a Γ
       | none =>
       match toOpen Γ i with
@@ -4284,6 +4324,26 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
             rw [getD_padSet]; simp
           rw [e'] at h₀
           exact h₀
+        · exact h
+      next =>
+      split at h
+      · next d r hb =>
+        obtain ⟨⟨w, rfl⟩, hd, hr, hdr, more, hΓ⟩ := toByte_spec hb
+        split at h
+        · next hu =>
+          have h₀ := h.1
+          simp only [Walk.holds] at h₀
+          rw [CtxS.den_setReg] at h₀
+          refine .strByte (Agrees.lookup code hcode hl) hd hr hdr
+            (by rw [CtxS.den_regs, hΓ]; rfl) h₀ (fun b hb0 hb256 => ?_)
+          have h₁ := h.2 b hb0 hb256
+          simp only [Walk.holds] at h₁
+          rw [CtxS.den_setReg, CtxS.den_setReg, CtxS.den_setVal hu] at h₁
+          have e' : (TyS.eq (.var k)).den (ρ.setVal k b) = .eq b := by
+            show Ty.eq ((padSet 0 ρ.val k b).getD k 0) = _
+            rw [getD_padSet]; simp
+          rw [e'] at h₁
+          exact h₁
         · exact h
       next =>
       split at h

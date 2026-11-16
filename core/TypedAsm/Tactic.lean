@@ -2882,9 +2882,6 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
   let some (instr, len) := instrs[n]? | return none
   if instr.endsBlock then return none
   let typeOf (r : Reg) : MetaM Expr := whnf tbl[1 + regIdx r]!
-  -- where a register is looked into or named first, that is done the long way
-  if let .movzx _ _ .w8 (.mem (.sib (some b) none _)) := instr then
-    if (← typeOf b).isAppOf ``Ty.str then return none
   let iE := toExpr instr
   let lenE := toExpr len
   let next ← mkAppM ``HAdd.hAdd #[a, lenE]
@@ -2972,6 +2969,12 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           if isErr && !cur.under k then break
           moves := moves.push (.split at' i len')
           break
+        -- a byte of text is loaded: zero, or not, and the text goes on
+        if (Sym.toByte cur i).isSome then
+          if stops?.isNone then break
+          unless cur.under k do break
+          moves := moves.push (.split at' i len')
+          break
         -- a pointer to a block of a kind that is reached through is opened
         if let some (r, tag, w, off) := Sym.toOpen cur i then
           let some Sk := Sym.lookupNat P.kinds tag | break
@@ -3024,6 +3027,7 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       | .name _ rest => final rest
       | .both _ _ => none
       | .err _ _ _ => none
+      | .byte _ _ _ => none
     let S'? := final W
     let ρ := atoms.env
     let SE := toExpr S
@@ -3080,9 +3084,9 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let rec down (W : Sym.Walk) (atoms : Sym.Atoms) (vs : Array Expr) (names : Array Name) :
         TacticM Expr := do
       match W with
-      | .stop _ Γ' =>
+      | .stop a' Γ' =>
         let Γ'E ← Sym.denCtx atoms Γ'
-        let allTy ← mkForallFVars vs (mkAppN ty.getAppFn #[Φ, fetch, sys, Ψ, aEnd, Γ'E])
+        let allTy ← mkForallFVars vs (mkAppN ty.getAppFn #[Φ, fetch, sys, Ψ, toExpr a', Γ'E])
         let m ← withLCtx lctx outerInsts <|
           mkFreshExprSyntheticOpaqueMVar allTy (← goal.getTag)
         restRef.modify (·.push (m, names))
@@ -3119,6 +3123,18 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
             let body ← down l atoms' ((vs.push v).push hv) ((names.push `e).push `herr)
             mkLambdaFVars #[v, hv] (← instantiateMVars body)
         mkAppM ``And.intro #[hl, ← down r atoms vs names]
+      | .byte k zero more =>
+        let hz ← down zero atoms vs names
+        let hm ← withLocalDeclD `b bv fun v => do
+          withLocalDeclD `hbyte (← mkAppM ``Ne #[v, toExpr (0 : BitVec 64)]) fun h₁ => do
+            withLocalDeclD `hsmall (← mkAppM ``LT.lt #[v, toExpr (256 : BitVec 64)]) fun h₂ => do
+              let pad := atoms.val ++
+                Array.replicate (k + 1 - atoms.val.size) (toExpr (0 : BitVec 64))
+              let atoms' := { atoms with val := pad.set! k v }
+              let body ← down more atoms' (((vs.push v).push h₁).push h₂)
+                (((names.push `b).push `hbyte).push `hsmall)
+              mkLambdaFVars #[v, h₁, h₂] (← instantiateMVars body)
+        mkAppM ``And.intro #[hz, hm]
     let hW ← down W atoms #[] #[]
     let rests ← restRef.get
     if rests.isEmpty then return none
