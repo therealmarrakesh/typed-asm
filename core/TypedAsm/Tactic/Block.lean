@@ -386,6 +386,8 @@ def finishBlockCore (goal : MVarId) (instr : Instr) : TacticM Finish := do
     match ← syscallNumber ctx with
     | some 60 =>
       if sysArg.isAppOf ``Syscall.exitsOnly then return .done (← exitOnly ``linux_exit_only)
+      if sysArg.isAppOf ``Syscall.writesOnly && sysArg.getAppArgs[0]!.isAppOf ``Syscall.exitsOnly then
+        return .done (← exitOnly ``linux_exit_only_writes)
       if sysArg.isAppOf ``Syscall.writesOnly then
         let gs ← runOn goal (do evalTactic (← `(tactic|
           refine BlockOk.last (by ty_fetch) (HasType.syscallExit (linux_exit_writes rfl)))))
@@ -398,6 +400,8 @@ def finishBlockCore (goal : MVarId) (instr : Instr) : TacticM Finish := do
     | some 231 =>
       if sysArg.isAppOf ``Syscall.exitsOnly then
         return .done (← exitOnly ``linux_exit_group_only)
+      if sysArg.isAppOf ``Syscall.writesOnly && sysArg.getAppArgs[0]!.isAppOf ``Syscall.exitsOnly then
+        return .done (← exitOnly ``linux_exit_group_only_writes)
       if sysArg.isAppOf ``Syscall.writesOnly then
         let gs ← runOn goal (do evalTactic (← `(tactic|
           refine BlockOk.last (by ty_fetch) (HasType.syscallExit (linux_exit_group_writes rfl)))))

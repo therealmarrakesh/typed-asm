@@ -27,8 +27,8 @@ asm_typing At data
 
 /-! ## Safety, and what is written -/
 
--- Safe, and wherever it reaches a `write`, the descriptor is 1 and the
--- bytes offered are the message.
-asm_safety At.start writes (fun fd bytes => fd = 1 ∧ bytes = message)
+-- Safe; it ends only with status 0; and wherever it reaches a `write`, the
+-- descriptor is 1 and the bytes offered are the message.
+asm_safety At.start exits (· = 0) writes (fun fd bytes => fd = 1 ∧ bytes = message)
 
 end Hello

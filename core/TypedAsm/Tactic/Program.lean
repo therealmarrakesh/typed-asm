@@ -350,10 +350,9 @@ elab_rules : command
     -- The system the program is typed against: `linux`, or, where what the
     -- program ends with is to be shown, `linux` refusing any other status.
     -- Safety under `linux` follows from the typing either way.
-    if q?.isSome && r?.isSome then
-      throwError "asm_safety: `exits` and `writes` are shown one at a time for now"
     let os ← match q?, r? with
-      | some q, _ => `(Syscall.exitsOnly linux $q)
+      | some q, some r => `(Syscall.writesOnly (Syscall.exitsOnly linux $q) $r)
+      | some q, none => `(Syscall.exitsOnly linux $q)
       | none, some r => `(Syscall.writesOnly linux $r)
       | none, none => `(linux)
     let fields ← match v? with
@@ -385,13 +384,18 @@ elab_rules : command
         never faults. -/
         theorem $(id `safeMem_of_entry) {s : State} (h : $(id `Entry) s) : SafeMem linux s :=
           $(← match q?, r? with
-            | some _, _ => `((h.safeMem_exits $(id `blocksOk) $(id `memOk) $start $fields).1)
+            | some _, some _ =>
+              `((h.safeMem_exits_writes $(id `blocksOk) $(id `memOk) $start $fields).1)
+            | some _, none => `((h.safeMem_exits $(id `blocksOk) $(id `memOk) $start $fields).1)
             | none, some _ =>
               `((h.safeMem_writes $(id `blocksOk) $(id `memOk) $start $fields).1)
             | none, none => `(h.safeMem $(id `blocksOk) $(id `memOk) $start $fields))))
-      if q?.isSome then
+      if q?.isSome && r?.isSome then
+        exits := some (← `((h.safeMem_exits_writes $(id `blocksOk) $(id `memOk) $start $fields).2.1))
+        writes := some (← `((h.safeMem_exits_writes $(id `blocksOk) $(id `memOk) $start $fields).2.2))
+      else if q?.isSome then
         exits := some (← `((h.safeMem_exits $(id `blocksOk) $(id `memOk) $start $fields).2))
-      if r?.isSome then
+      else if r?.isSome then
         writes := some (← `((h.safeMem_writes $(id `blocksOk) $(id `memOk) $start $fields).2))
       elabCommand (← `(
         /-- The starting state used by the simulator meets the entry contract. -/

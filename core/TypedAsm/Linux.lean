@@ -2024,6 +2024,29 @@ theorem linux_exit_group_writes {R : BitVec 64 → List (BitVec 8) → Prop}
     rw [Syscall.writesOnly_eq (fun e => by rw [hax] at e; exact absurd e (by decide))]
     simp [linux, hax]⟩
 
+/-- `exit` where both what the program writes and what it ends with are
+being shown: it is no `write`, and the status must be as wanted. -/
+theorem linux_exit_only_writes {Q : BitVec 32 → Prop} {R : BitVec 64 → List (BitVec 8) → Prop}
+    {v : BitVec 64} (hΓ : Γ.regs .rax = .eq 60) (hd : Γ.regs .rdi = .eq v)
+    (hQ : Q (v.setWidth 32)) : SysExits fetch ((linux.exitsOnly Q).writesOnly R) Ψ Γ := by
+  intro Ψ₁ _ hΨ n s h
+  have hax := h.eqReg (by decide) hΓ
+  have hdi := h.eqReg (by decide) hd
+  exact ⟨v.setWidth 32, by
+    rw [Syscall.writesOnly_eq (fun e => by rw [hax] at e; exact absurd e (by decide))]
+    exact Syscall.exitsOnly_exit (by simp [linux, hax, State.readReg, hdi]) hQ⟩
+
+theorem linux_exit_group_only_writes {Q : BitVec 32 → Prop}
+    {R : BitVec 64 → List (BitVec 8) → Prop} {v : BitVec 64} (hΓ : Γ.regs .rax = .eq 231)
+    (hd : Γ.regs .rdi = .eq v) (hQ : Q (v.setWidth 32)) :
+    SysExits fetch ((linux.exitsOnly Q).writesOnly R) Ψ Γ := by
+  intro Ψ₁ _ hΨ n s h
+  have hax := h.eqReg (by decide) hΓ
+  have hdi := h.eqReg (by decide) hd
+  exact ⟨v.setWidth 32, by
+    rw [Syscall.writesOnly_eq (fun e => by rw [hax] at e; exact absurd e (by decide))]
+    exact Syscall.exitsOnly_exit (by simp [linux, hax, State.readReg, hdi]) hQ⟩
+
 /-- `openat`: with 257 in `rax`, the call returns, whatever its arguments. A
 name that cannot be read is refused by the kernel, not a fault. -/
 theorem linux_openat (hΓ : Γ.regs .rax = .eq 257) :
