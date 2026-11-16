@@ -12,9 +12,6 @@ open TypedAsm
 
 namespace Sum
 
--- Where the array is loaded.
-asm_label dataBase .array
-
 /-! ## The typing -/
 
 /-- A pointer to element `i` of a read-only array of `n` integers. -/
@@ -54,12 +51,7 @@ inductive At : Label → Ctx → Prop
   | done (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     (sumSig n).CallerOk saved ret rest room → At .done ((sumSig n).exit saved ret rest room)
 
-def arrayLayout : Layout := ⟨.raw 40, false, none, 0⟩
-
-/-- One memory block: the array. -/
-def blocks : List (BitVec 64 × Layout) := [(dataBase, arrayLayout)]
-
-asm_typing At blocks blocks room 1
+asm_typing At
 
 /-! ## Arithmetic facts the loop relies on -/
 

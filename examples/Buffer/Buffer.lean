@@ -22,10 +22,7 @@ inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 2)
   | loop : At .loop looping
 
-/-- No memory blocks. -/
-def blocks : List (BitVec 64 × Layout) := []
-
-asm_typing At blocks blocks room 2
+asm_typing At
 
 /-! ## Safety -/
 

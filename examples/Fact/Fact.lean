@@ -45,10 +45,7 @@ inductive At : Label → Ctx → Prop
     At .afterAgain ⟨fun r => if calleeSaved r then saved r else .int,
       .slot (.eq (num n)) :: .slot (.code ret) :: rest, m + 8, Flags.Any, ret.owned, ret.above⟩
 
-/-- No memory blocks. -/
-def blocks : List (BitVec 64 × Layout) := []
-
-asm_typing At blocks blocks room 11
+asm_typing At
 
 /-! ## Arithmetic facts the recursion relies on -/
 

@@ -4199,47 +4199,105 @@ elab_rules : command
       def $name : BitVec 64 := $lit))
     elabCommand (← `(theorem $eqName : $name = Asm.addr $code $base $l := by decide +kernel))
 
-/-- `asm_typing At blocks bs room n`: for the program declared with
-`asm_program`, whose labels have the contexts `At`, whose memory blocks are
-`bs` and which needs `n` slots of stack, defines in the current namespace
+private unsafe def evalRunsUnsafe (e : Expr) : MetaM (List (Nat × Nat × Bool)) := do
+  let ty ← mkAppM ``List #[← mkAppM ``Prod #[mkConst ``Nat,
+    ← mkAppM ``Prod #[mkConst ``Nat, mkConst ``Bool]]]
+  evalExpr (List (Nat × Nat × Bool)) ty e
 
+/-- The value of a closed term for a list of runs of data: where each is,
+how long, and whether it may be written. -/
+@[implemented_by evalRunsUnsafe]
+private opaque evalRuns (e : Expr) : MetaM (List (Nat × Nat × Bool))
+
+/-- `asm_typing At`: for the program declared with `asm_program`, whose
+labels have the contexts `At`, defines in the current namespace
+
+* `blocks`, the program's blocks of memory: each labelled run of data, as
+  plain bytes, writable if its segment is. `blocks_eq` says these are the
+  runs of data the program has;
 * `Φ`, the code typing: those contexts at the addresses of their labels;
-* `Ψ`, the memory typing: those blocks (with `kinds ks` after the blocks,
-  those declared kinds);
+* `Ψ`, the memory typing: those blocks;
 * `memOk`, that the memory typing is well formed;
 * `Entry`, what the program needs of the state it starts in: its bytes in
   memory, executable where they are to be executed, each block readable or
-  writable as its layout says, and `n` writable slots of stack.
+  writable as its layout says, and its stack.
 
-The proof that the program is well typed, `blocksOk : BlocksOk Φ fetch linux
-Ψ`, comes after this, and `asm_safety` after that. -/
-syntax "asm_typing " ident &" blocks " term:max (&" kinds " term:max)? &" room " term:max : command
+How much stack the program needs is read from the context of its entry
+label, `At.start`, which must be `entryCtx n`.
 
-macro_rules
-  | `(asm_typing $ctxs blocks $bs $[kinds $ks?]? room $n) => do
-    let code := mkIdent `code
-    let base := mkIdent `base
-    let entry := mkIdent `entry
-    let parts := mkIdent `parts
-    let Φ := mkIdent `Φ
-    let Ψ := mkIdent `Ψ
-    let memOk := mkIdent `memOk
-    let Entry := mkIdent `Entry
+Each of these may be said instead of worked out:
+`asm_typing At blocks bs kinds ks room n`. The blocks are said when some of
+the data is more than plain bytes: holds pointers, is of a declared kind, or
+is text. The room is said when the entry label's context is of another form.
+
+The proof that the program is well typed, `blocksOk`, comes after this if
+some label needs something said, and `asm_safety` after that. -/
+syntax "asm_typing " ident (&" blocks " term:max)? (&" kinds " term:max)? (&" room " term:max)? :
+  command
+
+open Lean Elab Command Meta in
+elab_rules : command
+  | `(asm_typing $ctxs $[blocks $bs?]? $[kinds $ks?]? $[room $n?]?) => do
+    let id (n : Name) := mkIdent n
+    let code := id `code
+    let base := id `base
+    -- the blocks: as said, or the labelled runs of data, written out
+    let bs ← match bs? with
+      | some bs => pure bs
+      | none => do
+        let runs ← liftTermElabM do
+          let e ← Term.elabTerm (← `((Asm.dataRuns $base $code).map
+            fun r => (r.1, r.2.1, decide (r.2.2 = Perm.rw)))) none
+          Term.synthesizeSyntheticMVarsNoPostponing
+          evalRuns (← instantiateMVars e)
+        let items ← runs.toArray.mapM fun (a, size, w) => do
+          let wq := if w then mkIdent ``true else mkIdent ``false
+          `(((($(Syntax.mkNumLit (toString a)) : BitVec 64)),
+            (⟨ShapeOf.raw $(Syntax.mkNumLit (toString size)), $wq, none, 0⟩ : Layout)))
+        let blocks := id `blocks
+        elabCommand (← `(
+          /-- The program's blocks of memory: its labelled runs of data, as plain
+          bytes, writable where their segment is. -/
+          def $blocks : List (BitVec 64 × Layout) := [$items,*]))
+        elabCommand (← `(
+          theorem $(id `blocks_eq) :
+              ($blocks).map (fun x => (x.1.toNat, x.2.shape.size, x.2.writable)) =
+                (Asm.dataRuns $base $code).map
+                  (fun r => (r.1, r.2.1, decide (r.2.2 = Perm.rw))) := by
+            decide +kernel))
+        `($blocks)
+    -- the stack room: as said, or what the entry label's context asks
+    let n ← match n? with
+      | some n => pure n
+      | none => do
+        let room ← liftTermElabM do
+          let start ← Term.elabTerm (← `($(mkIdent (ctxs.getId ++ `start)))) none
+          let ty ← whnfR (← inferType start)
+          let ctx := ty.appArg!
+          unless ctx.isAppOf ``entryCtx do
+            throwError "asm_typing: the entry label's context is not `entryCtx n`; say how \
+              much stack the program needs with `room n`"
+          evalNat ctx.getAppArgs[0]!
+        pure (Syntax.mkNumLit (toString room))
     let ks ← match ks? with
       | some ks => pure ks
       | none => `([])
-    return mkNullNode #[
-      ← `(/-- The code typing: the contexts allowed at each label, at the addresses of
-        the labels. -/
-        def $Φ : CodeTy := .ofLabels $code $base $ctxs),
-      ← `(/-- The memory typing: the program's blocks. -/
-        def $Ψ : MemTy := .ofList $bs $ks),
-      ← `(theorem $memOk : MemTy.WF $Ψ := MemTy.wf_of_check (by decide)),
-      ← `(/-- What the program needs of the state it starts in: its bytes in memory,
-        executable where they are to be executed, each block with its permissions, and
-        its stack. This is the contract with whatever loads the program; for the ELF file,
-        with the Linux kernel. -/
-        abbrev $Entry : State → Prop := TypedAsm.Entry $entry $parts $bs $n 0)]
+    elabCommand (← `(
+      /-- The code typing: the contexts allowed at each label, at the addresses of
+      the labels. -/
+      def $(id `Φ) : CodeTy := .ofLabels $code $base $ctxs))
+    elabCommand (← `(
+      /-- The memory typing: the program's blocks. -/
+      def $(id `Ψ) : MemTy := .ofList $bs $ks))
+    elabCommand (← `(
+      theorem $(id `memOk) : MemTy.WF $(id `Ψ) := MemTy.wf_of_check (by decide)))
+    elabCommand (← `(
+      /-- What the program needs of the state it starts in: its bytes in memory,
+      executable where they are to be executed, each block with its permissions, and
+      its stack. This is the contract with whatever loads the program; for the ELF file,
+      with the Linux kernel. -/
+      abbrev $(id `Entry) : State → Prop :=
+        TypedAsm.Entry $(id `entry) $(id `parts) $bs $n 0))
 
 /-- `asm_safety At.start`: for a program declared with `asm_program` and
 `asm_typing`, whose entry label has the context `At.start`, proves in the

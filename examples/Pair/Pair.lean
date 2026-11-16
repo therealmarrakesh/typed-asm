@@ -43,10 +43,7 @@ inductive At : Label → Ctx → Prop
     twoSig.CallerOk saved ret rest room frame above →
     At .two (twoSig.entry saved ret rest room frame above)
 
-/-- No memory blocks: the pages are the program's own. -/
-def blocks : List (BitVec 64 × Layout) := []
-
-asm_typing At blocks blocks room 2
+asm_typing At
 
 /-! ## The program is well typed -/
 

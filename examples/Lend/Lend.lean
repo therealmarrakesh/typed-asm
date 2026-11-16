@@ -54,10 +54,7 @@ inductive At : Label → Ctx → Prop
   | fill (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     (fillSig p).CallerOk saved ret rest room → At .fill ((fillSig p).entry saved ret rest room)
 
-/-- No memory blocks. -/
-def blocks : List (BitVec 64 × Layout) := []
-
-asm_typing At blocks blocks room 4
+asm_typing At
 
 /-! ## The program is well typed -/
 

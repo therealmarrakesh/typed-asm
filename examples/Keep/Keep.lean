@@ -37,10 +37,7 @@ inductive At : Label → Ctx → Prop
   | pause (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     pauseSig.CallerOk saved ret rest room → At .pause (pauseSig.entry saved ret rest room)
 
-/-- No memory blocks. -/
-def blocks : List (BitVec 64 × Layout) := []
-
-asm_typing At blocks blocks room 3
+asm_typing At
 
 /-! ## Safety -/
 

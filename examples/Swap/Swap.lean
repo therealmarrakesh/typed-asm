@@ -12,9 +12,6 @@ open TypedAsm
 
 namespace Swap
 
--- Where the record is loaded.
-asm_label dataBase .record
-
 /-! ## The typing -/
 
 /-- A pointer to a writable record of sixteen plain bytes: two numbers. -/
@@ -40,12 +37,7 @@ inductive At : Label → Ctx → Prop
   | swap (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     swapSig.CallerOk saved ret rest room → At .swap (swapSig.entry saved ret rest room)
 
-def recordLayout : Layout := ⟨.raw 16, true, none, 0⟩
-
-/-- One memory block: the record. -/
-def blocks : List (BitVec 64 × Layout) := [(dataBase, recordLayout)]
-
-asm_typing At blocks blocks room 2
+asm_typing At
 
 /-! ## Safety -/
 

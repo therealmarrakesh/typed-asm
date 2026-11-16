@@ -49,10 +49,7 @@ inductive At : Label → Ctx → Prop
   | loop (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     (doubleSig p).CallerOk saved ret rest room → At .loop (inside p saved ret rest room)
 
-/-- No memory blocks: the page is the program's own. -/
-def blocks : List (BitVec 64 × Layout) := []
-
-asm_typing At blocks blocks room 1
+asm_typing At
 
 /-! ## Safety -/
 

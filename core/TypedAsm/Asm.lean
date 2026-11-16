@@ -160,6 +160,31 @@ def partsFrom (target : L → BitVec 64) : Nat → Perm → List (Asm L) → Lis
   | _, _, [] => []
   | a, p, x :: rest => (a, p, lineBytes target a x) :: partsFrom target (next a x) (perm p x) rest
 
+/-- Whether a line is data. -/
+def isData : Asm L → Bool
+  | .bytes _ | .quad _ | .space _ => true
+  | _ => false
+
+/-- How many bytes of data the lines from address `a` begin with. -/
+def dataSpan (a : Nat) : List (Asm L) → Nat
+  | [] => 0
+  | x :: rest => if isData x then (next a x - a) + dataSpan (next a x) rest else 0
+
+/-- The labelled runs of data in the lines from address `a`: for each label
+that data follows directly, the label's address, how many bytes of data
+follow, and the permission of the segment they are in. -/
+def dataRunsFrom : Nat → Perm → List (Asm L) → List (Nat × Nat × Perm)
+  | _, _, [] => []
+  | a, p, x :: rest =>
+    (match x with
+      | .label _ => if 0 < dataSpan a rest then [(a, dataSpan a rest, p)] else []
+      | _ => []) ++ dataRunsFrom (next a x) (perm p x) rest
+
+/-- The labelled runs of data of a program loaded at `base`. These are the
+blocks of memory a program has before it asks for any. -/
+def dataRuns (base : BitVec 64) (prog : List (Asm L)) : List (Nat × Nat × Perm) :=
+  dataRunsFrom base.toNat .rx prog
+
 /-- What a program loaded at `base` puts in memory, line by line: where,
 with what permission, and which bytes. This is all that a program's being
 loaded means, and it is stated for each line by itself: nothing is said

@@ -32,7 +32,7 @@ def recordLayout : Layout := ⟨.raw 16, true, none, 0⟩
 
 def blocks : List (BitVec 64 × Layout) := [(dataBase, tableLayout), (recordAddr, recordLayout)]
 
-asm_typing At blocks blocks room 0
+asm_typing At blocks blocks
 
 /-! ## The memory typing and the entry contract -/
 

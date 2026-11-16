@@ -47,10 +47,7 @@ inductive At : Label → Ctx → Prop
     pageSig.CallerOk saved ret rest room frame above →
     At .page (pageSig.entry saved ret rest room frame above)
 
-/-- No memory blocks: the page is the program's own. -/
-def blocks : List (BitVec 64 × Layout) := []
-
-asm_typing At blocks blocks room 1
+asm_typing At
 
 /-! ## The program is well typed -/
 

@@ -51,7 +51,7 @@ def tableLayout : Layout := ⟨⟨16, [(0, unary.ty), (8, unary.ty)]⟩, false, 
 /-- One memory block: the table. -/
 def blocks : List (BitVec 64 × Layout) := [(dataBase, tableLayout)]
 
-asm_typing At blocks blocks room 1
+asm_typing At blocks blocks
 
 /-! ## The program is well typed -/
 

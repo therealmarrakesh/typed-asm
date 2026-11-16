@@ -12,9 +12,6 @@ open TypedAsm
 
 namespace Index
 
--- Where the array is loaded.
-asm_label dataBase .array
-
 /-! ## The typing -/
 
 /-- A pointer to a read-only array of `n` integers. -/
@@ -40,12 +37,7 @@ inductive At : Label → Ctx → Prop
     (getSig n).CallerOk saved ret rest room → n < 2 ^ 64 →
     At .get ((getSig n).entry saved ret rest room)
 
-def arrayLayout : Layout := ⟨.raw 40, false, none, 0⟩
-
-/-- One memory block: the array. -/
-def blocks : List (BitVec 64 × Layout) := [(dataBase, arrayLayout)]
-
-asm_typing At blocks blocks room 1
+asm_typing At
 
 /-! ## The program is well typed -/
 

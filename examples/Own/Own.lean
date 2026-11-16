@@ -12,9 +12,6 @@ open TypedAsm
 
 namespace Own
 
--- Where the record is loaded.
-asm_label dataBase .record
-
 /-! ## The typing -/
 
 /-- The contexts allowed at each label: nothing is known about any register,
@@ -23,12 +20,7 @@ still holding a page. -/
 inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 0)
 
-/-- The record: one number, read-only. -/
-def recordLayout : Layout := ⟨.raw 8, false, none, 0⟩
-
-def blocks : List (BitVec 64 × Layout) := [(dataBase, recordLayout)]
-
-asm_typing At blocks blocks room 0
+asm_typing At
 
 /-! ## The program is well typed -/
 

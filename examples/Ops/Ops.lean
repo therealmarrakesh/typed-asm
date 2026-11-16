@@ -12,9 +12,6 @@ open TypedAsm
 
 namespace Ops
 
--- Where the record is loaded.
-asm_label dataBase .record
-
 /-! ## The typing -/
 
 /-- A pointer to a writable record of sixteen plain bytes: two numbers. -/
@@ -47,11 +44,7 @@ inductive At : Label → Ctx → Prop
   | compute (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     computeSig.CallerOk saved ret rest room → At .compute (computeSig.entry saved ret rest room)
 
-def recordLayout : Layout := ⟨.raw 16, true, none, 0⟩
-
-def blocks : List (BitVec 64 × Layout) := [(dataBase, recordLayout)]
-
-asm_typing At blocks blocks room 4
+asm_typing At
 
 /-! ## The program is well typed -/
 
