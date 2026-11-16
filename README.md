@@ -22,7 +22,9 @@ What exists and is checked today:
   writable, and can be aligned.
 - A model of the Linux calls a program needs (`read`, `write`, `openat`,
   `close`, `fstat`, `lseek`, `mmap`, `munmap`, `exit`, `exit_group`,
-  `clock_gettime`, `getrandom`).
+  `clock_gettime`, `getrandom`). Where the kernel has a choice the model has
+  it too: a call may hand over fewer bytes than were asked for, or fail, and
+  what a program may conclude from a result is stated and proved.
 - Twenty-two example programs in `examples/`, each built into an executable
   whose safety theorem depends only on Lean's three standard axioms.
 - Tests against real tools: 79,628 instructions against the GNU assembler,

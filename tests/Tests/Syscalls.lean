@@ -1,4 +1,5 @@
 import TypedAsm
+import CatProgram
 
 /-!
 # What the modelled system calls answer
@@ -176,5 +177,37 @@ def clocks : Nat → Nat → Nat := fun c i => if c = 0 then 5000000007 - i else
 #guard (Linux.clockGettime (asking 12 clocks)).getReg .rax == -22
 -- The clock of some process, where the world has one.
 #guard (Linux.clockGettime (asking 12 clocks (· == 12))).getReg .rax == 0
+
+/-! ## A program under a kernel that does not oblige
+
+Cat opens a file, reads it 64 bytes at a time and writes what it read. The
+file here holds `two` and a newline. Its calls, in order, are an `openat`, a
+`read`, a `write`, and the `read` that finds the end. It is safe whatever
+they answer; what it writes depends on them. -/
+
+def cat (fates : List Fate) : State × Outcome :=
+  let s := Cat.startWith ["cat", "b"] Cat.someFiles
+  runMemFinal linux 1000 { s with world := { s.world with fates := fates } }
+
+-- Every call obliges.
+#guard wroteAndExited "two\n" 0 (cat [])
+-- No descriptor to be had: it reports the failure and writes nothing.
+#guard wroteAndExited "" 1 (cat [.fail .mfile])
+-- The file comes two bytes at a time: it goes round again, and loses nothing.
+#guard wroteAndExited "two\n" 0 (cat [.full, .short 2, .full, .short 2])
+-- The device fails: it takes that for the end of the file.
+#guard wroteAndExited "" 0 (cat [.full, .fail .io])
+-- The output takes one byte of four. It does not look, and three are lost.
+#guard wroteAndExited "t" 0 (cat [.full, .full, .short 1])
+-- The output takes none, for want of room. It does not look at that either.
+#guard wroteAndExited "" 0 (cat [.full, .full, .fail .nospc])
+
+/-! ## `close` -/
+
+-- A descriptor is closed even when the call says the device failed.
+#guard
+  let s := (State.init.setReg .rax 3).setReg .rdi 1
+  let t := Linux.close { s with world := { fates := [.fail .io] } }
+  t.getReg .rax == -5 && (t.world.fd? 1).isNone
 
 end Tests.Syscalls

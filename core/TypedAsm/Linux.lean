@@ -15,8 +15,18 @@ What the types rely on is the same for every one of them, and is true of
 the real kernel whatever the arguments: the call returns to the next
 instruction (or ends the program), memory that was accessible is changed
 only inside a buffer the call was handed, and `rax`, `rcx`, `r11` and the
-flags hold values nothing is known about. What a call *answers* is the
-outside world's business, and nothing is proved from it.
+flags hold values nothing is known about. No typing rests on what a call
+*answers*.
+
+What a call answers is the outside world's business. Where the kernel has a
+choice, the world makes it: how many bytes a call hands over, whether it
+fails and with what, which bytes and what time it supplies, where memory
+goes. So what is proved of a program for every world is proved for every
+answer the model can give, and the model is made to give every answer Linux
+may: a count short of what was asked, an error no argument explains, a
+buffer filled only as far as it can be written. What a program may conclude
+from a result is stated for each call that stores or sends bytes:
+`read_stored`, `getrandom_stored`, `writeBy_stdout`.
 
 What the model leaves out, none of which touches the above:
 
@@ -313,12 +323,22 @@ def openat (s : State) : State :=
   | .fail e => if e.ofOpen then ret (nextFate s).2 e.code else openatIn (nextFate s).2
   | _ => openatIn (nextFate s).2
 
-/-- `close(fd)`. -/
-def close (s : State) : State :=
+/-- `close(fd)` when the kernel does `d` with it. The descriptor is closed
+even when the call reports that the device failed, as it may once what was
+written has been sent on its way. -/
+def closeBy (d : Fate) (s : State) : State :=
   let fd := fdArg s .rdi
   match s.world.fd? fd with
-  | some _ => ret { s with world := s.world.closeFd fd } 0
+  | some _ =>
+    ret { s with world := s.world.closeFd fd }
+      (match d with
+        | .fail .io => -5
+        | _ => 0)
   | none => ret s (-9)
+
+/-- `close(fd)`, with the kernel doing what the world says. -/
+def close (s : State) : State :=
+  closeBy (nextFate s).1 (nextFate s).2
 
 /-- `lseek(fd, offset, whence)`: move a file descriptor's position, counted
 from the start of the file, from where it is, or from the end. The result
@@ -1105,9 +1125,13 @@ theorem openat_only (s : State) : OnlyWorld s (openat s) := by
     · exact key _ (openatIn_only _)
   · exact key _ (openatIn_only _)
 
-theorem close_only (s : State) : OnlyWorld s (close s) := by
-  simp only [close]
+theorem closeBy_only (d : Fate) (s : State) : OnlyWorld s (closeBy d s) := by
+  simp only [closeBy]
   only_world
+
+theorem close_only (s : State) : OnlyWorld s (close s) := by
+  obtain ⟨v, w, e⟩ := closeBy_only (nextFate s).1 (nextFate s).2
+  exact ⟨v, w, e⟩
 
 theorem lseek_only (s : State) : OnlyWorld s (lseek s) := by
   simp only [lseek]
@@ -1139,6 +1163,70 @@ theorem readBy_fills (d : Fate) (s : State) :
     | (with_reducible exact Fills.only _ _ _ _ _)
     | exact (fills_give (canWrite_writableRun _ _ _) (List.length_take_le _ _)).mono hroom
     | split)
+
+/-- What a program may conclude from the result of a call that stores up to
+`count` bytes at `buf`. Either the call failed, with an error number, and
+memory is as it was. Or it answered a count, no more than `count`: then that
+many bytes at the start of the buffer are the ones the kernel supplied, and
+every other byte of memory is as it was. A count of zero is the end of what
+there is to read. -/
+def Stored (s : State) (buf : BitVec 64) (count : Nat) (t : State) : Prop :=
+  (SysErr (t.getReg .rax) ∧ t.mem = s.mem) ∨
+  ∃ data : List (BitVec 8), data.length ≤ count ∧
+    t.getReg .rax = BitVec.ofNat 64 data.length ∧
+    (∀ i (hi : i < data.length), t.mem (buf + BitVec.ofNat 64 i) = data[i]) ∧
+    ∀ x : BitVec 64, data.length ≤ (x - buf).toNat → t.mem x = s.mem x
+
+theorem Errno.code_err (e : Errno) : SysErr e.code := by
+  cases e <;> decide
+
+theorem Stored.err {buf : BitVec 64} {count : Nat} {v : BitVec 64} (w : World) (hv : SysErr v) :
+    Stored s buf count (ret { s with world := w } v) :=
+  .inl ⟨by rw [ret_rax]; exact hv, rfl⟩
+
+theorem Stored.err' {buf : BitVec 64} {count : Nat} {v : BitVec 64} (hv : SysErr v) :
+    Stored s buf count (ret s v) :=
+  .inl ⟨by rw [ret_rax]; exact hv, rfl⟩
+
+theorem Stored.none {buf : BitVec 64} {count : Nat} : Stored s buf count (ret s 0) :=
+  .inr ⟨[], Nat.zero_le _, ret_rax _ _, fun i hi => absurd hi (by simp), fun _ _ => rfl⟩
+
+theorem Stored.give {buf : BitVec 64} {count : Nat} {data : List (BitVec 8)} (w : World)
+    (hlen : data.length ≤ count) (hc : count < 2 ^ 64) :
+    Stored s buf count (give s buf data (BitVec.ofNat 64 data.length) w) := by
+  refine .inr ⟨data, hlen, ret_rax _ _, fun i hi => ?_, fun x hx => ?_⟩
+  · show (s.storeBytes buf data).mem _ = _
+    rw [State.mem_storeBytes _ _ _ _ (by omega)]
+    have e : (buf + BitVec.ofNat 64 i - buf).toNat = i := by bv_omega
+    rw [e, List.getElem?_eq_getElem hi]
+    rfl
+  · show (s.storeBytes buf data).mem x = _
+    rw [State.mem_storeBytes _ _ _ _ (by omega), List.getElem?_eq_none hx]
+    rfl
+
+/-- **What a program may conclude from the result of a `read`**, whatever the
+kernel did with it and whatever there was to read. -/
+theorem readBy_stored (d : Fate) (s : State) :
+    Stored s (s.getReg .rsi) (s.getReg .rdx).toNat (readBy d s) := by
+  have hroom : writableRun s (s.getReg .rsi) (min (s.getReg .rdx).toNat 0x7ffff000)
+      ≤ (s.getReg .rdx).toNat :=
+    Nat.le_trans (writableRun_le _ _ _) (Nat.min_le_left _ _)
+  have hlt := (s.getReg .rdx).isLt
+  simp only [readBy]
+  repeat' (first
+    | (with_reducible exact Stored.none)
+    | ((with_reducible refine Stored.err' ?_); first | decide | exact Errno.code_err _)
+    | ((with_reducible refine Stored.err _ ?_); first | decide | exact Errno.code_err _)
+    | ((with_reducible refine Stored.give _ ?_ hlt);
+        exact Nat.le_trans (List.length_take_le _ _) hroom)
+    | split)
+
+theorem read_stored (s : State) :
+    Stored s (s.getReg .rsi) (s.getReg .rdx).toNat (read s) := by
+  simp only [read]
+  split
+  · exact readBy_stored (nextFate s).1 (nextFate s).2
+  · exact readBy_stored _ s
 
 theorem read_fills (s : State) : Fills s (s.getReg .rsi) (s.getReg .rdx).toNat (read s) := by
   simp only [read]
@@ -1300,6 +1388,15 @@ theorem Getrandom.effect {s t : State} (h : Getrandom s t) :
 theorem getrandom_fills (s : State) :
     Fills s (s.getReg .rdi) (s.getReg .rsi).toNat (getrandom s) :=
   (getrandom_allowed s).fills
+
+/-- **What a program may conclude from the result of a `getrandom`**, in the
+same words as for a `read`. -/
+theorem getrandom_stored (s : State) :
+    Stored s (s.getReg .rdi) (s.getReg .rsi).toNat (getrandom s) := by
+  rcases (getrandom_allowed s).effect with ⟨hm, he⟩ | h
+  · refine .inl ⟨?_, hm⟩
+    rcases he with e | e | e <;> rw [e] <;> decide
+  · exact .inr h
 
 /-- The kernel gets exactly as far as the bytes that can be written. -/
 theorem writableRun_eq {s : State} {a : BitVec 64} {k n : Nat} (hcan : s.canWrite a k = true)
