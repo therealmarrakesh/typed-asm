@@ -88,4 +88,43 @@ theorem signed_ok : BlocksOk Φs signedFetch linux Ψ := by
   | .fault .pageFault => true
   | _ => false
 
+/-! ## What a program ends with
+
+Typed against the system that lets a program end only with a status that is
+as wanted, an exit is typed where the status is exactly known and is so. -/
+
+inductive Ending
+  | known | unknown
+  deriving DecidableEq
+
+def ending : List (Asm Ending) := [
+  .label .known,
+  .ins (.mov .w32 (.rm_i (.reg .rdi) 3)),
+  .ins (.mov .w32 (.rm_i (.reg .rax) 60)),
+  .ins .syscall,
+  .label .unknown,
+  .ins (.mov .w32 (.rm_r (.reg .rdi) .rcx)),
+  .ins (.mov .w32 (.rm_i (.reg .rax) 60)),
+  .ins .syscall]
+
+def endingFetch : Fetch := Asm.fetch 0 ending
+
+def Φz : CodeTy := .ofLabels ending 0 (fun _ Δ => Δ = bare)
+
+example : BlockOk Φz endingFetch (linux.exitsOnly (· = 3)) Ψ (Asm.addr ending 0 .known) bare := by
+  ty_block
+
+/-- error: unsolved goals
+case status
+⊢ BitVec.setWidth 32 3#64 = 4 -/
+#guard_msgs in
+example : BlockOk Φz endingFetch (linux.exitsOnly (· = 4)) Ψ (Asm.addr ending 0 .known) bare := by
+  ty_block
+
+/-- error: `syscall`: what the program ends with is being shown, so the status in `rdi` must be exactly known here, but its type is `int` -/
+#guard_msgs in
+example :
+    BlockOk Φz endingFetch (linux.exitsOnly (· = 3)) Ψ (Asm.addr ending 0 .unknown) bare := by
+  ty_block
+
 end Rejected
