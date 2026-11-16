@@ -41,9 +41,6 @@ inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 4)
   | afterCall : At .afterCall afterCtx
   | finish : At .finish fin
-  /-- No state matches this context: its flags predicate is never true. So
-  nothing can jump here, and the `ud2` is never executed. -/
-  | trap : At .trap ⟨fun _ => .int, [], 0, fun _ => False, [], 0⟩
   | compute (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     computeSig.CallerOk saved ret rest room → At .compute (computeSig.entry saved ret rest room)
 
@@ -78,7 +75,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_code_ptr .rcx to fin
     ty_block
   | finish => ty_block
-  | trap => ty_block
   | compute saved ret rest room hK =>
     -- make the two slots the signature guarantees visible, so the frame can be allocated
     obtain ⟨m, rfl⟩ := hK.room_split

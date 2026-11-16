@@ -2228,6 +2228,14 @@ private def isComparison (t : Expr) : Bool :=
   t.isAppOf ``LT.lt || t.isAppOf ``LE.le || t.isAppOf ``GT.gt || t.isAppOf ``GE.ge ||
   t.isAppOf ``Eq || t.isAppOf ``Ne || t.isAppOf ``Not
 
+/-- How the report that a label has no context at all begins. A jump forward
+to such a label is typed by typing what is there, in place. -/
+private def noContextDeclared : String := "no context is declared at label"
+
+/-- Whether an error is the report that a label has no context at all. -/
+private def isNoContext (e : Exception) : TacticM Bool := do
+  return (← e.toMessageData.toString).startsWith noContextDeclared
+
 /-- Proves `Φ a Δ` for a labelled program: finds the label whose address is
 `a` and a context allowed there. `check` runs once the context is chosen and
 should fail if it is the wrong one; another is then tried. Returns the goals
@@ -2261,6 +2269,7 @@ private def proveAtLabel (g : MVarId) (check : TacticM (List MVarId)) :
         pure false
     unless found do continue
     let mut reasons : MessageData := m!""
+    let mut declared := false
     for k in ← ctorsOfType (← fact.getType) do
       let atCtx ← saveState
       -- A context for some other label is passed over without comment.
@@ -2270,6 +2279,7 @@ private def proveAtLabel (g : MVarId) (check : TacticM (List MVarId)) :
           atCtx.restore
           pure none
       let some premises := premises? | continue
+      declared := true
       try
         -- Premises that are not comparisons, such as a caller's requirement,
         -- are looked for among the hypotheses first. That fixes the parameters
@@ -2300,6 +2310,9 @@ private def proveAtLabel (g : MVarId) (check : TacticM (List MVarId)) :
       catch e =>
         atCtx.restore
         reasons := reasons ++ m!"\n• {k.components.getLast!}: {e.toMessageData}"
+    unless declared do
+      throwError "{noContextDeclared} `{c.components.getLast!}`: a label that is jumped back \
+        to, called, or returned to must say what holds there"
     throwError "no context allowed at label `{c.components.getLast!}` accepts the current one{reasons}"
   throwError "there is no label at the target address"
 
@@ -2487,16 +2500,38 @@ private inductive Finish
   | done (left : List MVarId)
   /-- A conditional jump was typed and the block continues in `rest`. -/
   | continues (rest : MVarId) (left : List MVarId)
+  /-- A jump was typed by typing its target in place: each of these is a
+  block still to be typed. -/
+  | forks (blocks : List MVarId) (left : List MVarId)
   /-- This instruction needs information the tactic does not have. -/
   | needsHelp (msg : MessageData)
+
+/-- Whether a jump goes forward: to the instruction after it or beyond. -/
+private def jumpsForward : Instr → Bool
+  | .jmp (.rel d) | .jcc _ d => !d.msb
+  | _ => false
 
 /-- Types the control transfer at the head of a block goal. -/
 private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
   match instr with
   | .jmp (.rel _) =>
-    let gs ← runOn goal (do evalTactic (← `(tactic| refine BlockOk.last (by ty_fetch) (HasType.jmp ?_))))
-    let [acc] := gs | throwError "ty_block: unexpected goals at `jmp`"
-    return .done (← proveAccepts acc)
+    let before ← saveState
+    try
+      let gs ← runOn goal (do evalTactic (← `(tactic|
+        refine BlockOk.last (by ty_fetch) (HasType.jmp ?_))))
+      let [acc] := gs | throwError "ty_block: unexpected goals at `jmp`"
+      return .done (← proveAccepts acc)
+    catch e =>
+      -- A jump forward to a label with no context that accepts this one is
+      -- typed by typing what is there, here and now. A jump back is a loop,
+      -- and a loop's head must say what holds each time round.
+      unless jumpsForward instr && (← isNoContext e) do throw e
+      before.restore
+      let [target] ← runOn goal (do evalTactic (← `(tactic|
+        refine BlockOk.jump (by ty_fetch) ?_))) | throwError "ty_block: unexpected goals at `jmp`"
+      let [target'] ← runOn target (do evalTactic (← `(tactic| ty_normalize)))
+        | throwError "unexpected goals"
+      return .forks [target'] []
   | .syscall =>
     -- `write` and `read` are typed as steps; what reaches here is `exit`, or
     -- a call the type system has no rule for.
@@ -2625,12 +2660,35 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
         would then not be determined"
     let [takenAcc] ← runOn taken introBranch | throwError "unexpected goals"
     -- A side that the exactly known flags rule out needs nothing more.
-    let leftTaken ← if ← closeIfImpossible takenAcc then pure [] else proveAccepts takenAcc
-    let [rest'] ← runOn rest introBranch | throwError "unexpected goals"
-    if ← closeIfImpossible rest' then return .done leftTaken
-    let [rest''] ← runOn rest' (do evalTactic (← `(tactic| ty_normalize)))
-      | throwError "unexpected goals"
-    return .continues rest'' leftTaken
+    let beforeTaken ← saveState
+    let leftTaken? ← try
+        pure (some (← if ← closeIfImpossible takenAcc then pure [] else proveAccepts takenAcc))
+      catch e =>
+        unless jumpsForward instr && (← isNoContext e) do throw e
+        beforeTaken.restore
+        pure none
+    if let some leftTaken := leftTaken? then
+      let [rest'] ← runOn rest introBranch | throwError "unexpected goals"
+      if ← closeIfImpossible rest' then return .done leftTaken
+      let [rest''] ← runOn rest' (do evalTactic (← `(tactic| ty_normalize)))
+        | throwError "unexpected goals"
+      return .continues rest'' leftTaken
+    -- The target has no context that accepts this one: type it in place.
+    before.restore
+    let gs ← runOn goal (do evalTactic (← `(tactic|
+      refine BlockOk.branchIn (by ty_fetch) ?dec ?taken ?rest)))
+    let dec ← goalNamed gs `dec
+    let taken ← goalNamed gs `taken
+    let rest ← goalNamed gs `rest
+    discard <| runOn dec decideCond
+    let mut blocks : List MVarId := []
+    for side in [taken, rest] do
+      let [side'] ← runOn side introBranch | throwError "unexpected goals"
+      unless ← closeIfImpossible side' do
+        let [side''] ← runOn side' (do evalTactic (← `(tactic| ty_normalize)))
+          | throwError "unexpected goals"
+        blocks := blocks ++ [side'']
+    return .forks blocks []
   | .jmp (.ind _) =>
     let before ← saveState
     -- a tail call through a function pointer, on behalf of this function's caller
@@ -2691,6 +2749,7 @@ elab "ty_branch" : tactic => do
     match ← finishBlock goal instr with
     | .done l => setGoals (l ++ others)
     | .continues rest l => setGoals (rest :: l ++ others)
+    | .forks blocks l => setGoals (blocks ++ l ++ others)
     | .needsHelp m => throwError m
   | .stepped =>
     saved.restore
@@ -2708,25 +2767,32 @@ that do not obviously match. The tactic stops at a `call`, which needs
 elab "ty_block" : tactic => do
   let others := (← getGoals).drop 1
   let mut left : List MVarId := []
+  -- the blocks still to be typed: this one, and those a jump typed in place
+  -- leads to; and the ones the tactic could not carry further
+  let mut work : List MVarId := [← getMainGoal]
+  let mut stuck : List MVarId := []
   repeat
+    let g :: more := work | break
+    work := more
+    setGoals [g]
     let mut endInstr? : Option Instr := none
     repeat
       match ← typeStep with
       | .stepped => continue
       | .endOfBlock instr => endInstr? := some instr; break
       | .notABlock => break
-    let some instr := endInstr? | break
+    let some instr := endInstr? | stuck := stuck ++ (← getGoals); continue
     let goal ← getMainGoal
     match ← finishBlock goal instr with
-    | .done l =>
-      left := left ++ l
-      setGoals []
-      break
+    | .done l => left := left ++ l
     | .continues rest l =>
       left := left ++ l
-      setGoals [rest]
-    | .needsHelp _ => break
-  setGoals ((← getGoals) ++ left ++ others)
+      work := rest :: work
+    | .forks blocks l =>
+      left := left ++ l
+      work := blocks ++ work
+    | .needsHelp _ => stuck := stuck ++ (← getGoals)
+  setGoals (stuck ++ left ++ others)
 
 /-- `ty_call sig` types a `call` that ends a block, to a function with
 signature `sig`. The callee and the return point are found by label. Left as

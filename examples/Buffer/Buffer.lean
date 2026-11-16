@@ -21,7 +21,6 @@ def looping : Ctx := ⟨fun _ => .int, [.raw 16], 0, Flags.Any, [], 0⟩
 inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 2)
   | loop : At .loop looping
-  | done : At .done looping
 
 /-- No memory blocks. -/
 def blocks : List (BitVec 64 × Layout) := []
@@ -45,7 +44,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     -- a known address and the `read` is checked against the two slots there
     ty_name .rsp as sp
     ty_block
-  | done => ty_block
 
 /-! ## Safety -/
 

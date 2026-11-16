@@ -30,7 +30,6 @@ def walking : Ctx := ⟨fun r => if r = .rdi then link else .int, [], 0, Flags.A
 inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 0)
   | loop : At .loop walking
-  | done : At .done (entryCtx 0)
 
 /-- The code typing: those contexts, at the addresses of their labels. -/
 def Φ : CodeTy := .ofLabels code base At
@@ -65,7 +64,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     -- a node: it may be read, and its link goes round the loop
     · ty_open .rdi
       ty_block
-  | done => ty_block
 
 /-! ## The memory typing and the entry contract -/
 

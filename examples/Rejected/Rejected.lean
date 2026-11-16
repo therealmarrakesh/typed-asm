@@ -1170,6 +1170,37 @@ theorem signed_ok : BlocksOk Φs signedFetch linux Ψ := by
   | start a v hv hv1 => ty_block
   | out => ty_block
 
+/-! ## A loop with nothing said at its head
+
+A label reached only by jumping forward needs no context: what is there is
+typed where the jump is made. A label that is jumped back to is the head of
+a loop, and must say what holds each time round. -/
+
+inductive Back
+  | start | top | out
+  deriving DecidableEq
+
+def back : List (Asm Back) := [
+  .label .start,
+  .ins (.test .w64 (.reg .rax) (.reg .rax)),
+  .jcc .e .out,
+  .label .top,
+  .ins .nop,
+  .jmp .top,
+  .label .out,
+  .ins .ud2]
+
+def backFetch : Fetch := Asm.fetch 0 back
+
+inductive AtBack : Back → Ctx → Prop
+  | start : AtBack .start bare
+
+def Φb : CodeTy := .ofLabels back 0 AtBack
+
+/-- error: no context is declared at label `top`: a label that is jumped back to, called, or returned to must say what holds there -/
+#guard_msgs in
+example : BlockOk Φb backFetch linux Ψ (Asm.addr back 0 .start) bare := by ty_block
+
 /-! ## Memory where there can be none
 
 A processor with 48-bit addresses refuses any access from `2 ^ 47` up to the

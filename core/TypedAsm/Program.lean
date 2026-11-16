@@ -36,6 +36,22 @@ inductive BlockOk (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) :
     (∀ f, Γ.flags f → c.eval f = some true → Accepts Φ (a + len + d.signExtend 64) Γ) →
     (∀ f, Γ.flags f → c.eval f = some false → BlockOk Φ fetch sys Ψ (a + len) Γ) →
     BlockOk Φ fetch sys Ψ a Γ
+  /-- A jump, typed by typing what it jumps to, in the context the jump is
+  made in. The target needs no context of its own in the code typing. This
+  is how the join of an `if`, or a way out taken from several places, is
+  typed without saying what holds there: it is typed once for each way in. -/
+  | jump {a : BitVec 64} {Γ : Ctx} {d : BitVec 32} {len : BitVec 64} :
+    fetch a = some (.jmp (.rel d), len) →
+    BlockOk Φ fetch sys Ψ (a + len + d.signExtend 64) Γ → BlockOk Φ fetch sys Ψ a Γ
+  /-- A conditional jump whose target is typed in place, like `jump`: each
+  side is a block entered in the context of the jump, and may assume which
+  way the condition went. -/
+  | branchIn {a : BitVec 64} {Γ : Ctx} {c : Cond} {d : BitVec 32} {len : BitVec 64} :
+    fetch a = some (.jcc c d, len) → (∀ f, Γ.flags f → ∃ b, c.eval f = some b) →
+    (∀ f, Γ.flags f → c.eval f = some true →
+      BlockOk Φ fetch sys Ψ (a + len + d.signExtend 64) Γ) →
+    (∀ f, Γ.flags f → c.eval f = some false → BlockOk Φ fetch sys Ψ (a + len) Γ) →
+    BlockOk Φ fetch sys Ψ a Γ
   /-- The rule of consequence, between instructions: continue in any context
   that every matching state also matches. -/
   | weaken {a : BitVec 64} {Γ Γ' : Ctx} :
@@ -132,6 +148,10 @@ theorem BlocksOk.programOk (h : BlocksOk Φ fetch sys Ψ) :
   | sem hf hs hrest _ => exact ⟨_, _, hf, .sem hs (fun x => ⟨_, hrest x, CtxSub.refl _⟩)⟩
   | branch hf hdec hacc hrest _ =>
     exact ⟨_, _, hf, .jcc hdec (fun f hΓ hb => (hacc f hΓ hb).mono h)
+      (fun f hΓ hb => ⟨_, hrest f hΓ hb, CtxSub.refl _⟩)⟩
+  | jump hf htarget _ => exact ⟨_, _, hf, .jmp ⟨_, htarget, CtxSub.refl _⟩⟩
+  | branchIn hf hdec htaken hrest _ _ =>
+    exact ⟨_, _, hf, .jcc hdec (fun f hΓ hb => ⟨_, htaken f hΓ hb, CtxSub.refl _⟩)
       (fun f hΓ hb => ⟨_, hrest f hΓ hb, CtxSub.refl _⟩)⟩
   | weaken hsem _ ih =>
     obtain ⟨i, len, hf, ht⟩ := ih

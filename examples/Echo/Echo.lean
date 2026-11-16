@@ -18,7 +18,6 @@ namespace Echo
 and the program uses no stack. -/
 inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 0)
-  | done : At .done (entryCtx 0)
 
 /-- The buffer: sixteen plain bytes, writable. -/
 def bufferLayout : Layout := ⟨.raw 16, true, none, 0⟩
@@ -41,9 +40,8 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     -- `rsi` holds exactly the buffer's address, so it is a pointer to it
     refine BlockOk.castPtr (r := .rsi) (base := dataBase) (i := 0) (w := true) (by decide) rfl rfl
       (by decide) (fun _ => rfl) ?_
-    -- the `read`, the test of its result, the `write`, and round again
+    -- the `read`, the test of its result, the way out, the `write`, and round again
     ty_block
-  | done => ty_block
 
 /-! ## Safety -/
 

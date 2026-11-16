@@ -38,7 +38,6 @@ inductive At : Label → Ctx → Prop
   | afterFirst : At .afterFirst withTable
   | afterSecond : At .afterSecond withFn
   | afterThird : At .afterThird withFn
-  | bad : At .bad (entryCtx 1)
   | double (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     unary.CallerOk saved ret rest room → At .double (unary.entry saved ret rest room)
   | square (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
@@ -75,7 +74,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_steps
     ty_call unary
   | afterThird => ty_block
-  | bad => ty_block
   | double saved ret rest room hK => ty_block
   | square saved ret rest room hK => ty_block
 

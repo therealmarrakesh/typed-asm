@@ -43,14 +43,11 @@ def inside (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) 
 inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 1)
   | back (p : BitVec 64) : At .back (backCtx p)
-  | fail : At .fail (entryCtx 1)
   | double (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     (doubleSig p).CallerOk saved ret rest room →
     At .double ((doubleSig p).entry saved ret rest room)
   | loop (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     (doubleSig p).CallerOk saved ret rest room → At .loop (inside p saved ret rest room)
-  | done (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
-    (doubleSig p).CallerOk saved ret rest room → At .done (inside p saved ret rest room)
 
 /-- No memory blocks: the page is the program's own. -/
 def blocks : List (BitVec 64 × Layout) := []
@@ -79,13 +76,11 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_steps
     ty_munmap
     ty_block
-  | fail => ty_block
   | double p saved ret rest room hK => ty_into At.loop p saved ret rest room hK
   | loop p saved ret rest room hK =>
     -- the index, whatever it is, is called `i`; past the test it is less than 512
     ty_name .rcx as i
     ty_block
-  | done p saved ret rest room hK => ty_block
 
 /-! ## Safety -/
 

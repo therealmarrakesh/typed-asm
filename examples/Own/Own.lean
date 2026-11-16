@@ -19,7 +19,6 @@ and nothing is owned. In particular the program may not arrive at `fail`
 still holding a page. -/
 inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 0)
-  | fail : At .fail (entryCtx 0)
 
 /-- The record: one number, read-only. -/
 def recordLayout : Layout := ⟨.raw 8, false, none, 0⟩
@@ -75,7 +74,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
         -- so the page can become an ordinary block with that field
         ty_freeze .rbx
         ty_block
-  | fail => ty_block
 
 /-! ## Safety -/
 

@@ -36,13 +36,6 @@ inductive At : Label → Ctx → Prop
   | get (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     (getSig n).CallerOk saved ret rest room → n < 2 ^ 64 →
     At .get ((getSig n).entry saved ret rest room)
-  /-- Reached only with the index, here called `v`, below the length. -/
-  | inbounds (n : Nat) (v : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape)
-      (room : Nat) :
-    (getSig n).CallerOk saved ret rest room → v.toNat < n →
-    At .inbounds ⟨fun r => if calleeSaved r then saved r
-        else if r = .rdi then arr n else if r = .rdx then .eq v else .int,
-      .slot (.code ret) :: rest, room, Flags.Any, ret.owned, ret.above⟩
 
 def arrayLayout : Layout := ⟨.raw 40, false, none, 0⟩
 
@@ -71,7 +64,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_name .rdx as v
     -- entering `inbounds`, the comparison has found `v` below the length
     ty_block
-  | inbounds n v saved ret rest room hK hv => ty_block
 
 /-! ## Safety -/
 

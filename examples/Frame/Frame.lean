@@ -32,15 +32,8 @@ def fin : Ctx := ⟨fun _ => .int, [], 24, Flags.Any, [], 0⟩
 inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 3)
   | afterCall : At .afterCall fin
-  | spin : At .spin fin
   | pick (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     pickSig.CallerOk saved ret rest room → At .pick (pickSig.entry saved ret rest room)
-  /-- At `skip` the frame is still allocated: sixteen bytes, the first eight
-  of them holding the pointer. -/
-  | skip (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (m : Nat) :
-    pickSig.CallerOk saved ret rest (m + 16) →
-    At .skip ⟨fun r => if calleeSaved r then saved r else .int,
-      ⟨16, [(0, pair)]⟩ :: .slot (.code ret) :: rest, m, Flags.Any, ret.owned, ret.above⟩
 
 def recordLayout : Layout := ⟨.raw 16, true, none, 0⟩
 
@@ -63,12 +56,10 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_block
     ty_call pickSig
   | afterCall => ty_block
-  | spin => ty_block
   | pick saved ret rest room hK =>
     -- make the two slots the signature guarantees visible, so the frame can be allocated
     obtain ⟨m, rfl⟩ := hK.room_split
     ty_block
-  | skip saved ret rest m hK => ty_block
 
 /-! ## Safety -/
 

@@ -30,7 +30,6 @@ inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 0)
   | next : At .next listCtx
   | print : At .print listCtx
-  | done : At .done (entryCtx 0)
 
 /-- The code typing: those contexts, at the addresses of their labels. -/
 def Φ : CodeTy := .ofLabels code base At
@@ -70,7 +69,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     · ty_block
     · ty_open .rbx
       ty_block
-  | done => ty_block
 
 /-! ## The memory typing and the entry contract -/
 

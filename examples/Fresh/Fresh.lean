@@ -46,7 +46,6 @@ inductive At : Label → Ctx → Prop
       (frame : List (BitVec 64 × Shape)) (above : Nat) :
     pageSig.CallerOk saved ret rest room frame above →
     At .page (pageSig.entry saved ret rest room frame above)
-  | fail (Γ : Ctx) : At .fail Γ
 
 /-- No memory blocks: the page is the program's own. -/
 def blocks : List (BitVec 64 × Layout) := []
@@ -85,7 +84,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
       ty_branch
       ty_return_as p
       ty_block
-  | fail Γ => ty_block
 
 /-! ## Safety -/
 

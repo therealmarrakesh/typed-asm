@@ -28,7 +28,6 @@ inductive At : Label → Ctx → Prop
   | start (c : BitVec 64) : At .start (argsCtx 0 c)
   | file (c v : BitVec 64) : At .file (loopCtx c v)
   | next (c v : BitVec 64) : At .next (loopCtx c v)
-  | eof (c v : BitVec 64) : At .eof (loopCtx c v)
   | done (c : BitVec 64) : At .done (argsCtx 0 c)
   | fail (c : BitVec 64) : At .fail (argsCtx 0 c)
 
@@ -73,7 +72,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
       (by decide) (fun _ => rfl) ?_
     -- the `read`, the test of its result, the `write`, and round again
     ty_block
-  | eof c v => ty_block
   | done c => ty_block
   | fail c => ty_block
 

@@ -34,7 +34,6 @@ def ending : Ctx := ⟨fun _ => .int, [.raw 16], 8, Flags.Any, [], 0⟩
 inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 3)
   | back (sp : BitVec 64) : At .back (kept sp)
-  | done : At .done ending
   | pause (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     pauseSig.CallerOk saved ret rest room → At .pause (pauseSig.entry saved ret rest room)
 
@@ -59,7 +58,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   | back sp =>
     -- the `read` is into the address taken before the call
     ty_block
-  | done => ty_block
   | pause saved ret rest room hK => ty_block
 
 /-! ## Safety -/

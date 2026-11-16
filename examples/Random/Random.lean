@@ -19,7 +19,6 @@ namespace Random
 and the program uses no stack. -/
 inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 0)
-  | fail : At .fail (entryCtx 0)
 
 /-- The buffer: 512 plain bytes, writable. -/
 def bufferLayout : Layout := ⟨.raw 512, true, none, 0⟩
@@ -42,7 +41,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
       (by decide) (fun _ => rfl) ?_
     -- the `getrandom`, the test of its result, the `write` of that many bytes, and `exit`
     ty_block
-  | fail => ty_block
 
 /-! ## Safety -/
 
