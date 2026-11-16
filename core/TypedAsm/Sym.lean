@@ -1186,6 +1186,92 @@ theorem findOwned_spec (ρ : Env) (p : Val) : (l : List (Val × ShapeS)) → (k�
       · exact later h
     · exact later h
 
+/-! ### The stack, through an index
+
+A byte so far above the stack pointer, plus an index, is past every piece
+whose length is a number no greater than how far it is without the index:
+the index only takes it further. The first piece it is not seen to be past
+is the one the index runs over. -/
+
+/-- The piece of the stack a byte `D` above the stack pointer plus an index
+is taken to be in, counting pieces from `k`, and how far into it without the
+index. -/
+def pieceIdx : List ShapeS → Nat → Nat → Option (Nat × ShapeS × Nat)
+  | [], _, _ => none
+  | S :: σ, k, D =>
+    match S.size.lit? with
+    | some sz => if sz ≤ D then pieceIdx σ (k + 1) (D - sz) else some (k, S, D)
+    | none => some (k, S, D)
+
+theorem pieceIdx_spec (ρ : Env) (rest : List Shape) : (σ : List ShapeS) → (k₀ D : Nat) →
+    {k : Nat} → {S : ShapeS} → {R : Nat} → pieceIdx σ k₀ D = some (k, S, R) →
+    ∃ j, k = k₀ + j ∧ σ[j]? = some S ∧ D = stackOff (denShapes ρ σ rest) j + R
+  | [], _, _, _, _, _, h => by cases h
+  | T :: σ, k₀, D, k, S, R, h => by
+    unfold pieceIdx at h
+    split at h
+    · next tz ht =>
+      have hT : (T.den ρ).size = tz := by rw [ShapeS.den_size, Num.lit?_den ht]
+      split at h
+      · next hle =>
+        obtain ⟨j, hk, hj, hd⟩ := pieceIdx_spec ρ rest σ (k₀ + 1) (D - tz) h
+        refine ⟨j + 1, by omega, hj, ?_⟩
+        show D = (T.den ρ).size + stackOff (denShapes ρ σ rest) j + R
+        omega
+      · cases h; exact ⟨0, rfl, rfl, by simp⟩
+    · cases h; exact ⟨0, rfl, rfl, by simp⟩
+
+/-- Where an operand reached through the stack pointer is. -/
+def locateSp (Γ : CtxS) (ix : Option (IndexReg × Scale)) (disp : BitVec 32) :
+    Option (PlaceS × List CondS) :=
+  if disp.toNat < 2 ^ 31 then
+    match ix with
+    | none =>
+      match pieceAt Γ.stack 0 disp.toNat with
+      | some (k, S, i, _) => some (⟨.piece k, S, .lit i⟩, [])
+      | none => none
+    | some (x, sc) =>
+      match exactly (Γ.regs.get x.toReg), pieceIdx Γ.stack 0 disp.toNat with
+      | some c, some (k, S, R) =>
+        some (⟨.piece k, S, Num.plus (.mul (.toNat c) (.lit (2 ^ sc.shift))) (.lit R)⟩, [])
+      | _, _ => none
+  else none
+
+theorem locateSp_spec {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
+    {ix : Option (IndexReg × Scale)} {disp : BitVec 32} {x : PlaceS × List CondS}
+    (h : locateSp Γ ix disp = some x) :
+    Loc Ψ next (Γ.den ρ) (.sib (some .rsp) ix disp) (x.1.kind.den ρ) (x.1.shape.den ρ)
+      (x.1.off.den ρ) := by
+  unfold locateSp at h
+  split at h
+  · next hlt =>
+    split at h
+    · split at h
+      · next k S i sz hp =>
+        cases h
+        obtain ⟨j, hk, hj, hoff, _, _⟩ := pieceAt_spec ρ (stackTail ρ Γ.stackRest) _ _ _ hp
+        have hkj : k = j := by omega
+        subst hkj
+        exact .slot (byteDisp_toNat hlt)
+          ⟨by rw [CtxS.den_stack]; exact denShapes_getElem? ρ _ _ _ _ hj,
+           by rw [CtxS.den_stack]; exact hoff⟩
+      · cases h
+    · next xr sc =>
+      split at h
+      · next c k S R hc hp =>
+        cases h
+        obtain ⟨j, hk, hj, hoff⟩ := pieceIdx_spec ρ (stackTail ρ Γ.stackRest) _ _ _ hp
+        have hkj : k = j := by omega
+        subst hkj
+        refine .slotIndexed (d := (c.den ρ).toNat * 2 ^ sc.shift + disp.toNat)
+          (by rw [CtxS.den_regs, exactly_den hc]) (Check.index_bytes _ sc disp hlt)
+          ⟨by rw [CtxS.den_stack]; exact denShapes_getElem? ρ _ _ _ _ hj, ?_⟩
+        rw [CtxS.den_stack, Num.den_plus]
+        show _ = _ + ((c.den ρ).toNat * 2 ^ sc.shift + R)
+        omega
+      · cases h
+  · cases h
+
 /-- What is left to be shown for a number to be one a register can hold. -/
 def fits64 (j : Num) : Option (List CondS) :=
   match j.lit? with
@@ -1207,7 +1293,7 @@ what is left to be shown for it to be so. -/
 def locate (Γ : CtxS) (m : Mem) : Option (PlaceS × List CondS) :=
   match m with
   | .sib (some b) ix disp =>
-    if b = .rsp then none
+    if b = .rsp then locateSp Γ ix disp
     else match Γ.regs.get b, reach Γ ix disp with
       | .ptr S w off, some d => some (⟨.ptr w, S, off.plus d⟩, [])
       | .eq _, _ =>
@@ -1231,7 +1317,7 @@ theorem locate_spec {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {m : 
   split at h
   · next b ix disp =>
     split at h
-    · cases h
+    · next hb => subst hb; exact locateSp_spec h
     next hb =>
     split at h
     · next S w off d hΓ hr =>
