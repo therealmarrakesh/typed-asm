@@ -23,7 +23,23 @@
 #define IO 0x30000UL
 
 static sigjmp_buf recover;
-static void on_fault(int sig) { (void)sig; siglongjmp(recover, 1); }
+/* Which exception the processor raised: its trap number. */
+static volatile long trap;
+static void on_fault(int sig, siginfo_t *info, void *context) {
+    (void)sig; (void)info;
+    trap = ((ucontext_t *)context)->uc_mcontext.gregs[REG_TRAPNO];
+    siglongjmp(recover, 1);
+}
+static const char *trap_name(long t) {
+    switch (t) {
+    case 0: return "divideError";
+    case 6: return "invalidOpcode";
+    case 12: return "stackFault";
+    case 13: return "generalProtection";
+    case 14: return "pageFault";
+    default: return "other";
+    }
+}
 
 /* Load the inputs, point rsp and rbx at the buffer, and jump to the snippet.
  * The snippet's trailing code restores rsp from IO+192 and jumps to IO+200. */
@@ -74,11 +90,12 @@ int main(void) {
     sigaltstack(&alt, NULL);
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
-    sa.sa_handler = on_fault;
-    sa.sa_flags = SA_ONSTACK;
+    sa.sa_sigaction = on_fault;
+    sa.sa_flags = SA_ONSTACK | SA_SIGINFO;
     sigaction(SIGFPE, &sa, NULL);
     sigaction(SIGSEGV, &sa, NULL);
     sigaction(SIGILL, &sa, NULL);
+    sigaction(SIGBUS, &sa, NULL);
 
     char *line = NULL;
     size_t cap = 0;
@@ -100,7 +117,7 @@ int main(void) {
         buffer[1] = v[5];
         io[0] = v[0]; io[1] = v[1]; io[2] = v[2]; io[3] = v[3];
         io[26] = CODE;
-        if (sigsetjmp(recover, 1)) { puts("fault"); continue; }
+        if (sigsetjmp(recover, 1)) { printf("fault %s\n", trap_name(trap)); continue; }
         enter();
         uint64_t f = io[14];
         printf("ok %llx %llx %llx %llx %llx %llx %d%d%d%d %llx %llx %llx\n",

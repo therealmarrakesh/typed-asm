@@ -4718,12 +4718,12 @@ ok 225ce386 c071b40d6d942bd6 fffffff0 0 0 10800 1101 0 ffffffff af6f5ac82906d1be
 ok a3f3addc e7b1a35a498db92c ff0a6afe 0 0 10800 1011 0 8000000000000000 63d5b9e4147ca732
 ok 511e56a8 9c9be43db21eae9a fb54896d 0 0 10800 1011 0 fffffffe da496eceea4c73c
 ok 4b5cc030 df3076b7a7470c20 efe344e9 0 0 10800 1111 0 ffffffffffffff9d acdbf1e2b77f31dc
-fault
+fault divideError
 ok 7fff ffffffffffffff9d 327f9c 0 0 10800 1001 0 8caeab68de9f7b96 acdbf1e2b77f31dc
-fault
-fault
+fault divideError
+fault divideError
 ok 735045c3 a520f7e7e7d0d4d2 4af14a09 0 0 10800 0000 0 da496eceea4c73c 7fff
-fault
+fault divideError
 ok 7bba3aba fda719ebbd1e9dce 654ac53 0 0 10800 0000 0 0 fffffffffffffffe
 ok 5c616c9f fe69a54f7aa89e70 65fe5870 0 0 10800 1000 0 3 13575851f403431e
 ok 4806bc3f 8cd68249c4ca072a 3a0964a9 0 0 10800 0000 0 20 a520f7e7e7d0d4d2
@@ -4731,40 +4731,40 @@ ok cd4e7a69 a8edb0da9b82d7fc 419f51a2 0 0 10800 1000 0 40 2c53156aca50b11c
 ok 1 52af3101fed310e6 12cef18 0 0 10800 0000 0 7f a8edb0da9b82d7fc
 ok 23 8a1b02bfeebab1e8 5c79ad4f 0 0 10800 1000 0 8000 1af0ca375b674972
 ok 13196 4f3126146b39bb02 645f0b38 0 0 10800 0001 0 80000000 825c618109fe057e
-fault
-fault
-fault
+fault divideError
+fault divideError
+fault divideError
 ok e5e7dade ec30e347db1ff05a 9d4edd48 0 0 10800 0001 0 83441c3e44e0ac36 b61fa9e9174fdf8a
-fault
+fault divideError
 ok 32e621de 8caeab68de9f7b96 185c818e 0 0 10800 0001 0 8a8ee01e8c2c0544 21
-fault
-fault
-fault
+fault divideError
+fault divideError
+fault divideError
 ok 0 4622a1d0686b8008 0 0 0 10800 1001 0 acdbf1e2b77f31dc 7fffffff
-fault
-fault
+fault divideError
+fault divideError
 ok 745f7b23 73eac999ce2665ca 48b1a397 0 0 10800 0000 0 3f 4d5d6147d00d0c78
-fault
+fault divideError
 ok e7b69f5f ac1926bb7b98076e 80b84168 0 0 10800 0000 0 7fff 8cd68249c4ca072a
-fault
-fault
+fault divideError
+fault divideError
 ok 2 26dc16571e320698 9bc2a269 0 0 10800 1000 0 ffffffffffffffff 9c9be43db21eae9a
 ok 49 c071b40d6d942bd6 78890558 0 0 10800 0001 0 7 8caeab68de9f7b96
 ok 832a e7b1a35a498db92c 87070fa6 0 0 10800 1001 0 13575851f403431e 7229f080f9d29328
 ok f 9c9be43db21eae9a 11c8fa4 0 0 10800 0001 0 4d5d6147d00d0c78 4d0db38603b7f550
-fault
-fault
-fault
-fault
-fault
+fault divideError
+fault divideError
+fault divideError
+fault divideError
+fault divideError
 ok 33425d58 79121aebadeff926 b9971f36 0 0 10800 0000 0 4f3126146b39bb02 fffffffe
 ok ffffff71 8a8ee01e8c2c0544 4c96f0fb 0 0 10800 0001 0 5 100000000
 ok fffc2c1e fda719ebbd1e9dce a8219dc 0 0 10800 1001 0 21 fffffffe
 ok 0 fe69a54f7aa89e70 ffffffff 0 0 10800 0000 0 41 83441c3e44e0ac36
-fault
-fault
-fault
-fault
+fault divideError
+fault divideError
+fault divideError
+fault divideError
 ok a7f5ef0a 4f3126146b39bb02 a33dd389 0 0 10800 1000 0 fffffffe e7b1a35a498db92c
 ok 9b6a1dba a1f19aff74502c34 93394156 0 0 10800 0000 0 ffffffffffffff9d 759a9e8d169401ec
 ok 5f44fb19 825c618109fe057e 43798e8 0 0 10800 1000 0 969b749038e3ef54 f8ec17acd24c9542
@@ -4772,32 +4772,32 @@ ok c f07179992c4346e0 25bc9cd4 0 0 10800 0001 0 a520f7e7e7d0d4d2 71a60eb97cb7732
 ok fffffe3f ec30e347db1ff05a 23119a52 0 0 10800 1001 0 7265b2d253126486 dfc883b315d49bb0
 ok b5696 759a9e8d169401ec 1d99b5a 0 0 10800 0001 0 fe69a54f7aa89e70 3
 ok 0 8caeab68de9f7b96 e7d0d4d2 0 0 10800 1001 0 492ccf5f5e938290 3f
-fault
-fault
-fault
+fault divideError
+fault divideError
+fault divideError
 ok 3dfb1101 71a60eb97cb7732e 2da71ca0 0 0 10800 1001 0 e7b1a35a498db92c ffffffffffffff9d
-fault
-fault
+fault divideError
+fault divideError
 ok 65e 73eac999ce2665ca a20de82 0 0 10800 1001 0 8000 a789e2650a5c03a2
-fault
+fault divideError
 ok fffffffb ac1926bb7b98076e d8e18cd7 0 0 10800 1000 0 7fffffffffffffff 492ccf5f5e938290
-fault
-fault
-fault
-fault
-fault
+fault divideError
+fault divideError
+fault divideError
+fault divideError
+fault divideError
 ok b2f06f08 9c9be43db21eae9a 2b442b28 0 0 10800 1000 0 2c53156aca50b11c 2fe16484bbf0fd6a
-fault
+fault divideError
 ok 1f3e86a6 af6f5ac82906d1be 12 0 0 10800 1001 0 ac1926bb7b98076e 20
 ok 41aa1595 d58906f375dff74 9d 0 0 10800 0001 0 8a1b02bfeebab1e8 ff
-fault
-fault
-fault
-fault
-fault
-fault
-fault
-fault
+fault divideError
+fault divideError
+fault divideError
+fault divideError
+fault divideError
+fault divideError
+fault divideError
+fault divideError
 ok 8a7299d8 52af3101fed310e6 ff 0 0 10800 0000 0 7 52af3101fed310e6
 ok adcd3348 8a1b02bfeebab1e8 80000000 0 0 10800 1001 0 13575851f403431e 26dc16571e320698
 ok c5bb703c 4f3126146b39bb02 fffffffe 0 0 10800 1101 0 4d5d6147d00d0c78 f07179992c4346e0
@@ -10760,84 +10760,84 @@ ok 61614e04df0223d2 64 38 0 0 10800 1101 0 8a8ee01e8c2c0544 71a60eb97cb7732e
 ok e441d98aea4dd800 13575851f403431e ffffffffffffffef 0 0 10800 1011 0 2c53156aca50b11c dfc883b315d49bb0
 ok 9 2fe16484bbf0fd6a 733213e7bd6f6d0 0 0 10800 0001 0 71a60eb97cb7732e 71a60eb97cb7732e
 ok 49 dfc883b315d49bb0 f9af5a1dc343680 0 0 10800 1001 0 2fe16484bbf0fd6a dfc883b315d49bb0
-fault
-fault
-fault
-fault
-fault
-fault
-fault
-fault
-fault
+fault divideError
+fault divideError
+fault divideError
+fault divideError
+fault divideError
+fault divideError
+fault divideError
+fault divideError
+fault divideError
 ok 200000000 80000000 3f 0 0 10800 1000 0 7 8a1b02bfeebab1e8
 ok 3f00000000 100000000 40 0 0 10800 0000 0 13575851f403431e c071b40d6d942bd6
 ok 10000 8000000000000000 41 0 0 10800 1000 0 4d5d6147d00d0c78 ec30e347db1ff05a
 ok 8000000000000001 fffffffffffffffe 101 0 0 10800 0001 0 4622a1d0686b8008 d58906f375dff74
-fault
+fault divideError
 ok 8a8ee01e8c2c0579 ffffffffffffff9d 9540abd035061e4b 0 0 10800 0001 0 73eac999ce2665ca 2fe16484bbf0fd6a
 ok 8eb56e49517e6df2 83441c3e44e0ac36 6ae77d5761b6b6f3 0 0 10800 1001 0 a8edb0da9b82d7fc 1
-fault
+fault divideError
 ok f2caaa5850abd399 a520f7e7e7d0d4d2 43cdfb258c82b87d 0 0 10800 1001 0 4f3126146b39bb02 ff
 ok 1000000000000000 1 0 0 0 10800 1001 0 5 20
 ok 4040404040404040 3 41 0 0 10800 0001 0 21 ff
-fault
-fault
-fault
+fault divideError
+fault divideError
+fault divideError
 ok c2736719b455a6f2 ff 4949f79ce4734ab7 0 0 10800 0000 0 ffffffff 969b749038e3ef54
-fault
+fault divideError
 ok 55d217dbeb73a2b1 8000 271033b6034bcb77 0 0 10800 0000 0 fffffffe 73eac999ce2665ca
-fault
-fault
+fault divideError
+fault divideError
 ok 5209f580e9378eee 7fffffffffffffff 39846f156e03dc01 0 0 10800 1000 0 a520f7e7e7d0d4d2 f07179992c4346e0
 ok 2 ffffffffffffffff a1214a6fadf25d83 0 0 10800 0000 0 7265b2d253126486 af6f5ac82906d1be
 ok a4 fffffffe b14e9e2e024e477 0 0 10800 1000 0 fe69a54f7aa89e70 63d5b9e4147ca732
 ok 12c396 64 5f04fcea5788f58 0 0 10800 0001 0 492ccf5f5e938290 da496eceea4c73c
-fault
-fault
-fault
-fault
-fault
+fault divideError
+fault divideError
+fault divideError
+fault divideError
+fault divideError
 ok ec30e347db1ff05b 2c53156aca50b11c d861c690b63fe0b5 0 0 10800 0001 0 af6f5ac82906d1be fffffffffffffffe
 ok 1800000000000000 20 3 0 0 10800 0001 0 8000 ffffffff
-fault
-fault
+fault divideError
+fault divideError
 ok fbf7efdfbf7efdfd 7f ffffffffffffff9d 0 0 10800 1001 0 fffffffffffffffe a520f7e7e7d0d4d2
-fault
-fault
-fault
-fault
+fault divideError
+fault divideError
+fault divideError
+fault divideError
 ok 419f1290b171e7bf 8000000000000000 80000000000000ff 0 0 10800 0000 0 2c53156aca50b11c df3076b7a7470c20
-fault
-fault
+fault divideError
+fault divideError
 ok f83e0f83e0f83cc5 ffffffffffffff9d 2e 0 0 10800 1000 0 8a1b02bfeebab1e8 b61fa9e9174fdf8a
 ok ffffffffffffff7b 83441c3e44e0ac36 3262ac59c8b9f80e 0 0 10800 0001 0 26dc16571e320698 2
 ok 1a78d4ed4 4d5d6147d00d0c78 3db46859954e1c9f 0 0 10800 1001 0 825c618109fe057e 21
 ok 5 a520f7e7e7d0d4d2 c65b2878f8ebd7e5 0 0 10800 0001 0 9c9be43db21eae9a 7f
-fault
-fault
-fault
-fault
+fault divideError
+fault divideError
+fault divideError
+fault divideError
 ok 607793469f5d8fed a8edb0da9b82d7fc c237a329f6ac47b4 0 0 10800 1001 0 4d0db38603b7f550 7265b2d253126486
 ok 10 ff 2a29eb82ff2f38a0 0 0 10800 1001 0 7 4d5d6147d00d0c78
 ok 23a 80 498fd7b3090c2dc5 0 0 10800 0001 0 13575851f403431e 7265b2d253126486
 ok fffffffee3763ddd 8000 5fda27476e86cefd 0 0 10800 1001 0 4d5d6147d00d0c78 8cd68249c4ca072a
 ok fffffffd6c1bad08 7fffffff 5bb4d901c3acc920 0 0 10800 0000 0 4622a1d0686b8008 9cafcfae2533f464
-fault
+fault divideError
 ok 8dd57d96b8e97170 7fffffffffffffff 26823dbaed57a39f 0 0 10800 0000 0 73eac999ce2665ca 9c9be43db21eae9a
-fault
-fault
-fault
-fault
-fault
+fault divideError
+fault divideError
+fault divideError
+fault divideError
+fault divideError
 ok 13b13b13b3333333 a789e2650a5c03a2 c 0 0 10800 0001 0 df3076b7a7470c20 41
 ok 1fe000000010000 4622a1d0686b8008 0 0 0 10800 1001 0 8caeab68de9f7b96 8000
-fault
-fault
-fault
-fault
-fault
-fault
-fault
+fault divideError
+fault divideError
+fault divideError
+fault divideError
+fault divideError
+fault divideError
+fault divideError
 ok 3fffc0 ffff 1f 0 0 10800 0110 0 7265b2d253126486 ac1926bb7b98076e
 ok 2080000000 80000000 7f 0 0 10800 0110 0 fe69a54f7aa89e70 4f3126146b39bb02
 ok ff00000000 100000000 ffffffff 0 0 10800 0000 0 492ccf5f5e938290 e7b1a35a498db92c
@@ -13458,3 +13458,122 @@ ok 20011 1f ffff 0 0 10800 0000 20011 a1f19aff74502c34 a8edb0da9b82d7fc
 ok 20011 21 ffffffffffffffff 0 0 10800 1000 20011 e7b1a35a498db92c 1af0ca375b674972
 ok 20011 40 83441c3e44e0ac36 0 0 10800 0100 20011 ec30e347db1ff05a 825c618109fe057e
 ok 20011 ff 7265b2d253126486 0 0 10800 1100 20011 af6f5ac82906d1be df3076b7a7470c20
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault pageFault
+fault generalProtection
+fault pageFault
+fault pageFault
+fault pageFault
+fault pageFault
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault pageFault
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault stackFault
+fault stackFault
+fault stackFault
+fault stackFault
+fault stackFault
+fault stackFault
+fault stackFault
+fault stackFault
+fault generalProtection
+fault stackFault
+fault generalProtection
+fault generalProtection
+fault stackFault
+fault pageFault
+fault stackFault
+fault pageFault
+fault generalProtection
+fault generalProtection
+fault generalProtection
+fault pageFault
+fault pageFault
+fault pageFault
+fault invalidOpcode

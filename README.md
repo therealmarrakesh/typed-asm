@@ -26,8 +26,9 @@ What exists and is checked today:
 - Twenty-one example programs in `examples/`, each built into an executable
   whose safety theorem depends only on Lean's three standard axioms.
 - Tests against real tools: 79,628 instructions against the GNU assembler,
-  13,460 instruction sequences against a real processor, and 42 whole-program
-  runs compared with the same programs run as Linux executables.
+  13,579 instruction sequences against a real processor, including which
+  fault each bad access raises, and 42 whole-program runs compared with the
+  same programs run as Linux executables.
 
 The example programs are written as Lean constructor terms, and their typing
 is done by tactics.

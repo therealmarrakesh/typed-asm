@@ -107,20 +107,20 @@ theorem writeRM_frame (s : State) (w : Width) (dst : RM) (v : BitVec w.bits) :
     (s.writeRM w dst v).All (Frame s) := by
   cases dst with
   | reg r => exact Frame.of_eq rfl rfl
-  | mem m => exact write_frame s w _ v
+  | mem m => exact (Result.all_through _ _ _).mpr (write_frame s w _ v)
 
 theorem writeRM8_frame (s : State) (dst : RM) (v : BitVec 8) : (s.writeRM8 dst v).All (Frame s) := by
   cases dst with
   | reg r => exact Frame.of_eq rfl rfl
-  | mem m => exact write8_frame s _ v
+  | mem m => exact (Result.all_through _ _ _).mpr (write8_frame s _ v)
 
 theorem push64_frame (s : State) (v : BitVec 64) : (s.push64 v).All (Frame s) :=
-  (write64_frame (s.setReg .rsp (s.getReg .rsp - 8)) _ v).mono
+  (Result.all_onStack _ _).mpr <| (write64_frame (s.setReg .rsp (s.getReg .rsp - 8)) _ v).mono
     (fun _ h =>
       (Frame.of_eq (s := s) (s' := s.setReg .rsp (s.getReg .rsp - 8)) rfl rfl).trans h)
 
 theorem pop64_frame (s : State) : (s.pop64).All (fun p => Frame s p.2) := by
-  simp only [pop64, Result.all_bind, Result.all_pure]
+  simp only [pop64, Result.all_bind, Result.all_pure, Result.all_onStack]
   exact Result.All.of_forall (fun _ => Frame.of_eq rfl rfl)
 
 end State
@@ -141,7 +141,7 @@ macro "frame_steps" : tactic =>
       | (refine Result.All.mono (State.push64_frame _ _) ?_; intro _ hF; exact hF.congr rfl rfl)
       | (refine Result.All.mono (State.pop64_frame _) ?_; intro _ hF; exact hF.congr rfl rfl)
       | simp only [Result.all_bind, Result.all_pure, Result.all_next, Result.all_fault,
-          Result.all_stuck]
+          Result.all_stuck, Result.all_through, Result.all_onStack]
       | split
       | (apply Result.All.of_forall; intro _)))
 

@@ -179,16 +179,35 @@ def signFill {n : Nat} (a : BitVec n) : BitVec n :=
 
 Reading or writing a memory operand faults if the access is not permitted. -/
 
+/-- The result of an access through a memory operand: one whose base is
+`rsp` or `rbp` goes through the stack. -/
+def Result.through {α : Type} (m : Mem) (r : Result α) : Result α :=
+  if m.onStack then r.onStack else r
+
+@[simp] theorem Result.through_next {α : Type} (m : Mem) (a : α) :
+    (Result.next a).through m = .next a := by
+  simp [Result.through]
+
+@[simp] theorem Result.through_eq_next {α : Type} {m : Mem} {r : Result α} {a : α} :
+    r.through m = .next a ↔ r = .next a := by
+  unfold Result.through
+  split <;> simp
+
+@[simp] theorem Result.all_through {α : Type} (P : α → Prop) (m : Mem) (r : Result α) :
+    (r.through m).All P ↔ r.All P := by
+  unfold Result.through
+  split <;> simp
+
 namespace State
 
 def readRM (s : State) (w : Width) : RM → Result (BitVec w.bits)
   | .reg r => .next (s.readReg w r)
-  | .mem m => s.read w (s.ea m)
+  | .mem m => (s.read w (s.ea m)).through m
 
 def writeRM (s : State) (w : Width) (dst : RM) (v : BitVec w.bits) : Result State :=
   match dst with
   | .reg r => .next (s.writeReg w r v)
-  | .mem m => s.write w (s.ea m) v
+  | .mem m => (s.write w (s.ea m) v).through m
 
 def readRI (s : State) (w : Width) : RI → BitVec w.bits
   | .reg r => s.readReg w r
@@ -200,15 +219,15 @@ def readNarrow (s : State) (sw : NarrowW) (src : RM) : Result (BitVec sw.bits) :
   | .reg r => .next ((s.getReg r).setWidth sw.bits)
   | .mem m =>
     match sw with
-    | .w8 => s.read8 (s.ea m)
-    | .w16 => s.read16 (s.ea m)
+    | .w8 => (s.read8 (s.ea m)).through m
+    | .w16 => (s.read16 (s.ea m)).through m
 
 /-- Write one byte: the low byte of a register, leaving its other 56 bits
 unchanged, or one byte of memory. -/
 def writeRM8 (s : State) (dst : RM) (v : BitVec 8) : Result State :=
   match dst with
   | .reg r => .next (s.setReg r ((s.getReg r &&& ~~~0xff) ||| v.setWidth 64))
-  | .mem m => s.write8 (s.ea m) v
+  | .mem m => (s.write8 (s.ea m) v).through m
 
 /-- A shift count reduced modulo the operand width, as the hardware does. -/
 def shiftCount (s : State) (w : Width) : Count → Nat
@@ -218,11 +237,11 @@ def shiftCount (s : State) (w : Width) : Count → Nat
 /-- Decrement `rsp` by 8 and store a value there. -/
 def push64 (s : State) (v : BitVec 64) : Result State :=
   let sp := s.getReg .rsp - 8
-  (s.setReg .rsp sp).write64 sp v
+  ((s.setReg .rsp sp).write64 sp v).onStack
 
 /-- Load the value at `rsp` and increment `rsp` by 8. -/
 def pop64 (s : State) : Result (BitVec 64 × State) := do
-  let v ← s.read64 (s.getReg .rsp)
+  let v ← (s.read64 (s.getReg .rsp)).onStack
   return (v, s.setReg .rsp (s.getReg .rsp + 8))
 
 end State
@@ -236,7 +255,7 @@ def Operands.dst : Operands → RM
 /-- The value of the source of a two-operand form. Immediates are sign-extended. -/
 def Operands.src (s : State) (w : Width) : Operands → Result (BitVec w.bits)
   | .rm_r _ src => .next (s.readReg w src)
-  | .r_m _ src => s.read w (s.ea src)
+  | .r_m _ src => (s.read w (s.ea src)).through src
   | .rm_i _ imm => .next (imm.signExtend w.bits)
 
 /-! ## Instructions -/
@@ -288,8 +307,8 @@ def exec (sys : Syscall) (i : Instr) (s : State) : Outcome :=
   | .mov w ops => do
     s.writeRM w ops.dst (← ops.src s w)
   | .movAbs dst imm => .next (s.setReg dst imm)
-  | .store8 dst src => s.write8 (s.ea dst) ((s.getReg src).setWidth 8)
-  | .store16 dst src => s.write16 (s.ea dst) ((s.getReg src).setWidth 16)
+  | .store8 dst src => (s.write8 (s.ea dst) ((s.getReg src).setWidth 8)).through dst
+  | .store16 dst src => (s.write16 (s.ea dst) ((s.getReg src).setWidth 16)).through dst
   | .movzx w dst sw src => do
     return s.writeReg w dst ((← s.readNarrow sw src).setWidth w.bits)
   | .movsx w dst sw src => do
@@ -347,7 +366,7 @@ def run (fetch : Fetch) (sys : Syscall) : Nat → State → Outcome
 /-- Popping straight after a successful push returns the pushed value. -/
 theorem State.pop64_push64 {s s' : State} {v : BitVec 64} (h : s.push64 v = .next s') :
     s'.pop64 = .next (v, s'.setReg .rsp (s'.getReg .rsp + 8)) := by
-  simp only [State.push64, State.write64] at h
+  simp only [State.push64, Result.onStack_eq_next, State.write64] at h
   split at h
   next hw =>
     cases h
@@ -360,7 +379,7 @@ theorem State.pop64_push64 {s s' : State} {v : BitVec 64} (h : s.push64 v = .nex
     have hv : ((s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) v).load64
         (s.getReg .rsp - 8) = v :=
       State.load_store_same _ .w64 _ v
-    simp only [State.pop64, State.read64, hsp, hr, hv, ite_true]
+    simp only [State.pop64, State.read64, hsp, hr, hv, ite_true, Result.onStack_next]
     rfl
   next => cases h
 

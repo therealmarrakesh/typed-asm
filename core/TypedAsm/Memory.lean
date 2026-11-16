@@ -28,6 +28,13 @@ def Width.bytes : Width → BitVec 64
 
 namespace State
 
+/-- Whether a memory operand is addressed through the stack: its base is
+`rsp` or `rbp`. An index register does not count. -/
+def _root_.TypedAsm.Mem.onStack : Mem → Bool
+  | .sib (some .rsp) _ _ => true
+  | .sib (some .rbp) _ _ => true
+  | _ => false
+
 /-- The address a memory operand denotes. Arithmetic wraps at 64 bits.
 
 For the `rip`-relative form, `s.rip` must already hold the address of the *next*
@@ -435,32 +442,73 @@ theorem canWrite_top {s : State} {a : BitVec 64} {n : Nat} (h : s.canWrite a n =
     (hn : 0 < n) : a.toNat + n ≤ addrTop :=
   canRead_top (canRead_of_canWrite h) hn
 
+/-! ## Addresses the processor has
+
+A processor with 48-bit addresses has the addresses below `2 ^ 47` and the
+ones from `2 ^ 64 - 2 ^ 47` up; one with 57-bit addresses, the same with
+`2 ^ 56`. These are the canonical addresses. An access that touches any
+other is refused before memory is looked at, with a general-protection
+fault, or a stack fault if it was made through the stack. An access to
+canonical addresses that memory does not allow is a page fault. -/
+
+/-- Whether the processor has this address. -/
+def canon (s : State) (a : BitVec 64) : Bool :=
+  let half := if s.wide then 2 ^ 56 else 2 ^ 47
+  decide (a.toNat < half) || decide (2 ^ 64 - half ≤ a.toNat)
+
+/-- Whether the processor has all `n` addresses starting at `a`. -/
+def canonRange (s : State) (a : BitVec 64) (n : Nat) : Bool :=
+  (List.range n).all fun i => s.canon (a + BitVec.ofNat 64 i)
+
+/-- The fault an access to the `n` bytes at `a` raises when it is not
+allowed, through a register other than the stack's. -/
+def refusal (s : State) (a : BitVec 64) (n : Nat) : Fault :=
+  if s.canonRange a n then .pageFault else .generalProtection
+
+/-- Accessible memory is at addresses the processor has, so it makes no
+difference that the model asks about permissions first. -/
+theorem canon_of_perm {s : State} {a : BitVec 64} (h : s.perm a ≠ .none) : s.canon a = true := by
+  have := s.lt_top_of_perm h
+  have hT : addrTop = 0x7ffffffff000 := rfl
+  simp only [canon, Bool.or_eq_true, decide_eq_true_eq]
+  left
+  split <;> omega
+
+theorem canonRange_of_canRead {s : State} {a : BitVec 64} {n : Nat} (h : s.canRead a n = true) :
+    s.canonRange a n = true := by
+  simp only [canRead, canonRange, List.all_eq_true, List.mem_range] at *
+  exact fun i hi => canon_of_perm fun hp => by
+    have := h i hi
+    rw [hp] at this
+    cases this
+
 def read8 (s : State) (a : BitVec 64) : Result (BitVec 8) :=
-  if s.canRead a 1 then .next (s.load8 a) else .fault .pageFault
+  if s.canRead a 1 then .next (s.load8 a) else .fault (s.refusal a 1)
 
 def read16 (s : State) (a : BitVec 64) : Result (BitVec 16) :=
-  if s.canRead a 2 then .next (s.load16 a) else .fault .pageFault
+  if s.canRead a 2 then .next (s.load16 a) else .fault (s.refusal a 2)
 
 def read64 (s : State) (a : BitVec 64) : Result (BitVec 64) :=
-  if s.canRead a 8 then .next (s.load64 a) else .fault .pageFault
+  if s.canRead a 8 then .next (s.load64 a) else .fault (s.refusal a 8)
 
 /-- Load a value of the given width, faulting unless every byte is readable. -/
 def read (s : State) (w : Width) (a : BitVec 64) : Result (BitVec w.bits) :=
-  if s.canRead a w.bytes.toNat then .next (s.load w a) else .fault .pageFault
+  if s.canRead a w.bytes.toNat then .next (s.load w a) else .fault (s.refusal a w.bytes.toNat)
 
 def write8 (s : State) (a : BitVec 64) (v : BitVec 8) : Result State :=
-  if s.canWrite a 1 then .next (s.store8 a v) else .fault .pageFault
+  if s.canWrite a 1 then .next (s.store8 a v) else .fault (s.refusal a 1)
 
 def write16 (s : State) (a : BitVec 64) (v : BitVec 16) : Result State :=
-  if s.canWrite a 2 then .next (s.store16 a v) else .fault .pageFault
+  if s.canWrite a 2 then .next (s.store16 a v) else .fault (s.refusal a 2)
 
 def write64 (s : State) (a : BitVec 64) (v : BitVec 64) : Result State :=
-  if s.canWrite a 8 then .next (s.store64 a v) else .fault .pageFault
+  if s.canWrite a 8 then .next (s.store64 a v) else .fault (s.refusal a 8)
 
 /-- Store a value of the given width, faulting unless every byte is writable.
 A faulting store changes nothing. -/
 def write (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) : Result State :=
-  if s.canWrite a w.bytes.toNat then .next (s.store w a v) else .fault .pageFault
+  if s.canWrite a w.bytes.toNat then .next (s.store w a v)
+  else .fault (s.refusal a w.bytes.toNat)
 
 /-- A successful write is the raw store. -/
 theorem write_eq_next {s s' : State} {w : Width} {a : BitVec 64} {v : BitVec w.bits}

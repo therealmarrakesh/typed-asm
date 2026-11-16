@@ -39,13 +39,15 @@ theorem canExec_top {s : State} {a : BitVec 64} {n : Nat} (h : s.canExec a n = t
 def bytesAt (s : State) (a : BitVec 64) (n : Nat) : List Byte :=
   (List.range n).map fun k => s.mem (a + BitVec.ofNat 64 k)
 
-/-- The instruction at `rip` and its length, read from memory. Bytes that do
-not decode are an invalid opcode; bytes that are not executable are a page fault. -/
+/-- The instruction at `rip` and its length, read from memory. Bytes that
+are not executable are a page fault, or a general-protection fault where the
+processor has no such address; executable bytes that do not decode are an
+invalid opcode. -/
 def fetch (s : State) : Result (Instr × BitVec 64) :=
   match decode (s.bytesAt s.rip maxInstrLength) with
-  | none => .fault .invalidOpcode
+  | none => if s.canExec s.rip 1 then .fault .invalidOpcode else .fault (s.refusal s.rip 1)
   | some (i, n) =>
-    if s.canExec s.rip n then .next (i, BitVec.ofNat 64 n) else .fault .pageFault
+    if s.canExec s.rip n then .next (i, BitVec.ofNat 64 n) else .fault (s.refusal s.rip n)
 
 end State
 

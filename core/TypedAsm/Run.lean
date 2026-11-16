@@ -25,9 +25,19 @@ def runMemFinal (sys : Syscall) : Nat → State → State × Outcome
 def bytesOf (s : String) : List Byte :=
   s.toUTF8.toList.map fun b => BitVec.ofNat 8 b.toNat
 
+/-- What a fault means, in words. -/
+def Fault.describe : Fault → String
+  | .divideError => "divide error: division by zero, or a quotient that does not fit"
+  | .invalidOpcode => "invalid opcode: these bytes are not an instruction"
+  | .pageFault => "page fault: the memory at that address is not there, or does not allow this"
+  | .generalProtection =>
+    "general-protection fault: the address used is not one the processor has"
+  | .stackFault =>
+    "stack fault: the stack pointer, or `rbp`, holds an address the processor does not have"
+
 def describe : Outcome → String
   | .next s => s!"still running at rip = {s.rip.toNat}"
-  | .fault f => s!"fault: {repr f}"
+  | .fault f => s!"fault: {f.describe}"
   | .exit code => s!"exit {code.toNat}"
   | .stuck => "stuck"
 

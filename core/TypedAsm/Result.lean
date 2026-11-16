@@ -14,10 +14,17 @@ inductive Fault
   | divideError
   /-- An undefined instruction, including `ud2`. -/
   | invalidOpcode
-  /-- A read from memory that is not readable, or a write to memory that is
-  not writable. This also stands in for the general-protection fault the
-  hardware raises on a non-canonical address. -/
+  /-- An access to an address the processor has, but where the memory is not
+  there or does not allow it: a read of memory that is not readable, a write
+  to memory that is not writable, or execution of memory that is not
+  executable. -/
   | pageFault
+  /-- An access to an address the processor does not have: one that is not
+  canonical. No memory can be there, so the pointer itself is wrong. -/
+  | generalProtection
+  /-- The same, for an access made through the stack: a `push`, `pop`, `call`
+  or `ret`, or a memory operand whose base is `rsp` or `rbp`. -/
+  | stackFault
   deriving DecidableEq, Repr
 
 inductive Result (α : Type)
@@ -62,6 +69,20 @@ def ofOption {α : Type} : Option α → Result α
 @[simp] theorem stuck_bind {α β : Type} (f : α → Result β) :
     (Result.stuck >>= f) = .stuck := rfl
 
+/-- The result of an access made through the stack: an address the processor
+does not have is a stack fault there, not a general-protection fault. -/
+def onStack {α : Type} : Result α → Result α
+  | .fault .generalProtection => .fault .stackFault
+  | r => r
+
+@[simp] theorem onStack_next {α : Type} (a : α) : (Result.next a).onStack = .next a := rfl
+
+@[simp] theorem onStack_eq_next {α : Type} {r : Result α} {a : α} :
+    r.onStack = .next a ↔ r = .next a := by
+  cases r with
+  | fault f => cases f <;> simp [onStack]
+  | _ => simp [onStack]
+
 /-- `x.All P`: if the computation continues with a value, the value satisfies `P`. -/
 def All {α : Type} (P : α → Prop) : Result α → Prop
   | .next a => P a
@@ -84,6 +105,12 @@ def All {α : Type} (P : α → Prop) : Result α → Prop
 @[simp] theorem all_bind {α β : Type} (x : Result α) (f : α → Result β) (P : β → Prop) :
     (x >>= f).All P ↔ x.All (fun a => (f a).All P) := by
   cases x <;> rfl
+
+@[simp] theorem all_onStack {α : Type} (P : α → Prop) (x : Result α) :
+    x.onStack.All P ↔ x.All P := by
+  cases x with
+  | fault f => cases f <;> simp [onStack, All]
+  | _ => simp [onStack]
 
 theorem All.of_forall {α : Type} {P : α → Prop} {x : Result α} (h : ∀ a, P a) : x.All P := by
   cases x <;> first | exact h _ | trivial

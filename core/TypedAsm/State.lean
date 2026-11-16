@@ -643,6 +643,9 @@ structure State where
   memory : Memory
   perms : Perms
   world : World := {}
+  /-- Whether the processor has 57-bit addresses, not 48-bit. It decides
+  only which fault an address in between raises. -/
+  wide : Bool := false
 
 /-- The value of each register. -/
 def State.regs (s : State) : Reg → BitVec 64 :=

@@ -1216,8 +1216,35 @@ def nowhere : State :=
 /-- Marking the memory writable changed nothing. -/
 example : nowhere.canWrite (0x0200000000000000 - 8) 8 = false := by decide
 
--- and a `push` there faults
+-- A `push` there is a stack fault: the processor has no such address, and
+-- the access is through the stack.
 #guard match exec linux (.push .rax) nowhere with
+  | .fault .stackFault => true
+  | _ => false
+
+-- A load from there through another register is a general-protection fault.
+#guard match exec linux (.mov .w64 (.r_m .rax (.sib (some .rcx) none 0)))
+    (nowhere.setReg .rcx 0x0200000000000000) with
+  | .fault .generalProtection => true
+  | _ => false
+
+-- A load from the kernel's half, or from an address with nothing there, is a
+-- page fault: the address exists, the memory is not the program's.
+#guard match exec linux (.mov .w64 (.r_m .rax (.sib (some .rcx) none 0)))
+    (nowhere.setReg .rcx 0xffff800000000000) with
+  | .fault .pageFault => true
+  | _ => false
+
+-- Which addresses the processor has depends on its width. `2 ^ 47` is not
+-- one with 48-bit addresses, and is one with 57-bit addresses; no program
+-- has memory there either way, so only the fault differs.
+#guard match exec linux (.mov .w64 (.r_m .rax (.sib (some .rcx) none 0)))
+    (nowhere.setReg .rcx 0x800000000000) with
+  | .fault .generalProtection => true
+  | _ => false
+
+#guard match exec linux (.mov .w64 (.r_m .rax (.sib (some .rcx) none 0)))
+    { nowhere.setReg .rcx 0x800000000000 with wide := true } with
   | .fault .pageFault => true
   | _ => false
 

@@ -1483,7 +1483,7 @@ theorem ReadOk.readRM {w : Width} {rm : RM} (hr : ReadOk Ψ next Γ w.bytes.toNa
   | reg r => exact ⟨_, rfl⟩
   | mem m =>
     refine ⟨s.load w (s.ea m), ?_⟩
-    simp only [State.readRM, State.read, hr.canRead h hrip, ite_true]
+    simp only [State.readRM, State.read, hr.canRead h hrip, ite_true, Result.through_next]
 
 /-- Reading a readable narrow operand succeeds. -/
 theorem ReadOk.readNarrow {sw : NarrowW} {rm : RM} (hr : ReadOk Ψ next Γ sw.bytes rm)
@@ -1496,11 +1496,11 @@ theorem ReadOk.readNarrow {sw : NarrowW} {rm : RM} (hr : ReadOk Ψ next Γ sw.by
     | w8 =>
       have hc : s.canRead (s.ea m) 1 = true := hr.canRead h hrip
       refine ⟨s.load8 (s.ea m), ?_⟩
-      simp only [State.readNarrow, State.read8, hc, ite_true]
+      simp only [State.readNarrow, State.read8, hc, ite_true, Result.through_next]
     | w16 =>
       have hc : s.canRead (s.ea m) 2 = true := hr.canRead h hrip
       refine ⟨s.load16 (s.ea m), ?_⟩
-      simp only [State.readNarrow, State.read16, hc, ite_true]
+      simp only [State.readNarrow, State.read16, hc, ite_true, Result.through_next]
 
 /-- Writing any value to a writable operand succeeds and leaves a state
 matching the judgment's result context. -/
@@ -1522,7 +1522,7 @@ theorem WriteIntOk.writeRM {w : Width} {rm : RM} {Γ' : Ctx}
         (State.perm_store _ _ _ _)
         (fun y hd => State.load64_store_range s w v hd)
         (fun x hx => State.mem_store_range s w v hx)⟩
-    simp only [State.writeRM, hea, State.write, hc, ite_true]
+    simp only [State.writeRM, hea, State.write, hc, ite_true, Result.through_next]
   | @global base l d disp hl hwr haddr hin hfree =>
     have hea : s.ea (.rip disp) = base + BitVec.ofNat 64 d := by
       simp only [State.ea, hrip, haddr]
@@ -1532,7 +1532,7 @@ theorem WriteIntOk.writeRM {w : Width} {rm : RM} {Γ' : Ctx}
         (State.perm_store _ _ _ _)
         (fun y hd => State.load64_store_range s w v hd)
         (fun x hx => State.mem_store_range s w v hx)⟩
-    simp only [State.writeRM, hea, State.write, hc, ite_true]
+    simp only [State.writeRM, hea, State.write, hc, ite_true, Result.through_next]
   | @owned m k a p off S hm hat hin hfree =>
     obtain ⟨hk, hoff⟩ := hat
     have hea : s.ea m = a + off := by rw [hm.sound h, hoff]
@@ -1543,7 +1543,7 @@ theorem WriteIntOk.writeRM {w : Width} {rm : RM} {Γ' : Ctx}
         (State.regs_store _ _ _ _) (State.flags_store _ _ _ _) (State.perm_store _ _ _ _)
         (fun y hd => by rw [hoa] at hd; exact State.load64_store_range s w v hd)
         (fun x hx => by rw [hoa] at hx; exact State.mem_store_range s w v hx)⟩
-    simp only [State.writeRM, hea, State.write, hc, ite_true]
+    simp only [State.writeRM, hea, State.write, hc, ite_true, Result.through_next]
   | @ownedClear m k a p off S hm hat hin =>
     obtain ⟨hk, hoff⟩ := hat
     have hea : s.ea m = a + off := by rw [hm.sound h, hoff]
@@ -1554,7 +1554,7 @@ theorem WriteIntOk.writeRM {w : Width} {rm : RM} {Γ' : Ctx}
         (State.regs_store _ _ _ _) (State.flags_store _ _ _ _) (State.perm_store _ _ _ _)
         (fun y hd => by rw [hoa] at hd; exact State.load64_store_range s w v hd)
         (fun x hx => by rw [hoa] at hx; exact State.mem_store_range s w v hx)⟩
-    simp only [State.writeRM, hea, State.write, hc, ite_true]
+    simp only [State.writeRM, hea, State.write, hc, ite_true, Result.through_next]
   | @reg d hd => exact ⟨s.writeReg w d v, rfl, rfl, h.setReg hd (HasTy.int _)⟩
   | @field b S off d disp hb hΓ hdisp hin hfree =>
     have hp := h.regs b hb
@@ -1568,7 +1568,7 @@ theorem WriteIntOk.writeRM {w : Width} {rm : RM} {Γ' : Ctx}
         (State.perm_store _ _ _ _)
         (fun y hd => State.load64_store_range s w v hd)
         (fun x hx => State.mem_store_range s w v hx)⟩
-    simp only [State.writeRM, hea, State.write, hc, ite_true]
+    simp only [State.writeRM, hea, State.write, hc, ite_true, Result.through_next]
   | @slot d k i S disp hdisp hat hin =>
     obtain ⟨hk, rfl⟩ := hat
     have hea := State.ea_byte s .rsp hdisp
@@ -1578,7 +1578,7 @@ theorem WriteIntOk.writeRM {w : Width} {rm : RM} {Γ' : Ctx}
         (State.perm_store _ _ _ _)
         (fun y hd => State.load64_store_range s w v hd)
         (fun x hx => State.mem_store_range s w v hx)⟩
-    simp only [State.writeRM, hea, State.write, hc, ite_true]
+    simp only [State.writeRM, hea, State.write, hc, ite_true, Result.through_next]
   | @slotIndexed x sc d k i S disp c hΓx hD hat hin =>
     obtain ⟨hk, rfl⟩ := hat
     have hea : s.ea (.sib (some .rsp) (some (x, sc)) disp)
@@ -1590,7 +1590,7 @@ theorem WriteIntOk.writeRM {w : Width} {rm : RM} {Γ' : Ctx}
         (State.perm_store _ _ _ _)
         (fun y hd => State.load64_store_range s w v hd)
         (fun x hx => State.mem_store_range s w v hx)⟩
-    simp only [State.writeRM, hea, State.write, hc, ite_true]
+    simp only [State.writeRM, hea, State.write, hc, ite_true, Result.through_next]
 /-- Writing any byte to a writable operand succeeds likewise. -/
 theorem WriteIntOk.writeRM8 {rm : RM} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 1 rm Γ')
     (h : WellTyped fetch sys Ψ ix Γ s) (hΨ : Ψ.WF) (hrip : s.rip = next) (v : BitVec 8) :
@@ -1608,7 +1608,7 @@ theorem WriteIntOk.writeRM8 {rm : RM} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 1 
       h.writeHeapFree hΨ hl hin hfree rfl rfl rfl
         (fun y hd => State.load64_store8_range s v hd)
         (fun x hx => State.mem_store8_range s v hx)⟩
-    simp only [State.writeRM8, hea, State.write8, hc, ite_true]
+    simp only [State.writeRM8, hea, State.write8, hc, ite_true, Result.through_next]
   | @global base l d disp hl hwr haddr hin hfree =>
     have hea : s.ea (.rip disp) = base + BitVec.ofNat 64 d := by
       simp only [State.ea, hrip, haddr]
@@ -1617,7 +1617,7 @@ theorem WriteIntOk.writeRM8 {rm : RM} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 1 
       h.writeHeapFree hΨ hl hin hfree rfl rfl rfl
         (fun y hd => State.load64_store8_range s v hd)
         (fun x hx => State.mem_store8_range s v hx)⟩
-    simp only [State.writeRM8, hea, State.write8, hc, ite_true]
+    simp only [State.writeRM8, hea, State.write8, hc, ite_true, Result.through_next]
   | @owned m k a p off S hm hat hin hfree =>
     obtain ⟨hk, hoff⟩ := hat
     have hea : s.ea m = a + off := by rw [hm.sound h, hoff]
@@ -1628,7 +1628,7 @@ theorem WriteIntOk.writeRM8 {rm : RM} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 1 
         rfl rfl rfl
         (fun y hd => by rw [hoa] at hd; exact State.load64_store8_range s v hd)
         (fun x hx => by rw [hoa] at hx; exact State.mem_store8_range s v hx)⟩
-    simp only [State.writeRM8, hea, State.write8, hc, ite_true]
+    simp only [State.writeRM8, hea, State.write8, hc, ite_true, Result.through_next]
   | @ownedClear m k a p off S hm hat hin =>
     obtain ⟨hk, hoff⟩ := hat
     have hea : s.ea m = a + off := by rw [hm.sound h, hoff]
@@ -1639,7 +1639,7 @@ theorem WriteIntOk.writeRM8 {rm : RM} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 1 
         rfl rfl rfl
         (fun y hd => by rw [hoa] at hd; exact State.load64_store8_range s v hd)
         (fun x hx => by rw [hoa] at hx; exact State.mem_store8_range s v hx)⟩
-    simp only [State.writeRM8, hea, State.write8, hc, ite_true]
+    simp only [State.writeRM8, hea, State.write8, hc, ite_true, Result.through_next]
   | @reg d hd => exact ⟨_, rfl, rfl, h.setReg hd (HasTy.int _)⟩
   | @field b S off d disp hb hΓ hdisp hin hfree =>
     have hp := h.regs b hb
@@ -1652,7 +1652,7 @@ theorem WriteIntOk.writeRM8 {rm : RM} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 1 
       h.writeHeapFree hΨ hl hin hfree rfl rfl rfl
         (fun y hd => State.load64_store8_range s v hd)
         (fun x hx => State.mem_store8_range s v hx)⟩
-    simp only [State.writeRM8, hea, State.write8, hc, ite_true]
+    simp only [State.writeRM8, hea, State.write8, hc, ite_true, Result.through_next]
   | @slot d k i S disp hdisp hat hin =>
     obtain ⟨hk, rfl⟩ := hat
     have hea := State.ea_byte s .rsp hdisp
@@ -1661,7 +1661,7 @@ theorem WriteIntOk.writeRM8 {rm : RM} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 1 
       h.writeStackClear hΨ hk hin rfl rfl rfl
         (fun y hd => State.load64_store8_range s v hd)
         (fun x hx => State.mem_store8_range s v hx)⟩
-    simp only [State.writeRM8, hea, State.write8, hc, ite_true]
+    simp only [State.writeRM8, hea, State.write8, hc, ite_true, Result.through_next]
   | @slotIndexed x sc d k i S disp c hΓx hD hat hin =>
     obtain ⟨hk, rfl⟩ := hat
     have hea : s.ea (.sib (some .rsp) (some (x, sc)) disp)
@@ -1672,7 +1672,7 @@ theorem WriteIntOk.writeRM8 {rm : RM} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 1 
       h.writeStackClear hΨ hk hin rfl rfl rfl
         (fun y hd => State.load64_store8_range s v hd)
         (fun x hx => State.mem_store8_range s v hx)⟩
-    simp only [State.writeRM8, hea, State.write8, hc, ite_true]
+    simp only [State.writeRM8, hea, State.write8, hc, ite_true, Result.through_next]
 theorem WriteIntOk.write16 {m : Mem} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 2 (.mem m) Γ')
     (h : WellTyped fetch sys Ψ ix Γ s) (hΨ : Ψ.WF) (hrip : s.rip = next) (v : BitVec 16) :
     ∃ s', s.write16 (s.ea m) v = .next s' ∧ s'.rip = s.rip ∧ WellTyped fetch sys Ψ ix Γ' s' := by
@@ -2420,7 +2420,7 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
       State.store64_rip _ _ _, h.push hΨ hroom (h.regs r hr)⟩
     have hpush : s.push64 (s.getReg r)
         = .next ((s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) (s.getReg r)) := by
-      simp only [State.push64, State.write64, hw, ite_true]
+      simp only [State.push64, State.write64, hw, ite_true, Result.onStack_next]
     simp [exec, hpush]
   | @pop r τ σ hr hst =>
     obtain ⟨hv, hw⟩ := h.pop hst
@@ -2617,7 +2617,7 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
             rip := s.rip + d.signExtend 64 } := by
       have hpush : s.push64 s.rip
           = .next ((s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip) := by
-        simp only [State.push64, State.write64, hw, ite_true]
+        simp only [State.push64, State.write64, hw, ite_true, Result.onStack_next]
       simp [exec, hpush]
     have hw' := h.push hΨ hroom hv
     generalize (s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip = s₁
@@ -2643,7 +2643,7 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
             rip := s.rip + d.signExtend 64 } := by
       have hpush : s.push64 s.rip
           = .next ((s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip) := by
-        simp only [State.push64, State.write64, hw, ite_true]
+        simp only [State.push64, State.write64, hw, ite_true, Result.onStack_next]
       simp [exec, hpush]
     have hw' := h.push hΨ hroom hv
     generalize (s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip = s₁
@@ -2701,7 +2701,7 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
             rip := v } := by
       have hpush : s.push64 s.rip
           = .next ((s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip) := by
-        simp only [State.push64, State.write64, hw, ite_true]
+        simp only [State.push64, State.write64, hw, ite_true, Result.onStack_next]
       simp [exec, hv, hpush]
     have hw' := h.push hΨ hroom hra
     generalize (s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip = s₁
@@ -2741,7 +2741,7 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
             rip := v } := by
       have hpush : s.push64 s.rip
           = .next ((s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip) := by
-        simp only [State.push64, State.write64, hw, ite_true]
+        simp only [State.push64, State.write64, hw, ite_true, Result.onStack_next]
       simp [exec, hv, hpush]
     have hw' := h.push hΨ hroom hra
     generalize (s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip = s₁
@@ -2802,7 +2802,7 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
             rip := v } := by
       have hpush : s.push64 s.rip
           = .next ((s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip) := by
-        simp only [State.push64, State.write64, hw, ite_true]
+        simp only [State.push64, State.write64, hw, ite_true, Result.onStack_next]
       simp [exec, hv, hpush]
     have hw' := h.push hΨ hroom hra
     generalize (s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip = s₁

@@ -146,6 +146,71 @@ def control : List (List Instr) :=
 def snippets : List (List Instr) :=
   single.map (fun i => [i]) ++ control
 
+/-! ## Snippets that fault
+
+Each ends in an access the processor refuses, and what is compared is which
+exception it raises. An address the processor does not have is a
+general-protection fault, or a stack fault when the access goes through the
+stack; an address it has, with no memory the program may use that way, is a
+page fault. -/
+
+/-- An address a processor with 48-bit addresses does not have. -/
+def hole : BitVec 64 := 0x0200000000000000
+
+/-- Addresses the processor has, where there is no memory for a program:
+nothing mapped, the page Linux withholds, the kernel's half, and one whose
+last bytes wrap round to zero. -/
+def absent : List (BitVec 64) :=
+  [0x40000, 0x7ffffffff000, 0xffff800000000000, 0xfffffffffffffffc]
+
+/-- Addresses where an eight-byte access touches one the processor does not
+have: in the hole, running into it, and running out of it. -/
+def refused : List (BitVec 64) :=
+  [hole, 0x800000000000, 0x7ffffffffffc, 0xffff7ffffffffffc]
+
+def atRcx : Mem := .sib (some .rcx) none 0
+
+/-- Accesses of every kind through `rcx`, which holds the address. -/
+def accesses (a : BitVec 64) : List (List Instr) :=
+  [Instr.mov .w64 (.r_m .rax atRcx), .mov .w64 (.rm_r (.mem atRcx) .rax),
+   .mov .w32 (.rm_i (.mem atRcx) 1), .alu .add .w64 (.rm_r (.mem atRcx) .rax),
+   .movzx .w64 .rax .w8 (.mem atRcx), .movsx .w64 .rax .w16 (.mem atRcx), .store8 atRcx .rax,
+   .store16 atRcx .rax, .unary .neg .w64 (.mem atRcx), .jmp (.ind (.mem atRcx)),
+   .mulDiv .mul .w64 (.mem atRcx), .setcc .e (.mem atRcx)].map fun i => [.movAbs .rcx a, i]
+
+def faulting : List (List Instr) :=
+  (absent ++ refused).flatMap accesses ++
+  -- through the stack: `rsp` or `rbp` as the base, and the instructions that
+  -- use the stack themselves
+  [ [.movAbs .rsp hole, .push .rax],
+    [.movAbs .rsp hole, .pop .rax],
+    [.movAbs .rsp hole, .call (.rel 0)],
+    [.movAbs .rsp hole, .ret],
+    [.movAbs .rsp hole, .mov .w64 (.r_m .rax (.sib (some .rsp) none 0))],
+    [.movAbs .rsp hole, .mov .w64 (.rm_r (.mem (.sib (some .rsp) none 16)) .rax)],
+    [.movAbs .rbp hole, .mov .w64 (.r_m .rax (.sib (some .rbp) none 0))],
+    [.movAbs .rbp hole, .store8 (.sib (some .rbp) none 0) .rax],
+    -- the base decides, not the index
+    [.movAbs .rbp hole, .mov .w64 (.r_m .rax (.sib (some .rdi) (some (.rbp, .s1)) 0))],
+    [.movAbs .rbp 0, .movAbs .rcx hole,
+      .mov .w64 (.r_m .rax (.sib (some .rbp) (some (.rcx, .s1)) 0))],
+    [.movAbs .r12 hole, .mov .w64 (.r_m .rax (.sib (some .r12) none 0))],
+    [.movAbs .r13 hole, .mov .w64 (.r_m .rax (.sib (some .r13) none 0))],
+    -- a push that starts in the hole and one that lands just below it
+    [.movAbs .rsp 0x800000000004, .push .rax],
+    [.movAbs .rsp 0x800000000000, .push .rax],
+    -- the stack is used before the target is looked at
+    [.movAbs .rsp hole, .movAbs .rax hole, .call (.ind (.reg .rax))],
+    [.movAbs .rsp 0x40000, .movAbs .rax hole, .call (.ind (.reg .rax))],
+    -- going to an address that is not there
+    [.movAbs .rax hole, .jmp (.ind (.reg .rax))],
+    [.movAbs .rax hole, .call (.ind (.reg .rax))],
+    [.movAbs .rax hole, .push .rax, .ret],
+    [.movAbs .rax 0x40000, .jmp (.ind (.reg .rax))],
+    [.movAbs .rax 0xffff800000000000, .jmp (.ind (.reg .rax))],
+    [.movAbs .rax 0x7ffffffff000, .push .rax, .ret],
+    [.ud2] ]
+
 /-! ## Inputs -/
 
 def corners : List (BitVec 64) :=
@@ -214,8 +279,11 @@ def modelLine (snippet : List Instr) (inp : Input) : String :=
     let reg (r : Reg) := hex64 (s.getReg r)
     s!"ok {reg .rax} {reg .rcx} {reg .rdx} {reg .rsi} {reg .rdi} {reg .rsp} {fl} \
        {hex64 (s.load64 (buffer - 8))} {hex64 (s.load64 buffer)} {hex64 (s.load64 (buffer + 8))}"
-  | .fault .divideError => "fault"
-  | .fault f => s!"model: {repr f}"
+  | .fault .divideError => "fault divideError"
+  | .fault .invalidOpcode => "fault invalidOpcode"
+  | .fault .pageFault => "fault pageFault"
+  | .fault .generalProtection => "fault generalProtection"
+  | .fault .stackFault => "fault stackFault"
   | .exit _ => "model: exit"
   | .stuck => "model: stuck"
 
@@ -255,7 +323,9 @@ def caseLine (snippet : List Instr) (inp : Input) : String :=
 
 /-- Every case, in the order of the data file. -/
 def cases : List (List Instr × Input) :=
-  (List.zip snippets (List.range snippets.length)).flatMap fun (sn, i) =>
-    (inputsFor i).map fun inp => (sn, inp)
+  ((List.zip snippets (List.range snippets.length)).flatMap fun (sn, i) =>
+    (inputsFor i).map fun inp => (sn, inp)) ++
+  -- a faulting snippet sets up what it needs itself, so one input is enough
+  faulting.map fun sn => (sn, { a := 1, b := 2, d := 3, flags := 0, m0 := 4, m1 := 5 })
 
 end Tests.Hardware
