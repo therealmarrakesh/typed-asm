@@ -4766,7 +4766,13 @@ theorem sysFill_spec {ρ : Env} {Γ : CtxS} {b : Reg} {n : Nat} {x : CtxS × Lis
 def sysFillBy (Γ : CtxS) (b c : Reg) : Option (CtxS × List CondS) :=
   match Γ.regs.get b, Γ.regs.get c with
   | .ptr S true off, .eq len =>
-    if S.plain then some (Γ.afterSyscall, [.le (off.plus (.toNat len)) S.size]) else none
+    match len with
+    | .lit l =>
+      -- a count written out: the bytes it covers must be plain
+      match within off l.toNat S.size, freeConds S off l.toNat with
+      | some ws, some fs => some (Γ.afterSyscall, ws ++ fs)
+      | _, _ => none
+    | len => if S.plain then some (Γ.afterSyscall, [.le (off.plus (.toNat len)) S.size]) else none
   | _, _ => none
 
 theorem sysFillBy_spec {ρ : Env} {Γ : CtxS} {b c : Reg} {x : CtxS × List CondS}
@@ -4777,14 +4783,24 @@ theorem sysFillBy_spec {ρ : Env} {Γ : CtxS} {b c : Reg} {x : CtxS × List Cond
   split at h
   · next S off len hb hcr =>
     split at h
-    · next hp =>
-      cases h
-      refine ⟨rfl, S.den ρ, off.den ρ, len.den ρ, by rw [CtxS.den_regs, hb]; rfl,
-        by rw [CtxS.den_regs, hcr]; rfl, ?_, ShapeS.plain_free hp _ _⟩
-      have := hc.1
-      simp only [CondS.den, Num.den_plus] at this
-      rw [ShapeS.den_size]; exact this
-    · cases h
+    · next l =>
+      split at h
+      · next ws fs hw hf =>
+        cases h
+        obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc
+        refine ⟨rfl, S.den ρ, off.den ρ, l, by rw [CtxS.den_regs, hb]; rfl,
+          by rw [CtxS.den_regs, hcr]; rfl, ?_, freeConds_spec hf h₂⟩
+        rw [ShapeS.den_size]; exact within_spec hw h₁
+      · cases h
+    · split at h
+      · next hp =>
+        cases h
+        refine ⟨rfl, S.den ρ, off.den ρ, len.den ρ, by rw [CtxS.den_regs, hb]; rfl,
+          by rw [CtxS.den_regs, hcr]; rfl, ?_, ShapeS.plain_free hp _ _⟩
+        have := hc.1
+        simp only [CondS.den, Num.den_plus] at this
+        rw [ShapeS.den_size]; exact this
+      · cases h
   · cases h
 
 theorem ShapeS.plain_clear {ρ : Env} {S : ShapeS} (h : S.plain = true) (o n : Nat) :
@@ -4837,6 +4853,57 @@ theorem sysFillOwned_spec {ρ : Env} {Γ : CtxS} {b c : Reg} {x : CtxS × List C
           ShapeS.plain_clear hp _ _⟩
         · rw [ShapeS.den_size]; exact h2
         · rw [ShapeS.den_size]; exact h1
+      · cases h
+    · cases h
+  · cases h
+
+/-- A call that fills a count of bytes written out, at an exactly known
+address in a block the context owns: whatever typed value the bytes reach
+into is forgotten. -/
+def sysFillOwnedLit (Γ : CtxS) (b c : Reg) : Option (CtxS × List CondS) :=
+  match Γ.regs.get b, Γ.regs.get c with
+  | .eq p, .eq (.lit l) =>
+    match findOwned p Γ.owned 0 with
+    | some (k, a, S, j) =>
+      match S.clear j l.toNat with
+      | some S' =>
+        some (({ Γ with owned := Γ.owned.set k (a, S') } : CtxS).afterSyscall,
+          [.le (j.plus (.lit l.toNat)) S.size, .le S.size (.lit (2 ^ 64))])
+      | none => none
+    | none => none
+  | _, _ => none
+
+theorem sysFillOwnedLit_spec {ρ : Env} {Γ : CtxS} {b c : Reg} {x : CtxS × List CondS}
+    (h : sysFillOwnedLit Γ b c = some x) (hc : CondS.all ρ x.2) :
+    ∃ k a S v lo len, (Γ.den ρ).regs b = .eq v ∧ (Γ.den ρ).regs c = .eq len ∧
+      OwnedByte (Γ.den ρ).owned k a S v lo ∧ lo + len.toNat ≤ S.size ∧
+      x.1.den ρ = ({ Γ.den ρ with
+        owned := (Γ.den ρ).owned.set k (a, S.clear lo len.toNat) } : Ctx).afterSyscall := by
+  unfold sysFillOwnedLit at h
+  split at h
+  · next p l hb hcr =>
+    split at h
+    · next k a S j hf =>
+      split at h
+      · next S' hcl =>
+        cases h
+        obtain ⟨i, hki, hi, hpa⟩ := findOwned_spec ρ p Γ.owned 0 hf
+        have hk : k = i := by omega
+        subst hk
+        have h1 := hc.1
+        have h2 := hc.2.1
+        simp only [CondS.den, Num.den_plus] at h1 h2
+        refine ⟨k, a.den ρ, S.den ρ, p.den ρ, j.den ρ, l,
+          by rw [CtxS.den_regs, hb]; rfl, by rw [CtxS.den_regs, hcr]; rfl,
+          ⟨by rw [CtxS.den_owned]; exact denOwned_getElem? ρ _ _ _ _ _ hi, hpa, ?_⟩, ?_, ?_⟩
+        · rw [ShapeS.den_size]; exact h2
+        · rw [ShapeS.den_size]; exact h1
+        · rw [CtxS.den_afterSyscall, ← ShapeS.den_clear hcl]
+          have e : CtxS.den ρ { Γ with owned := Γ.owned.set k (a, S') }
+              = { Γ.den ρ with owned := (Γ.den ρ).owned.set k (a.den ρ, S'.den ρ) } := by
+            show ({ Γ.den ρ with owned := denOwned ρ (Γ.owned.set k (a, S')) _ } : Ctx) = _
+            rw [denOwned_set ρ _ _ _ _ _ hi]; rfl
+          rw [e]
       · cases h
     · cases h
   · cases h
@@ -4924,6 +4991,9 @@ def stepSys (Γ : CtxS) : Option (CtxS × List CondS) :=
       match sysFillBy Γ .rsi .rdx with
       | some x => some x
       | none =>
+        match sysFillOwnedLit Γ .rsi .rdx with
+        | some x => some x
+        | none =>
         match sysFillOwned Γ .rsi .rdx with
         | some x => some x
         | none => sysFillStack Γ .rsi .rdx
@@ -4972,6 +5042,13 @@ theorem stepSys_sound {fetch : Fetch} {sys : Syscall} [LikeLinux sys] {Ψ : MemT
               obtain ⟨hx, S, off, len, hb, hl, hle, hf⟩ := sysFillBy_spec hy hc
               rw [hx, CtxS.den_afterSyscall]; exact linux_read hax hb hl hle hf
             · split at h
+              · next y hy =>
+                cases h
+                obtain ⟨k, a, S, v, lo, len, hb, hl, hat, hle, hx⟩ := sysFillOwnedLit_spec hy hc
+                rw [hx]
+                exact linux_read_owned hax hb hat hl hle
+              next =>
+              split at h
               · next y hy =>
                 cases h
                 obtain ⟨hx, k, a, S, v, lo, len, hb, hl, hat, hle, hcl⟩ := sysFillOwned_spec hy hc
