@@ -3624,11 +3624,12 @@ elab "ty_loaded" : tactic => withMainContext do
     let t ← instantiateMVars (← g.getType)
     try
       -- that the program is in memory: each byte is looked at, by the
-      -- kernel; anything else: by the kernel too
+      -- kernel; anything else: by the kernel too. Stating the check for a
+      -- long run of data takes more nesting than the default allows.
       discard <| runOn g (do evalTactic (← `(tactic|
         first
-          | exact State.holds_of_check (by decide +kernel)
-          | decide +kernel)))
+          | exact State.holds_of_check (by set_option maxRecDepth 100000 in decide +kernel)
+          | (set_option maxRecDepth 100000 in decide +kernel))))
     catch _ =>
       throwError "ty_loaded: the starting state does not meet the entry contract; this does \
         not hold:{indentExpr t}"

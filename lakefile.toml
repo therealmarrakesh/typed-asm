@@ -1,6 +1,6 @@
 name = "typed-assembly"
 version = "0.1.0"
-defaultTargets = ["TypedAsm", "Sum", "Swap", "Frame", "Ops", "Index", "Echo", "Table", "Dispatch", "List", "Fact", "Buffer", "Keep", "Alloc", "Cat", "Stat", "Args", "Own", "Double", "Fresh", "Pair", "Lend", "Rejected", "sum", "swap", "frame", "ops", "index", "echo", "table", "dispatch", "list", "fact", "buffer", "keep", "alloc", "cat", "stat", "args", "own", "double", "fresh", "pair", "lend"]
+defaultTargets = ["TypedAsm", "Sum", "Swap", "Frame", "Ops", "Index", "Echo", "Table", "Dispatch", "List", "Fact", "Buffer", "Keep", "Alloc", "Cat", "Stat", "Args", "Own", "Double", "Fresh", "Pair", "Lend", "Random", "Rejected", "sum", "swap", "frame", "ops", "index", "echo", "table", "dispatch", "list", "fact", "buffer", "keep", "alloc", "cat", "stat", "args", "own", "double", "fresh", "pair", "lend", "random"]
 testDriver = "tests"
 
 # The core library: machine model, instruction set, semantics, type system.
@@ -68,6 +68,16 @@ roots = ["Index", "IndexProgram"]
 name = "index"
 root = "IndexMain"
 srcDir = "examples/Index"
+
+[[lean_lib]]
+name = "Random"
+srcDir = "examples/Random"
+roots = ["Random", "RandomProgram"]
+
+[[lean_exe]]
+name = "random"
+root = "RandomMain"
+srcDir = "examples/Random"
 
 [[lean_lib]]
 name = "Echo"

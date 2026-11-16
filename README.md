@@ -23,7 +23,7 @@ What exists and is checked today:
 - A model of the Linux calls a program needs (`read`, `write`, `openat`,
   `close`, `fstat`, `lseek`, `mmap`, `munmap`, `exit`, `exit_group`,
   `clock_gettime`, `getrandom`).
-- Twenty-one example programs in `examples/`, each built into an executable
+- Twenty-two example programs in `examples/`, each built into an executable
   whose safety theorem depends only on Lean's three standard axioms.
 - Tests against real tools: 79,628 instructions against the GNU assembler,
   13,579 instruction sequences against a real processor, including which
