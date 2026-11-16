@@ -48,6 +48,10 @@ theorem exactly_eq {τ : Ty} {a : BitVec 64} (h : exactly τ = some a) : τ = .e
 def carryNeeds (Γ : Ctx) (op : AluOp) : Prop :=
   op.readsCarry = true → ∀ f, Γ.flags f → f.cf.isSome = true
 
+/-- An operation that does not read the carry flag asks nothing of it. -/
+theorem carryNeeds_of_false (Γ : Ctx) (op : AluOp) (h : op.readsCarry = false) :
+    carryNeeds Γ op := fun h' => absurd h' (by rw [h]; decide)
+
 /-- A 32-bit copy between registers. -/
 def mov32 (Γ : Ctx) (d s : Reg) : Option Step :=
   if d = .rsp then none

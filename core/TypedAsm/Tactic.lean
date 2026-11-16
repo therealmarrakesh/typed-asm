@@ -2845,11 +2845,48 @@ private def fastStep (goal : MVarId) (ty : Expr) (named : Bool) : TacticM (Optio
   let needsN ← tidy stW.appArg!
   let hf ← fetchProof (mkApp fetch a) (toExpr (some (instr, len)))
   let hc ← mkExpectedTypeHint (← mkEqRefl r) (← mkEq chk r)
-  let hn ← if needsN.isConstOf ``True then pure (mkConst ``True.intro) else do
-    let g ← mkFreshExprSyntheticOpaqueMVar needsN
-    let left ← runOn g.mvarId! do evalTactic (← `(tactic| first | trivial | ty_side))
-    unless left.isEmpty do throwError "left over"
-    pure g
+  -- What is left to be shown is most often one of three things that are
+  -- settled by looking: that an operation which does not read the carry flag
+  -- asks nothing of it, a comparison of two numbers, and that there is room
+  -- on a stack known to have some amount more than a number.
+  let natLit (e : Expr) : MetaM (Option Nat) := do
+    if e.hasFVar || e.hasExprMVar then return none
+    match ← kwhnf e with
+    | .lit (.natVal k) => return some k
+    | _ => return none
+  let quick? : Option Expr ← (do
+    if needsN.isConstOf ``True then return some (mkConst ``True.intro)
+    if needsN.isAppOfArity ``Check.carryNeeds 2 then
+      let op := needsN.appArg!
+      let reads ← kwhnf (mkApp (mkConst ``AluOp.readsCarry) op)
+      if reads.isConstOf ``Bool.false then
+        return some (mkApp3 (mkConst ``Check.carryNeeds_of_false) needsN.appFn!.appArg! op
+          (← mkEqRefl (mkConst ``Bool.false)))
+      return none
+    if needsN.isAppOfArity ``LE.le 4 && needsN.getAppArgs[0]!.isConstOf ``Nat then
+      let a := needsN.appFn!.appArg!
+      let b := needsN.appArg!
+      let some x ← natLit a | return none
+      let ble (a b : Expr) : MetaM Expr := do
+        return mkApp3 (mkConst ``Nat.le_of_ble_eq_true) a b (← mkEqRefl (mkConst ``Bool.true))
+      if let some y ← natLit b then
+        if x ≤ y then return some (← ble a b) else return none
+      if b.isAppOfArity ``HAdd.hAdd 6 then
+        let m := b.appFn!.appArg!
+        let c := b.appArg!
+        if let some y ← natLit c then
+          if x ≤ y then
+            return some (mkApp5 (mkConst ``Nat.le_trans) a c b (← ble a c)
+              (mkApp2 (mkConst ``Nat.le_add_left) c m))
+      return none
+    return none : MetaM (Option Expr))
+  let hn ← match quick? with
+    | some h => pure h
+    | none =>
+      let g ← mkFreshExprSyntheticOpaqueMVar needsN
+      let left ← runOn g.mvarId! do evalTactic (← `(tactic| first | trivial | ty_side))
+      unless left.isEmpty do throwError "left over"
+      pure g
   let rest ← mkFreshExprSyntheticOpaqueMVar
     (mkAppN ty.getAppFn #[Φ, fetch, sys, Ψ, nextLit, ctxN]) (← goal.getTag)
   let stCtx := mkApp (mkConst ``Check.Step.ctx) st
