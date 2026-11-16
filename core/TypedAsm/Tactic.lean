@@ -1117,6 +1117,46 @@ def Instr.noRuleReason : Instr → Option String
       memory are not tracked: load the divisor into a register first"
   | _ => none
 
+/-- The memory operand of an instruction, if it has one. -/
+def Instr.memOperand? : Instr → Option Mem
+  | .alu _ _ (.rm_r (.mem m) _) | .alu _ _ (.r_m _ m) | .alu _ _ (.rm_i (.mem m) _)
+  | .mov _ (.rm_r (.mem m) _) | .mov _ (.r_m _ m) | .mov _ (.rm_i (.mem m) _)
+  | .test _ (.mem m) _ | .unary _ _ (.mem m) | .shift _ _ (.mem m) _ | .setcc _ (.mem m)
+  | .mulDiv _ _ (.mem m) | .imul2 _ _ (.mem m) | .imul3 _ _ (.mem m) _ | .popcnt _ _ (.mem m)
+  | .movzx _ _ _ (.mem m) | .movsx _ _ _ (.mem m) | .movsxd _ (.mem m) | .cmov _ _ _ (.mem m)
+  | .store8 m _ | .store16 m _ | .jmp (.ind (.mem m)) | .call (.ind (.mem m)) => some m
+  | _ => none
+
+/-- Whether an instruction's memory operand is addressed through the stack,
+which decides the fault a bad address raises. -/
+def Instr.onStack (i : Instr) : Bool :=
+  (i.memOperand?.map Mem.onStack).getD false
+
+/-! ## What could go wrong
+
+A rule is refused because the instruction could do something the machine
+does not allow, or leave memory other than its type says. Each reason for a
+refusal ends by saying which. -/
+
+/-- A number that is not known to be an address, used as one. -/
+def hazardAddress (onStack : Bool) : String :=
+  if onStack then
+    ". Used as an address through the stack, an arbitrary number is a stack fault where the \
+      processor has no such address, and a page fault where there is no memory for it"
+  else
+    ". Used as an address, an arbitrary number is a general-protection fault where the \
+      processor has no such address, and a page fault where there is no memory for it"
+
+/-- An access that may fall outside what it is known to be inside. -/
+def hazardBounds : String :=
+  ". Where nothing is known to be, there may be no memory, which is a page fault, or other \
+    data, which would be read or overwritten unnoticed"
+
+/-- A store that would leave a block holding something other than its type says. -/
+def hazardConfusion : String :=
+  ". The memory would no longer hold what its type says, and a later use of the value there \
+    could fault"
+
 /-- The registers whose values an instruction's rules need to speak of. If
 one of them is typed as an integer, the tactic gives its value a name first,
 so that the rules for exactly known values apply. -/
@@ -1569,23 +1609,25 @@ private def regName? (e : Expr) : Option String :=
   | _ => none
 
 /-- Describes, in terms of the program, a rule premise that could not be proved. -/
-private def describePremise (ty : Expr) : MetaM MessageData := do
+private def describePremise (onStack : Bool) (ty : Expr) : MetaM MessageData := do
   let ty ← instantiateMVars ty
   if let some (_, lhs, rhs) := ty.eq? then
     -- what a divide needs of the upper half of its dividend
     if lhs.isAppOf ``BitVec.setWidth && rhs.isAppOf ``signFill then
       return m!"`rdx` is not known to hold the sign extension of `rax`: use `cqo` or `cdq` \
-        before the divide"
+        before the divide. Otherwise the quotient may not fit, which is a divide error"
     if lhs.isAppOf ``BitVec.setWidth && !rhs.isAppOf ``BitVec.setWidth then
       return m!"`rdx`, the upper half of the dividend, is not known to be zero: clear it \
-        before the divide"
+        before the divide. Otherwise the quotient may not fit, which is a divide error"
     -- what a register must hold
     if lhs.isAppOfArity ``CtxOf.regs 3 then
       let reg := (regName? (← whnf lhs.appArg!)).getD "the register"
       let actual ← ppTy (← reduce lhs)
       if lhs.appArg!.isAppOf ``IndexReg.toReg then
         return m!"the index register `{reg}` must hold an exactly known value, but its type \
-          is `{actual}`; `ty_name` gives an integer a name"
+          is `{actual}`; `ty_name` gives an integer a name. An unknown index could reach \
+          outside what the base points to, where there may be no memory (a page fault) or \
+          other data"
       let wanted :=
         if rhs.isAppOf ``Ty.ptr then
           if rhs.getAppArgs[1]!.isConstOf ``Bool.true then "a writable pointer" else "a pointer"
@@ -1603,22 +1645,37 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
         else if held.isAppOf ``Ty.ref && rhs.isAppOf ``Ty.ptr then
           ": `ty_open` turns it into a pointer to a block of that kind's shape"
         else ""
-      return m!"`{reg}` must hold {wanted}, but its type is `{actual}`{hint}"
+      let hazard :=
+        if held.isAppOf ``Ty.nullable then ". An access through null is a page fault"
+        else if held.isAppOf ``Ty.orErr then
+          ". An error number used as an address is in the kernel's half: a page fault"
+        else if held.isAppOf ``Ty.ref || held.isAppOf ``Ty.eq then ""
+        else if held.isAppOf ``Ty.ptr && rhs.isAppOf ``Ty.ptr then
+          ". A store to memory that is read-only is a page fault"
+        else if rhs.isAppOf ``Ty.ptr then hazardAddress onStack
+        else if rhs.isAppOf ``Ty.code || rhs.isAppOf ``Ty.fn || rhs.isAppOf ``FnSig.ty ||
+            rhs.isAppOf ``Ty.fnAll || rhs.isAppOf ``FnSigEx.ty then
+          ". Control would go to whatever address it holds, where there may be no code"
+        else ""
+      return m!"`{reg}` must hold {wanted}, but its type is `{actual}`{hint}{hazard}"
     if lhs.isAppOf ``MemTy.locate then
-      return m!"the address is not inside any memory block"
+      return m!"the address is not inside any memory block{hazardBounds}"
     if lhs.isAppOf ``AluOp.readsCarry then
       return m!"this rule does not cover operations that read the carry flag"
     if lhs.isAppOf ``stackDrop then
       return m!"the pieces at the top of the stack do not come to exactly that many bytes"
     if lhs.isAppOfArity ``CtxOf.room 2 then
-      return m!"there is not enough free stack: the context has room for {← ppClean (← reduce lhs)}"
+      return m!"there is not enough free stack: the context has room for \
+        {← ppClean (← reduce lhs)}. Below the stack the program was given there may be no \
+        memory, which is a page fault, or other data, which would be overwritten"
     if lhs.isAppOf ``ShapeOf.free then
       if ty.hasFVar then
-        return m!"the bytes are not known to be clear of the typed values the block holds"
+        return m!"the bytes are not known to be clear of the typed values the block \
+          holds{hazardConfusion}"
       return m!"a typed value of the block reaches into those bytes, and plain bytes may not \
-        be stored over it"
+        be stored over it{hazardConfusion}"
     if lhs.isAppOf ``ShapeOf.sole then
-      return m!"another typed value of the block reaches into those eight bytes"
+      return m!"another typed value of the block reaches into those eight bytes{hazardConfusion}"
     -- a typed value or stack slot lookup
     let actual ← reduce lhs
     if actual.isAppOf ``Option.none then
@@ -1633,20 +1690,20 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
         `{← ppTy actual.appArg!}`"
     if rhs.isAppOf ``Option.some then
       return m!"the field is not known to be inside the block: a bound on the index is needed \
-        among the hypotheses"
+        among the hypotheses{hazardBounds}"
     return m!"needs `{← ppClean ty}`, but the left side is `{← ppClean actual}`"
   if ty.isAppOf ``StackAt then
-    return m!"those bytes are not known to be inside one piece of the stack"
+    return m!"those bytes are not known to be inside one piece of the stack{hazardBounds}"
   if ty.isAppOf ``byteDisp then
     return m!"the displacement must be non-negative"
   if ty.isAppOfArity ``Sub 2 then
     return m!"a value of type `{← ppTy (← reduce ty.appFn!.appArg!)}` cannot be stored \
-      where `{← ppTy ty.appArg!}` is required"
+      where `{← ppTy ty.appArg!}` is required{hazardConfusion}"
   if ty.isAppOfArity ``Ne 3 && (regName? ty.appArg!) == some "rsp" then
     return m!"`rsp` cannot be this operand"
   if ty.isAppOfArity ``Ne 3 && ty.appFn!.appArg!.isAppOf ``BitVec.setWidth then
     return m!"the divisor, `{← ppClean ty.appFn!.appArg!.appArg!}`, is not known to be \
-      non-zero: a check is needed before the divide"
+      non-zero: a check is needed before the divide. Dividing by zero is a divide error"
   if ty.isAppOfArity ``Ne 3 then
     return m!"`{← ppClean ty}` is not known: it is needed among the hypotheses"
   if ty.isAppOfArity ``Or 2 then
@@ -1655,16 +1712,20 @@ private def describePremise (ty : Expr) : MetaM MessageData := do
   if ty.isAppOf ``LE.le && ty.appArg!.isAppOf ``ShapeOf.size then
     if ty.hasFVar then
       return m!"the bytes are not known to be inside the block: a bound on the index is \
-        needed among the hypotheses"
-    return m!"the access would reach past the end of the block"
+        needed among the hypotheses{hazardBounds}"
+    return m!"the access would reach past the end of the block{hazardBounds}"
   if ty.isAppOf ``LE.le then
-    return m!"the access would reach past the end of its piece of the stack"
+    return m!"the access would reach past the end of its piece of the stack{hazardBounds}"
   if ty.isForall && ty.getForallBody.isAppOf ``Exists then
-    return m!"the flags are not known here, so they do not decide the condition"
+    return m!"the flags are not known here, so they do not decide the condition. The \
+      processor leaves them undefined after some instructions, and what this one does would \
+      then not be determined"
   if ty.isForall then
-    return m!"the operation reads the carry flag, which is not known to be defined here"
+    return m!"the operation reads the carry flag, which is not known to be defined here. The \
+      processor leaves it undefined after some instructions, and the result would then not be \
+      determined"
   if ty.isAppOf ``OwnedAt || ty.isAppOf ``OwnedByte then
-    return m!"the address is not known to be inside a block the context owns"
+    return m!"the address is not known to be inside a block the context owns{hazardBounds}"
   if ty.isAppOf ``EaIs then
     return m!"the registers the address is computed from must each hold an exactly known \
       value; a register holding some number is given a name with `ty_name`"
@@ -1696,8 +1757,8 @@ private def stackRules : List Name :=
 
 /-- A premise's description, in the words for the stack where the rule is
 one about the stack. -/
-private def describeFor (rule : Name) (ty : Expr) : MetaM MessageData := do
-  let msg ← describePremise ty
+private def describeFor (onStack : Bool) (rule : Name) (ty : Expr) : MetaM MessageData := do
+  let msg ← describePremise onStack ty
   unless stackRules.contains rule do return msg
   let text ← msg.toString
   let text := text.replace "the block is not known to hold" "that piece of the stack is not known to hold"
@@ -1709,7 +1770,8 @@ private def describeFor (rule : Name) (ty : Expr) : MetaM MessageData := do
 /-- Applies a rule to the main goal and describes the first premise that
 cannot be proved. `none` if the rule is for a goal of a different form. A
 premise about an operand is explained by the rule for that kind of operand. -/
-private partial def explainPremises (rule : Name) : TacticM (Option MessageData) := do
+private partial def explainPremises (onStack : Bool) (rule : Name) :
+    TacticM (Option MessageData) := do
   try
     evalTactic (← `(tactic| refine' $(mkIdent rule) ..))
   catch _ =>
@@ -1749,7 +1811,7 @@ private partial def explainPremises (rule : Name) : TacticM (Option MessageData)
   match chosen with
   | some (g, ty) =>
     let inner := operandRules ty
-    if inner.isEmpty then return some (← describeFor rule ty)
+    if inner.isEmpty then return some (← describeFor onStack rule ty)
     -- Where the address is exactly known the operand is in an owned block or
     -- nowhere, and the rule for owned blocks is the one to explain.
     if let some r := ownedOperandRule ty then
@@ -1768,20 +1830,20 @@ private partial def explainPremises (rule : Name) : TacticM (Option MessageData)
       saved.restore
       if exact then
         setGoals [g]
-        if let some msg ← explainPremises r then return some msg
+        if let some msg ← explainPremises onStack r then return some msg
     for r in inner do
       setGoals [g]
-      if let some msg ← explainPremises r then return some msg
+      if let some msg ← explainPremises onStack r then return some msg
     return some m!"this form of operand has no rule: a memory operand needs a base register \
       or `rip`"
   | none => return some m!"every premise holds separately, but not together"
 
 /-- Says why a rule did not apply: the first premise that could not be proved. -/
-private def explainRule (rule : Name) : TacticM MessageData := do
+private def explainRule (onStack : Bool) (rule : Name) : TacticM MessageData := do
   let saved ← saveState
   let name := rule.components.getLast!
   try
-    match ← explainPremises rule with
+    match ← explainPremises onStack rule with
     | some msg => return m!"{name}: {msg}"
     | none => return m!"{name}: is for a different form of this instruction"
   finally
@@ -1822,7 +1884,7 @@ def typeStraight : TacticM Unit := deep <| withMainContext do
   -- rules that fail for the same reason are listed once, under the first
   let mut said : List String := []
   for rule in (if general.isEmpty then rules else general) do
-    let why ← explainRule rule
+    let why ← explainRule ((instr?.map Instr.onStack).getD false) rule
     let text ← why.toString
     let reason := (text.splitOn ": ").drop 1 |> String.intercalate ": "
     if said.contains reason then continue
@@ -2483,7 +2545,9 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
             for each value the function may hand back; say which the function returns into \
             with `ty_return_as`"
         throwError "`ret` needs a return address on top of the stack, but the context does \
-          not have one there"
+          not have one there. Control would go to whatever number is there: a \
+          general-protection fault where the processor has no such address, a page fault \
+          where there is no code"
     let mut left := []
     for g in gs do
       if ← g.isAssigned then continue
@@ -2556,7 +2620,9 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
     try
       discard <| runOn dec decideCond
     catch _ =>
-      throwError "`{instr.toAsm}`: the flags known here do not decide the condition"
+      throwError "`{instr.toAsm}`: the flags known here do not decide the condition. The \
+        processor leaves some flags undefined after some instructions, and which way this goes \
+        would then not be determined"
     let [takenAcc] ← runOn taken introBranch | throwError "unexpected goals"
     -- A side that the exactly known flags rule out needs nothing more.
     let leftTaken ← if ← closeIfImpossible takenAcc then pure [] else proveAccepts takenAcc
@@ -2587,8 +2653,10 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
     try
       discard <| runOn code (do evalTactic (← `(tactic| ty_operand)))
     catch _ =>
-      throwError "`{instr.toAsm}`: the operand does not hold a pointer to code here. A register \
-        holding the exact address of a label becomes one with `ty_fn_ptr` (a function) or \
+      throwError "`{instr.toAsm}`: the operand does not hold a pointer to code here. Control \
+        would go to whatever number it holds: a general-protection fault where the processor \
+        has no such address, a page fault where there is no code. A register holding the \
+        exact address of a label becomes a pointer to code with `ty_fn_ptr` (a function) or \
         `ty_code_ptr` (any other label)"
     let left ← try
         runOn sub (do evalTactic (← `(tactic| ctx_sub)))
@@ -2679,7 +2747,8 @@ elab "ty_call " sig:term : tactic => do
   let noRoom (instr : Instr) : TacticM MessageData := do
     let room ← typed.withContext do ppClean (← reduce (← mkAppM ``CtxOf.room #[ctx]))
     return m!"`{instr.toAsm}`: there is no room on the stack for the return address: the \
-      context has room for {room}"
+      context has room for {room}. Below the stack the program was given there may be no \
+      memory, which is a page fault, or other data, which would be overwritten"
   -- A call through an operand holding a function pointer is typed like a
   -- direct call to that function.
   let viaPointer? ← match instr? with

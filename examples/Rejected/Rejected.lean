@@ -62,45 +62,45 @@ def Γ : Ctx where
   flags := Flags.Any
 
 /-- error: at address 0: cannot type `mov qword ptr [rax], rcx` in the current context
-• storeField: `rax` must hold a writable pointer, but its type is `int` -/
+• storeField: `rax` must hold a writable pointer, but its type is `int`. Used as an address, an arbitrary number is a general-protection fault where the processor has no such address, and a page fault where there is no memory for it -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i0) Γ := by ty_step
 
 /-- error: at address 3: cannot type `mov rax, qword ptr [rdi+16]` in the current context
 • loadField: no typed value of the block starts at that offset
-• loadInt: the access would reach past the end of the block -/
+• loadInt: the access would reach past the end of the block. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i1) Γ := by ty_step
 
 /-- error: at address 7: cannot type `mov qword ptr [rsi], rcx` in the current context
-• storeField: `rsi` must hold a writable pointer, but its type is `read-only pointer to 16 bytes` -/
+• storeField: `rsi` must hold a writable pointer, but its type is `read-only pointer to 16 bytes`. A store to memory that is read-only is a page fault -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i2) Γ := by ty_step
 
 /-- error: at address 10: cannot type `push rax` in the current context
-• push: there is not enough free stack: the context has room for 0 -/
+• push: there is not enough free stack: the context has room for 0. Below the stack the program was given there may be no memory, which is a page fault, or other data, which would be overwritten -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i3) Γ := by ty_step
 
 /-- error: at address 11: cannot type `mov dword ptr [rdx+8], ecx` in the current context
-• storeInt: a typed value of the block reaches into those bytes, and plain bytes may not be stored over it -/
+• storeInt: a typed value of the block reaches into those bytes, and plain bytes may not be stored over it. The memory would no longer hold what its type says, and a later use of the value there could fault -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i4) Γ := by ty_step
 
 /-- error: at address 14: cannot type `div rcx` in the current context
-• divSafe: the divisor, `rcx₀`, is not known to be non-zero: a check is needed before the divide -/
+• divSafe: the divisor, `rcx₀`, is not known to be non-zero: a check is needed before the divide. Dividing by zero is a divide error -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i5) Γ := by ty_step
 
 /-- error: at address 17: cannot type `adc rax, rcx` in the current context
 • aluExactRR: this rule does not cover operations that read the carry flag
-• aluRR: the operation reads the carry flag, which is not known to be defined here -/
+• aluRR: the operation reads the carry flag, which is not known to be defined here. The processor leaves it undefined after some instructions, and the result would then not be determined -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i6) Γ := by ty_step
 
 /-- error: at address 20: cannot type `mov rax, qword ptr [rdi+12]` in the current context
 • loadField: no typed value of the block starts at that offset
-• loadInt: the access would reach past the end of the block -/
+• loadInt: the access would reach past the end of the block. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i7) Γ := by ty_step
 
@@ -110,8 +110,8 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i7) Γ := by ty_step
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i8) Γ := by ty_step
 
 /-- error: at address 27: cannot type `mov qword ptr [rdx+8], rdi` in the current context
-• storeField: a value of type `pointer to 16 bytes` cannot be stored where `read-only pointer to 8 bytes` is required
-• storeInt: a typed value of the block reaches into those bytes, and plain bytes may not be stored over it -/
+• storeField: a value of type `pointer to 16 bytes` cannot be stored where `read-only pointer to 8 bytes` is required. The memory would no longer hold what its type says, and a later use of the value there could fault
+• storeInt: a typed value of the block reaches into those bytes, and plain bytes may not be stored over it. The memory would no longer hold what its type says, and a later use of the value there could fault -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i9) Γ := by ty_step
 
@@ -120,46 +120,46 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i9) Γ := by ty_step
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i10) Γ := by ty_step
 
 /-- error: at address 32: cannot type `mov rax, qword ptr [rdi+rcx*8]` in the current context
-• loadIndexed: the index register `rcx` must hold an exactly known value, but its type is `int`; `ty_name` gives an integer a name -/
+• loadIndexed: the index register `rcx` must hold an exactly known value, but its type is `int`; `ty_name` gives an integer a name. An unknown index could reach outside what the base points to, where there may be no memory (a page fault) or other data -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i11) Γ := by ty_step
 
 /-- error: at address 36: cannot type `cmovg eax, ecx` in the current context
-• cmovRM: the flags are not known here, so they do not decide the condition -/
+• cmovRM: the flags are not known here, so they do not decide the condition. The processor leaves them undefined after some instructions, and what this one does would then not be determined -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i12) Γ := by ty_step
 
 /-- error: at address 39: cannot type `add dword ptr [rsp+8], eax` in the current context
-• aluStoreR: those bytes are not known to be inside one piece of the stack -/
+• aluStoreR: those bytes are not known to be inside one piece of the stack. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i13) Γ := by ty_step
 
 /-- error: at address 43: cannot type `shl dword ptr [rsi], 1` in the current context
-• shiftImm: `rsi` must hold a writable pointer, but its type is `read-only pointer to 16 bytes` -/
+• shiftImm: `rsi` must hold a writable pointer, but its type is `read-only pointer to 16 bytes`. A store to memory that is read-only is a page fault -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i14) Γ := by ty_step
 
 /-- error: at address 45: cannot type `imul eax, dword ptr [rdi+14]` in the current context
-• imul2RM: the access would reach past the end of the block -/
+• imul2RM: the access would reach past the end of the block. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i15) Γ := by ty_step
 
 /-- error: at address 49: cannot type `not qword ptr [rdx+8]` in the current context
-• notRM: a typed value of the block reaches into those bytes, and plain bytes may not be stored over it -/
+• notRM: a typed value of the block reaches into those bytes, and plain bytes may not be stored over it. The memory would no longer hold what its type says, and a later use of the value there could fault -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i16) Γ := by ty_step
 
 /-- error: at address 53: cannot type `neg qword ptr [rdi+rcx*8]` in the current context
-• negRM: the index register `rcx` must hold an exactly known value, but its type is `int`; `ty_name` gives an integer a name -/
+• negRM: the index register `rcx` must hold an exactly known value, but its type is `int`; `ty_name` gives an integer a name. An unknown index could reach outside what the base points to, where there may be no memory (a page fault) or other data -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i17) Γ := by ty_step
 
-/-- error: `jmp rax`: the operand does not hold a pointer to code here. A register holding the exact address of a label becomes one with `ty_fn_ptr` (a function) or `ty_code_ptr` (any other label) -/
+/-- error: `jmp rax`: the operand does not hold a pointer to code here. Control would go to whatever number it holds: a general-protection fault where the processor has no such address, a page fault where there is no code. A register holding the exact address of a label becomes a pointer to code with `ty_fn_ptr` (a function) or `ty_code_ptr` (any other label) -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i18) Γ := by ty_block
 
 /-- error: at address 59: cannot type `add dword ptr [rip+100], 1` in the current context
-• aluStoreI: the address is not inside any memory block -/
+• aluStoreI: the address is not inside any memory block. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i19) Γ := by ty_step
 
@@ -168,12 +168,12 @@ def maybe : Ctx :=
   ⟨fun r => if r = .rdi then .nullable (.ptr (.raw 24) false 0) else .int, [], 0, Flags.Any, [], 0⟩
 
 /-- error: at address 3: cannot type `mov rax, qword ptr [rdi+16]` in the current context
-• loadField: `rdi` must hold a pointer, but its type is `read-only pointer to 24 bytes or null`: it must be tested for null first, and `ty_null` then gives the two cases -/
+• loadField: `rdi` must hold a pointer, but its type is `read-only pointer to 24 bytes or null`: it must be tested for null first, and `ty_null` then gives the two cases. An access through null is a page fault -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i1) maybe := by ty_step
 
 /-- error: cannot type `mov word ptr [rdx+7], ax` in the current context
-• store16RM: a typed value of the block reaches into those bytes, and plain bytes may not be stored over it -/
+• store16RM: a typed value of the block reaches into those bytes, and plain bytes may not be stored over it. The memory would no longer hold what its type says, and a later use of the value there could fault -/
 #guard_msgs in
 example : ∃ Γ', Straight Ψ 10 Γ (.store16 (.sib (some .rdx) none 7) .rax) Γ' :=
   ⟨_, by ty_straight⟩
@@ -219,7 +219,7 @@ example : BlockOk Φj jumpFetch linux Ψ (Asm.addr jumps 0 .start) bare := by ty
 #guard_msgs in
 example : BlockOk Φj jumpFetch linux Ψ (Asm.addr jumps 0 .far) bare := by ty_block
 
-/-- error: `ret` needs a return address on top of the stack, but the context does not have one there -/
+/-- error: `ret` needs a return address on top of the stack, but the context does not have one there. Control would go to whatever number is there: a general-protection fault where the processor has no such address, a page fault where there is no code -/
 #guard_msgs in
 example : BlockOk Φj jumpFetch linux Ψ (Asm.addr jumps 0 .needsSlot) oneSlot := by ty_block
 
@@ -254,7 +254,7 @@ inductive AtCallee : Callee → Ctx → Prop
 
 def Φc : CodeTy := .ofLabels calls 0 AtCallee
 
-/-- error: `call 2`: there is no room on the stack for the return address: the context has room for 0 -/
+/-- error: `call 2`: there is no room on the stack for the return address: the context has room for 0. Below the stack the program was given there may be no memory, which is a page fault, or other data, which would be overwritten -/
 #guard_msgs in
 example : BlockOk Φc callFetch linux Ψ (Asm.addr calls 0 .direct) bare := by ty_call plain
 
@@ -313,7 +313,7 @@ def Φf : CodeTy := .ofLabels flagged 0 (fun _ Δ => Δ = bare)
 
 example : BlockOk Φf flaggedFetch linux Ψ (Asm.addr flagged 0 .zero) bare := by ty_block
 
-/-- error: `jo 8`: the flags known here do not decide the condition -/
+/-- error: `jo 8`: the flags known here do not decide the condition. The processor leaves some flags undefined after some instructions, and which way this goes would then not be determined -/
 #guard_msgs in
 example : BlockOk Φf flaggedFetch linux Ψ (Asm.addr flagged 0 .overflow) bare := by ty_block
 
@@ -386,15 +386,13 @@ def argLoads : List (Asm Arg) := [
 
 def argFetch : Fetch := Asm.fetch 0 argLoads
 
-/--
-error: at address 0: cannot type `mov rsi, qword ptr [rsp+rax*8+8]` in the current context
-• loadStackIndexed: the index register `rax` must hold an exactly known value, but its type is `int`; `ty_name` gives an integer a name
--/
+/-- error: at address 0: cannot type `mov rsi, qword ptr [rsp+rax*8+8]` in the current context
+• loadStackIndexed: the index register `rax` must hold an exactly known value, but its type is `int`; `ty_name` gives an integer a name. An unknown index could reach outside what the base points to, where there may be no memory (a page fault) or other data -/
 #guard_msgs in
 example : BlockOk Φy argFetch linux Ψ (Asm.addr argLoads 0 .unknown) (argsCtx 0 2) := by ty_block
 
 /-- error: at address 12: cannot type `mov rsi, qword ptr [rsp+rax*8+8]` in the current context
-• loadStackIndexed: those bytes are not known to be inside one piece of the stack -/
+• loadStackIndexed: those bytes are not known to be inside one piece of the stack. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example : BlockOk Φy argFetch linux Ψ (Asm.addr argLoads 0 .beyond) (argsCtx 0 2) := by ty_block
 
@@ -418,17 +416,13 @@ def textFetch : Fetch := Asm.fetch 0 texts
 /-- `rdi` points into text. -/
 def atText : Ctx := ⟨fun r => if r = .rdi then .str false else .int, [], 0, Flags.Any, [], 0⟩
 
-/--
-error: at address 4: cannot type `movzx eax, byte ptr [rdi]` in the current context
-• movzxRM: `rdi` must hold a pointer, but its type is `int`
--/
+/-- error: at address 4: cannot type `movzx eax, byte ptr [rdi]` in the current context
+• movzxRM: `rdi` must hold a pointer, but its type is `int`. Used as an address, an arbitrary number is a general-protection fault where the processor has no such address, and a page fault where there is no memory for it -/
 #guard_msgs in
 example : BlockOk Φy textFetch linux Ψ (Asm.addr texts 0 .onward) atText := by ty_block
 
-/--
-error: at address 9: cannot type `mov byte ptr [rdi], al` in the current context
-• store8RM: `rdi` must hold a writable pointer, but its type is `pointer into text`
--/
+/-- error: at address 9: cannot type `mov byte ptr [rdi], al` in the current context
+• store8RM: `rdi` must hold a writable pointer, but its type is `pointer into text`. Used as an address, an arbitrary number is a general-protection fault where the processor has no such address, and a page fault where there is no memory for it -/
 #guard_msgs in
 example : BlockOk Φy textFetch linux Ψ (Asm.addr texts 0 .store) atText := by ty_block
 
@@ -508,7 +502,7 @@ def maps : List (Asm Map) :=
 def mapFetch : Fetch := Asm.fetch 0 maps
 
 /-- error: at address 25: cannot type `mov rdx, qword ptr [rax]` in the current context
-• loadField: `rax` must hold a pointer, but its type is `pointer to 16 bytes or an error number`: it must be tested for an error first, and `ty_err` then gives the two cases -/
+• loadField: `rax` must hold a pointer, but its type is `pointer to 16 bytes or an error number`: it must be tested for an error first, and `ty_err` then gives the two cases. An error number used as an address is in the kernel's half: a page fault -/
 #guard_msgs in
 example : BlockOk Φy mapFetch linux Ψ (Asm.addr maps 0 .unchecked) bare := by
   ty_steps
@@ -589,7 +583,7 @@ def Φm : CodeTy := .ofLabels owning 0 AtMem
 
 /-- error: at address 52: cannot type `mov rcx, qword ptr [rbx]` in the current context
 • loadField: `rbx` must hold a pointer, but its type is `exactly p`
-• loadInt: the address is not known to be inside a block the context owns -/
+• loadInt: the address is not known to be inside a block the context owns. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example : BlockOk Φm ownFetch linux Ψ (Asm.addr owning 0 .afterFree) bare := by
   ty_steps
@@ -709,12 +703,10 @@ example (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (ro
   ty_munmap
   ty_block
 
-/--
-error: at address 13: cannot type `mov rax, qword ptr [rdi+rcx*8]` in the current context
+/-- error: at address 13: cannot type `mov rax, qword ptr [rdi+rcx*8]` in the current context
 • loadIndexed: `rdi` must hold a pointer, but its type is `exactly p`
-• loadOwned: the address is not known to be inside a block the context owns
-• loadInt: the bytes are not known to be inside the block: a bound on the index is needed among the hypotheses
--/
+• loadOwned: the address is not known to be inside a block the context owns. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed
+• loadInt: the bytes are not known to be inside the block: a bound on the index is needed among the hypotheses. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat)
     (hK : (pageSig p).CallerOk saved ret rest room) :
@@ -936,7 +928,7 @@ example (i : BitVec 64) (hlt : i.toNat < 64) :
   ty_straight
 
 /-- error: cannot type `mov byte ptr [rbx+rcx*1+16], al` in the current context
-• store8RM: the bytes are not known to be inside the block: a bound on the index is needed among the hypotheses -/
+• store8RM: the bytes are not known to be inside the block: a bound on the index is needed among the hypotheses. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example (i : BitVec 64) (hlt : i.toNat < 65) :
     Straight Ψ 10 (filling i) (.store8 (.sib (some .rbx) (some (.rcx, .s1)) 16) .rax)
@@ -944,7 +936,7 @@ example (i : BitVec 64) (hlt : i.toNat < 65) :
   ty_straight
 
 /-- error: cannot type `mov byte ptr [rbx+rcx*1+7], al` in the current context
-• store8RM: the bytes are not known to be clear of the typed values the block holds -/
+• store8RM: the bytes are not known to be clear of the typed values the block holds. The memory would no longer hold what its type says, and a later use of the value there could fault -/
 #guard_msgs in
 example (i : BitVec 64) (hlt : i.toNat < 64) :
     Straight Ψ 10 (filling i) (.store8 (.sib (some .rbx) (some (.rcx, .s1)) 7) .rax)
@@ -987,7 +979,7 @@ example (n k : Nat) :
   ⟨_, by ty_straight, rfl⟩
 
 /-- error: cannot type `mov byte ptr [rbx+8], al` in the current context
-• store8RM: the bytes are not known to be clear of the typed values the block holds -/
+• store8RM: the bytes are not known to be clear of the typed values the block holds. The memory would no longer hold what its type says, and a later use of the value there could fault -/
 #guard_msgs in
 example (n k : Nat) (hk : k < n) :
     Straight Ψ 10 (walking n k) (.store8 (.sib (some .rbx) none 8) .rax) (walking n k) := by
@@ -995,7 +987,7 @@ example (n k : Nat) (hk : k < n) :
 
 /-- error: cannot type `mov rax, qword ptr [rbx+8]` in the current context
 • loadField: the block is not known to hold a typed value there: a bound on the index is needed among the hypotheses
-• loadInt: the bytes are not known to be inside the block: a bound on the index is needed among the hypotheses -/
+• loadInt: the bytes are not known to be inside the block: a bound on the index is needed among the hypotheses. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example (n k : Nat) :
     ∃ Γ', Straight Ψ 10 (walking n k) (.mov .w64 (.r_m .rax (.sib (some .rbx) none 8))) Γ' :=
@@ -1050,7 +1042,7 @@ example (i : BitVec 64) :
   ⟨_, by ty_straight⟩
 
 /-- error: cannot type `mov byte ptr [rsp+rcx*1], al` in the current context
-• store8RM: those bytes are not known to be inside one piece of the stack -/
+• store8RM: those bytes are not known to be inside one piece of the stack. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example (i : BitVec 64) (hlt : i.toNat < 101) :
     ∃ Γ', Straight Ψ 10 (frame i [.raw 100, .raw 4])
@@ -1059,7 +1051,7 @@ example (i : BitVec 64) (hlt : i.toNat < 101) :
 
 /-- error: cannot type `mov rax, qword ptr [rsp+96]` in the current context
 • loadStack: no typed value of that piece of the stack starts at that offset
-• loadInt: the access would reach past the end of the piece of the stack it starts in -/
+• loadInt: the access would reach past the end of the piece of the stack it starts in. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example (i : BitVec 64) :
     ∃ Γ', Straight Ψ 10 (frame i [.raw 100, .raw 4])
