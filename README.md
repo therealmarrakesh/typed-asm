@@ -52,7 +52,7 @@ jumped back to, called or returned to, and three commands:
   With `exits Q` after it, it also proves that the program ends only with a
   status satisfying `Q`.
 
-Each instruction is typed without being told how. Sixteen of the twenty-three
+Each instruction is typed without being told how. Seventeen of the twenty-three
 examples need nothing more than this. In the others, a label's block says
 what cannot be read off the program: where an owned block is split, joined
 or made part of the shared memory, which piece of the stack is lent to a

@@ -46,25 +46,6 @@ inductive At : Label → Ctx → Prop
 
 asm_typing At
 
-/-! ## The program is well typed -/
-
-theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  ty_program
-  case start =>
-    -- lea rdi, [rip + record]
-    ty_step
-    -- lea rax, [rip + compute]
-    ty_step
-    -- `rax` holds exactly the address of `compute`, so it is a pointer to that function
-    ty_code_ptr .rax to computeCtx
-    -- the pointer is stored in a stack slot and called through it
-    ty_call computeSig
-  case afterCall =>
-    ty_steps
-    -- `rcx` holds exactly the address of `finish`
-    ty_code_ptr .rcx to fin
-    ty_block
-
 /-! ## Safety -/
 
 asm_safety At.start

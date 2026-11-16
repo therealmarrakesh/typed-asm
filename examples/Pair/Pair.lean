@@ -51,9 +51,7 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   ty_program
   case start =>
     -- lea r12, [rip + two]: `r12` holds exactly the function's address
-    ty_step
     -- so it is a pointer to the function, and the call is through it
-    ty_fn_ptr .r12 to twoSig
     ty_call twoSig returning backCtx
   case two saved ret rest room frame above hK =>
     -- the caller left a slot for the page kept across the second request

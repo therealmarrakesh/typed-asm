@@ -1278,6 +1278,8 @@ syntax "ty_err " term " as " ident : tactic
 syntax "ty_mmap " term : tactic
 syntax "ty_mmap_kind " term : tactic
 syntax "ty_into " term : tactic
+syntax "ty_code_ptr_fwd " term " to " term : tactic
+syntax "ty_fn_ptr_fwd " term " to " term : tactic
 syntax "ty_byte " "as " ident : tactic
 syntax "ty_mmap_own " "as " ident : tactic
 syntax "ty_munmap" : tactic
@@ -2909,6 +2911,50 @@ private def fastStep (goal : MVarId) (ty : Expr) (named : Bool) : TacticM (Optio
   goal.assign (mkAppN (mkConst ``BlockOk.step) #[Φ, fetch, sys, Ψ, a, Γ, stCtx, iE, lenE, hf, hs, eta])
   return some rest.mvarId!
 
+/-- What a register holding the address `v` may be made a pointer to, where
+`v` is the address of a label with one declared context: a function, where
+that context is a signature's entry, and otherwise the code there, where the
+context has nothing left open. The tactic that makes it so, if there is one. -/
+private def codePtrTactic (Φ : Expr) (v : Nat) (reg : Ident) :
+    TacticM (Option (TSyntax `tactic)) := do
+  let mut f := Φ
+  for _ in [0:4] do
+    if f.isAppOf ``CodeTy.ofLabels then break
+    let some f' ← unfoldDefinition? f | return none
+    f := f'.headBeta
+  unless f.isAppOf ``CodeTy.ofLabels && f.getAppNumArgs ≥ 3 do return none
+  let args := f.getAppArgs
+  let T := args[args.size - 1]!
+  let base := args[args.size - 2]!
+  let prog := args[args.size - 3]!
+  let .const tn _ := T.getAppFn | return none
+  let some (.inductInfo info) := (← getEnv).find? tn | return none
+  -- the contexts declared at the label whose address this is
+  let mut found : Array (Option Expr × Option Expr) := #[]
+  for c in info.ctors do
+    let some ci := (← getEnv).find? c | continue
+    let r ← forallTelescope ci.type fun xs body => do
+      let bs := body.getAppArgs
+      unless bs.size ≥ 2 do return none
+      let some l := bs[bs.size - 2]!.getAppFn.constName? | return none
+      let some n ← addrNat (← mkAppM ``Asm.addr #[prog, base, mkConst l]) | return none
+      unless n == v do return none
+      let ctx := bs[bs.size - 1]!
+      let sig? : Option Expr :=
+        if ctx.isAppOf ``FnSig.entry && ctx.getAppNumArgs ≥ 1 then some ctx.getAppArgs[0]!
+        else if ctx.isAppOf ``FnSigEx.entry && ctx.getAppNumArgs ≥ 3 then some ctx.getAppArgs[2]!
+        else none
+      let sig? := sig?.filter (!·.hasFVar)
+      let code? := if xs.size == 0 && !ctx.hasFVar then some ctx else none
+      return some (sig?, code?)
+    if let some x := r then found := found.push x
+  let #[(sig?, code?)] := found | return none
+  if let some sig := sig? then
+    return some (← `(tactic| ty_fn_ptr_fwd $reg to $(← Term.exprToSyntax sig)))
+  if let some ctx := code? then
+    return some (← `(tactic| ty_code_ptr_fwd $reg to $(← Term.exprToSyntax ctx)))
+  return none
+
 /-- For each address a block has been typed up to: which instruction last
 gave each register, and the flags, what the context says of them there. It is
 what lets a rejection say where a type came from. It is kept by address, and
@@ -3131,6 +3177,24 @@ private partial def typeStepCore (named : Bool := false) : TacticM StepResult :=
             let ty' := ty.replace fun e => if e == off then some lit else none
             setGoals [← g.replaceTargetDefEq ty']
     catch _ => before.restore
+    -- A register just loaded with the address of a label where code is
+    -- typed is a pointer to that code from here on, or to the function there.
+    let made ← saveState
+    try
+      let g ← getMainGoal
+      let ty := (← instantiateMVars (← g.getType)).consumeMData
+      let regE := mkConst (Name.str ``Reg d.name64)
+      let regTy ← g.withContext (do whnf (← mkAppM ``CtxOf.regs #[ty.getAppArgs[5]!, regE]))
+      if regTy.isAppOfArity ``Ty.eq 1 then
+        if let some v ← addrNat regTy.appArg! then
+          if let some tac ← codePtrTactic ty.getAppArgs[0]! v reg then
+            let rest := (← getGoals).drop 1
+            setGoals [g]
+            Tactic.withoutRecover (evalTactic tac)
+            -- only where nothing is left to be said
+            unless (← getGoals).length == 1 do throwError "left over"
+            setGoals ((← getGoals) ++ rest)
+    catch _ => made.restore
   setGoals ((← getGoals) ++ others)
   return .stepped
 
@@ -4465,6 +4529,10 @@ elab "ty_fn_ptr " r:term " to " sig:term : tactic => do
   setGoals [← goalNamed gs `rest]
   evalTactic (← `(tactic| ty_normalize))
   setGoals ((← getGoals) ++ left ++ others)
+
+macro_rules
+  | `(tactic| ty_code_ptr_fwd $r to $Δ) => `(tactic| ty_code_ptr $r to $Δ)
+  | `(tactic| ty_fn_ptr_fwd $r to $s) => `(tactic| ty_fn_ptr $r to $s)
 
 /-- Types an `mmap` at the head of a block goal with the given lemma applied
 to the layout asked for, and proves what it needs of the registers. -/
