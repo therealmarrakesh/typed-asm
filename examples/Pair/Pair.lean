@@ -58,19 +58,12 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     obtain ⟨m, rfl⟩ := hK.room_split
     ty_mmap_own as p
     · ty_block
-    · ty_step
-      ty_branch
-      -- push rax, and the second request
-      ty_mmap_own as q
+    -- the first page is kept on the stack across the second request
+    · ty_mmap_own as q
       · ty_block
-      · ty_step
-        ty_branch
-        -- mov rdx, rax; pop rax
-        ty_step
-        ty_step
-        -- the pair the function returns with, its pages in that order
-        ty_return_as (p, q)
-        ty_own_first .rax
+      -- the pair the function returns with, its pages in that order
+      · ty_return_as (p, q)
+        ty_own_first p
         ty_block
 
 /-! ## Safety -/

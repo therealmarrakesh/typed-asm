@@ -61,8 +61,7 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     -- an error number is negative: the test sends control to `fail`
     · ty_block
     -- a page at `p`: that is the address the function returns with
-    · ty_step
-      ty_return_as p
+    · ty_return_as p
       ty_block
 
 /-! ## Safety -/

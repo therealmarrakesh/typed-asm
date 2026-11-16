@@ -952,6 +952,39 @@ elab "ty_branch" : tactic => do
     throwError "ty_branch: the instruction here does not transfer control; use `ty_step`"
   | .notABlock => throwError "ty_branch: the goal is not a block"
 
+/-- Runs a tactic where it applies. It is tried here, and if it does not
+apply, after each further instruction that types by itself, a conditional
+jump included (its other side settled as `ty_block` would settle it), for as
+far as that goes. If it never applies, its complaint here is the one given.
+So what is said of a block is said without the steps up to it being counted. -/
+def seeking (tac : TacticM Unit) : TacticM Unit := do
+  let start ← saveState
+  let attempt : TacticM (Option Exception) := do
+    let s ← saveState
+    try
+      tac
+      pure none
+    catch e =>
+      s.restore
+      pure (some e)
+  let some first ← attempt | return
+  for _ in [0:64] do
+    let s ← saveState
+    let moved ← try
+        match ← typeStep with
+        | .stepped => pure true
+        | .endOfBlock (.jcc _ _) =>
+          evalTactic (← `(tactic| ty_branch))
+          pure true
+        | _ => pure false
+      catch _ =>
+        s.restore
+        pure false
+    unless moved do break
+    if (← attempt).isNone then return
+  start.restore
+  throw first
+
 /-- `ty_call sig` types a `call` that ends a block, to a function with
 signature `sig`. The callee and the return point are found by label. Left as
 goals: argument registers whose types do not obviously match what the
@@ -1163,7 +1196,7 @@ elab "ty_call " sig:term " returning " ret:term : tactic => do
 contexts, and the function has decided it returns into the one for `x`. From
 here on the return address is typed as code for that context alone, which is
 what `ret` needs. -/
-elab "ty_return_as " x:term : tactic => do
+elab "ty_return_as " x:term : tactic => seeking do
   let goal ← getMainGoal
   let others := (← getGoals).drop 1
   for i in [0:16] do
@@ -1385,7 +1418,7 @@ number in `rax`, then with `rax` holding exactly an address `p` and the
 context owning the pages at `p` as a block of integers. `hpage` says `p` is
 the start of a page, and `hlow` that it is not an error number. -/
 elab_rules : tactic
-  | `(tactic| ty_mmap_own as $p) => withTrail "ty_mmap_own" do
+  | `(tactic| ty_mmap_own as $p) => seeking <| withTrail "ty_mmap_own" do
     advance
     let goal ← getMainGoal
     let others := (← getGoals).drop 1
@@ -1823,7 +1856,7 @@ context owns, of at least `m` bytes. From here on the context owns two
 blocks in its place: the first `m` bytes where the block was, and the rest
 `m` bytes on. Each can be stored to, frozen or given back on its own. -/
 elab_rules : tactic
-  | `(tactic| ty_split $r at $m) => do
+  | `(tactic| ty_split $r at $m) => seeking do
     freezeWith (name := "ty_split") fun k => do
       let kq := Syntax.mkNumLit (toString k)
       `(tactic| refine BlockOk.splitOwned (r := $r) (k := $kq) (m := $m) (base := ?_) (S := ?_)
@@ -1926,12 +1959,28 @@ elab "ty_loaded" : tactic => withMainContext do
 /-- `ty_own_first r`: register `r` holds exactly the address of a block the
 context owns. From here on that block is listed first among the owned ones.
 The order means nothing, but a call hands a function the blocks its
-signature takes from the front of the list, in the signature's order. -/
+signature takes from the front of the list, in the signature's order.
+
+`ty_own_first p`, with `p` an address, says the same of the block at `p`,
+whatever the registers hold: it can be said anywhere the block is owned. -/
 elab_rules : tactic
   | `(tactic| ty_own_first $r) => do
-    freezeWith (name := "ty_own_first") fun k => do
-      let kq := Syntax.mkNumLit (toString k)
-      `(tactic| refine BlockOk.frontOwned (r := $r) (k := $kq) (base := ?_) (S := ?_) ?_ ?_ ?_)
+    -- told apart by what the term is: a register, or an address
+    let isReg ← withMainContext do
+      try
+        discard <| Term.withoutErrToSorry <|
+          Term.elabTermEnsuringType r (some (mkConst ``Reg))
+        pure true
+      catch _ => pure false
+    if isReg then
+      freezeWith (name := "ty_own_first") fun k => do
+        let kq := Syntax.mkNumLit (toString k)
+        `(tactic| refine BlockOk.frontOwned (r := $r) (k := $kq) (base := ?_) (S := ?_) ?_ ?_ ?_)
+    else
+      freezeWith (name := "ty_own_first")
+        (failure := m!"ty_own_first: the context owns no block at that address") fun k => do
+        let kq := Syntax.mkNumLit (toString k)
+        `(tactic| refine BlockOk.frontOwnedAt (k := $kq) (base := $r) (S := ?_) ?_ ?_)
 
 /-- `ty_into h` types the instruction here and ends the block with it. Use it
 when the next instruction is at a label and the block should hand over to

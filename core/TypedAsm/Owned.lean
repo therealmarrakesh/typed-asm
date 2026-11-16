@@ -466,6 +466,13 @@ theorem BlockOk.frontOwned {a : BitVec 64} {Γ : Ctx} {r : Reg} {k : Nat} {base 
     BlockOk Φ fetch sys Ψ a Γ :=
   .weaken (fun _ _ _ _ _ h => h.permOwned (perm_cons_eraseIdx hk)) hrest
 
+/-- The same, for the block at an address: no register need hold it. -/
+theorem BlockOk.frontOwnedAt {a : BitVec 64} {Γ : Ctx} {k : Nat} {base : BitVec 64}
+    {S : Shape} (hk : Γ.owned[k]? = some (base, S))
+    (hrest : BlockOk Φ fetch sys Ψ a { Γ with owned := (base, S) :: Γ.owned.eraseIdx k }) :
+    BlockOk Φ fetch sys Ψ a Γ :=
+  .weaken (fun _ _ _ _ _ h => h.permOwned (perm_cons_eraseIdx hk)) hrest
+
 /-- An `mmap` whose memory the program is to own, in a block: what follows is
 typed twice, for an error number in `rax` and for the address of whole pages
 of plain bytes that the context then owns. -/

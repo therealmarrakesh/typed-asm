@@ -31,13 +31,10 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_mmap_own as p
     -- an error number is negative: the test sends control to `fail`
     · ty_block
-    -- a page: `p` is not negative, so the test lets control through
-    · ty_step
-      ty_branch
-      -- mov rbx, rax
-      ty_step
-      -- regard the page as two blocks: its first sixteen bytes, and the rest
-      ty_split .rbx at 16
+    -- a page: `p` is not negative, so the test lets control through; once
+    -- its address is in `rbx`, regard the page as two blocks: its first
+    -- sixteen bytes, and the rest
+    · ty_split .rbx at 16
       -- the stores give the fields their types, in whichever block each
       -- address falls; the loads find them
       -- one block again, and give it back: the context owns nothing
@@ -46,12 +43,8 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
       -- two more pages, at `q`
       ty_mmap_own as q
       · ty_block
-      · ty_step
-        ty_branch
-        -- mov rbx, rax
-        ty_step
-        -- a block for each page; give the second back
-        ty_split .rbx at 4096
+      -- a block for each page; give the second back
+      · ty_split .rbx at 4096
         ty_munmap
         -- lea rcx, [rip + record]
         ty_step
