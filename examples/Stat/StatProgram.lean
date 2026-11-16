@@ -164,7 +164,7 @@ def entry : BitVec 64 := Asm.addr code base .start
 two data segments in memory, the name readable and the buffer writable. The
 program uses no stack. -/
 def prepared : State :=
-  (Asm.load State.init base code).setReg .rsp 0x80000000
+  (Asm.load State.init base code .start).setReg .rsp 0x80000000
 
 /-- A starting state: `prepared`, with `rip` at the entry. There are no files. -/
 def start : State :=

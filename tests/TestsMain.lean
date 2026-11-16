@@ -8,6 +8,7 @@ Checks the model against results recorded from real tools:
 * the encoder against the GNU assembler, and the decoder against the encoder
 * the instruction semantics against a real processor
 * whole programs against the same programs run as Linux executables
+* the memory a program starts with in the model against its executable file
 
 It needs nothing but Lean: the recorded results are in `tests/data`. Run it
 with `lake test`. To regenerate the recorded results, see `Capture.lean`.
@@ -77,8 +78,26 @@ def checkPrograms : IO Bool := do
         the machine {real.take 80}"
   report "programs" cases.size failures
 
+/-- The kernel maps an executable page by page, each byte of the file as far
+from where it is loaded as it is from the start of the file. So the memory a
+program starts with in the model must be the file, byte for byte, headers
+and padding included, and all of it readable. -/
+def checkImages : IO Bool := do
+  let cases := Tests.Programs.cases.toArray
+  let mut failures : Array String := #[]
+  for c in cases do
+    let s := c.program.startWith c.args c.input #[]
+    let base := BitVec.ofNat 64 Elf.loadBase
+    let elf := c.program.elf
+    unless s.bytesAt base elf.length == elf do
+      failures := failures.push s!"{c.label}: memory at the load address is not the file"
+    unless s.canRead base elf.length do
+      failures := failures.push s!"{c.label}: part of the file's extent is not readable"
+  report "images" cases.size failures
+
 def main : IO UInt32 := do
   let a ← checkEncoding
   let b ← checkHardware
   let c ← checkPrograms
-  return if a && b && c then 0 else 1
+  let d ← checkImages
+  return if a && b && c && d then 0 else 1

@@ -356,12 +356,35 @@ variable (s : State) (room : Nat) (args : List (List Byte))
 theorem getReg_withArgs : (s.withArgs room args).getReg .rsp = argBase :=
   State.getReg_setReg_same _ _ _
 
+/-- Only giving the stack its permission changes any. -/
 theorem perm_withArgs (x : BitVec 64) :
     (s.withArgs room args).perm x =
-      if x.toNat < addrTop ∧
-          x - (argBase - BitVec.ofNat 64 (8 * room)) < BitVec.ofNat 64 (8 * room + 0x10000)
-      then .rw else s.perm x :=
-  State.perm_setPerm _ _ _ _ _
+      (s.setPerm (argBase - BitVec.ofNat 64 (8 * room)) (BitVec.ofNat 64 (8 * room + 0x10000))
+        .rw).perm x :=
+  rfl
+
+/-- The stack is writable: the room below the stack pointer and the 64 KiB
+from it up. -/
+theorem perm_withArgs_in (hroom : 8 * room ≤ 0x10000) {x : BitVec 64}
+    (h1 : argBase.toNat - 8 * room ≤ x.toNat) (h2 : x.toNat < argBase.toNat + 0x10000) :
+    (s.withArgs room args).perm x = .rw := by
+  have hbase : argBase.toNat = 0x7fff0000 := rfl
+  have hx : x.toNat < addrTop := by
+    show x.toNat < 0x7ffffffff000
+    rw [hbase] at h2
+    exact Nat.lt_trans h2 (by decide)
+  rw [perm_withArgs]
+  exact State.perm_setPerm_in s (base := argBase - BitVec.ofNat 64 (8 * room))
+    (len := BitVec.ofNat 64 (8 * room + 0x10000)) .rw hx ⟨by bv_omega, by bv_omega⟩
+
+/-- Below the stack's pages, permissions are what they were. -/
+theorem perm_withArgs_below (hroom : 8 * room ≤ 0x10000) {x : BitVec 64}
+    (hx : x.toNat < 0x7ffe0000) : (s.withArgs room args).perm x = s.perm x := by
+  have hbase : argBase.toNat = 0x7fff0000 := rfl
+  have hout : x.toNat / 4096 < (argBase - BitVec.ofNat 64 (8 * room)).toNat / 4096 := by
+    bv_omega
+  rw [perm_withArgs]
+  exact State.perm_setPerm_out s (len := BitVec.ofNat 64 (8 * room + 0x10000)) .rw (.inl hout)
 
 theorem mem_withArgs_below {x : BitVec 64} (hx : x.toNat < argBase.toNat) :
     (s.withArgs room args).mem x = s.mem x := by
@@ -416,11 +439,7 @@ theorem Entry.ofLoadSlots {p : State} (args : List (List Byte)) (hroom : 8 * roo
   have hperm : ∀ x : BitVec 64, x.toNat < 0x7ffe0000 →
       ({ p.withArgs room args with rip := entry } : State).perm x = p.perm x := by
     intro x hx
-    show (p.withArgs room args).perm x = p.perm x
-    rw [State.perm_withArgs]
-    split
-    · next hin => exact absurd hin (by bv_omega)
-    · rfl
+    exact State.perm_withArgs_below p room args hroom hx
   have hmem : ∀ x : BitVec 64, x.toNat < 0x7ffe0000 →
       ({ p.withArgs room args with rip := entry } : State).mem x = p.mem x :=
     fun x hx => State.mem_withArgs_below p room args (by omega)
@@ -452,12 +471,8 @@ theorem Entry.ofLoadSlots {p : State} (args : List (List Byte)) (hroom : 8 * roo
   · rw [hsp, State.canWrite_iff]
     intro i hi
     show ((p.withArgs room args).perm _).writable = true
-    rw [State.perm_withArgs]
-    split
-    · rfl
-    · next hout =>
-      have hT : addrTop = 0x7ffffffff000 := rfl
-      exact absurd ⟨by bv_omega, by bv_omega⟩ hout
+    rw [State.perm_withArgs_in p room args hroom (by bv_omega) (by bv_omega)]
+    rfl
   · intro x hx
     have hf := hfarBlocks x hx
     rw [hsp]

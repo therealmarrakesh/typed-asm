@@ -120,7 +120,7 @@ def entry : BitVec 64 := Asm.addr code base .start
 /-- A starting state but for the stack and `rip`: the program in memory, and
 with it the data. -/
 def prepared : State :=
-  Asm.load State.init base code
+  Asm.load State.init base code .start
 
 /-- A starting state: `prepared`, given a stack that holds the arguments, with
 `rip` at the entry. The first argument is by custom the program's own name. -/

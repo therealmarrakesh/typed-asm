@@ -28,7 +28,8 @@ What exists and is checked today:
 - Tests against real tools: 79,628 instructions against the GNU assembler,
   13,579 instruction sequences against a real processor, including which
   fault each bad access raises, and 42 whole-program runs compared with the
-  same programs run as Linux executables.
+  same programs run as Linux executables. The memory each program starts
+  with in the model is checked to be its executable file, byte for byte.
 
 The example programs are written as Lean constructor terms, and their typing
 is done by tactics.

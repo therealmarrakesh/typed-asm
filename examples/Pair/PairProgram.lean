@@ -147,7 +147,7 @@ def entry : BitVec 64 := Asm.addr code base .start
 free stack slots, for a return address and the page the function keeps while
 it asks for another. -/
 def prepared : State :=
-  ((Asm.load State.init base code).setPerm 0x7ffffff0 16 .rw).setReg .rsp 0x80000000
+  ((Asm.load State.init base code .start).setPerm 0x7ffffff0 16 .rw).setReg .rsp 0x80000000
 
 /-- A starting state: `prepared`, with `rip` at the entry. Every request for
 memory is refused. -/

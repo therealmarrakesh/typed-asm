@@ -1240,4 +1240,20 @@ example : nowhere.canWrite (0x0200000000000000 - 8) 8 = false := by decide
   | .fault .pageFault => true
   | _ => false
 
+/-! ## One permission to a page
+
+A processor protects memory a page at a time. No state of the model has two
+permissions inside one page, so asking for a few bytes gives their whole
+page, as it does from the kernel. -/
+
+/-- The bytes of a page have one permission, in every state. -/
+example (s : State) : s.perm 0x10000 = s.perm 0x10fff := s.perm_page (by decide)
+
+/-- Sixteen writable bytes, as a program's data might be. -/
+def sixteen : State := State.init.setPerm 0x10000 16 .rw
+
+/-- The page is writable to its last byte, and the next one is not. -/
+example : sixteen.canWrite 0x10ff8 8 = true ∧ sixteen.canWrite 0x11000 1 = false := by
+  decide
+
 end Rejected

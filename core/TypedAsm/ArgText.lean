@@ -354,12 +354,7 @@ theorem EntryTexts.ofLoad {p : State} (args : List (List Byte)) (hroom : 8 * roo
     intro x h1 h2
     rw [← hS]
     show (p.withArgs room args).perm x = .rw
-    rw [State.perm_withArgs]
-    split
-    · rfl
-    · next hout =>
-      have hT : addrTop = 0x7ffffffff000 := rfl
-      exact absurd ⟨by omega, by bv_omega⟩ hout
+    exact State.perm_withArgs_in p room args hroom (by omega) (by omega)
   -- the texts
   let T := textsAt given (textBase given)
   have hTlen : T.length = given.length := textsAt_length _ _

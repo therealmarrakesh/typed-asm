@@ -167,7 +167,7 @@ def entry : BitVec 64 := Asm.addr code base .start
 /-- The starting state but for `rip`: the program in memory, and with it the
 record, in read-only memory. The program uses no stack. -/
 def prepared : State :=
-  (Asm.load State.init base code).setReg .rsp 0x80000000
+  (Asm.load State.init base code .start).setReg .rsp 0x80000000
 
 /-- A starting state: `prepared`, with `rip` at the entry. Every request for
 memory is refused. -/

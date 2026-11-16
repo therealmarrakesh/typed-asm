@@ -90,7 +90,7 @@ def entry : BitVec 64 := Asm.addr code base .start
 eleven free stack slots below `rsp`, one for the first return address and two
 for each of the five levels below it. -/
 def prepared : State :=
-  ((Asm.load State.init base code).setPerm 0x7fffffa8 88 .rw).setReg .rsp 0x80000000
+  ((Asm.load State.init base code .start).setPerm 0x7fffffa8 88 .rw).setReg .rsp 0x80000000
 
 /-- A starting state: `prepared`, with `rip` at the entry. -/
 def start : State :=

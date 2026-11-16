@@ -89,7 +89,7 @@ def listBytes : List Byte := Asm.dataAt base code .first 48
 /-- The starting state but for `rip`: the program in memory, and with it the
 list. The program uses no stack. -/
 def prepared : State :=
-  (Asm.load State.init base code).setReg .rsp 0x80000000
+  (Asm.load State.init base code .start).setReg .rsp 0x80000000
 
 /-- A starting state: `prepared`, with `rip` at the entry. -/
 def start : State :=

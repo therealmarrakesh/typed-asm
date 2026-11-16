@@ -50,18 +50,22 @@ def header (entry n : Nat) : List Byte :=
     ++ le16 2 ++ le16 0x3E ++ le32n 1 ++ le64n entry ++ le64n 64 ++ le64n 0 ++ le32n 0
     ++ le16 64 ++ le16 56 ++ le16 (n + 1) ++ le16 64 ++ le16 0 ++ le16 0
 
+/-- Everything in the file before the program: the ELF header and one
+program header for each segment. The kernel maps whole pages of the file,
+so these bytes are in memory too, in the page the program begins in. -/
+def headers (entry firstLen : Nat) (segs : List (Nat × Perm × List Byte)) : List Byte :=
+  header entry segs.length
+    ++ programHeader 5 0 loadBase (headerSize segs.length + firstLen)
+    ++ (segs.flatMap fun (va, p, bs) => programHeader (flags p) (va - loadBase) va bs.length)
+
 /-- The bytes of an executable file that begins with `first`, straight after
 the headers, and whose other segments are `segs`: for each, where it is
 loaded, its permission, and its bytes. Each of those sits in the file as far
 from the start as it is loaded from `loadBase`, so it must be loaded on a
 page boundary above everything before it. Execution starts at `entry`. -/
 def file (entry : Nat) (first : List Byte) (segs : List (Nat × Perm × List Byte)) : List Byte :=
-  let n := segs.length
-  let head := header entry n
-    ++ programHeader 5 0 loadBase (headerSize n + first.length)
-    ++ (segs.flatMap fun (va, p, bs) => programHeader (flags p) (va - loadBase) va bs.length)
-    ++ first
   segs.foldl (fun acc (va, _, bs) =>
-    acc ++ List.replicate (va - loadBase - acc.length) 0 ++ bs) head
+    acc ++ List.replicate (va - loadBase - acc.length) 0 ++ bs)
+    (headers entry first.length segs ++ first)
 
 end TypedAsm.Elf

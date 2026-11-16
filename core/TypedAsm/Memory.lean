@@ -296,7 +296,7 @@ whole range lies beyond anything that was accessible to begin with, it is
 enough that no page of it has been made accessible since; otherwise every
 byte is asked. `unmapped_iff` says the two ways agree. -/
 def unmapped (s : State) (a : BitVec 64) (n : Nat) : Bool :=
-  (decide (s.perms.clearFrom ≤ a.toNat) &&
+  (decide (s.perms.clearFrom ≤ a.toNat / 4096) &&
     allBelow (fun j => decide ((s.perms.pages[a.toNat / 4096 + j]?).getD .none = .none))
       ((n + 4095) / 4096)) ||
   allBelow (fun i => decide (s.perm (a + BitVec.ofNat 64 i) = .none)) n
@@ -316,9 +316,11 @@ theorem unmapped_iff {s : State} {a : BitVec 64} {n : Nat} (hal : a.toNat % 4096
         rw [hnat i hin]; omega
       have hq := hp (i / 4096) (by omega)
       by_cases hx : (a + BitVec.ofNat 64 i).toNat < addrTop
-      · simp only [Perms.get, hpg, hx, ↓reduceIte]
+      · simp only [Perms.get, Perms.page, hpg, hx, ↓reduceIte]
         cases hc : s.perms.pages[a.toNat / 4096 + i / 4096]? with
-        | none => exact s.perms.clear _ (by rw [hnat i hin]; omega)
+        | none =>
+          have hT : addrTop = 0x7ffffffff000 := rfl
+          exact s.perms.clear _ (by omega) (by rw [← hpg]; omega)
         | some q => rw [hc] at hq; exact hq
       · exact s.perms.get_top (Nat.le_of_not_lt hx)
     · exact hall i hin

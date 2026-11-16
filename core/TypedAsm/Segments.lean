@@ -39,10 +39,19 @@ def elf (base : BitVec 64) (prog : List (Asm L)) (start : L) : List Byte :=
   | [] => []
   | (_, _, first) :: rest => Elf.file (addr prog base start).toNat first rest
 
-/-- A state with the program in memory: each segment's bytes where the
-program puts them, with the segment's permission. -/
-def load (s : State) (base : BitVec 64) (prog : List (Asm L)) : State :=
-  (segments base prog).foldl (fun s g => s.loadData (BitVec.ofNat 64 g.1) g.2.2 g.2.1) s
+/-- A state with the program in memory as the kernel puts the executable
+file there: each segment's bytes where the program puts them, and every
+page a segment touches with the segment's permission. The first segment of
+the file begins with the file's headers, so they are in memory in front of
+the program, executable like it, even when the program's own first segment
+is empty. -/
+def load (s : State) (base : BitVec 64) (prog : List (Asm L)) (start : L) : State :=
+  match segments base prog with
+  | [] => s
+  | (a, p, first) :: rest =>
+    let head := Elf.headers (addr prog base start).toNat first.length rest
+    rest.foldl (fun s g => s.loadData (BitVec.ofNat 64 g.1) g.2.2 g.2.1)
+      (s.loadData (BitVec.ofNat 64 (a - head.length)) (head ++ first) p)
 
 /-- The `n` bytes a program puts in memory from a label on, whatever lines
 they come from. Where it puts none, zero. -/
