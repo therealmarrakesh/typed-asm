@@ -326,6 +326,18 @@ example : ends base = none := by decide
 -- and no other instruction does
 example : (exitAt (reg base .rax (.eq (.lit 60))) .nop).isNone = true := by decide
 
+/-! ## The stack pointer where a function keeps it
+
+Its type is then one the terms have no form for, and moving the stack
+pointer gives that type shifted: by all the moves together. -/
+
+example : (TyS.atom 3).shift? 8 = some (.shifted 3 8) := by decide
+example : (TyS.shifted 3 8).shift? 16 = some (.shifted 3 24) := by decide
+-- a return is seen through it
+example : ((afterRet { reg base .rsp (.atom 3) with
+    stack := [.mk (.lit 8) (.cons 0 (.atom 5) .nil)] }).map fun x => (x.1, x.2.regs.get .rsp))
+    = some (5, .shifted 3 8) := by decide
+
 /-! ## Why an instruction is refused -/
 
 def isReason (Γ : CtxS) (i : Instr) (p : Reject → Bool) : Bool :=

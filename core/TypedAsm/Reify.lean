@@ -171,6 +171,12 @@ partial def reifyTy (e : Expr) : ReifyM TyS := do
     return .atom i
   if e.isConstOf ``Ty.int then return .int
   if e.isAppOfArity ``Ty.eq 1 then return .eq (← reifyVal e.appArg!)
+  -- a type with no form, of a value a known amount has been added to
+  if e.isAppOfArity ``Ty.shift 2 then
+    if let some d := bvLit? e.appArg! then
+      match ← reifyTy e.appFn!.appArg! with
+      | .atom i => return .shifted i d
+      | _ => return ← asAtom
   if e.isAppOfArity ``Ty.ptr 3 then
     let some w := boolLit? e.getAppArgs[1]! | return ← asAtom
     return .ptr (← reifyShape e.getAppArgs[0]!) w (← reifyNum e.getAppArgs[2]!)
@@ -489,6 +495,7 @@ partial def denTy (as : Atoms) (τ : TyS) : MetaM Expr := do
   | .orErr τ => return mkApp (mkConst ``Ty.orErr) (← denTy as τ)
   | .str m => return mkApp (mkConst ``Ty.str) (toExpr m)
   | .atom i => return as.ty[i]!
+  | .shifted i d => return mkApp2 (mkConst ``Ty.shift) as.ty[i]! (toExpr d)
 
 /-- A shape term written out. -/
 partial def denShape (as : Atoms) (S : ShapeS) : MetaM Expr := do

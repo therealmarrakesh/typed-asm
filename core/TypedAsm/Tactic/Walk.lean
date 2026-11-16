@@ -1800,10 +1800,13 @@ values the walk names standing as variables. -/
 def findLeave (atoms : Sym.Atoms) (named : Array (Nat × Reg)) (cur : Sym.CtxS)
     (at' : Nat) : TacticM (Option (LeaveInfo × Sym.Atoms)) := do
   if ← enterOff.get then return none
-  let some (i, after) := Sym.afterRet cur | return none
+  let some (i, after) := Sym.afterRet cur
+    | do trace[TypedAsm.fast] "return: the top of the stack is not seen to be a return address: {toExpr cur.stack}, rsp {toExpr (cur.regs.get .rsp)}"; return none
   let some tyE := atoms.ty[i]? | return none
   let tyW ← whnf tyE
-  unless tyW.isAppOfArity ``Ty.code 1 do return none
+  unless tyW.isAppOfArity ``Ty.code 1 do
+    trace[TypedAsm.fast] "return: the type on top of the stack is not code's: {tyW}"
+    return none
   let Δ0 := tyW.appArg!
   -- the context to compare with, and that it stands for the one wanted
   let written ← (do
@@ -2377,6 +2380,7 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           if linux?.isNone then break
           if advanced && (stops?.getD #[]).contains at' then break
           let some (S', cs) := Sym.stepSys cur | do
+            if (Sym.exitAt cur i).isSome then break
             trace[TypedAsm.fast] "system call not stepped: rax {toExpr (cur.regs.get .rax)}, rsi {
               toExpr (cur.regs.get .rsi)}, rdx {toExpr (cur.regs.get .rdx)}, owned {toExpr cur.owned}"
             break

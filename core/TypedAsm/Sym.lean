@@ -160,6 +160,9 @@ inductive TyS
   | orErr (τ : TyS)
   | str (more : Bool)
   | atom (i : Nat)
+  /-- A type the terms have no form for, of a value a known amount has been
+  added to: what the stack pointer has, moved, where a function keeps it. -/
+  | shifted (i : Nat) (d : BitVec 64)
 
 /-- The shape of a block as a term. -/
 inductive ShapeS
@@ -322,6 +325,7 @@ def TyS.den (ρ : Env) : TyS → Ty
   | .orErr τ => .orErr (τ.den ρ)
   | .str more => .str more
   | .atom i => ρ.ty.getD i .int
+  | .shifted i d => (ρ.ty.getD i .int).shift d
 
 /-- The shape a term stands for. -/
 def ShapeS.den (ρ : Env) : ShapeS → Shape
@@ -648,15 +652,17 @@ is one the terms have a form for. -/
 def TyS.shift? (τ : TyS) (d : BitVec 64) : Option TyS :=
   match τ with
   | .eq v => some (.eq (v.plusLit d))
-  | .atom _ => none
+  | .atom i => some (.shifted i d)
+  | .shifted i e => some (.shifted i (e + d))
   | _ => some .int
 
 theorem TyS.den_shift {ρ : Env} {τ υ : TyS} {d : BitVec 64} (h : τ.shift? d = some υ) :
     υ.den ρ = (τ.den ρ).shift d := by
-  cases τ <;> simp only [TyS.shift?, Option.some.injEq, reduceCtorEq] at h <;> subst h <;>
+  cases τ <;> simp only [TyS.shift?, Option.some.injEq] at h <;> subst h <;>
     try rfl
-  show Ty.eq _ = Ty.eq _
-  rw [Val.den_plusLit]
+  · show Ty.eq _ = Ty.eq _
+    rw [Val.den_plusLit]
+  · exact (Ty.shift_shift _ _ _).symm
 
 namespace CtxS
 
@@ -3970,6 +3976,7 @@ def TyS.under (k : Nat) : TyS → Bool
   | .orErr τ => τ.under k
   | .str _ => true
   | .atom _ => true
+  | .shifted _ _ => true
 
 def ShapeS.under (k : Nat) : ShapeS → Bool
   | .mk size vals => size.under k && vals.under k
@@ -4005,6 +4012,7 @@ theorem TyS.den_setVal {ρ : Env} {k : Nat} {x : BitVec 64} : (t : TyS) → t.un
     rw [TyS.den_setVal τ h]; rfl
   | .str _, _ => rfl
   | .atom _, _ => rfl
+  | .shifted _ _, _ => rfl
 
 theorem ShapeS.den_setVal {ρ : Env} {k : Nat} {x : BitVec 64} : (t : ShapeS) →
     t.under k = true → t.den (ρ.setVal k x) = t.den ρ
