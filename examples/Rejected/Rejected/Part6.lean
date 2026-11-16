@@ -12,7 +12,7 @@ open TypedAsm
 namespace Rejected
 
 /-- error: at address 0: cannot type `mov qword ptr [rax], rcx` in the current context
-• storeField: `rax` must hold a writable pointer, but its type is `int`. Used as an address, an arbitrary number is a general-protection fault where the processor has no such address, and a page fault where there is no memory for it -/
+• `rax` must hold a writable pointer, but its type is `int`. Used as an address, an arbitrary number is a general-protection fault where the processor has no such address, and a page fault where there is no memory for it -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i0) Γ := by ty_step
 

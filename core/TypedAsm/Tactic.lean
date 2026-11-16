@@ -2695,6 +2695,113 @@ the last block to pass an address is the one remembered. -/
 initialize trailRef :
     IO.Ref (Std.HashMap (UInt64 × Nat) (Std.HashMap String (Nat × String))) ← IO.mkRef {}
 
+/-- Why the checker refused the instruction a step was asked to take, where
+it did: said in place of trying the rules one by one. -/
+initialize refusal : IO.Ref (Option MessageData) ← IO.mkRef none
+
+/-- How many instructions the next walk is to stop after, where the one
+after them is known to be refused: the walk up to it is then taken by
+itself, and the refusal is of the first instruction of the next. -/
+initialize stepLimit : IO.Ref (Option Nat) ← IO.mkRef none
+
+/-- Says, of the program, why the checker refuses an instruction. -/
+private def explainReject (atoms : Sym.Atoms) (onStack : Bool) : Sym.Reject → MetaM MessageData
+  | .spOperand => return m!"`rsp` cannot be this operand"
+  | .notPointer r τ writing => do
+    let wanted := if writing then "a writable pointer" else "a pointer"
+    let (hint, hazard) := match τ with
+      | .nullable _ =>
+        (": it must be tested for null first, and `ty_null` then gives the two cases",
+          ". An access through null is a page fault")
+      | .orErr _ =>
+        (": it must be tested for an error first, and `ty_err` then gives the two cases",
+          ". An error number used as an address is in the kernel's half: a page fault")
+      | .ref .. => (": `ty_open` turns it into a pointer to a block of that kind's shape", "")
+      | .eq _ => ("", "")
+      | _ => ("", hazardAddress onStack)
+    return m!"`{r.name64}` must hold {wanted}, but its type is \
+      `{← ppTy (← Sym.denTy atoms τ)}`{hint}{hazard}"
+  | .indexUnknown r τ => do
+    return m!"the index register `{r.name64}` must hold an exactly known value, but its type \
+      is `{← ppTy (← Sym.denTy atoms τ)}`; `ty_name` gives an integer a name. An unknown index \
+      could reach outside what the base points to, where there may be no memory (a page \
+      fault) or other data"
+  | .readOnly r τ => do
+    return m!"`{r.name64}` must hold a writable pointer, but its type is \
+      `{← ppTy (← Sym.denTy atoms τ)}`. A store to memory that is read-only is a page fault"
+  | .notOwned =>
+    return m!"the address is not known to be inside a block the context owns{hazardBounds}"
+  | .noBlock => return m!"the address is not inside any memory block{hazardBounds}"
+  | .noPiece =>
+    return m!"those bytes are not known to be inside one piece of the stack{hazardBounds}"
+  | .pastBlock => return m!"the access would reach past the end of the block{hazardBounds}"
+  | .pastPiece =>
+    return m!"the access would reach past the end of its piece of the stack{hazardBounds}"
+  | .typedThere =>
+    return m!"a typed value of the block reaches into those bytes, and plain bytes may not \
+      be stored over it{hazardConfusion}"
+  | .notClear =>
+    return m!"the bytes are not known to be clear of the typed values the block \
+      holds{hazardConfusion}"
+  | .notSole =>
+    return m!"another typed value of the block reaches into those eight bytes{hazardConfusion}"
+  | .roomShort room => do
+    return m!"there is not enough free stack: the context has room for \
+      {← ppClean (← Sym.denNum atoms room)}. Below the stack the program was given there may \
+      be no memory, which is a page fault, or other data, which would be overwritten"
+  | .framePieces =>
+    return m!"the pieces at the top of the stack do not come to exactly that many bytes"
+  | .popPiece => return m!"the top of the stack is not a piece of eight bytes"
+  | .divUnknown r τ => do
+    return m!"`{r.name64}` must hold an exactly known value for a divide, but its type is \
+      `{← ppTy (← Sym.denTy atoms τ)}`: a divide is typed only when it is known not to raise \
+      a divide error"
+  | .divFault =>
+    return m!"the divide is not known to produce a result. Dividing by zero, or a quotient \
+      that does not fit, is a divide error"
+  | .noForm => return m!"the checker has no rule for this form of the instruction"
+
+/-- Says, of the program, what a condition a step left could not be shown. -/
+private def explainCond (atoms : Sym.Atoms) (instr : Instr) (c : Sym.CondS) :
+    MetaM MessageData :=
+  let inside : MessageData :=
+    if instr.onStack then
+      m!"those bytes are not known to be inside one piece of the stack: a bound on the index \
+        is needed among the hypotheses{hazardBounds}"
+    else
+      m!"the bytes are not known to be inside the block: a bound on the index is needed among \
+        the hypotheses{hazardBounds}"
+  match c with
+  | .le _ b => do
+    match instr with
+    | .push _ | .alu .sub .w64 (.rm_i (.reg .rsp) _) =>
+      return m!"there is not enough free stack: the context has room for \
+        {← ppClean (← Sym.denNum atoms b)}. Below the stack the program was given there may \
+        be no memory, which is a page fault, or other data, which would be overwritten"
+    | _ => return inside
+  | .lt _ _ => return inside
+  | .sub τ υ => do
+    return m!"a value of type `{← ppTy (← Sym.denTy atoms τ)}` cannot be stored where \
+      `{← ppTy (← Sym.denTy atoms υ)}` is required{hazardConfusion}"
+  | .cf _ =>
+    return m!"the operation reads the carry flag, which is not known to be defined here. The \
+      processor leaves it undefined after some instructions, and the result would then not be \
+      determined"
+  | .decides _ _ =>
+    return m!"the flags are not known here, so they do not decide the condition. The \
+      processor leaves them undefined after some instructions, and what this one does would \
+      then not be determined"
+  | .nonzeroW _ v => do
+    return m!"the divisor, `{← ppClean (← Sym.denVal atoms v)}`, is not known to be \
+      non-zero: a check is needed before the divide. Dividing by zero is a divide error"
+  | .zeroW _ _ =>
+    return m!"`rdx`, the upper half of the dividend, is not known to be zero: clear it \
+      before the divide. Otherwise the quotient may not fit, which is a divide error"
+  | .sfill _ _ _ =>
+    return m!"`rdx` is not known to hold the sign extension of `rax`: use `cqo` or `cdq` \
+      before the divide. Otherwise the quotient may not fit, which is a divide error"
+  | c => do return m!"needs `{← ppClean (← Sym.denCond atoms c)}`: it is needed among the hypotheses"
+
 /-- What a walk through a block does at each move: gives a value a name,
 opens a pointer to a block of a kind, or steps over an instruction, with the
 context it was come to with and what the step left to be shown. -/
@@ -2940,7 +3047,7 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let ((result, prog?), atoms) ← (do
       let some S₀ ← (match kept? with
         | some (Sc, _) => pure (some Sc)
-        | none => Sym.reifyCtx Γ) | return (none, none)
+        | none => Sym.reifyCtx Γ) | return (Sum.inl none, none)
       -- The program's blocks and kinds are read where the walk may need
       -- them: a pointer to a block of a kind is held, or an instruction ahead
       -- reaches data by where it is or takes its address.
@@ -2963,10 +3070,11 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       -- the context each instruction of the walk was come to with
       let mut arrived := S₀
       let mut steps := 0
+      let mut refused : Option (Nat × Instr × Array WalkMove × Sym.Reject) := none
       -- whether the walk has gone past the instruction it started at
       let mut advanced := false
       let mut k := (← get).val.size
-      let limit := if stops?.isSome then 4096 else 1
+      let limit := (← stepLimit.get).getD (if stops?.isSome then 4096 else 1)
       for _ in [0:8192] do
         if steps ≥ limit then break
         let some (i, len') := instrs[at']? | break
@@ -3027,7 +3135,12 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           if (Sym.blockAt P.blocks (BitVec.ofNat 64 at' + len' + disp.signExtend 64)).isNone then
             break
         let some (S', cs) :=
-          Sym.step (BitVec.ofNat 64 at' + len') { cur with blocks := P.blocks } i | break
+          Sym.step (BitVec.ofNat 64 at' + len') { cur with blocks := P.blocks } i | do
+            -- refused, and the first instruction asked of the walk: why
+            unless advanced do
+              refused := some (at', i, moves,
+                Sym.why (BitVec.ofNat 64 at' + len') { cur with blocks := P.blocks } i)
+            break
         moves := moves.push (.step at' i len' arrived cs)
         steps := steps + 1
         advanced := true
@@ -3042,9 +3155,24 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         | some (.jump ..) => break
         | some _ => moves := moves.pop
         | none => break
-      if moves.isEmpty then return (none, prog?)
-      return (some (S₀, moves, at', arrived), prog?) : Sym.ReifyM _).run ((kept?.map (·.2)).getD {})
-    let some (S₀, moves, atEnd, arrived) := result | return none
+      if moves.isEmpty then return (Sum.inl refused, prog?)
+      return (Sum.inr (S₀, moves, at', arrived), prog?) : Sym.ReifyM _).run ((kept?.map (·.2)).getD {})
+    -- values the walk would have named are spoken of by the names they would have had
+    let withNames (atoms : Sym.Atoms) (moves : Array WalkMove) : Sym.Atoms := Id.run do
+      let mut a := atoms
+      for mv in moves do
+        if let .name k r := mv then
+          let pad := a.val ++ Array.replicate (k + 1 - a.val.size) (toExpr (0 : BitVec 64))
+          a := { a with val := pad.set! k (mkConst (Name.mkSimple s!"{r.name64}₀")) }
+      return a
+    let (S₀, moves, atEnd, arrived) ← match result with
+      | .inr x => pure x
+      | .inl none => return none
+      | .inl (some (_, _, _, .noForm)) => return none
+      | .inl (some (at', i, tried, why)) =>
+        let msg ← explainReject (withNames atoms tried) i.onStack why
+        refusal.set (some m!"at address {at'}: cannot type `{i.toAsm}` in the current context\n• {msg}")
+        throwError "refused"
     let P : Sym.Prog := { (prog?.map (·.1)).getD {} with
       labels := ((stops?.getD #[]).map (BitVec.ofNat 64)).toList }
     let S := { S₀ with blocks := [] }
@@ -3118,6 +3246,16 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let bv := mkApp (mkConst ``BitVec) (mkNatLit 64)
     let outerInsts ← getLocalInstances
     let restRef : IO.Ref (Array (Expr × Array Name)) ← IO.mkRef #[]
+    -- the instruction each group of conditions in the walk comes from: a
+    -- step, or a conditional jump (whose condition the flags must decide)
+    let condMoves := (moves.toList.zipIdx).filterMap fun (mv, idx) =>
+      match mv with
+      | .step at' i _ _ _ => some ((at', i), idx)
+      | .split at' i _ => if i matches .jcc _ _ then some ((at', i), idx) else none
+      | _ => none
+    let condInstrs := (condMoves.map (·.1)).toArray
+    let condMoveIdx := (condMoves.map (·.2)).toArray
+    let condsSeen : IO.Ref Nat ← IO.mkRef 0
     let rec down (W : Sym.Walk) (atoms : Sym.Atoms) (vs : Array Expr) (names : Array Name) :
         TacticM Expr := do
       match W with
@@ -3131,13 +3269,42 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       | .conds cs rest =>
         let mut hn := mkConst ``True.intro
         let mut allE := mkConst ``True
-        arithLeft.set #[]
-        for c in cs.reverse do
-          let leaf ← Sym.denCond atoms c
-          let h ← closeNeeds (← getEnv) (← getLCtx) kwhnf pure #[] leaf
-          hn := mkApp4 (mkConst ``And.intro) leaf allE h hn
-          allE := mkApp2 (mkConst ``And) leaf allE
-        closeArithLeft
+        -- which instruction of the walk left these
+        let nth ← condsSeen.modifyGet fun j => (j, j + 1)
+        let before ← saveState
+        try
+          arithLeft.set #[]
+          for c in cs.reverse do
+            let leaf ← Sym.denCond atoms c
+            let h ← closeNeeds (← getEnv) (← getLCtx) kwhnf pure #[] leaf
+            hn := mkApp4 (mkConst ``And.intro) leaf allE h hn
+            allE := mkApp2 (mkConst ``And) leaf allE
+          closeArithLeft
+        catch _ =>
+          before.restore
+          -- which of them could not be shown
+          let some (at', i) := condInstrs[nth]? | throwError "left over"
+          let stepsBefore := (moves.toList.take (condMoveIdx[nth]?.getD 0)).countP
+            fun | .step .. => true | _ => false
+          if stepsBefore > 0 then
+            -- the walk up to this instruction is taken first, by itself
+            stepLimit.set (some stepsBefore)
+            throwError "left over"
+          for c in cs do
+            let ok ← (do
+              let s ← saveState
+              try
+                arithLeft.set #[]
+                discard <| closeNeeds (← getEnv) (← getLCtx) kwhnf pure #[] (← Sym.denCond atoms c)
+                closeArithLeft
+                s.restore
+                pure true
+              catch _ => s.restore; pure false)
+            unless ok do
+              let msg ← explainCond atoms i c
+              refusal.set (some m!"at address {at'}: cannot type `{i.toAsm}` in the current context\n• {msg}")
+              throwError "refused"
+          throwError "left over"
         let hrest ← down rest atoms vs names
         mkAppM ``And.intro #[← instantiateMVars hn, hrest]
       | .name k rest =>
@@ -3252,7 +3419,16 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       trailRef.modify (·.insert (fetch.hash, atEnd) t)
       trailDone.set true
     return some goals
-  symStep
+  let s ← saveState
+  stepLimit.set none
+  try symStep
+  catch e =>
+    -- an instruction past the first was refused: the walk up to it is taken
+    match ← stepLimit.get with
+    | some _ =>
+      s.restore
+      try symStep finally stepLimit.set none
+    | none => throw e
 
 /-- What a register holding the address `v` may be made a pointer to, where
 `v` is the address of a label with one declared context: a function, where
@@ -3363,8 +3539,11 @@ private partial def typeStepCore (named : Bool := false) : TacticM StepResult :=
   -- what is saved, to go back to, is the block with its address written out
   setGoals (goal :: others)
   let saved ← saveState
+  refusal.set none
   let fast? ← try fastStep goal ty named catch e => do
     saved.restore
+    -- the checker's own reason for refusing the instruction is the one given
+    if let some msg ← refusal.modifyGet fun r => (r, none) then throwError msg
     trace[TypedAsm.fast] "the checker's step failed: {e.toMessageData}"
     pure none
   if let some rests := fast? then

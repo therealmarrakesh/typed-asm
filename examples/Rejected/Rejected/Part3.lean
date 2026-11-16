@@ -12,7 +12,7 @@ open TypedAsm
 namespace Rejected
 
 /-- error: at address 43: cannot type `shl dword ptr [rsi], 1` in the current context
-• shiftImm: `rsi` must hold a writable pointer, but its type is `read-only pointer to 16 bytes`. A store to memory that is read-only is a page fault -/
+• `rsi` must hold a writable pointer, but its type is `read-only pointer to 16 bytes`. A store to memory that is read-only is a page fault -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i14) Γ := by ty_step
 

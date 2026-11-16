@@ -12,12 +12,12 @@ open TypedAsm
 namespace Rejected
 
 /-- error: at address 7: cannot type `mov qword ptr [rsi], rcx` in the current context
-• storeField: `rsi` must hold a writable pointer, but its type is `read-only pointer to 16 bytes`. A store to memory that is read-only is a page fault -/
+• `rsi` must hold a writable pointer, but its type is `read-only pointer to 16 bytes`. A store to memory that is read-only is a page fault -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i2) Γ := by ty_step
 
 /-- error: at address 11: cannot type `mov dword ptr [rdx+8], ecx` in the current context
-• storeInt: a typed value of the block reaches into those bytes, and plain bytes may not be stored over it. The memory would no longer hold what its type says, and a later use of the value there could fault -/
+• a typed value of the block reaches into those bytes, and plain bytes may not be stored over it. The memory would no longer hold what its type says, and a later use of the value there could fault -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i4) Γ := by ty_step
 
@@ -26,12 +26,12 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i4) Γ := by ty_step
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i10) Γ := by ty_step
 
 /-- error: at address 39: cannot type `add dword ptr [rsp+8], eax` in the current context
-• aluStoreR: those bytes are not known to be inside one piece of the stack. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
+• those bytes are not known to be inside one piece of the stack. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i13) Γ := by ty_step
 
 /-- error: at address 45: cannot type `imul eax, dword ptr [rdi+14]` in the current context
-• imul2RM: the access would reach past the end of the block. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
+• the access would reach past the end of the block. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i15) Γ := by ty_step
 

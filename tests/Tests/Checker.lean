@@ -58,8 +58,9 @@ example : refused base (.mov .w64 (.rm_i (.reg .rsp) 5)) = true := by decide
 example : after (reg base .rdi (.ptr (.mk (.lit 64) .nil) false (.lit 8)))
     (.alu .add .w64 (.rm_i (.reg .rdi) 8)) .rdi
     = some (.ptr (.mk (.lit 64) .nil) false (.lit 16)) := by decide
-example : refused (reg base .rdi (.ptr (.mk (.lit 64) .nil) false (.lit 8)))
-    (.alu .sub .w64 (.rm_i (.reg .rdi) 8)) = true := by decide
+-- any other arithmetic on it leaves a number
+example : after (reg base .rdi (.ptr (.mk (.lit 64) .nil) false (.lit 8)))
+    (.alu .sub .w64 (.rm_i (.reg .rdi) 8)) .rdi = some .int := by decide
 -- shifts, extensions and the rest are worked out on numbers
 example : after (reg base .rax (.eq (.lit 3))) (.shift .shl .w64 (.reg .rax) (.imm 4)) .rax
     = some (.eq (.lit 48)) := by decide
@@ -237,5 +238,39 @@ example : needs { base with room := .var 0 } { base with room := .add (.var 1) (
     = some 1 := by decide
 -- the owned blocks must be written the same
 example : needs { base with owned := [(v 5, .mk (.lit 32) .nil)] } base = none := by decide
+
+/-! ## Why an instruction is refused -/
+
+def isReason (Γ : CtxS) (i : Instr) (p : Reject → Bool) : Bool :=
+  refused Γ i && p (why 0x1000 Γ i)
+
+-- a number used as an address, and which register
+example : isReason base (.mov .w64 (.r_m .rax (mem .rdi 0)))
+    (fun | .notPointer .rdi .int false => true | _ => false) = true := by decide
+-- a store through a pointer that may only be read through
+example : isReason (reg base .rdi (.ptr (.mk (.lit 16) .nil) false (.lit 0)))
+    (.mov .w64 (.rm_r (.mem (mem .rdi 0)) .rax))
+    (fun | .readOnly .rdi _ => true | _ => false) = true := by decide
+-- past the end of the block
+example : isReason (reg base .rdi (.ptr (.mk (.lit 16) .nil) true (.lit 0)))
+    (.mov .w64 (.r_m .rax (mem .rdi 12)))
+    (fun | .pastBlock => true | _ => false) = true := by decide
+-- plain bytes over a typed value
+example : isReason (reg base .rdi (.ptr rec2 true (.lit 0)))
+    (.unary .not .w64 (.mem (mem .rdi 8)))
+    (fun | .typedThere => true | _ => false) = true := by decide
+-- an index that is not exactly known
+example : isReason (reg base .rdi (.ptr (.mk (.lit 16) .nil) true (.lit 0)))
+    (.mov .w64 (.r_m .rax (idx .rdi .rcx .s8 0)))
+    (fun | .indexUnknown .rcx .int => true | _ => false) = true := by decide
+-- bytes of the stack that are in no piece
+example : isReason base (.mov .w64 (.r_m .rax (mem .rsp 8)))
+    (fun | .noPiece => true | _ => false) = true := by decide
+-- the stack pointer as the register written
+example : isReason base (.mov .w64 (.rm_i (.reg .rsp) 5))
+    (fun | .spOperand => true | _ => false) = true := by decide
+-- a divide whose dividend is not exactly known
+example : isReason (dividing .int (.eq (.lit 0)) (.eq (.lit 2))) (.mulDiv .div .w64 (.reg .rcx))
+    (fun | .divUnknown .rax .int => true | _ => false) = true := by decide
 
 end Tests.Checker

@@ -12,24 +12,22 @@ open TypedAsm
 namespace Rejected
 
 /-- error: at address 3: cannot type `mov rax, qword ptr [rdi+16]` in the current context
-• loadField: no typed value of the block starts at that offset
-• loadInt: the access would reach past the end of the block. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
+• the access would reach past the end of the block. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i1) Γ := by ty_step
 
 /-- error: at address 24: cannot type `mov rsp, rax` in the current context
-• movRR64: `rsp` cannot be this operand -/
+• `rsp` cannot be this operand -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i8) Γ := by ty_step
 
 /-- error: at address 27: cannot type `mov qword ptr [rdx+8], rdi` in the current context
-• storeField: a value of type `pointer to 16 bytes` cannot be stored where `read-only pointer to 8 bytes` is required. The memory would no longer hold what its type says, and a later use of the value there could fault
-• storeInt: a typed value of the block reaches into those bytes, and plain bytes may not be stored over it. The memory would no longer hold what its type says, and a later use of the value there could fault -/
+• a value of type `pointer to 16 bytes` cannot be stored where `read-only pointer to 8 bytes` is required. The memory would no longer hold what its type says, and a later use of the value there could fault -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i9) Γ := by ty_step
 
 /-- error: at address 49: cannot type `not qword ptr [rdx+8]` in the current context
-• notRM: a typed value of the block reaches into those bytes, and plain bytes may not be stored over it. The memory would no longer hold what its type says, and a later use of the value there could fault -/
+• a typed value of the block reaches into those bytes, and plain bytes may not be stored over it. The memory would no longer hold what its type says, and a later use of the value there could fault -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i16) Γ := by ty_step
 
@@ -43,17 +41,17 @@ example (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat)
   ty_stack_detach at 8
 
 /-- error: at address 0: cannot type `mov rsi, qword ptr [rsp+rax*8+8]` in the current context
-• loadStackIndexed: those bytes are not known to be inside one piece of the stack. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
+• those bytes are not known to be inside one piece of the stack: a bound on the index is needed among the hypotheses. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example : BlockOk Φy argFetch linux Ψ (Asm.addr argLoads 0 .unknown) (argsCtx 0 2) := by ty_block
 
 /-- error: at address 9: cannot type `mov byte ptr [rdi], al` in the current context
-• store8RM: `rdi` must hold a writable pointer, but its type is `pointer into text`. Used as an address, an arbitrary number is a general-protection fault where the processor has no such address, and a page fault where there is no memory for it -/
+• `rdi` must hold a writable pointer, but its type is `pointer into text`. Used as an address, an arbitrary number is a general-protection fault where the processor has no such address, and a page fault where there is no memory for it -/
 #guard_msgs in
 example : BlockOk Φy textFetch linux Ψ (Asm.addr texts 0 .store) atText := by ty_block
 
 /-- error: at address 25: cannot type `mov rdx, qword ptr [rax]` in the current context
-• loadField: `rax` must hold a pointer, but its type is `pointer to 16 bytes or an error number`: it must be tested for an error first, and `ty_err` then gives the two cases. An error number used as an address is in the kernel's half: a page fault -/
+• `rax` must hold a pointer, but its type is `pointer to 16 bytes or an error number`: it must be tested for an error first, and `ty_err` then gives the two cases. An error number used as an address is in the kernel's half: a page fault -/
 #guard_msgs in
 example : BlockOk Φy mapFetch linux Ψ (Asm.addr maps 0 .unchecked) bare := by
   ty_steps

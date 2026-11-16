@@ -12,12 +12,12 @@ open TypedAsm
 namespace Rejected
 
 /-- error: at address 10: cannot type `push rax` in the current context
-• push: there is not enough free stack: the context has room for 0. Below the stack the program was given there may be no memory, which is a page fault, or other data, which would be overwritten -/
+• there is not enough free stack: the context has room for 0. Below the stack the program was given there may be no memory, which is a page fault, or other data, which would be overwritten -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i3) Γ := by ty_step
 
 /-- error: at address 59: cannot type `add dword ptr [rip+100], 1` in the current context
-• aluStoreI: the address is not inside any memory block. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
+• the address is not inside any memory block. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i19) Γ := by ty_step
 

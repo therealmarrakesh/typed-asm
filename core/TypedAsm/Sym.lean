@@ -3112,14 +3112,16 @@ def stepAlu (next : BitVec 64) (Γ : CtxS) (op : AluOp) (w : Width) (ops : Opera
         | .add, .w64 =>
           if imm.toNat < 2 ^ 31 then
             some ({ Γ.setReg d (.ptr S wr (off.plus (.lit imm.toNat))) with flags := .known }, [])
-          else none
-        | _, _ => none
+          else some (afterAlu Γ op d, carryConds Γ.flags op)
+        | _, _ => some (afterAlu Γ op d, carryConds Γ.flags op)
       | .str true =>
         match op, w with
         | .add, .w64 =>
-          if imm = 1 then some ({ Γ.setReg d (.str false) with flags := .known }, []) else none
-        | _, _ => none
-      | _ => none
+          if imm = 1 then some ({ Γ.setReg d (.str false) with flags := .known }, [])
+          else some (afterAlu Γ op d, carryConds Γ.flags op)
+        | _, _ => some (afterAlu Γ op d, carryConds Γ.flags op)
+      -- anything else is a number once arithmetic has been done on it
+      | _ => some (afterAlu Γ op d, carryConds Γ.flags op)
 
 theorem stepAlu_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
     (hB : BlocksOk Ψ ρ Γ.blocks)
@@ -3244,8 +3246,8 @@ theorem stepAlu_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
           show ({ (Γ.den ρ).setReg d (.ptr (S.den ρ) wr ((off.plus (.lit imm.toNat)).den ρ)) with
             flags := _ } : Ctx) = _
           rw [Num.den_plus]; rfl
-        · cases h
-      · cases h
+        · cases h; rw [den_afterAlu]; exact .aluRI hd (carryConds_spec hn)
+      · cases h; rw [den_afterAlu]; exact .aluRI hd (carryConds_spec hn)
     · next hΓ =>
       split at h
       · split at h
@@ -3253,9 +3255,9 @@ theorem stepAlu_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
           cases h; subst hi
           have hΓd : (Γ.den ρ).regs d = .str true := by rw [CtxS.den_regs, hΓ]; rfl
           exact cast_ctx (.strNext hd hΓd) (by rw [CtxS.den_setReg_flags]; rfl)
-        · cases h
-      · cases h
-    · cases h
+        · cases h; rw [den_afterAlu]; exact .aluRI hd (carryConds_spec hn)
+      · cases h; rw [den_afterAlu]; exact .aluRI hd (carryConds_spec hn)
+    · cases h; rw [den_afterAlu]; exact .aluRI hd (carryConds_spec hn)
 
 /-- The checker for `test`. -/
 def stepTest (next : BitVec 64) (Γ : CtxS) (w : Width) (dst : RM) (src : RI) :
@@ -4644,6 +4646,141 @@ theorem subCtx_sound {ρ : Env} {Γ Δ : CtxS} {cs : List CondS} (h : subCtx Γ 
       · rw [CtxS.den_regs, CtxS.den_regs]; exact regsConds_spec hr .rsp
       · rw [CtxS.den_owned, CtxS.den_owned, he.2.1, he.2.2]
   · cases h
+
+/-! ## Why the checker has no answer
+
+Where the checker refuses an instruction, the reason is found by going
+through what it does with the same parts it is made of: where the operand
+is, whether the bytes are inside the block, whether they may be written.
+The reason is for the one who wrote the program, so it is said of the
+program; it is no part of what makes a typing sound. -/
+
+/-- Why an instruction is refused. -/
+inductive Reject
+  /-- The stack pointer is an operand that may not be it. -/
+  | spOperand
+  /-- A register an address is taken from does not hold a pointer. -/
+  | notPointer (r : Reg) (τ : TyS) (writing : Bool)
+  /-- An index register does not hold an exactly known value. -/
+  | indexUnknown (r : Reg) (τ : TyS)
+  /-- A store through a pointer that may only be read through. -/
+  | readOnly (r : Reg) (τ : TyS)
+  /-- An exactly known address that is in no block the context owns. -/
+  | notOwned
+  /-- A fixed address that is in none of the program's blocks. -/
+  | noBlock
+  /-- Bytes not inside one piece of the stack. -/
+  | noPiece
+  /-- An access that reaches past the end of its block, or of its piece. -/
+  | pastBlock
+  | pastPiece
+  /-- Plain bytes stored over a typed value others may read, or over bytes
+  not known to be clear of one. -/
+  | typedThere
+  | notClear
+  /-- Another typed value reaches into the eight bytes stored to. -/
+  | notSole
+  /-- Not enough room on the stack: what there is. -/
+  | roomShort (room : Num)
+  /-- The pieces at the top of the stack do not come to the bytes given back. -/
+  | framePieces
+  /-- Nothing to pop, or a piece that is not eight bytes. -/
+  | popPiece
+  /-- A divide whose values are not exactly known: the register and its type. -/
+  | divUnknown (r : Reg) (τ : TyS)
+  /-- A divide by zero, or one whose quotient does not fit. -/
+  | divFault
+  /-- A form the checker has no case for. -/
+  | noForm
+
+/-- How many bytes of its memory operand an instruction reads or writes,
+and whether it writes them. -/
+def access? : Instr → Option (Nat × Bool)
+  | .mov w (.r_m _ _) => some (w.bytes.toNat, false)
+  | .mov w (.rm_r (.mem _) _) => some (w.bytes.toNat, true)
+  | .mov w (.rm_i (.mem _) _) => some (w.bytes.toNat, true)
+  | .store8 _ _ => some (1, true)
+  | .store16 _ _ => some (2, true)
+  | .alu _ w (.r_m _ _) => some (w.bytes.toNat, false)
+  | .alu op w (.rm_r (.mem _) _) => some (w.bytes.toNat, op.writesDst)
+  | .alu op w (.rm_i (.mem _) _) => some (w.bytes.toNat, op.writesDst)
+  | .test w (.mem _) _ => some (w.bytes.toNat, false)
+  | .unary _ w (.mem _) => some (w.bytes.toNat, true)
+  | .shift _ w (.mem _) _ => some (w.bytes.toNat, true)
+  | .mulDiv _ w (.mem _) => some (w.bytes.toNat, false)
+  | .imul2 w _ (.mem _) => some (w.bytes.toNat, false)
+  | .imul3 w _ (.mem _) _ => some (w.bytes.toNat, false)
+  | .popcnt w _ (.mem _) => some (w.bytes.toNat, false)
+  | .movsxd _ (.mem _) => some (4, false)
+  | .movzx _ _ sw (.mem _) => some (sw.bytes, false)
+  | .movsx _ _ sw (.mem _) => some (sw.bytes, false)
+  | .cmov _ w _ (.mem _) => some (w.bytes.toNat, false)
+  | .setcc _ (.mem _) => some (1, true)
+  | _ => none
+
+/-- The register an instruction writes, where it writes one. -/
+def dst? : Instr → Option Reg
+  | .mov _ (.r_m d _) | .mov _ (.rm_r (.reg d) _) | .mov _ (.rm_i (.reg d) _) => some d
+  | .alu _ _ (.r_m d _) | .alu _ _ (.rm_r (.reg d) _) | .alu _ _ (.rm_i (.reg d) _) => some d
+  | .unary _ _ (.reg d) | .shift _ _ (.reg d) _ => some d
+  | .imul2 _ d _ | .imul3 _ d _ _ | .popcnt _ d _ | .movsxd d _ => some d
+  | .movzx _ d _ _ | .movsx _ d _ _ | .cmov _ _ d _ | .setcc _ (.reg d) => some d
+  | .lea _ d _ => some d
+  | _ => none
+
+/-- Why an access of `n` bytes to a memory operand is refused. `typed` is
+whether what is stored is a whole value with a type of its own. -/
+def whyMem (next : BitVec 64) (Γ : CtxS) (m : Mem) (n : Nat) (writing typed : Bool) : Reject :=
+  match locate next Γ m with
+  | some (pl, _) =>
+    match within pl.off n pl.shape.size with
+    | none =>
+      match pl.kind with
+      | .piece _ => .pastPiece
+      | _ => .pastBlock
+    | some _ =>
+      if writing then
+        match pl.kind, m with
+        | .ptr false, .sib (some b) _ _ => .readOnly b (Γ.regs.get b)
+        | .block false, _ => .typedThere
+        | .ptr true, _ | .block true, _ =>
+          match pl.shape.look pl.off with
+          | some _ => if typed then .notSole else .typedThere
+          | none => .notClear
+        | _, _ => .noForm
+      else .noForm
+  | none =>
+    match m with
+    | .sib (some .rsp) _ _ => .noPiece
+    | .sib (some b) ix _ =>
+      match Γ.regs.get b, ix with
+      | .ptr _ _ _, some (x, _) => .indexUnknown x.toReg (Γ.regs.get x.toReg)
+      | .eq _, some (x, _) =>
+        match Γ.regs.get x.toReg with
+        | .eq _ => .notOwned
+        | τ => .indexUnknown x.toReg τ
+      | .eq _, none => .notOwned
+      | τ, _ => .notPointer b τ writing
+    | _ => .noBlock
+
+/-- **Why the checker refuses an instruction**, where it does. -/
+def why (next : BitVec 64) (Γ : CtxS) (i : Instr) : Reject :=
+  match i.memOperand?, access? i with
+  | some m, some (n, writing) =>
+    whyMem next Γ m n writing (match i with | .mov .w64 (.rm_r (.mem _) _) => true | _ => false)
+  | _, _ =>
+    match i with
+    | .push _ => .spOperand
+    | .pop r => if r = .rsp then .spOperand else .popPiece
+    | .alu .add .w64 (.rm_i (.reg .rsp) _) => .framePieces
+    | .mulDiv _ _ (.reg r) =>
+      if r = .rsp then .spOperand
+      else match Γ.regs.get .rax, Γ.regs.get .rdx, Γ.regs.get r with
+        | .eq _, .eq _, .eq _ => .divFault
+        | .eq _, .eq _, τ => .divUnknown r τ
+        | .eq _, τ, _ => .divUnknown .rdx τ
+        | τ, _, _ => .divUnknown .rax τ
+    | i => if dst? i = some .rsp then .spOperand else .noForm
 
 end Sym
 

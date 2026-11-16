@@ -12,13 +12,12 @@ open TypedAsm
 namespace Rejected
 
 /-- error: at address 17: cannot type `adc rax, rcx` in the current context
-• aluExactRR: this rule does not cover operations that read the carry flag
-• aluRR: the operation reads the carry flag, which is not known to be defined here. The processor leaves it undefined after some instructions, and the result would then not be determined -/
+• the operation reads the carry flag, which is not known to be defined here. The processor leaves it undefined after some instructions, and the result would then not be determined -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i6) Γ := by ty_step
 
 /-- error: at address 3: cannot type `mov rax, qword ptr [rdi+16]` in the current context
-• loadField: `rdi` must hold a pointer, but its type is `read-only pointer to 24 bytes or null`: it must be tested for null first, and `ty_null` then gives the two cases. An access through null is a page fault -/
+• `rdi` must hold a pointer, but its type is `read-only pointer to 24 bytes or null`: it must be tested for null first, and `ty_null` then gives the two cases. An access through null is a page fault -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i1) maybe := by ty_step
 
@@ -38,7 +37,7 @@ example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .tooLong) (buffer (.raw 
   ty_block
 
 /-- error: at address 4: cannot type `movzx eax, byte ptr [rdi]` in the current context
-• movzxRM: `rdi` must hold a pointer, but its type is `int`. Used as an address, an arbitrary number is a general-protection fault where the processor has no such address, and a page fault where there is no memory for it
+• `rdi` must hold a pointer, but its type is `int`. Used as an address, an arbitrary number is a general-protection fault where the processor has no such address, and a page fault where there is no memory for it
 `rdi` was given its type by `add rdi, 1` at address 0 -/
 #guard_msgs in
 example : BlockOk Φy textFetch linux Ψ (Asm.addr texts 0 .onward) atText := by ty_block
@@ -50,9 +49,7 @@ example : BlockOk Φy mapFetch linux Ψ (Asm.addr maps 0 .notZero) bare := by
   ty_mmap ⟨16, [(8, .ptr (.raw 8) true 0)]⟩
 
 /-- error: at address 13: cannot type `mov rax, qword ptr [rdi+rcx*8]` in the current context
-• loadIndexed: `rdi` must hold a pointer, but its type is `exactly p`
-• loadOwned: the address is not known to be inside a block the context owns. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed
-• loadInt: the bytes are not known to be inside the block: a bound on the index is needed among the hypotheses. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
+• the bytes are not known to be inside the block: a bound on the index is needed among the hypotheses. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat)
     (hK : (pageSig p).CallerOk saved ret rest room) :

@@ -12,29 +12,32 @@ open TypedAsm
 namespace Rejected
 
 /-- error: at address 14: cannot type `div rcx` in the current context
-• divSafe: the divisor, `rcx₀`, is not known to be non-zero: a check is needed before the divide. Dividing by zero is a divide error -/
+• `rdx` must hold an exactly known value for a divide, but its type is `pointer to 16 bytes with read-only pointer to 8 bytes at byte 8`: a divide is typed only when it is known not to raise a divide error -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i5) Γ := by ty_step
 
+/-- error: at address 14: cannot type `div rcx` in the current context
+• `rdx`, the upper half of the dividend, is not known to be zero: clear it before the divide. Otherwise the quotient may not fit, which is a divide error -/
+#guard_msgs in
+example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i5) bare := by ty_step
+
 /-- error: at address 20: cannot type `mov rax, qword ptr [rdi+12]` in the current context
-• loadField: no typed value of the block starts at that offset
-• loadInt: the access would reach past the end of the block. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
+• the access would reach past the end of the block. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i7) Γ := by ty_step
 
 /-- error: at address 32: cannot type `mov rax, qword ptr [rdi+rcx*8]` in the current context
-• loadIndexed: no typed value of the block starts at that offset
-• loadInt: the bytes are not known to be inside the block: a bound on the index is needed among the hypotheses. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
+• the bytes are not known to be inside the block: a bound on the index is needed among the hypotheses. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i11) Γ := by ty_step
 
 /-- error: at address 36: cannot type `cmovg eax, ecx` in the current context
-• cmovRM: the flags are not known here, so they do not decide the condition. The processor leaves them undefined after some instructions, and what this one does would then not be determined -/
+• the flags are not known here, so they do not decide the condition. The processor leaves them undefined after some instructions, and what this one does would then not be determined -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i12) Γ := by ty_step
 
 /-- error: at address 53: cannot type `neg qword ptr [rdi+rcx*8]` in the current context
-• negRM: the bytes are not known to be inside the block: a bound on the index is needed among the hypotheses. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
+• the bytes are not known to be inside the block: a bound on the index is needed among the hypotheses. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i17) Γ := by ty_step
 
@@ -46,7 +49,7 @@ example (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat)
   ty_stack_attach
 
 /-- error: at address 12: cannot type `mov rsi, qword ptr [rsp+rax*8+8]` in the current context
-• loadStackIndexed: those bytes are not known to be inside one piece of the stack. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
+• those bytes are not known to be inside one piece of the stack: a bound on the index is needed among the hypotheses. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example : BlockOk Φy argFetch linux Ψ (Asm.addr argLoads 0 .beyond) (argsCtx 0 2) := by ty_block
 
@@ -57,8 +60,7 @@ example : BlockOk Φy mapFetch linux Ψ (Asm.addr maps 0 .highHint) bare := by
   ty_mmap (.raw 16)
 
 /-- error: at address 52: cannot type `mov rcx, qword ptr [rbx]` in the current context
-• loadField: `rbx` must hold a pointer, but its type is `exactly p`
-• loadInt: the address is not known to be inside a block the context owns. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
+• the address is not known to be inside a block the context owns. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example : BlockOk Φm ownFetch linux Ψ (Asm.addr owning 0 .afterFree) bare := by
   ty_steps
