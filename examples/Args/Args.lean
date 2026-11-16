@@ -52,7 +52,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_into (At.arg c 1)
   case arg c v =>
     -- cmp r14, r13; jae done
-    ty_step
     ty_branch
     -- carrying on, the argument's number is below the count, so its slot is
     -- there and holds the address of a text

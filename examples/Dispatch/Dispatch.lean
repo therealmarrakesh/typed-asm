@@ -64,11 +64,9 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_call unary
   case afterFirst =>
     -- a function pointer is loaded from the table into `r12` and called
-    ty_steps
     ty_call unary
   case afterSecond =>
     -- `r12` was preserved by the call, and is still a function pointer
-    ty_steps
     ty_call unary
 
 /-! ## Safety -/

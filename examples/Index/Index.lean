@@ -45,7 +45,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   ty_program
   case start =>
     -- lea rdi, [rip + array]
-    ty_steps
     ty_call (getSig 5)
 
 /-! ## Safety -/

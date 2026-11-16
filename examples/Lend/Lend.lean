@@ -67,7 +67,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_step
     -- the stack pointer's value is called `sp`; `lea rdi, [rsp]` is then the local's address
     ty_name .rsp as sp
-    ty_step
     -- the local, and everything above it, become blocks: the local is handed to `fill`
     ty_stack_detach at 0
     ty_call (fillSig (sp + 0))

@@ -61,7 +61,6 @@ theorem decr {n : Nat} (hn : 0 < n) :
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   ty_program
   case start =>
-    ty_steps
     ty_call (factSig 5)
   case fact n saved ret rest room hK =>
     ty_block
@@ -73,7 +72,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     -- the argument is not zero, so the caller left at least sixteen bytes
     have hroom : 16 * n ≤ room := hK.room
     obtain ⟨m, rfl⟩ : ∃ m, room = m + 16 := ⟨room - 16, by omega⟩
-    ty_steps
     ty_call (factSig (n - 1))
     -- the inner call gets exactly one less
     exact Sub.of_eq (decr hn)

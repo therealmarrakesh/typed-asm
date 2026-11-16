@@ -58,13 +58,11 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   case two saved ret rest room frame above hK =>
     -- the caller left a slot for the page kept across the second request
     obtain ⟨m, rfl⟩ := hK.room_split
-    ty_steps
     ty_mmap_own as p
     · ty_block
     · ty_step
       ty_branch
       -- push rax, and the second request
-      ty_steps
       ty_mmap_own as q
       · ty_block
       · ty_step

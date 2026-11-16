@@ -58,7 +58,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     -- `rax` holds exactly the address of `compute`, so it is a pointer to that function
     ty_code_ptr .rax to computeCtx
     -- the pointer is stored in a stack slot and called through it
-    ty_steps
     ty_call computeSig
   case afterCall =>
     ty_steps

@@ -2493,6 +2493,23 @@ elab "ty_steps" : tactic => do
     | .stepped => continue
     | _ => break
 
+open Lean Meta Elab Tactic in
+/-- Types the straight-line instructions before the one something is about to
+be said of, so that a hint may be given for a call, a branch or a system
+call without first stepping up to it. An instruction that does not type by
+itself is where this stops. -/
+private def advance : TacticM Unit := do
+  let mut go := true
+  while go do
+    let s ← saveState
+    try
+      match ← typeStep with
+      | .stepped => pure ()
+      | _ => go := false
+    catch _ =>
+      s.restore
+      go := false
+
 /-! ## Control transfers
 
 For a labelled program the tactic can find where control goes: it looks for
@@ -3118,6 +3135,7 @@ elab "ty_block" : tactic => do
 is settled as `ty_block` would settle it; the side that carries on is left
 as the goal, so that something can be said about it before going further. -/
 elab "ty_branch" : tactic => do
+  advance
   let others := (← getGoals).drop 1
   let saved ← saveState
   match ← typeStep with
@@ -3146,6 +3164,7 @@ goals: argument registers whose types do not obviously match what the
 function expects, and register types after the return that do not obviously
 match the return point's context. -/
 elab "ty_call " sig:term : tactic => do
+  advance
   let goal ← getMainGoal
   let others := (← getGoals).drop 1
   -- Find the instruction, to tell a direct call from an indirect one.
@@ -3294,6 +3313,7 @@ value the function chooses as it returns: typically the address of a block
 it made. `ret` gives the context at the instruction after the call for each
 such value, and the label there must allow all of them. -/
 elab "ty_call " sig:term " returning " ret:term : tactic => do
+  advance
   let goal ← getMainGoal
   let others := (← getGoals).drop 1
   -- directly, or through an operand that holds a pointer to the function
@@ -3510,6 +3530,7 @@ used as a block of this shape. Afterwards `rax` holds an error number or a
 writable pointer to the new block; `ty_err` tells them apart. -/
 elab_rules : tactic
   | `(tactic| ty_mmap $shape) => do
+    advance
     typeMmap (← `(linux_mmap (S := $shape) (len := ?_) rfl ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_))
 
 /-- `ty_mmap_kind tag`: as `ty_mmap`, for a block of the declared kind
@@ -3517,6 +3538,7 @@ elab_rules : tactic
 block of that kind. -/
 elab_rules : tactic
   | `(tactic| ty_mmap_kind $tag) => do
+    advance
     typeMmap (← `(linux_mmap_kind (tag := $tag) (S := ?_) (len := ?_) rfl ?_ ?_ ?_ ?_ ?_ ?_ ?_
       ?_ ?_))
 
@@ -3561,6 +3583,7 @@ context owning the pages at `p` as a block of integers. `hpage` says `p` is
 the start of a page, and `hlow` that it is not an error number. -/
 elab_rules : tactic
   | `(tactic| ty_mmap_own as $p) => do
+    advance
     let goal ← getMainGoal
     let others := (← getGoals).drop 1
     setGoals [goal]
@@ -3902,6 +3925,7 @@ owns, whose address is in `rdi` and whose whole size is in `rsi`. Afterwards
 the context no longer owns it. -/
 elab_rules : tactic
   | `(tactic| ty_munmap) => do
+    advance
     let others := (← getGoals).drop 1
     let gs ← withOwnedPlace (fun k => do
         let kq := Syntax.mkNumLit (toString k)

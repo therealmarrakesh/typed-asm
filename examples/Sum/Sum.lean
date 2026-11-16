@@ -73,7 +73,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   ty_program
   case start =>
     -- lea rdi, [rip + array]; mov esi, 5
-    ty_steps
     ty_call (sumSig 5)
   case sum n saved ret rest room hK =>
     ty_block

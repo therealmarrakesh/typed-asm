@@ -44,7 +44,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_into At.next
   case next =>
     -- the arguments, then the `mmap` for a node
-    ty_steps
     ty_mmap_kind 1
     ty_block
 
