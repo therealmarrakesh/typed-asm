@@ -2885,13 +2885,6 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
   -- where a register is looked into or named first, that is done the long way
   if let .movzx _ _ .w8 (.mem (.sib (some b) none _)) := instr then
     if (← typeOf b).isAppOf ``Ty.str then return none
-  unless named do
-    match instr with
-    | .test _ (.reg r) (.reg r') =>
-      if r == r' then
-        let τ ← typeOf r
-        if τ.isAppOf ``Ty.nullable || τ.isAppOf ``Ty.orErr then return none
-    | _ => pure ()
   let iE := toExpr instr
   let lenE := toExpr len
   let next ← mkAppM ``HAdd.hAdd #[a, lenE]
