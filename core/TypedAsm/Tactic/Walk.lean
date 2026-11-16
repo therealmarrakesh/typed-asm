@@ -1210,7 +1210,10 @@ partial def closeNeeds (env : Environment) (lctx : LocalContext)
           -- flags known to be defined have the carry flag defined
           | exact fun _ hf => Flags.cf_isSome_of_known hf
           | ty_decided
-          | ty_side))
+          | ty_side
+          -- two exactly known values the same by arithmetic, with the
+          -- definitions of the file at hand opened
+          | (refine Sub.of_eq ?_; ty_arith)))
       pure left.isEmpty
     catch _ => pure false
   unless settled do
@@ -1596,17 +1599,25 @@ def solveLeaf (g : MVarId) (Φ : Expr) (lName kName : Name) (params : Array Expr
     if ← m.isAssigned then continue
     let left ← runOn m do
       evalTactic (← `(tactic| first | assumption | omega | decide | ty_arith))
-    unless left.isEmpty do throwError "left over"
+    unless left.isEmpty do
+      trace[TypedAsm.fast] "a premise of `{kName}` is left over: {m}"
+      throwError "left over"
   -- what the comparison left
   let mut hn := mkConst ``True.intro
   let mut allE := mkConst ``True
   arithLeft.set #[]
   for c in cs.reverse do
     let leaf ← Sym.denCond atoms c
-    let h ← closeNeeds env lctx kwhnf pure #[] leaf
+    let h ← try closeNeeds env lctx kwhnf pure #[] leaf
+      catch e =>
+        trace[TypedAsm.fast] "handing over to `{kName}` leaves: {leaf}"
+        throw e
     hn := mkApp4 (mkConst ``And.intro) leaf allE h hn
     allE := mkApp2 (mkConst ``And) leaf allE
-  closeArithLeft
+  try closeArithLeft
+  catch e =>
+    trace[TypedAsm.fast] "handing over to `{kName}` leaves arithmetic: {(← arithLeft.get).map mkMVar}"
+    throw e
   g.assign (mkApp4 (mkConst ``And.intro) (mkApp P ΔE) allE pf2 (← instantiateMVars hn))
   setGoals goals
 
