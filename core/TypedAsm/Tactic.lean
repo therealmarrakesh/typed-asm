@@ -2294,6 +2294,9 @@ private def explainReject (atoms : Sym.Atoms) (onStack : Bool) : Sym.Reject → 
   | .noPiece =>
     return m!"those bytes are not known to be inside one piece of the stack{hazardBounds}"
   | .pastBlock => return m!"the access would reach past the end of the block{hazardBounds}"
+  | .pastOwned =>
+    return m!"the access would reach past the end of the block the context owns \
+      there{hazardBounds}"
   | .pastPiece =>
     return m!"the access would reach past the end of its piece of the stack{hazardBounds}"
   | .typedThere =>
@@ -3090,6 +3093,10 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
               | _, _ => false)
             unless onlyNamed do t := t.insert r.name64 (at', i.toAsm)
         unless before.flags == after.flags do t := t.insert "flags" (at', i.toAsm)
+        unless before.stack == after.stack && before.stackRest == after.stackRest do
+          t := t.insert "stack" (at', i.toAsm)
+        unless before.owned == after.owned && before.ownedRest == after.ownedRest do
+          t := t.insert "owned" (at', i.toAsm)
       trailRef.modify (·.insert (fetch.hash, atEnd) t)
       trailDone.set true
     return some goals
@@ -3165,11 +3172,28 @@ private def trailKey (g : MVarId) :
       for r in allRegs do
         parts := parts.push (r.name64, tbl[1 + regIdx r]!)
     parts := parts.push ("flags", c[4]!)
+    -- the whole context, for telling whether the stack or the blocks owned changed
+    parts := parts.push ("ctx", Γ)
   return some ((args[1]!.hash, n), args[1]!, parts)
 
+/-- Which of the stack and the blocks owned differ between two contexts,
+told on the terms read from them: written differently they may be the same.
+Nothing is said to differ where a context cannot be read. -/
+private def storeChanges (old new : Array (String × Expr)) : MetaM (List String) := do
+  let (some (_, Γ), some (_, Γ')) := (old.find? (·.1 == "ctx"), new.find? (·.1 == "ctx"))
+    | return []
+  if Γ == Γ' then return []
+  let (r, _) ← (do
+    let some a ← Sym.reifyCtx Γ | return none
+    let some b ← Sym.reifyCtx Γ' | return none
+    return some ((if a.stack == b.stack && a.stackRest == b.stackRest then [] else ["stack"]) ++
+      (if a.owned == b.owned && a.ownedRest == b.ownedRest then [] else ["owned"]))
+      : Sym.ReifyM _).run {}
+  return r.getD []
+
 /-- What to add to a rejection at an address: for each register the message
-speaks of, and for the flags if it speaks of them, the earlier instruction of
-the block that gave it what it has. Nothing is added for what the block was
+speaks of, and for the flags, the stack or the blocks owned if it speaks of
+them, the earlier instruction of the block that gave it what it has. Nothing is added for what the block was
 entered with. -/
 private def trailNote (key : UInt64 × Nat) (msg : String) : IO String := do
   let t := (← trailRef.get)[key]?.getD {}
@@ -3184,9 +3208,41 @@ private def trailNote (key : UInt64 × Nat) (msg : String) : IO String := do
   if has "flags" then
     if let some (m, asm) := t["flags"]? then
       note := note ++ s!"\nthe flags were last set by `{asm}` at address {m}"
+  if has "piece of the stack" then
+    if let some (m, asm) := t["stack"]? then
+      note := note ++ s!"\nthe stack was last changed by `{asm}` at address {m}"
+  if has "block the context owns" then
+    if let some (m, asm) := t["owned"]? then
+      note := note ++ s!"\nthe blocks owned were last changed by `{asm}` at address {m}"
   -- said once, however many layers the rejection passes through
   if note != "" && has note then return ""
   return note
+
+/-- Runs a tactic that the user gives to say what cannot be read off the
+program, and records what it changed of the context: so that a later
+rejection can say that the stack or the blocks owned were last changed here.
+It is recorded as the instruction stepped over, or as the tactic where none was. -/
+private def withTrail (what : String) (tac : TacticM Unit) : TacticM Unit := do
+  let pre ← getGoals
+  let before ← try trailKey (← getMainGoal) catch _ => pure none
+  tac
+  let some (key, fetch, old) := before | return
+  try
+    for g in ← getGoals do
+      if pre.contains g then continue
+      let some (key', _, new) ← trailKey g | continue
+      let by' ← if key' == key then pure s!"{what}" else
+        pure ((((← instrsOf fetch).bind (·[key.2]?)).map (·.1.toAsm)).getD what)
+      let mut t := (← trailRef.get)[key]?.getD {}
+      for (name, e') in new do
+        if name == "ctx" then continue
+        let some (_, e) := old.find? (·.1 == name) | continue
+        if e' == e then continue
+        t := t.insert name (key.2, by')
+      for name in ← g.withContext (storeChanges old new) do
+        t := t.insert name (key.2, by')
+      trailRef.modify (·.insert key' t)
+  catch _ => pure ()
 
 /-- Types the first instruction of a block goal if it is a straight-line
 instruction, leaving the rest of the block as the main goal. -/
@@ -3437,7 +3493,10 @@ private def typeStep (named : Bool := false) : TacticM StepResult := do
       let asm := (instr?.map (·.toAsm)).getD "the instruction"
       let named := (instr?.map (·.wantsNamed.map (·.name64))).getD []
       let mut t := (← trailRef.get)[key]?.getD {}
+      for name in ← (← getMainGoal).withContext (storeChanges old new) do
+        t := t.insert name (key.2, asm)
       for (name, e') in new do
+        if name == "ctx" then continue
         let some (_, e) := old.find? (·.1 == name) | continue
         if e' == e then continue
         -- a register only given a name holds what it held
@@ -4911,7 +4970,7 @@ number in `rax`, then with `rax` holding exactly an address `p` and the
 context owning the pages at `p` as a block of integers. `hpage` says `p` is
 the start of a page, and `hlow` that it is not an error number. -/
 elab_rules : tactic
-  | `(tactic| ty_mmap_own as $p) => do
+  | `(tactic| ty_mmap_own as $p) => withTrail "ty_mmap_own" do
     advance
     let goal ← getMainGoal
     let others := (← getGoals).drop 1
@@ -5104,7 +5163,8 @@ elab_rules : tactic
 /-- Applies to the block goal the first of the tactics made for the pieces
 of its stack that works, leaving the rest of the block. -/
 private def atStackPiece (name : String) (mk : Nat → TacticM (TSyntax `tactic))
-    (failure : MessageData) (past : Nat := 0) : TacticM Unit := withMainContext do
+    (failure : MessageData) (past : Nat := 0) : TacticM Unit :=
+    withTrail name <| withMainContext do
   let others := (← getGoals).drop 1
   setGoals [← getMainGoal]
   evalTactic (← `(tactic| ty_normalize))
@@ -5198,7 +5258,7 @@ the stack, and lie where the stack now ends, are from here on its topmost
 pieces again, holding whatever they were left holding. They must come first
 among the blocks owned, lowest first, as `ty_stack_detach` left them. -/
 elab_rules : tactic
-  | `(tactic| ty_stack_attach) => withMainContext do
+  | `(tactic| ty_stack_attach) => withTrail "ty_stack_attach" <| withMainContext do
     let others := (← getGoals).drop 1
     setGoals [← getMainGoal]
     evalTactic (← `(tactic| ty_normalize))
@@ -5253,7 +5313,7 @@ private def withOwnedPlace (mk : Nat → TacticM (TSyntax `tactic)) (failure : M
 owns, whose address is in `rdi` and whose whole size is in `rsi`. Afterwards
 the context no longer owns it. -/
 elab_rules : tactic
-  | `(tactic| ty_munmap) => do
+  | `(tactic| ty_munmap) => withTrail "ty_munmap" do
     advance
     let others := (← getGoals).drop 1
     let gs ← withOwnedPlace (fun k => do
@@ -5289,7 +5349,7 @@ private def freezeWith (mk : Nat → TacticM (TSyntax `tactic)) (name : String :
     (after : TacticM Unit := pure ()) (places : Option (List Nat) := none)
     (failure : MessageData :=
       m!"{name}: the register must hold exactly the address of a block the context owns") :
-    TacticM Unit := do
+    TacticM Unit := withTrail name do
   let others := (← getGoals).drop 1
   let gs ← withOwnedPlace mk failure places
   let mut rest? : Option MVarId := none
@@ -5359,7 +5419,7 @@ context owns, and the context also owns the block that starts where that one
 ends. From here on it owns one block in their place, with the bytes of the
 first followed by those of the second. -/
 elab_rules : tactic
-  | `(tactic| ty_join $r) => do
+  | `(tactic| ty_join $r) => withTrail "ty_join" do
     let n ← ownedCountHere
     freezeWith (name := "ty_join")
       (places := some ((List.range (n * n)).filter fun c => c / n ≠ c % n))

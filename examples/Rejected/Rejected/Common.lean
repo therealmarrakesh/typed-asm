@@ -583,4 +583,20 @@ def nowhere : State :=
 /-- Sixteen writable bytes, as a program's data might be. -/
 def sixteen : State := State.init.setPerm 0x10000 16 .rw
 
+/-! ## Where the stack got what it holds
+
+A frame of eight bytes is taken and then read from byte 4: four of the eight
+bytes read are past it. The rejection says which instruction last changed
+the stack. -/
+
+inductive Framed
+  | start
+  deriving DecidableEq
+
+def framed : List (Asm Framed) := [
+  .label .start, .ins (.alu .sub .w64 (.rm_i (.reg .rsp) 8)),
+  .ins (.mov .w64 (.r_m .rax (.sib (some .rsp) none 4))), .ins .ud2]
+
+def framedFetch : Fetch := Asm.fetch 0 framed
+
 end Rejected

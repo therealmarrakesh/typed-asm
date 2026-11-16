@@ -4746,6 +4746,7 @@ inductive Reject
   | noPiece
   /-- An access that reaches past the end of its block, or of its piece. -/
   | pastBlock
+  | pastOwned
   | pastPiece
   /-- Plain bytes stored over a typed value others may read, or over bytes
   not known to be clear of one. -/
@@ -4812,6 +4813,7 @@ def whyMem (next : BitVec 64) (Γ : CtxS) (m : Mem) (n : Nat) (writing typed : B
     | none =>
       match pl.kind with
       | .piece _ => .pastPiece
+      | .owned _ _ => .pastOwned
       | _ => .pastBlock
     | some _ =>
       if writing then

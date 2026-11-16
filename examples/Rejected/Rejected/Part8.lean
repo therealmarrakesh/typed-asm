@@ -60,7 +60,8 @@ example : BlockOk Φy mapFetch linux Ψ (Asm.addr maps 0 .highHint) bare := by
   ty_mmap (.raw 16)
 
 /-- error: at address 52: cannot type `mov rcx, qword ptr [rbx]` in the current context
-• the address is not known to be inside a block the context owns. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
+• the address is not known to be inside a block the context owns. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed
+the blocks owned were last changed by `syscall` at address 50 -/
 #guard_msgs in
 example : BlockOk Φm ownFetch linux Ψ (Asm.addr owning 0 .afterFree) bare := by
   ty_steps
@@ -97,6 +98,12 @@ example : ∃ Γ', Straight Ψ 10 Γ₄
 example (n k : Nat) (hk : k < n) :
     Straight Ψ 10 (walking n k) (.store8 (.sib (some .rbx) none 16) .rax) (walking n k) := by
   ty_straight
+
+/-- error: at address 4: cannot type `mov rax, qword ptr [rsp+4]` in the current context
+• the access would reach past the end of its piece of the stack. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed
+the stack was last changed by `sub rsp, 8` at address 0 -/
+#guard_msgs in
+example : BlockOk Φy framedFetch linux Ψ (Asm.addr framed 0 .start) roomy := by ty_block
 
 theorem divide_ok : BlocksOk Φd divideFetch linux Ψ := by
   refine BlocksOk.of_labels ?_
