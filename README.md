@@ -21,7 +21,9 @@ What exists and is checked today:
   block a pointer points into, the owned block an address is in, the element
   of an array, the piece of the stack, a block of the program. What it
   cannot settle by looking, a bound on an index say, it returns to be
-  shown. A run of instructions is checked in one evaluation.
+  shown. A run of instructions is checked in one evaluation. Where it
+  refuses an instruction, the reason given is worked out from the same
+  parts: there is no second, slower way of typing an instruction.
 - Memory and the stack are typed to the byte. Stack space can be lent to a
   called function, and arrays can be indexed by any value within bounds,
   through a pointer or at a fixed address.
