@@ -2905,7 +2905,8 @@ private def planHint (instr : Instr) (typeOf : Reg → MetaM Expr) (stack owned 
       let here : Bool := match rep?, size? with
         | some _, _ => decide (P ≤ D)
         | none, some sz => decide (P ≤ D) && decide (D < P + sz)
-        | none, none => false
+        -- a piece whose length is not a number is one an index runs over
+        | none, none => decide (P ≤ D)
       if here then
         let R := D - P
         let i := if R == 0 then scaled else mkNatAdd scaled (mkNatLit R)
