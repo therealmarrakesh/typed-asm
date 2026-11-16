@@ -252,18 +252,20 @@ def mmapCall (len flags : BitVec 32) : List (Asm Map) := [
   .ins (.mov .w32 (.rm_i (.reg .rdx) 3)), .ins (.mov .w32 (.rm_i (.reg .r10) flags)),
   .ins .syscall]
 
-def maps : List (Asm Map) :=
-  [.label .unchecked] ++ mmapCall 16 0x22 ++
-    [.ins (.mov .w64 (.r_m .rdx (.sib (some .rax) none 0))), .ins .ud2] ++
-  [.label .notZero] ++ mmapCall 16 0x22 ++ [.ins .ud2] ++
-  [.label .tooShort] ++ mmapCall 8 0x22 ++ [.ins .ud2] ++
-  [.label .shared] ++ mmapCall 16 0x21 ++ [.ins .ud2] ++
-  [.label .noKind] ++ mmapCall 16 0x22 ++ [.ins .ud2] ++
+-- Written as a list of pieces to be joined: joined with `++` one after
+-- another, the pieces take Lean seconds to make sense of.
+def maps : List (Asm Map) := List.flatten [
+  [.label .unchecked], mmapCall 16 0x22,
+    [.ins (.mov .w64 (.r_m .rdx (.sib (some .rax) none 0))), .ins .ud2],
+  [.label .notZero], mmapCall 16 0x22, [.ins .ud2],
+  [.label .tooShort], mmapCall 8 0x22, [.ins .ud2],
+  [.label .shared], mmapCall 16 0x21, [.ins .ud2],
+  [.label .noKind], mmapCall 16 0x22, [.ins .ud2],
   -- the address asked for left as whatever `rdi` held
-  [.label .noHint] ++ (mmapCall 16 0x22).drop 1 ++ [.ins .ud2] ++
+  [.label .noHint], (mmapCall 16 0x22).drop 1, [.ins .ud2],
   -- an address asked for, where only the kernel's choice is modelled
-  [.label .highHint, .ins (.movAbs .rdi 0x800000000000)] ++ (mmapCall 16 0x22).drop 1 ++
-    [.ins .ud2]
+  [.label .highHint, .ins (.movAbs .rdi 0x800000000000)], (mmapCall 16 0x22).drop 1,
+    [.ins .ud2]]
 
 def mapFetch : Fetch := Asm.fetch 0 maps
 
@@ -285,15 +287,15 @@ def ownCall : List (Asm Mem) := [
   .ins (.mov .w32 (.rm_i (.reg .rdx) 3)), .ins (.mov .w32 (.rm_i (.reg .r10) 0x22)),
   .ins .syscall, .ins (.test .w64 (.reg .rax) (.reg .rax)), .jcc .s .done]
 
-def owning : List (Asm Mem) :=
-  [.label .afterFree] ++ ownCall ++ [
+def owning : List (Asm Mem) := List.flatten [
+  [.label .afterFree], ownCall, [
     .ins (.mov .w64 (.rm_r (.reg .rbx) .rax)), .ins (.mov .w32 (.rm_i (.reg .rax) 11)),
     .ins (.mov .w64 (.rm_r (.reg .rdi) .rbx)), .ins (.mov .w32 (.rm_i (.reg .rsi) 4096)),
-    .ins .syscall, .ins (.mov .w64 (.r_m .rcx (.sib (some .rbx) none 0))), .ins .ud2] ++
-  [.label .leak] ++ ownCall ++ [.jmp .done] ++
+    .ins .syscall, .ins (.mov .w64 (.r_m .rcx (.sib (some .rbx) none 0))), .ins .ud2],
+  [.label .leak], ownCall, [.jmp .done],
   [.label .notOwned, .ins (.mov .w32 (.rm_i (.reg .rax) 11)),
-    .ins (.mov .w32 (.rm_i (.reg .rsi) 4096)), .ins .syscall, .ins .ud2] ++
-  [.label .done, .ins .ud2]
+    .ins (.mov .w32 (.rm_i (.reg .rsi) 4096)), .ins .syscall, .ins .ud2],
+  [.label .done, .ins .ud2]]
 
 def ownFetch : Fetch := Asm.fetch 0 owning
 
