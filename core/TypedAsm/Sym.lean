@@ -4436,6 +4436,10 @@ inductive Walk
   a return address on the stack whose type, the variable `j`, is that of
   code wanting `R`, a context allowed at `next`. -/
   | callVia (τ : TyS) (next : BitVec 64) (j : Nat) (R Δ : CtxS) (cs : List CondS)
+  /-- The block calls a function that chooses a value as it returns: as
+  `call`, but the return address's type, the variable `j`, is that of code
+  ready for a family of contexts, each allowed at `next`. -/
+  | callAll (t next : BitVec 64) (j : Nat) (Δ : CtxS) (cs : List CondS)
   /-- A register was given the address `v` of code, and from here on has
   the type that is the variable `h`: a pointer to that code. -/
   | asCode (v : BitVec 64) (h : Nat) (rest : Walk)
@@ -4485,6 +4489,9 @@ def Walk.holds (Q : CodeTy) (P : BitVec 64 → Ctx → Prop) (E : Option (BitVec
     (τ.den ρ).Enters (Δ.den ρ) ∧ (TyS.atom j).den ρ = .code (R.den ρ) ∧ Q next (R.den ρ) ∧
       CondS.all ρ cs
   | .asCode v h rest, ρ => CodeAt Q v ((TyS.atom h).den ρ) ∧ rest.holds Q P E ρ
+  | .callAll t next j Δ cs, ρ =>
+    (∃ pre : (Nat → BitVec 64) → Ctx, (TyS.atom j).den ρ = .codeAll pre ∧ ∀ x, Q next (pre x)) ∧
+      Q t (Δ.den ρ) ∧ CondS.all ρ cs
 
 /-- The first register an instruction needs the value of that the context
 only knows to hold a number. -/
@@ -4530,6 +4537,10 @@ structure Prog where
   /-- Addresses of code a register given one is made a pointer to, each
   with the variable that is the pointer's type. -/
   codes : List (BitVec 64 × Nat) := []
+  /-- Calls to functions that choose a value as they return: the
+  instruction's address, the variable that is the return address's type,
+  and the context the function is entered in. -/
+  callsAll : List (BitVec 64 × Nat × CtxS) := []
   /-- Whether the operating system is one that returns from the calls Linux
   returns from, as Linux does: then system calls that return are stepped over. -/
   linux : Bool := false
@@ -5441,7 +5452,16 @@ def callAt (P : Prog) (a len : BitVec 64) (Γ : CtxS) : Instr → Option Walk
           some (.call (a + len + d.signExtend 64) (a + len) e.2.1 e.2.2.1 e.2.2.2 (rc ++ cs))
         | none => none
       | none => none
-    | none => none
+    | none =>
+      match P.callsAll.find? (·.1 == a) with
+      | some e =>
+        match afterCall Γ e.2.1 with
+        | some (Γ', rc) =>
+          match subCtx Γ' e.2.2 with
+          | some cs => some (.callAll (a + len + d.signExtend 64) (a + len) e.2.1 e.2.2 (rc ++ cs))
+          | none => none
+        | none => none
+      | none => none
   | _ => none
 
 theorem callAt_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
@@ -5483,7 +5503,38 @@ theorem callAt_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} 
           · cases hc
         · cases h
       · cases h
-    · cases h
+    · split at h
+      · next e _ =>
+        split at h
+        · next Γ' rc hc =>
+          split at h
+          · next cs hs =>
+            cases h
+            obtain ⟨⟨pre, hty, hret⟩, hΔ, hall⟩ := hW
+            unfold afterCall at hc
+            split at hc
+            · next Γ'' hm =>
+              cases hc
+              obtain ⟨hrc, hcs⟩ := CondS.all_append (Γ.room.minus 8).2 cs hall
+              obtain ⟨υ, rfl, hυ⟩ := CtxS.moveSp_spec hm
+              have hsub := subCtx_sound hs hcs
+              have e₁ : ({ Γ.setReg .rsp υ with
+                    stack := .mk (.lit 8) (.cons 0 (.atom e.2.1) .nil) :: Γ.stack,
+                    room := (Γ.room.minus 8).1 } : CtxS).den ρ
+                  = { (Γ.den ρ).moveSp (-8) with
+                      stack := .slot (.codeAll pre) :: (Γ.den ρ).stack,
+                      room := (Γ.room.minus 8).1.den ρ } := by
+                refine (CtxS.den_sp ρ Γ υ _ _ Γ.flags).trans ?_
+                rw [hυ]
+                show ({ (Γ.den ρ).moveSp (-8) with
+                  stack := ShapeOf.mk 8 [(0, (TyS.atom e.2.1).den ρ)] :: _, room := _ } : Ctx) = _
+                rw [hty]; rfl
+              rw [e₁] at hsub
+              exact .last hf (.callAll (Num.minus_spec hrc) hret ⟨_, hΔ, hsub⟩)
+            · cases hc
+          · cases h
+        · cases h
+      · cases h
   · cases h
 
 /-- The type of the value an operand holds, where the rules for jumping and
@@ -5643,7 +5694,10 @@ def hintAt (P : Prog) (a : BitVec 64) : Option CtxS :=
     | none =>
       match P.calls.find? (·.1 == a) with
       | some e => some e.2.2.2
-      | none => none
+      | none =>
+        match P.callsAll.find? (·.1 == a) with
+        | some e => some e.2.2
+        | none => none
 
 /-- The registers that hold exactly a block's address where the context the
 block is to be compared with at this instruction wants a pointer, made
