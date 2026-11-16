@@ -49,18 +49,6 @@ inductive At : Label → Ctx → Prop
 
 asm_typing At
 
-/-! ## The program is well typed -/
-
-theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  ty_program
-  case page saved ret rest room frame above hK =>
-    ty_mmap_own as p
-    -- an error number is negative: the test sends control to `fail`
-    · ty_block
-    -- a page at `p`: that is the address the function returns with
-    · ty_return_as p
-      ty_block
-
 /-! ## Safety -/
 
 asm_safety At.start

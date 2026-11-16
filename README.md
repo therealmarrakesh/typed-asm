@@ -79,11 +79,14 @@ jumped back to, called or returned to, and three commands:
   data` first makes the program's read-only data say its bytes). The two may
   be given together.
 
-Each instruction is typed without being told how. Eighteen of the twenty-four
-examples need nothing more than this. In the others, a label's block says
-what cannot be read off the program: where an owned block is split, joined
-or made part of the shared memory, which piece of the stack is lent to a
-function, or what a register holding a label's address is a pointer to. A
+Each instruction is typed without being told how, and so is each way a
+block ends: a jump, a call or a return, through a label or through a value,
+a call that ends the program, memory asked of the kernel or given back.
+Twenty of the twenty-four examples need nothing more than their contexts. In
+the other four, a label's block says what cannot be read off the program:
+where an owned block is split, joined or made part of the shared memory,
+which piece of the stack is lent to a function, what kind a new block is to
+be, or which of a family of signatures a recursive call is made at. A
 fact about what the program computes is a theorem marked `@[asm_fact]`:
 `examples/Fact` gives two, what the function returns for zero and what its
 multiply computes, and the checker uses them where they are needed.

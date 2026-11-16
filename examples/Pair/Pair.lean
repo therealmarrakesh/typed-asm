@@ -45,27 +45,6 @@ inductive At : Label → Ctx → Prop
 
 asm_typing At
 
-/-! ## The program is well typed -/
-
-theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  ty_program
-  case start =>
-    -- lea r12, [rip + two]: `r12` holds exactly the function's address
-    -- so it is a pointer to the function, and the call is through it
-    ty_call twoSig returning backCtx
-  case two saved ret rest room frame above hK =>
-    -- the caller left a slot for the page kept across the second request
-    obtain ⟨m, rfl⟩ := hK.room_split
-    ty_mmap_own as p
-    · ty_block
-    -- the first page is kept on the stack across the second request
-    · ty_mmap_own as q
-      · ty_block
-      -- the pair the function returns with, its pages in that order
-      · ty_return_as (p, q)
-        ty_own_first p
-        ty_block
-
 /-! ## Safety -/
 
 asm_safety At.start

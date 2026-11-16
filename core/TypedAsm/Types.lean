@@ -1136,6 +1136,12 @@ inductive Ty.Enters : Ty → Ctx → Prop
       {frame : List (BitVec 64 × Shape)} {above : Nat} :
     sig.raw.CallerOk saved ret rest room frame above →
     Ty.Enters sig.ty (sig.raw.entry saved ret rest room frame above)
+  /-- The same, for a caller whose contexts on return are given by the value
+  chosen, as the signature has it, and not by the sequence that stands for it. -/
+  | fnEx {ι : Type} [Chosen ι] {sig : FnSigEx ι} {saved : Reg → Ty} {ret : ι → Ctx}
+      {rest : List Shape} {room : Nat} {frame : List (BitVec 64 × Shape)} {above : Nat} :
+    sig.CallerOk saved ret rest room frame above →
+    Ty.Enters sig.ty (sig.entry saved ret rest room frame above)
 
 /-- A value whose type enters a context is the address of code wanting it. -/
 theorem Ty.Enters.sound {τ : Ty} {Δ : Ctx} {v : BitVec 64} (he : τ.Enters Δ)
@@ -1151,6 +1157,12 @@ theorem Ty.Enters.sound {τ : Ty} {Δ : Ctx} {v : BitVec 64} (he : τ.Enters Δ)
     rw [hasTy_code]
     intro k hk Ψ' he' hΨ' s hs hw
     exact hasTy_fnAll.mp h k hk Ψ' he' hΨ' _ _ _ _ _ _ hK s hs hw
+  | @fnEx ι _ sig saved ret rest room frame above hK =>
+    rw [hasTy_code]
+    intro k hk Ψ' he' hΨ' s hs hw
+    exact hasTy_fnAll.mp h k hk Ψ' he' hΨ' saved (fun q => ret (Chosen.dec q)) rest room frame
+      above ⟨fun q => hK.each (Chosen.dec q), fun q => hK.frame (Chosen.dec q),
+        fun q => hK.detached (Chosen.dec q)⟩ s hs hw
 
 /-- A type's meaning at a step count implies its meaning at every smaller one. -/
 theorem HasTy.mono {m : Nat} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys Ψ n τ v)

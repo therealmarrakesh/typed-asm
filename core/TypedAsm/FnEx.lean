@@ -33,6 +33,21 @@ theorem CallerOk.owned_back {sig : FnSigEx ι} {saved : Reg → Ty} {ret : ι �
     show sig.gives x ++ frame = sig.gives x ++ List.drop (sig.gives x).length (ret x).owned
     rw [h.frame x])
 
+omit [Chosen ι] in
+/-- **What the function returns with, at the value it chose, stands for the
+context it returns into**: stated with the blocks owned written out, the ones
+it gives for that value and then what its caller owned besides, and with
+what is detached from the stack as it was on entry. -/
+theorem CallerOk.retAt {sig : FnSigEx ι} {saved : Reg → Ty} {ret : ι → Ctx}
+    {rest : List Shape} {room : Nat} {frame : List (BitVec 64 × Shape)}
+    (h : sig.CallerOk saved ret rest room frame above) (x : ι) :
+    CtxSub ((sig.pick x).returned saved rest room (sig.gives x ++ frame) above) (ret x) := by
+  have ho := h.owned_back x rfl
+  have ha := h.detached x
+  have := (h.each x).ret
+  rw [← ho, ha] at this
+  exact this
+
 /-- The caller left room for the function's own stack use, and possibly more. -/
 theorem CallerOk.room_split {sig : FnSigEx ι} {saved : Reg → Ty} {ret : ι → Ctx}
     {rest : List Shape} {room : Nat} {frame : List (BitVec 64 × Shape)}
@@ -101,5 +116,12 @@ theorem BlockOk.chooseRet {ι : Type} [Chosen ι] {a : BitVec 64} {Γ : Ctx} {i 
           have := Sub.codeAll (fun s => ret (Chosen.dec s)) (Chosen.enc x)
           rwa [Chosen.dec_enc] at this)),
         rfl, fun _ hf => hf, .refl _, rfl, rfl⟩) hrest
+
+/-- Code ready for a family of contexts given by the value a function
+chooses is ready for the context at any one value. -/
+theorem Sub.codeAll_at {ι : Type} [Chosen ι] (ret : ι → Ctx) (x : ι) :
+    Sub (.codeAll fun s => ret (Chosen.dec s)) (.code (ret x)) := by
+  have := Sub.codeAll (fun s => ret (Chosen.dec s)) (Chosen.enc x)
+  rwa [Chosen.dec_enc] at this
 
 end TypedAsm

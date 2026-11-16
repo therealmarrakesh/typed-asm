@@ -1060,6 +1060,13 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
     Γ.room = n + 8 → Φ next ret →
     CtxSub { Γ.moveSp (-8) with stack := .slot (.code ret) :: Γ.stack, room := n } Δ →
     HasType Φ fetch sys Ψ next Γ (.call (.ind rm))
+  /-- Call through such a value with a return address ready for a family of
+  contexts, each allowed at the instruction after the call: what a function
+  that chooses a value as it returns is called with. -/
+  | callAsAll {Γ Δ : Ctx} {ret : (Nat → BitVec 64) → Ctx} {rm : RM} {τ : Ty} {n : Nat} :
+    Holds Ψ next Γ rm τ → τ.Enters Δ → Γ.room = n + 8 → (∀ x, Φ next (ret x)) →
+    CtxSub { Γ.moveSp (-8) with stack := .slot (.codeAll ret) :: Γ.stack, room := n } Δ →
+    HasType Φ fetch sys Ψ next Γ (.call (.ind rm))
   /-- A register holding exactly the address of a function may be treated as
   a pointer to that function, to be called by any caller. -/
   | fnPtr {Γ : Ctx} {i : Instr} {r : Reg} {a : BitVec 64} {sig : FnSig} :

@@ -437,7 +437,7 @@ theorem BlockOk.joinOwned {a : BitVec 64} {Γ : Ctx} {r : Reg} {k₁ k₂ : Nat}
   .weaken (fun _ _ hΨ₁ _ _ h => h.joinOwned hΨ₁ hk₁ hk₂ hne hsz) hrest
 
 /-- A list is its element at one place followed by the rest, in some order. -/
-private theorem perm_cons_eraseIdx {α : Type} {l : List α} {k : Nat} {b : α}
+theorem perm_cons_eraseIdx {α : Type} {l : List α} {k : Nat} {b : α}
     (h : l[k]? = some b) : (b :: l.eraseIdx k).Perm l := by
   induction l generalizing k with
   | nil => cases h

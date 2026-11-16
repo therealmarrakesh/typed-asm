@@ -1,5 +1,6 @@
 import TypedAsm.Loc
 import TypedAsm.Linux
+import TypedAsm.Owned
 import TypedAsm.RegMap
 
 /-!
@@ -4430,7 +4431,8 @@ inductive Walk
   left to be shown for the context reached to stand for it. -/
   | enter (t : BitVec 64) (Δ : CtxS) (cs : List CondS)
   /-- The block returns: the type on top of the stack, a variable, is that
-  of code wanting a context that `Δ` may stand for, and this is what is left
+  of code wanting a context that `Δ` may stand for (or of code ready for a
+  family of contexts, one of which it is), and this is what is left
   to be shown for the context the return leaves to stand for `Δ`. For a
   function, `Δ` is what its signature says it returns with, and the caller's
   requirement is what makes that stand for the context returned to. -/
@@ -4459,6 +4461,10 @@ inductive Walk
   `call`, but the return address's type, the variable `j`, is that of code
   ready for a family of contexts, each allowed at `next`. -/
   | callAll (t next : BitVec 64) (j : Nat) (Δ : CtxS) (cs : List CondS)
+  /-- The block calls through a value of this type, which enters `Δ`, with
+  a return address ready for a family of contexts, each allowed at `next`:
+  a call through a pointer to a function that chooses a value. -/
+  | callViaAll (τ : TyS) (next : BitVec 64) (j : Nat) (Δ : CtxS) (cs : List CondS)
   /-- A register was given the address `v` of code, and from here on has
   the type that is the variable `h`: a pointer to that code. -/
   | asCode (v : BitVec 64) (h : Nat) (rest : Walk)
@@ -4496,7 +4502,7 @@ def Walk.holds (Q : CodeTy) (P : BitVec 64 → Ctx → Prop) (E : Option (BitVec
       (∀ f, fl.den ρ f → c.eval f = some false → fall.holds Q P E ρ)
   | .enter t Δ cs, ρ => Q t (Δ.den ρ) ∧ CondS.all ρ cs
   | .leave i Δ cs, ρ =>
-    (∃ D, (TyS.atom i).den ρ = .code D ∧ CtxSub (Δ.den ρ) D) ∧ CondS.all ρ cs
+    (∃ D, Sub ((TyS.atom i).den ρ) (.code D) ∧ CtxSub (Δ.den ρ) D) ∧ CondS.all ρ cs
   | .call t next j R Δ cs, ρ =>
     (TyS.atom j).den ρ = .code (R.den ρ) ∧ Q next (R.den ρ) ∧ Q t (Δ.den ρ) ∧ CondS.all ρ cs
   | .exit v, ρ => E (v.map (·.den ρ))
@@ -4508,6 +4514,10 @@ def Walk.holds (Q : CodeTy) (P : BitVec 64 → Ctx → Prop) (E : Option (BitVec
     (τ.den ρ).Enters (Δ.den ρ) ∧ (TyS.atom j).den ρ = .code (R.den ρ) ∧ Q next (R.den ρ) ∧
       CondS.all ρ cs
   | .asCode v h rest, ρ => CodeAt Q v ((TyS.atom h).den ρ) ∧ rest.holds Q P E ρ
+  | .callViaAll τ next j Δ cs, ρ =>
+    (τ.den ρ).Enters (Δ.den ρ) ∧
+      (∃ pre : (Nat → BitVec 64) → Ctx, (TyS.atom j).den ρ = .codeAll pre ∧ ∀ x, Q next (pre x)) ∧
+      CondS.all ρ cs
   | .callAll t next j Δ cs, ρ =>
     (∃ pre : (Nat → BitVec 64) → Ctx, (TyS.atom j).den ρ = .codeAll pre ∧ ∀ x, Q next (pre x)) ∧
       Q t (Δ.den ρ) ∧ CondS.all ρ cs
@@ -5439,11 +5449,17 @@ theorem leaveAt_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
             refine (CtxS.den_sp ρ Γ υ σ _ Γ.flags).trans ?_
             rw [hυ, Num.den_plus]; rfl
           rw [e₁] at hsub
-          refine .last hf (.ret (Δ := D) (σ := denShapes ρ σ (stackTail ρ Γ.stackRest))
-            ?_ (hsub.trans hD))
-          rw [CtxS.den_stack, hst]
-          show ShapeOf.mk 8 [(0, (TyS.atom j).den ρ)] :: _ = _
-          rw [hty]; rfl
+          have hstk : (Γ.den ρ).stack
+              = .slot ((TyS.atom j).den ρ) :: denShapes ρ σ (stackTail ρ Γ.stackRest) := by
+            rw [CtxS.den_stack, hst]; rfl
+          -- the return address may be taken at the weaker type: code wanting `D`
+          refine .weaken (Γ' := { Γ.den ρ with
+              stack := .slot (.code D) :: denShapes ρ σ (stackTail ρ Γ.stackRest) })
+            (fun _ _ _ _ _ hw => hw.sub
+              ⟨fun _ _ => .refl _, by rw [hstk]; exact .cons (.slot hty) (.refl _), rfl,
+                fun _ hf => hf, .refl _, rfl, rfl⟩) ?_
+          exact .last hf (.ret (Δ := D) (σ := denShapes ρ σ (stackTail ρ Γ.stackRest)) rfl
+            (hsub.trans hD))
         · cases hr
       · cases h
     · cases h
@@ -5615,6 +5631,17 @@ def viaAt (P : Prog) (a len : BitVec 64) (Γ : CtxS) : Instr → Option Walk
         | some cs => some (.callVia τ (a + len) e.2.1 e.2.2.1 e.2.2.2 (hc ++ (rc ++ cs)))
         | none => none
       | none => none
+    | none, some (τ, hc) =>
+      -- a function that chooses a value as it returns
+      match P.callsAll.find? (·.1 == a) with
+      | some e =>
+        match afterCall Γ e.2.1 with
+        | some (Γ', rc) =>
+          match subCtx Γ' e.2.2 with
+          | some cs => some (.callViaAll τ (a + len) e.2.1 e.2.2 (hc ++ (rc ++ cs)))
+          | none => none
+        | none => none
+      | none => none
     | _, _ => none
   | _ => none
 
@@ -5673,6 +5700,42 @@ theorem viaAt_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {
           · cases hcall
         · cases h
       · cases h
+    · next τ hc _ hh =>
+      split at h
+      · next e _ =>
+        split at h
+        · next Γ' rc hcall =>
+          split at h
+          · next cs hs =>
+            cases h
+            obtain ⟨hen, ⟨pre, hty, hret⟩, hall⟩ := hW
+            obtain ⟨h₁, h₂⟩ := CondS.all_append hc (rc ++ cs) hall
+            unfold afterCall at hcall
+            split at hcall
+            · next Γ'' hm =>
+              cases hcall
+              obtain ⟨hrc, hcs⟩ := CondS.all_append (Γ.room.minus 8).2 cs h₂
+              obtain ⟨υ, rfl, hυ⟩ := CtxS.moveSp_spec hm
+              have hsub := subCtx_sound hs hcs
+              have e₁ : ({ Γ.setReg .rsp υ with
+                    stack := .mk (.lit 8) (.cons 0 (.atom e.2.1) .nil) :: Γ.stack,
+                    room := (Γ.room.minus 8).1 } : CtxS).den ρ
+                  = { (Γ.den ρ).moveSp (-8) with
+                      stack := .slot (.codeAll pre) :: (Γ.den ρ).stack,
+                      room := (Γ.room.minus 8).1.den ρ } := by
+                refine (CtxS.den_sp ρ Γ υ _ _ Γ.flags).trans ?_
+                rw [hυ]
+                show ({ (Γ.den ρ).moveSp (-8) with
+                  stack := ShapeOf.mk 8 [(0, (TyS.atom e.2.1).den ρ)] :: _, room := _ } : Ctx) = _
+                rw [hty]; rfl
+              rw [e₁] at hsub
+              exact .last hf (.callAsAll
+                (held_sound (Γ := { Γ with blocks := P.blocks }) hP.blocks hh h₁) hen
+                (Num.minus_spec hrc) hret hsub)
+            · cases hcall
+          · cases h
+        · cases h
+      · cases h
     · cases h
   · cases h
 
@@ -5726,6 +5789,71 @@ def castAt (P : Prog) (a : BitVec 64) (Γ : CtxS) (transfers : Bool) : Option Ct
   -- where it runs into a label
   match (if transfers then hintAt P a else (P.enters.find? (·.1 == a)).map (·.2.2)) with
   | some Δ => castWanted P Δ regList Γ false
+  | none => none
+
+/-- The blocks owned, put in the order a list has their addresses: each is
+found by its address as it is written. Nothing unless every address is one
+block's and no block is left over. -/
+def pullOwned : List Val → List (Val × ShapeS) → Option (List (Val × ShapeS))
+  | [], [] => some []
+  | [], _ :: _ => none
+  | w :: ws, cur =>
+    match ownedAt w cur 0 with
+    | some (k, S) => (pullOwned ws (cur.eraseIdx k)).map ((w, S) :: ·)
+    | none => none
+
+theorem pullOwned_perm : (ws : List Val) → {cur l : List (Val × ShapeS)} →
+    pullOwned ws cur = some l → l.Perm cur
+  | [], [], l, h => by cases h; exact .nil
+  | [], _ :: _, l, h => by cases h
+  | w :: ws, cur, l, h => by
+    unfold pullOwned at h
+    split at h
+    · next k S ho =>
+      obtain ⟨i, hk, hi⟩ := ownedAt_spec cur 0 ho
+      have hki : k = i := by omega
+      subst hki
+      cases hp : pullOwned ws (cur.eraseIdx k) with
+      | none => rw [hp] at h; cases h
+      | some l' =>
+        rw [hp] at h; cases h
+        exact ((pullOwned_perm ws hp).cons (w, S)).trans (perm_cons_eraseIdx hi)
+    · cases h
+
+theorem denOwned_map (ρ : Env) : (l : List (Val × ShapeS)) → (tail : List (BitVec 64 × Shape)) →
+    denOwned ρ l tail = l.map (fun p => (p.1.den ρ, p.2.den ρ)) ++ tail
+  | [], _ => rfl
+  | (a, S) :: l, tail => by
+    show (a.den ρ, S.den ρ) :: denOwned ρ l tail = _
+    rw [denOwned_map ρ l tail]; rfl
+
+/-- The context reached with the blocks it owns in the order the context it
+is to be compared with has them, where they are the same blocks in another
+order: which block is listed first says nothing of the machine. -/
+def reorder (Δ Γ : CtxS) : Option CtxS :=
+  if Γ.owned.map (·.1) = Δ.owned.map (·.1) then none
+  else (pullOwned (Δ.owned.map (·.1)) Γ.owned).map fun l => { Γ with owned := l }
+
+theorem reorder_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
+    {a : BitVec 64} {Δ Γ Γ' : CtxS} (hr : reorder Δ Γ = some Γ')
+    (h : BlockOk Φ fetch sys Ψ a (Γ'.den ρ)) : BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
+  unfold reorder at hr
+  split at hr
+  · cases hr
+  · cases hp : pullOwned (Δ.owned.map (·.1)) Γ.owned with
+    | none => rw [hp] at hr; cases hr
+    | some l =>
+      rw [hp] at hr; cases hr
+      have hperm : (denOwned ρ l (ownedTail ρ Γ.ownedRest)).Perm (Γ.den ρ).owned := by
+        rw [CtxS.den_owned, denOwned_map, denOwned_map]
+        exact ((pullOwned_perm _ hp).map _).append_right _
+      exact .weaken (fun _ _ _ _ _ hw => hw.permOwned hperm) h
+
+/-- The same where the context to be compared with is the one given for an
+instruction. -/
+def reorderAt (P : Prog) (a : BitVec 64) (Γ : CtxS) (transfers : Bool) : Option CtxS :=
+  match (if transfers then hintAt P a else (P.enters.find? (·.1 == a)).map (·.2.2)) with
+  | some Δ => reorder Δ Γ
   | none => none
 
 /-- A system call that ends the program: `exit` or `exit_group`, by the
@@ -5921,6 +6049,9 @@ def walk (P : Prog) :
       match castAt P a Γ (transfers i) with
       | some Γ' => walk P code fuel k a Γ'
       | none =>
+      match reorderAt P a Γ (transfers i) with
+      | some Γ' => walk P code fuel k a Γ'
+      | none =>
       match endAt P k a len Γ i with
       | some W => W
       | none =>
@@ -5997,6 +6128,13 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
         unfold castAt at hc
         split at hc
         · exact castWanted_sound hP regList hc (walk_sound hsys hw hE code hcode fuel k a Γ' ρ hP h)
+        · cases hc
+      next =>
+      split at h
+      · next Γ' hc =>
+        unfold reorderAt at hc
+        split at hc
+        · exact reorder_sound hc (walk_sound hsys hw hE code hcode fuel k a Γ' ρ hP h)
         · cases hc
       next =>
       split at h

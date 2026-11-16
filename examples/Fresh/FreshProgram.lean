@@ -62,8 +62,8 @@ fail:
 The function `page` cannot say in its signature where the page it returns
 will be: the kernel decides. Its signature says instead that whatever
 address `x` comes back in `rax`, the caller owns a page there; and the place
-it returns to is typed for every `x`. Just before returning the function
-says which `x` it is returning with.
+it returns to is typed for every `x`. Which `x` the function returns with
+is found from what it returns with: the address in `rax`.
 
 Two smaller things are shown on the way. The program stores the page's own
 address in its first word, so that word is no longer typed as a number; the
