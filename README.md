@@ -37,9 +37,12 @@ What exists and is checked today:
 - And what it writes: data that is never written can say the bytes it
   holds, the type system keeps that true, and a program can be proved to
   offer the kernel, at every `write`, only bytes satisfying a stated
-  condition. `examples/Hello` is proved to write exactly its message, on
-  standard output. So far this covers what is written from such data; bytes
-  a program computes and then writes are not yet followed.
+  condition; and from that, that everything a whole run adds to the output
+  is the first so many bytes of something satisfying it, the kernel being
+  free to take fewer bytes than it is offered. `examples/Hello` is proved to
+  end with 0 and to write its message and nothing else, on standard output.
+  So far this covers what is written from such data; bytes a program
+  computes and then writes are not yet followed.
 - An assembler with labels for code and data. A program can have any number
   of segments, in any order. Each segment is executable, read-only or
   writable, and can be aligned.
@@ -71,8 +74,10 @@ jumped back to, called or returned to, and three commands:
   from every state meeting the contract, whatever the outside world does.
   With `exits Q` after it, it also proves that the program ends only with a
   status satisfying `Q`; with `writes R`, that every `write` it makes offers
-  a descriptor and bytes satisfying `R` (`asm_typing At data` first makes the
-  program's read-only data say its bytes).
+  a descriptor and bytes satisfying `R`, and that every entry a run adds to
+  the world's record of writes is the start of such bytes (`asm_typing At
+  data` first makes the program's read-only data say its bytes). The two may
+  be given together.
 
 Each instruction is typed without being told how. Eighteen of the twenty-four
 examples need nothing more than this. In the others, a label's block says

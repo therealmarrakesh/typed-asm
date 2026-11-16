@@ -31,4 +31,13 @@ asm_typing At data
 -- descriptor is 1 and the bytes offered are the message.
 asm_safety At.start exits (· = 0) writes (fun fd bytes => fd = 1 ∧ bytes = message)
 
+/-- Everything the program ever adds to the output is the message, or the
+first so many bytes of it where the kernel took fewer than it was offered. -/
+theorem output_is_message {s s' : State} (h : Entry s) (hs : Steps fetch linux s s') :
+    ∃ new, s'.world.writes = new ++ s.world.writes ∧ ∀ w ∈ new, ∃ n, w = message.take n := by
+  obtain ⟨new, e, hall⟩ := output_of_entry h s' hs
+  refine ⟨new, e, fun w hw => ?_⟩
+  obtain ⟨_, _, n, ⟨_, rfl⟩, rfl⟩ := hall w hw
+  exact ⟨n, rfl⟩
+
 end Hello

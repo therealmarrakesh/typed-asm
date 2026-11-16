@@ -471,7 +471,15 @@ elab_rules : command
         theorem $(id `writes_of_entry) {s : State} (h : $(id `Entry) s) :
             WritesOnly $(id `fetch) $r s :=
           $pf))
-      thms := thms ++ [`writes_of_entry]
+      elabCommand (← `(
+        /-- **Everything the program writes**: each entry a run adds to the
+        world's record of writes is the first so many bytes of something the
+        condition allows. The kernel may take fewer bytes than a `write`
+        offers it, and nothing else is ever written. -/
+        theorem $(id `output_of_entry) {s : State} (h : $(id `Entry) s) :
+            OutputOnly $(id `fetch) $r s :=
+          ($(id `writes_of_entry) h).output))
+      thms := thms ++ [`writes_of_entry, `output_of_entry]
     -- the proofs rest on Lean's three standard axioms and nothing else
     for thm in thms do
       let axs ← Lean.collectAxioms (ns ++ thm)

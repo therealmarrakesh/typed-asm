@@ -1,5 +1,6 @@
 import TypedAsm.ArgText
 import TypedAsm.Linux
+import TypedAsm.Output
 
 /-!
 # From a typed program to a safe run
@@ -271,5 +272,34 @@ theorem EntryTexts.safeMem_exits_writes {Q : BitVec 32 → Prop}
   have he := Safe.of_exitsOnly hw.1
   ⟨.of_safe linux_frame (Asm.loaded h.choose_spec.1.loaded) he.1, he.2,
     fun s' hs' len hf hax => hw.2 s' hs'.exitsOnly len hf hax⟩
+
+/-! ## Everything a program writes
+
+The record the world keeps of what was written, over a whole run. -/
+
+/-- **Everything a program has written.** Where every `write` the program
+reaches offers a descriptor and bytes satisfying `R`, each entry the run has
+added to the record of writes is the first so many bytes of something
+satisfying `R`: the kernel may take fewer bytes than it is offered, and
+nothing else is ever written. -/
+def OutputOnly (fetch : Fetch) (R : BitVec 64 → List (BitVec 8) → Prop) (s : State) : Prop :=
+  ∀ s', Steps fetch linux s s' → ∃ new, s'.world.writes = new ++ s.world.writes ∧
+    ∀ w ∈ new, ∃ fd bytes n, R fd bytes ∧ w = bytes.take n
+
+theorem WritesOnly.output {fetch : Fetch} {R : BitVec 64 → List (BitVec 8) → Prop} {s : State}
+    (h : WritesOnly fetch R s) : OutputOnly fetch R s := by
+  intro s' hs'
+  induction hs' with
+  | refl s => exact ⟨[], rfl, fun _ hw => by cases hw⟩
+  | @step s t u hst _ ih =>
+    obtain ⟨new, e, hall⟩ := ih (fun v hv => h v (.step hst hv))
+    rcases step_writes hst with e' | ⟨⟨len, hf⟩, hax, n, e'⟩
+    · exact ⟨new, by rw [e, e'], hall⟩
+    · refine ⟨new ++ [s.offered.take n], by rw [e, e', List.append_assoc]; rfl, fun w hw => ?_⟩
+      rcases List.mem_append.mp hw with hw | hw
+      · exact hall w hw
+      · rw [List.mem_singleton.mp hw]
+        exact ⟨_, _, n, h s (.refl s) len hf hax, rfl⟩
+
 
 end TypedAsm
