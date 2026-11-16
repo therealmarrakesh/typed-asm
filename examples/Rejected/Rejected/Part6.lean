@@ -53,8 +53,8 @@ example (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (ro
     (hK : (pageSig p).CallerOk saved ret rest room) :
     BlockOk Φh handedFetch linux Ψ (Asm.addr handed 0 .drops)
       ((pageSig p).entry saved ret rest room) := by
+  -- the `munmap` is a step like any other
   ty_steps
-  ty_munmap
   ty_block
 
 /-! Comparing memory with a register, a one-operand signed multiply, a

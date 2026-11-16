@@ -2292,6 +2292,10 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let linux? : Option Expr ← (do
       try pure (some (← synthInstance (mkApp (mkConst ``LikeLinux) sys)))
       catch _ => pure none)
+    -- the same but for `write`: the other calls are stepped over then too
+    let linuxNW? : Option Expr ← (do
+      try pure (some (← synthInstance (mkApp (mkConst ``LikeLinuxNW) sys)))
+      catch _ => pure none)
     let ((result, prog?), atoms) ← (do
       let some S₀ ← (match kept? with
         | some (Sc, _) => pure (some Sc)
@@ -2377,9 +2381,15 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           break
         -- a system call that returns is a step like any other
         if let .syscall := i then
-          if linux?.isNone then break
+          if linuxNW?.isNone then break
           if advanced && (stops?.getD #[]).contains at' then break
-          let some (S', cs) := Sym.stepSys cur | do
+          -- an `mmap` for memory the program is to own: the walk ends in what
+          -- follows it, twice
+          if (Sym.mmapAt { P with linux := true } k (BitVec.ofNat 64 next') cur i).isSome then
+            if stops?.isNone then break
+            moves := moves.push (.split at' i len')
+            break
+          let some (S', cs) := Sym.stepSys cur linux?.isSome | do
             if (Sym.exitAt cur i).isSome then break
             trace[TypedAsm.fast] "system call not stepped: rax {toExpr (cur.regs.get .rax)}, rsi {
               toExpr (cur.regs.get .rsi)}, rdx {toExpr (cur.regs.get .rdx)}, owned {toExpr cur.owned}"
@@ -2673,7 +2683,8 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       enters := enters.toList.map fun e => (BitVec.ofNat 64 e.at', BitVec.ofNat 64 e.t, e.Δ)
       leaves := leave?.toList.map fun e => (BitVec.ofNat 64 e.at', e.Δ)
       calls := call?.toList.map fun e => (BitVec.ofNat 64 e.at', e.j, e.R, e.Δ)
-      linux := linux?.isSome }
+      linux := linuxNW?.isSome
+      plainWrite := linux?.isSome }
     let S := { S₀ with blocks := [] }
     -- the context at the end: the walk again, as the checker makes it
     let code : List (BitVec 64 × Instr × BitVec 64) :=
@@ -2695,11 +2706,13 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       | .leave _ _ _ => none
       | .call .. => none
       | .exit _ => none
+      | .fresh _ _ _ => none
     let rec enters? : Sym.Walk → Bool
       | .enter _ _ _ => true
       | .leave _ _ _ => true
       | .call .. => true
       | .exit _ => false
+      | .fresh _ l r => enters? l || enters? r
       | .conds _ rest => enters? rest
       | .name _ rest => enters? rest
       | .both l r => enters? l || enters? r
@@ -2720,6 +2733,7 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       | .both l r => exits? l || exits? r
       | .err _ l r => exits? l || exits? r
       | .byte _ l r => exits? l || exits? r
+      | .fresh _ l r => exits? l || exits? r
       | .branch _ _ l r => exits? l || exits? r
       | _ => false
     let S'? := final W
@@ -2914,6 +2928,24 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           throw e
         trace[TypedAsm.fast] "called within the walk"
         instantiateMVars m
+      | .fresh k l r =>
+        let pad := atoms.val ++ Array.replicate (k + 1 - atoms.val.size) (toExpr (0 : BitVec 64))
+        let hl ← withLocalDeclD `e bv fun v => do
+          withLocalDeclD `herr (mkApp (mkConst ``SysErr) v) fun hv => do
+            let atoms' := { atoms with val := pad.set! k v }
+            let body ← down l atoms' ((vs.push v).push hv) ((names.push `e).push `herr)
+            mkLambdaFVars #[v, hv] (← instantiateMVars body)
+        let hr ← withLocalDeclD `p bv fun v => do
+          let page ← mkEq (← mkAppM ``HMod.hMod #[← mkAppM ``BitVec.toNat #[v], mkNatLit 4096])
+            (mkNatLit 0)
+          withLocalDeclD `hpage page fun h₁ => do
+            withLocalDeclD `hlow (← mkAppM ``LT.lt #[v, toExpr (0x800000000000 : BitVec 64)])
+                fun h₂ => do
+              let atoms' := { atoms with val := pad.set! k v }
+              let body ← down r atoms' (((vs.push v).push h₁).push h₂)
+                (((names.push `p).push `hpage).push `hlow)
+              mkLambdaFVars #[v, h₁, h₂] (← instantiateMVars body)
+        mkAppM ``And.intro #[hl, hr]
       | .exit v =>
         match wantQ?, v with
         | none, _ => pure (mkConst ``True.intro)
@@ -2970,13 +3002,16 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let PE := toExpr P
     let WE := toExpr W
     let hP := mkAppN (mkConst ``Sym.Prog.Ok.mk) #[Ψ, ρ, PE, hB, hT, hK]
-    let hsys := match linux? with
+    let hsys := match linuxNW? with
+      | some inst => mkApp2 (mkConst ``Sym.likeLinuxNW) sys inst
+      | none => mkApp (mkConst ``Sym.anySystemNW) sys
+    let hwr := match linux? with
       | some inst => mkApp2 (mkConst ``Sym.likeLinux) sys inst
       | none => mkApp (mkConst ``Sym.anySystem) sys
     let walkE := mkAppN (mkConst ``Sym.walk) #[PE, codeE, fuelE, mkNatLit k₀, a, SE]
     let hwalk ← mkExpectedTypeHint (← mkEqRefl walkE) (← mkEq walkE WE)
     goal.assign (mkAppN (mkConst ``Sym.walk_sound')
-      #[Φ, fetch, sys, Ψ, ρ, PE, codeE, endsE, hP, hcode, hsys, hEnds, fuelE, mkNatLit k₀, a, SE,
+      #[Φ, fetch, sys, Ψ, ρ, PE, codeE, endsE, hP, hcode, hsys, hwr, hEnds, fuelE, mkNatLit k₀, a, SE,
         WE, hwalk, hW])
     -- the values named are in the goals for the rest of the block
     let mut goals : List MVarId := []
@@ -3461,10 +3496,25 @@ open Lean Meta Elab Tactic in
 /-- Types the straight-line instructions before the one something is about to
 be said of, so that a hint may be given for a call, a branch or a system
 call without first stepping up to it. An instruction that does not type by
-itself is where this stops. -/
-def advance : TacticM Unit := do
+itself is where this stops, and so is the system call numbered `before`,
+which would otherwise be stepped over. -/
+def advance (before : Option Nat := none) : TacticM Unit := do
+  -- whether the block is at the system call something is to be said of
+  let there : TacticM Bool := do
+    let some nr := before | return false
+    try
+      let ty := (← instantiateMVars (← (← getMainGoal).getType)).consumeMData
+      unless ty.isAppOf ``BlockOk do return false
+      let a := ty.getAppArgs[4]!
+      unless isAddrLit a do return false
+      let some n := a.appArg!.nat? | return false
+      let some m ← instrsOf ty.getAppArgs[1]! | return false
+      let some (.syscall, _) := m[n]? | return false
+      return (← syscallNumber ty.getAppArgs[5]!) == some nr
+    catch _ => return false
   let mut go := true
   while go do
+    if ← there then break
     let s ← saveState
     try
       match ← typeStep with

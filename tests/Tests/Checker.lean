@@ -338,6 +338,40 @@ example : ((afterRet { reg base .rsp (.atom 3) with
     stack := [.mk (.lit 8) (.cons 0 (.atom 5) .nil)] }).map fun x => (x.1, x.2.regs.get .rsp))
     = some (5, .shifted 3 8) := by decide
 
+/-! ## Memory asked of the kernel and given back -/
+
+/-- The registers set for an `mmap` of one page that the program is to own. -/
+def asking : CtxS :=
+  reg (reg (reg (reg (reg base .rax (.eq (.lit 9))) .rsi (.eq (.lit 100))) .rdx (.eq (.lit 3)))
+    .r10 (.eq (.lit 0x22))) .rdi (.eq (.lit 0))
+
+/-- What the context owns on the side of an `mmap` where it gave memory. -/
+def got (Γ : CtxS) : Option (List (Val × ShapeS)) :=
+  match mmapAt { linux := true } 0 0x1000 Γ .syscall with
+  | some (.fresh _ _ (.stop _ Δ)) => some Δ.owned
+  | _ => none
+
+-- whole pages, at an address the walk names
+example : got asking = some [(.var 0, .mk (.lit 4096) .nil)] := by decide
+-- not for memory that is a file's, nor at a place the program chooses
+example : got (reg asking .r10 (.eq (.lit 0x21))) = none := by decide
+example : got (reg asking .rdi (.eq (.lit 0x10000))) = none := by decide
+-- nor where the system is not known to be like Linux
+example : (mmapAt {} 0 0x1000 asking .syscall).isNone = true := by decide
+
+/-- A page owned at the address in `rdi`, and the registers set to give back `len` bytes. -/
+def giving (len : BitVec 64) : CtxS :=
+  { reg (reg (reg base .rax (.eq (.lit 11))) .rdi (.eq (.var 0))) .rsi (.eq (.lit len)) with
+    owned := [(.var 0, .mk (.lit 4096) .nil)] }
+
+-- given back whole: the context owns nothing, and nothing is left to show
+example : (stepSys (giving 4096)).map (fun x => (x.1.owned, x.2.length)) = some ([], 0) := by
+  decide
+-- a length that does not cover exactly the block is left as something false to show
+example : (stepSys (giving 8192)).map (·.2.length) = some 1 := by decide
+-- and an address that is not a block's own is refused
+example : (stepSys (reg (giving 4096) .rdi (.eq (.lit 5)))).isNone = true := by decide
+
 /-! ## Why an instruction is refused -/
 
 def isReason (Γ : CtxS) (i : Instr) (p : Reject → Bool) : Bool :=

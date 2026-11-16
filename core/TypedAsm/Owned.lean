@@ -486,19 +486,19 @@ theorem BlockOk.frontOwnedAt {a : BitVec 64} {Γ : Ctx} {k : Nat} {base : BitVec
 /-- An `mmap` whose memory the program is to own, in a block: what follows is
 typed twice, for an error number in `rax` and for the address of whole pages
 of plain bytes that the context then owns. -/
-theorem BlockOk.mmapOwn {a : BitVec 64} {Γ : Ctx} {len : BitVec 64} {l : BitVec 64}
+theorem BlockOk.mmapOwn [LikeLinuxNW sys] {a : BitVec 64} {Γ : Ctx} {len : BitVec 64} {l : BitVec 64}
     {size : Nat}
     (hf : fetch a = some (.syscall, l)) (hΓ : Γ.regs .rax = .eq 9)
     (hlen : Γ.regs .rsi = .eq len) (hprot : Γ.regs .rdx = .eq 3)
     (hflags : Γ.regs .r10 = .eq 0x22) (hhint : Γ.regs .rdi = .eq 0)
     (hsize : size = (len.toNat + 4095) / 4096 * 4096)
     (herr : ∀ e, SysErr e →
-      BlockOk Φ fetch linux Ψ (a + l) (Γ.afterSyscall.setReg .rax (.eq e)))
+      BlockOk Φ fetch sys Ψ (a + l) (Γ.afterSyscall.setReg .rax (.eq e)))
     (hok : ∀ p : BitVec 64, p.toNat % 4096 = 0 → p < 0x800000000000 →
-      BlockOk Φ fetch linux Ψ (a + l)
+      BlockOk Φ fetch sys Ψ (a + l)
         { Γ.afterSyscall.setReg .rax (.eq p) with
           owned := (p, ShapeOf.raw size) :: Γ.owned }) :
-    BlockOk Φ fetch linux Ψ a Γ := by
+    BlockOk Φ fetch sys Ψ a Γ := by
   subst hsize
   exact .sem hf (linux_mmap_own hΓ hlen hprot hflags hhint) (fun x =>
     match x with

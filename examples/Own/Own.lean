@@ -37,9 +37,9 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     · ty_split .rbx at 16
       -- the stores give the fields their types, in whichever block each
       -- address falls; the loads find them
-      -- one block again, and give it back: the context owns nothing
+      -- one block again; giving it back needs nothing said: the context then
+      -- owns nothing
       ty_join .rbx
-      ty_munmap
       -- two more pages, at `q`
       ty_mmap_own as q
       · ty_block

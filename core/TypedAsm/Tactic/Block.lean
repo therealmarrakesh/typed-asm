@@ -1838,7 +1838,7 @@ owns, whose address is in `rdi` and whose whole size is in `rsi`. Afterwards
 the context no longer owns it. -/
 elab_rules : tactic
   | `(tactic| ty_munmap) => withTrail "ty_munmap" do
-    advance
+    advance (some 11)
     let others := (← getGoals).drop 1
     let gs ← withOwnedPlace (fun k => do
         let kq := Syntax.mkNumLit (toString k)
