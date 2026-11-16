@@ -2252,7 +2252,15 @@ def store (next : BitVec 64) (Γ : CtxS) (s : Reg) (m : Mem) : Option (CtxS × L
           -- the type that is there is kept where what is stored has it
           if pl.shape.sole pl.off ∧ (Γ.regs.get s).subB τ = true then some (Γ, cs)
           else storeOwnedNew next Γ s m pl cs k a
-        | _ => storeOwnedNew next Γ s m pl cs k a
+        | some none => storeOwnedNew next Γ s m pl cs k a
+        | none =>
+          -- an element of an array keeps its type: what is stored must have it
+          match pl.shape.elem pl.off with
+          | some (τ, es) =>
+            if pl.shape.elemSole pl.off = true ∧ (Γ.regs.get s).subB τ = true then
+              some (Γ, cs ++ es)
+            else none
+          | none => storeOwnedNew next Γ s m pl cs k a
       | .piece _ => writes next Γ 8 m
       | .block true =>
         match pl.shape.look pl.off with
@@ -2339,6 +2347,19 @@ theorem store_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
             (by rw [CtxS.den_regs]; exact TyS.subB_sound hkeep.2)
         · exact storeOwnedNew_sound hB hs hl hk h hc
       · exact storeOwnedNew_sound hB hs hl hk h hc
+      · split at h
+        · next τ es he =>
+          split at h
+          · next hkeep =>
+            cases h
+            obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc
+            have hloc := locate_spec hB (Ψ := Ψ) (next := next) hl h₁
+            rw [hk] at hloc
+            exact hloc.storeOwnedKeep hs (ShapeS.elem_typed (x := (τ, es)) he h₂)
+              (ShapeS.elemSole_spec (x := (τ, es)) he h₂ hkeep.1)
+              (by rw [CtxS.den_regs]; exact TyS.subB_sound hkeep.2)
+          · cases h
+        · exact storeOwnedNew_sound hB hs hl hk h hc
     · exact .storeInt (writes_sound hB h hc).1
     · next hk =>
       split at h
