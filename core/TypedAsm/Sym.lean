@@ -3874,6 +3874,25 @@ theorem Agrees.lookup {fetch : Fetch} : (code : List (BitVec 64 × Instr × BitV
     · next e => cases h; subst e; exact hc.1
     · exact Agrees.lookup rest hc.2 h
 
+/-- The instruction listed at an address, and the instructions listed after
+it: a walk takes its instructions in the order they are listed, so the next
+one is found at once. -/
+def lookupRest : List (BitVec 64 × Instr × BitVec 64) → BitVec 64 →
+    Option ((Instr × BitVec 64) × List (BitVec 64 × Instr × BitVec 64))
+  | [], _ => none
+  | (a, x) :: rest, b => if a = b then some (x, rest) else lookupRest rest b
+
+theorem Agrees.lookupRest {fetch : Fetch} : (code : List (BitVec 64 × Instr × BitVec 64)) →
+    Agrees fetch code → {a : BitVec 64} → {x : Instr × BitVec 64} →
+    {rest : List (BitVec 64 × Instr × BitVec 64)} → Sym.lookupRest code a = some (x, rest) →
+    fetch a = some x ∧ Agrees fetch rest
+  | [], _, _, _, _, h => by cases h
+  | (b, y) :: tail, hc, a, x, rest, h => by
+    unfold Sym.lookupRest at h
+    split at h
+    · next e => cases h; subst e; exact hc
+    · exact Agrees.lookupRest tail hc.2 h
+
 /-- The checker run from an address for at most so many instructions, with
 the program's blocks at hand: where it stops, the context there, and what is
 left to be shown. It stops where no instruction is listed or it has no answer. -/
@@ -5702,8 +5721,10 @@ def hintAt (P : Prog) (a : BitVec 64) : Option CtxS :=
 /-- The registers that hold exactly a block's address where the context the
 block is to be compared with at this instruction wants a pointer, made
 pointers. -/
-def castAt (P : Prog) (a : BitVec 64) (Γ : CtxS) : Option CtxS :=
-  match hintAt P a with
+def castAt (P : Prog) (a : BitVec 64) (Γ : CtxS) (transfers : Bool) : Option CtxS :=
+  -- an instruction that goes on to the next is compared with a context only
+  -- where it runs into a label
+  match (if transfers then hintAt P a else (P.enters.find? (·.1 == a)).map (·.2.2)) with
   | some Δ => castWanted P Δ regList Γ false
   | none => none
 
@@ -5826,42 +5847,87 @@ theorem mmapAt_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} 
     · cases h
   · cases h
 
+/-- Whether an instruction can pass control elsewhere than to the one after
+it, or end the program. The walk asks this once of each instruction: one
+that cannot is not looked at for any of the ways a block may end. -/
+def transfers : Instr → Bool
+  | .syscall | .ret | .call _ | .jmp _ | .jcc _ _ => true
+  | _ => false
+
+/-- The ways a block may end at an instruction, each tried: a call that ends
+the program, memory asked of the kernel, a jump or a call through a value, a
+return, a call, a jump that hands the block over. -/
+def endAt (P : Prog) (k : Nat) (a len : BitVec 64) (Γ : CtxS) (i : Instr) : Option Walk :=
+  if transfers i then
+    match exitAt Γ i with
+    | some W => some W
+    | none =>
+    match mmapAt P k (a + len) Γ i with
+    | some W => some W
+    | none =>
+    match viaAt P a len Γ i with
+    | some W => some W
+    | none =>
+    match leaveAt P a Γ i with
+    | some W => some W
+    | none =>
+    match callAt P a len Γ i with
+    | some W => some W
+    | none => enterJump P a len Γ i
+  else none
+
+theorem endAt_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
+    {P : Prog} {k : Nat} {a len : BitVec 64} {Γ : CtxS} {i : Instr} {W : Walk}
+    {E : Option (BitVec 64) → Prop} (hP : P.Ok Ψ ρ) (hsys : P.linux = true → LikeLinuxNW sys)
+    (hE : sys.EndsWhen E) (hf : fetch a = some (i, len)) (h : endAt P k a len Γ i = some W)
+    (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) E ρ) : BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
+  unfold endAt at h
+  split at h
+  · split at h
+    · next W' hj => cases h; exact exitAt_sound hE hf hj hW
+    next =>
+    split at h
+    · next W' hj => cases h; exact mmapAt_sound hsys hf hj hW
+    next =>
+    split at h
+    · next W' hj => cases h; exact viaAt_sound hP hf hj hW
+    next =>
+    split at h
+    · next W' hj => cases h; exact leaveAt_sound hf hj hW
+    next =>
+    split at h
+    · next W' hj => cases h; exact callAt_sound hf hj hW
+    · exact enterJump_sound hf h hW
+  · cases h
+
+/-- What is found only where it is looked for. -/
+theorem guarded_some {α : Type} {b : Bool} {x : Option α} {w : α}
+    (h : (if b then x else none) = some w) : x = some w := by
+  cases b
+  · cases h
+  · exact h
+
 /-- The checker walked from an address for at most so many moves, `k` being
 a variable no term yet mentions. Before an instruction, a pointer to a block
 of a kind that it reaches through is opened, and a value it needs to speak
 of is named; after it, an address of data just loaded is made a pointer. -/
-def walk (P : Prog) (code : List (BitVec 64 × Instr × BitVec 64)) :
-    Nat → Nat → BitVec 64 → CtxS → Walk
-  | 0, _, a, Γ => .stop a Γ
-  | fuel + 1, k, a, Γ =>
-    match lookup code a with
+def walk (P : Prog) :
+    List (BitVec 64 × Instr × BitVec 64) → Nat → Nat → BitVec 64 → CtxS → Walk
+  | _, 0, _, a, Γ => .stop a Γ
+  | code, fuel + 1, k, a, Γ =>
+    match lookupRest code a with
     | none => .stop a Γ
-    | some (i, len) =>
-      match castAt P a Γ with
+    | some ((i, len), rest) =>
+      match castAt P a Γ (transfers i) with
       | some Γ' => walk P code fuel k a Γ'
       | none =>
-      match exitAt Γ i with
+      match endAt P k a len Γ i with
       | some W => W
       | none =>
-      match mmapAt P k (a + len) Γ i with
-      | some W => W
+      match (if transfers i then jumpTo P a len i else none) with
+      | some t => walk P rest fuel k t Γ
       | none =>
-      match viaAt P a len Γ i with
-      | some W => W
-      | none =>
-      match leaveAt P a Γ i with
-      | some W => W
-      | none =>
-      match callAt P a len Γ i with
-      | some W => W
-      | none =>
-      match enterJump P a len Γ i with
-      | some W => W
-      | none =>
-      match jumpTo P a len i with
-      | some t => walk P code fuel k t Γ
-      | none =>
-      match branchTo P a len i with
+      match (if transfers i then branchTo P a len i else none) with
       | some (c, t) =>
         .conds (decideConds Γ.flags c) (.branch Γ.flags c (.stop t Γ) (.stop (a + len) Γ))
       | none =>
@@ -5894,8 +5960,8 @@ def walk (P : Prog) (code : List (BitVec 64 × Instr × BitVec 64)) :
             .name k (walk P code fuel (k + 1) a (Γ.setReg r (.eq (.var k))))
           else .stop a Γ
         | none =>
-          match sysStep P Γ i with
-          | some (Γ', cs) => .conds cs (walk P code fuel k (a + len) Γ')
+          match (if transfers i then sysStep P Γ i else none) with
+          | some (Γ', cs) => .conds cs (walk P rest fuel k (a + len) Γ')
           | none =>
           match step (a + len) { Γ with blocks := P.blocks } i with
           | some (Γ', cs) =>
@@ -5905,60 +5971,47 @@ def walk (P : Prog) (code : List (BitVec 64 × Instr × BitVec 64)) :
             | none =>
               match codeCast P Γ' i with
               | some (d, v, h) =>
-                .conds cs (.asCode v h (walk P code fuel k (a + len) (Γ'.setReg d (.atom h))))
-              | none => .conds cs (walk P code fuel k (a + len) (castData P Γ' i))
+                .conds cs (.asCode v h (walk P rest fuel k (a + len) (Γ'.setReg d (.atom h))))
+              | none => .conds cs (walk P rest fuel k (a + len) (castData P Γ' i))
           | none => .stop a Γ
 
 /-- **A walk whose conditions hold types the block it started at**, if the
 block where it stopped is typed. -/
 theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P : Prog}
-    {code : List (BitVec 64 × Instr × BitVec 64)} {E : Option (BitVec 64) → Prop}
-    (hcode : Agrees fetch code) (hsys : P.linux = true → LikeLinuxNW sys)
+    {E : Option (BitVec 64) → Prop} (hsys : P.linux = true → LikeLinuxNW sys)
     (hw : P.plainWrite = true → LikeLinux sys) (hE : sys.EndsWhen E) :
+    (code : List (BitVec 64 × Instr × BitVec 64)) → Agrees fetch code →
     (fuel k : Nat) → (a : BitVec 64) → (Γ : CtxS) → (ρ : Env) → P.Ok Ψ ρ →
     (walk P code fuel k a Γ).holds Φ (BlockOk Φ fetch sys Ψ) E ρ →
     BlockOk Φ fetch sys Ψ a (Γ.den ρ)
-  | 0, _, _, _, _, _, h => h
-  | fuel + 1, k, a, Γ, ρ, hP, h => by
+  | _, _, 0, _, _, _, _, _, h => h
+  | code, hcode, fuel + 1, k, a, Γ, ρ, hP, h => by
     unfold walk at h
     split at h
     · exact h
-    · next i len hl =>
+    · next i len rest hl =>
+      have hfetch := (Agrees.lookupRest code hcode hl).1
+      have hrestOk := (Agrees.lookupRest code hcode hl).2
       split at h
       · next Γ' hc =>
         unfold castAt at hc
         split at hc
-        · exact castWanted_sound hP regList hc (walk_sound hcode hsys hw hE fuel k a Γ' ρ hP h)
+        · exact castWanted_sound hP regList hc (walk_sound hsys hw hE code hcode fuel k a Γ' ρ hP h)
         · cases hc
       next =>
       split at h
-      · next W hj => exact exitAt_sound hE (Agrees.lookup code hcode hl) hj h
-      next =>
-      split at h
-      · next W hj => exact mmapAt_sound hsys (Agrees.lookup code hcode hl) hj h
-      next =>
-      split at h
-      · next W hj => exact viaAt_sound hP (Agrees.lookup code hcode hl) hj h
-      next =>
-      split at h
-      · next W hj => exact leaveAt_sound (Agrees.lookup code hcode hl) hj h
-      next =>
-      split at h
-      · next W hj => exact callAt_sound (Agrees.lookup code hcode hl) hj h
-      next =>
-      split at h
-      · next W hj => exact enterJump_sound (Agrees.lookup code hcode hl) hj h
+      · next W hj => exact endAt_sound hP hsys hE hfetch hj h
       next =>
       split at h
       · next t hj =>
-        obtain ⟨d, rfl, rfl⟩ := jumpTo_spec hj
-        exact .jump (Agrees.lookup code hcode hl) (walk_sound hcode hsys hw hE fuel k _ Γ ρ hP h)
+        obtain ⟨d, rfl, rfl⟩ := jumpTo_spec (guarded_some hj)
+        exact .jump hfetch (walk_sound hsys hw hE rest hrestOk fuel k _ Γ ρ hP h)
       next =>
       split at h
       · next c t hb =>
-        obtain ⟨d, rfl, rfl⟩ := branchTo_spec hb
+        obtain ⟨d, rfl, rfl⟩ := branchTo_spec (guarded_some hb)
         obtain ⟨hdec, htaken, hfall⟩ := h
-        exact .branchIn (Agrees.lookup code hcode hl) (decideConds_spec hdec)
+        exact .branchIn hfetch (decideConds_spec hdec)
           (fun f hf hc => htaken f hf hc) (fun f hf hc => hfall f hf hc)
       next =>
       split at h
@@ -5995,7 +6048,7 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
           have h₀ := h.1
           simp only [Walk.holds] at h₀
           rw [CtxS.den_setReg] at h₀
-          refine .strByte (Agrees.lookup code hcode hl) hd hr hdr
+          refine .strByte hfetch hd hr hdr
             (by rw [CtxS.den_regs, hΓ]; rfl) h₀ (fun b hb0 hb256 => ?_)
           have h₁ := h.2 b hb0 hb256
           simp only [Walk.holds] at h₁
@@ -6014,7 +6067,7 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
           split at h
           · exact h
           · next hr =>
-            have := walk_sound hcode hsys hw hE fuel k a (Γ.setReg r (.ptr S w off)) ρ hP h
+            have := walk_sound hsys hw hE code hcode fuel k a (Γ.setReg r (.ptr S w off)) ρ hP h
             rw [CtxS.den_setReg] at this
             exact .openRef hr (by rw [CtxS.den_regs, toOpen_spec ho]; rfl)
               (KindsOk.lookup _ hP.kinds hk) this
@@ -6025,7 +6078,7 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
           · next hu =>
             simp only [Bool.and_eq_true] at hu
             have key : ∀ x, BlockOk Φ fetch sys Ψ a ((Γ.den ρ).setReg r (.eq x)) := fun x => by
-              have := walk_sound hcode hsys hw hE fuel (k + 1) a (Γ.setReg r (.eq (.var k)))
+              have := walk_sound hsys hw hE code hcode fuel (k + 1) a (Γ.setReg r (.eq (.var k)))
                 (ρ.setVal k x) (hP.setVal hu.1.2 hu.2) (h x)
               rw [CtxS.den_setReg, CtxS.den_setVal hu.1.1] at this
               have e : (TyS.eq (.var k)).den (ρ.setVal k x) = .eq x := by
@@ -6039,13 +6092,14 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
           · exact h
         · split at h
           · next Γ' cs hs =>
+            have hs := guarded_some hs
             unfold sysStep at hs
             split at hs
             · split at hs
               · next hlin =>
                 haveI := hsys hlin
-                exact .sys (Agrees.lookup code hcode hl) (stepSys_sound hw hs h.1)
-                  (walk_sound hcode hsys hw hE fuel k (a + len) Γ' ρ hP h.2)
+                exact .sys hfetch (stepSys_sound hw hs h.1)
+                  (walk_sound hsys hw hE rest hrestOk fuel k (a + len) Γ' ρ hP h.2)
               · cases hs
             · cases hs
           next =>
@@ -6055,17 +6109,17 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
               hP.blocks hs
             split at h
             · next Δ cs' hh =>
-              exact .last (Agrees.lookup code hcode hl)
+              exact .last hfetch
                 (.straight (hst h.1) (handOver_sound hh h.2.1 h.2.2))
             · split at h
               · next d v hh hcc =>
                 obtain ⟨hd, hΓd⟩ := codeCast_spec hcc
-                have hrest := walk_sound hcode hsys hw hE fuel k (a + len) _ ρ hP h.2.2
+                have hrest := walk_sound hsys hw hE rest hrestOk fuel k (a + len) _ ρ hP h.2.2
                 rw [CtxS.den_setReg] at hrest
-                exact .step (Agrees.lookup code hcode hl) (hst h.1)
+                exact .step hfetch (hst h.1)
                   (h.2.1.block hd (by rw [CtxS.den_regs, hΓd]; rfl) hrest)
-              · exact .step (Agrees.lookup code hcode hl) (hst h.1)
-                  (castData_sound hP (walk_sound hcode hsys hw hE fuel k (a + len) _ ρ hP h.2))
+              · exact .step hfetch (hst h.1)
+                  (castData_sound hP (walk_sound hsys hw hE rest hrestOk fuel k (a + len) _ ρ hP h.2))
           · exact h
 
 /-- The same, from the walk written out. -/
@@ -6075,7 +6129,7 @@ theorem walk_sound' {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {
     (hw : P.plainWrite = true → LikeLinux sys) (hE : sys.EndsWhen E) {fuel k : Nat} {a : BitVec 64} {Γ : CtxS}
     {W : Walk} (h : walk P code fuel k a Γ = W) (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) E ρ) :
     BlockOk Φ fetch sys Ψ a (Γ.den ρ) :=
-  walk_sound hcode hsys hw hE fuel k a Γ ρ hP (by rw [h]; exact hW)
+  walk_sound hsys hw hE code hcode fuel k a Γ ρ hP (by rw [h]; exact hW)
 
 /-- An operating system like Linux, for a walk that steps over system calls. -/
 theorem likeLinux {sys : Syscall} [i : LikeLinux sys] : true = true → LikeLinux sys := fun _ => i
