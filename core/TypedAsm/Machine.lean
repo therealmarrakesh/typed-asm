@@ -24,6 +24,17 @@ namespace State
 def canExec (s : State) (a : BitVec 64) (n : Nat) : Bool :=
   (List.range n).all fun i => (s.perm (a + BitVec.ofNat 64 i)).executable
 
+/-- **Executable memory is memory a program can have**: it lies below
+`addrTop`. So no instruction is fetched from an address the processor would
+refuse to jump to. -/
+theorem canExec_top {s : State} {a : BitVec 64} {n : Nat} (h : s.canExec a n = true)
+    (hn : 0 < n) : a.toNat + n ≤ addrTop := by
+  simp only [canExec, List.all_eq_true, List.mem_range] at h
+  exact range_top hn fun i hi hp => by
+    have := h i hi
+    rw [hp] at this
+    cases this
+
 /-- The `n` bytes of memory starting at `a`. -/
 def bytesAt (s : State) (a : BitVec 64) (n : Nat) : List Byte :=
   (List.range n).map fun k => s.mem (a + BitVec.ofNat 64 k)

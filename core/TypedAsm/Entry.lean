@@ -116,6 +116,15 @@ structure Entry (entry : BitVec 64) (parts : List (Nat × Perm × List Byte))
   /-- The text of each block that has some ends in a zero byte. -/
   text : ∀ x ∈ blocks, x.2.text ≠ 0 → s.mem (x.1 + BitVec.ofNat 64 (x.2.size - 1)) = 0
 
+/-- **The stack of a starting state is where a program can have memory.** No
+state meets an entry contract with its stack at an address the processor
+would refuse, or one the kernel keeps for itself. -/
+theorem Entry.stack_top {entry : BitVec 64} {parts : List (Nat × Perm × List Byte)}
+    {blocks : List (BitVec 64 × Layout)} {room above : Nat} {s : State}
+    (h : Entry entry parts blocks room above s) (hpos : 0 < room + above) :
+    (s.getReg .rsp - BitVec.ofNat 64 (8 * room)).toNat + 8 * (room + above) ≤ addrTop :=
+  State.canWrite_top h.stack (by omega)
+
 /-- The context a program is entered in: nothing known about any register,
 room below `rsp` for `room` eight-byte words, and the given pieces at and
 above `rsp`; none, unless the program looks at its arguments. The room is
@@ -349,7 +358,8 @@ theorem getReg_withArgs : (s.withArgs room args).getReg .rsp = argBase :=
 
 theorem perm_withArgs (x : BitVec 64) :
     (s.withArgs room args).perm x =
-      if x - (argBase - BitVec.ofNat 64 (8 * room)) < BitVec.ofNat 64 (8 * room + 0x10000)
+      if x.toNat < addrTop ∧
+          x - (argBase - BitVec.ofNat 64 (8 * room)) < BitVec.ofNat 64 (8 * room + 0x10000)
       then .rw else s.perm x :=
   State.perm_setPerm _ _ _ _ _
 
@@ -445,7 +455,9 @@ theorem Entry.ofLoadSlots {p : State} (args : List (List Byte)) (hroom : 8 * roo
     rw [State.perm_withArgs]
     split
     · rfl
-    · next hout => exact absurd (show _ < _ by bv_omega) hout
+    · next hout =>
+      have hT : addrTop = 0x7ffffffff000 := rfl
+      exact absurd ⟨by bv_omega, by bv_omega⟩ hout
   · intro x hx
     have hf := hfarBlocks x hx
     rw [hsp]

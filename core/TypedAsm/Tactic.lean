@@ -2968,6 +2968,9 @@ private def typeMmap (rule : TSyntax `term) : TacticM Unit := do
           else if reg == "rdx" then
             throwError "`mmap` is typed only for memory to read and write: `rdx` must hold \
               exactly 3, but its type is `{actual}`"
+          else if reg == "rdi" then
+            throwError "`mmap` needs the address asked for in `rdi` to be exactly known (zero \
+              leaves the choice to the kernel), but its type is `{actual}`"
           else
             throwError "`mmap` is typed only for private memory that is not a file: `{reg}` \
               must hold exactly 0x22, but its type is `{actual}`"
@@ -2994,7 +2997,10 @@ private def typeMmap (rule : TSyntax `term) : TacticM Unit := do
                 List.length_replicate]; omega)
             | (simp; done)))
       catch _ =>
-        if t.isAppOf ``LE.le then
+        if t.isAppOf ``LE.le && t.appArg!.isConstOf ``addrTop then
+          throwError "`mmap`: the address asked for in `rdi` is above every address a program \
+            can have memory at, and the model does not say what the kernel does then"
+        else if t.isAppOf ``LE.le then
           throwError "`mmap`: the block does not fit in the length in `rsi`"
         else if t.isAppOf ``LT.lt then
           throwError "`mmap`: a block needs at least one byte"
@@ -3013,15 +3019,16 @@ used as a block of this shape. Afterwards `rax` holds an error number or a
 writable pointer to the new block; `ty_err` tells them apart. -/
 elab_rules : tactic
   | `(tactic| ty_mmap $shape) => do
-    typeMmap (← `(linux_mmap (S := $shape) (len := ?_) rfl ?_ ?_ ?_ ?_ ?_ ?_ ?_))
+    typeMmap (← `(linux_mmap (S := $shape) (len := ?_) (hint := ?_) rfl ?_ ?_ ?_ ?_ ?_ ?_ ?_
+      ?_ ?_))
 
 /-- `ty_mmap_kind tag`: as `ty_mmap`, for a block of the declared kind
 `tag`. Afterwards `rax` holds an error number or a writable pointer to a
 block of that kind. -/
 elab_rules : tactic
   | `(tactic| ty_mmap_kind $tag) => do
-    typeMmap (← `(linux_mmap_kind (tag := $tag) (S := ?_) (len := ?_) rfl ?_ ?_ ?_ ?_
-      ?_ ?_ ?_ ?_))
+    typeMmap (← `(linux_mmap_kind (tag := $tag) (S := ?_) (len := ?_) (hint := ?_) rfl ?_ ?_ ?_
+      ?_ ?_ ?_ ?_ ?_ ?_ ?_))
 
 /-- `ty_byte as b`: the instruction here loads the byte of text a register
 points at. Two goals follow: the rest of the block with the byte exactly
@@ -3069,7 +3076,8 @@ elab_rules : tactic
     setGoals [goal]
     try
       evalTactic (← `(tactic|
-        refine BlockOk.mmapOwn (len := ?_) (size := ?_) (by ty_fetch) rfl ?_ ?_ ?_ ?_ ?_ ?_))
+        refine BlockOk.mmapOwn (len := ?_) (hint := ?_) (size := ?_) (by ty_fetch) rfl ?_ ?_ ?_
+          ?_ ?_ ?_ ?_ ?_))
     catch _ =>
       throwError "`mmap` is system call 9 of the Linux model: `rax` must hold exactly 9"
     let gs ← getGoals
@@ -3083,7 +3091,18 @@ elab_rules : tactic
             Tactic.withoutRecover do evalTactic (← `(tactic| rfl))
           catch _ =>
             throwError "`mmap` needs an exactly known length in `rsi`, 3 in `rdx` (read and \
-              write) and 0x22 in `r10` (private memory, not a file)"
+              write), 0x22 in `r10` (private memory, not a file) and an exactly known address \
+              in `rdi` (zero leaves the choice to the kernel)"
+    for g in gs do
+      if ← g.isAssigned then continue
+      let t ← instantiateMVars (← g.getType)
+      if t.isAppOf ``LE.le then
+        setGoals [g]
+        try
+          Tactic.withoutRecover do evalTactic (← `(tactic| decide))
+        catch _ =>
+          throwError "`mmap`: the address asked for in `rdi` is above every address a program \
+            can have memory at, and the model does not say what the kernel does then"
     -- how many fields the pages make, worked out as a number
     for g in gs do
       if ← g.isAssigned then continue

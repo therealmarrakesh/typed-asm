@@ -8,7 +8,9 @@ The registers, flags, instruction pointer and memory, with the basic operations
 for reading and writing registers.
 
 Memory has a byte at every address, and separately a permission for every
-address that says whether programs may read or write it.
+address that says whether programs may read or write it. Only addresses
+below `addrTop` can be accessible: the rest are ones no program can have
+memory at.
 
 The registers and memory are stored so that the model runs at a steady
 speed however long the run: the registers as sixteen fields, memory as an
@@ -371,6 +373,23 @@ theorem in_range_iff {a x : BitVec 64} {size : Nat} (hal : a.toNat % 4096 = 0)
 
 end Pages
 
+/-! ## The addresses a program can use
+
+Not every 64-bit number is an address a program can have memory at. A
+processor with 48-bit addresses faults on any access from `2 ^ 47` up to
+`2 ^ 64 - 2 ^ 47`, whatever the page tables say, and the addresses above
+that belong to the kernel. Linux also keeps the last page below `2 ^ 47`
+from programs, so that no instruction can end exactly there. A processor
+with 57-bit addresses has more, but Linux gives a program none of it unless
+the program asks for an address up there.
+
+So a permission is only ever looked up below `addrTop`; from there on every
+byte is inaccessible, whatever is recorded for it. No state has readable,
+writable or executable memory at an address the hardware would refuse. -/
+
+/-- One past the highest address a program can have memory at. -/
+def addrTop : Nat := 0x7ffffffff000
+
 /-- The permission of every byte: what it was to begin with, and what whole
 pages have been given since, when memory was handed to the program or taken
 back. `clearFrom` is an address from which nothing was accessible to begin
@@ -386,13 +405,21 @@ structure Perms where
 namespace Perms
 
 @[inline] def get (p : Perms) (x : BitVec 64) : Perm :=
-  (p.pages[x.toNat / 4096]?).getD (p.initial x)
+  if x.toNat < addrTop then (p.pages[x.toNat / 4096]?).getD (p.initial x) else .none
+
+/-- **No memory at or above `addrTop` is accessible**, in any state. -/
+theorem get_top (p : Perms) {x : BitVec 64} (h : addrTop ≤ x.toNat) : p.get x = .none := by
+  simp only [get, Nat.not_lt.mpr h, ↓reduceIte]
+
+theorem lt_top_of_get (p : Perms) {x : BitVec 64} (h : p.get x ≠ .none) : x.toNat < addrTop :=
+  Nat.lt_of_not_le fun hle => h (p.get_top hle)
 
 /-- The permissions given by a function. -/
 def ofFun (f : BitVec 64 → Perm) : Perms :=
   { initial := f }
 
-@[simp] theorem get_ofFun (f : BitVec 64 → Perm) (x : BitVec 64) : (ofFun f).get x = f x := by
+@[simp] theorem get_ofFun (f : BitVec 64 → Perm) (x : BitVec 64) :
+    (ofFun f).get x = if x.toNat < addrTop then f x else .none := by
   simp [get, ofFun]
 
 /-- No byte is accessible. -/
@@ -420,27 +447,38 @@ lie below `top`, which keeps track of where nothing is accessible. -/
 
 theorem get_override (p : Perms) (inRange : BitVec 64 → Bool) (q : Perm) (top : Nat)
     (htop : ∀ x : BitVec 64, inRange x = true → x.toNat < top) (x : BitVec 64) :
-    (p.override inRange q top htop).get x = if inRange x then q else p.get x := by
-  unfold override
-  split
-  · next he =>
-    have hc : ∀ k, p.pages[k]? = Option.none := fun k =>
-      Std.TreeMap.getElem?_eq_none_of_contains_eq_false (Std.TreeMap.contains_of_isEmpty he)
-    simp only [get, hc, Std.TreeMap.getElem?_emptyc, Option.getD_none]
-  · exact get_ofFun _ _
+    (p.override inRange q top htop).get x =
+      if x.toNat < addrTop ∧ inRange x = true then q else p.get x := by
+  by_cases hx : x.toNat < addrTop
+  · unfold override
+    split
+    · next he =>
+      have hc : ∀ k, p.pages[k]? = Option.none := fun k =>
+        Std.TreeMap.getElem?_eq_none_of_contains_eq_false (Std.TreeMap.contains_of_isEmpty he)
+      simp only [get, hc, Std.TreeMap.getElem?_emptyc, Option.getD_none, hx, true_and, ↓reduceIte]
+    · rw [get_ofFun]
+      simp only [hx, true_and, ↓reduceIte]
+  · rw [get_top _ (Nat.le_of_not_lt hx), get_top _ (Nat.le_of_not_lt hx)]
+    simp only [hx, false_and, ↓reduceIte]
 
 /-- Give the pages of the `size` bytes starting at `a` the permission `q`. -/
 def setRange (p : Perms) (a : BitVec 64) (size : Nat) (q : Perm) : Perms :=
   { p with pages := Pages.setRange p.pages (a.toNat / 4096) q (size / 4096) }
 
 theorem get_setRange (p : Perms) {a : BitVec 64} {size : Nat} (q : Perm) (x : BitVec 64)
-    (hal : a.toNat % 4096 = 0) (hsz : size % 4096 = 0) (hfit : a.toNat + size ≤ 2 ^ 64) :
+    (hal : a.toNat % 4096 = 0) (hsz : size % 4096 = 0) (hfit : a.toNat + size ≤ addrTop) :
     (p.setRange a size q).get x = if (x - a).toNat < size then q else p.get x := by
-  have key := Pages.in_range_iff (x := x) hal hsz hfit
+  have htop : addrTop = 0x7ffffffff000 := rfl
+  have key := Pages.in_range_iff (x := x) hal hsz (by omega)
   simp only [get, setRange, Pages.getElem?_setRange]
   by_cases h : (x - a).toNat < size
   · have hp := key.mpr h
-    simp only [hp, and_self, ↓reduceIte, h, Option.getD_some]
+    have hx : x.toNat < addrTop := by
+      rw [BitVec.toNat_sub] at h
+      have := x.isLt
+      have := a.isLt
+      omega
+    simp only [hp, and_self, ↓reduceIte, h, Option.getD_some, hx]
   · have h' := mt key.mp h
     simp only [h', ↓reduceIte, h]
 
@@ -449,7 +487,7 @@ def mapRange (p : Perms) (a : BitVec 64) (size : Nat) : Perms :=
   p.setRange a size .rw
 
 theorem get_mapRange (p : Perms) {a : BitVec 64} {size : Nat} (x : BitVec 64)
-    (hal : a.toNat % 4096 = 0) (hsz : size % 4096 = 0) (hfit : a.toNat + size ≤ 2 ^ 64) :
+    (hal : a.toNat % 4096 = 0) (hsz : size % 4096 = 0) (hfit : a.toNat + size ≤ addrTop) :
     (p.mapRange a size).get x = if (x - a).toNat < size then .rw else p.get x :=
   get_setRange p .rw x hal hsz hfit
 
@@ -644,8 +682,17 @@ def setPerm (s : State) (base len : BitVec 64) (p : Perm) : State :=
         · exact x.isLt) }
 
 theorem perm_setPerm (s : State) (base len x : BitVec 64) (p : Perm) :
-    (s.setPerm base len p).perm x = if x - base < len then p else s.perm x := by
+    (s.setPerm base len p).perm x =
+      if x.toNat < addrTop ∧ x - base < len then p else s.perm x := by
   simp only [State.perm, setPerm, Perms.get_override, decide_eq_true_eq]
+
+/-- **No memory at or above `addrTop` is accessible**, in any state. -/
+theorem perm_top (s : State) {x : BitVec 64} (h : addrTop ≤ x.toNat) : s.perm x = .none :=
+  s.perms.get_top h
+
+/-- A byte that is accessible in any way is below `addrTop`. -/
+theorem lt_top_of_perm (s : State) {x : BitVec 64} (h : s.perm x ≠ .none) : x.toNat < addrTop :=
+  s.perms.lt_top_of_get h
 
 /-- Read a full 64-bit register. -/
 def getReg (s : State) (r : Reg) : BitVec 64 :=

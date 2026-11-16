@@ -264,7 +264,9 @@ def getrandom (s : State) : State :=
 /-- `mmap(addr, length, prot, flags, fd, offset)`, for fresh memory only:
 `prot` must be 3 (read and write) and `flags` 0x22 (private, not backed by a
 file). The kernel ignores `addr` and `fd` in this form, apart from treating
-`addr` as a hint; `offset` must be a multiple of the page size. The length
+`addr` as a hint; a hint above `addrTop` is not modelled at all, since that is
+how a program asks for memory above it, and `linux` says nothing then.
+`offset` must be a multiple of the page size. The length
 is rounded up to whole pages. The world proposes where the memory goes; a
 place that is not page-aligned, not within reach of a program, or not
 entirely inaccessible beforehand is not one the kernel would choose, and the
@@ -279,7 +281,7 @@ def mmap (s : State) : State :=
   else match s.world.place s.world.asked with
     | none => ret { s with world := w } (-12)
     | some a =>
-      if a.toNat % 4096 = 0 ∧ 0 < a.toNat ∧ a.toNat + size ≤ 2 ^ 47 ∧
+      if a.toNat % 4096 = 0 ∧ 0 < a.toNat ∧ a.toNat + size ≤ addrTop ∧
           s.unmapped a size = true then
         ret { s.mapZero a size with world := w } a
       else ret { s with world := w } (-12)
@@ -292,7 +294,7 @@ def munmap (s : State) : State :=
   let a := s.getReg .rdi
   let len := (s.getReg .rsi).toNat
   let size := (len + 4095) / 4096 * 4096
-  if a.toNat % 4096 = 0 ∧ len ≠ 0 ∧ a.toNat + size ≤ 2 ^ 47 ∧
+  if a.toNat % 4096 = 0 ∧ len ≠ 0 ∧ a.toNat + size ≤ addrTop ∧
       State.allBelow (fun i =>
         decide ((s.perm (a + BitVec.ofNat 64 i)).writable = true ∨
           s.perm (a + BitVec.ofNat 64 i) = .none)) size = true then
@@ -309,7 +311,10 @@ def linux : Syscall := fun s =>
   else if s.getReg .rax = 231 then .exit (s.readReg .w32 .rdi)
   else if s.getReg .rax = 1 then .next (Linux.write s)
   else if s.getReg .rax = 0 then .next (Linux.read s)
-  else if s.getReg .rax = 9 then .next (Linux.mmap s)
+  else if s.getReg .rax = 9 then
+    -- Asked for an address above any the model has, a kernel on a processor
+    -- with 57-bit addresses may give memory there. The model does not say.
+    if (s.getReg .rdi).toNat ≤ addrTop then .next (Linux.mmap s) else .stuck
   else if s.getReg .rax = 11 then .next (Linux.munmap s)
   else if s.getReg .rax = 3 then .next (Linux.close s)
   else if s.getReg .rax = 5 then .next (Linux.fstat s)
@@ -371,9 +376,9 @@ theorem mmap_rip (s : State) : (mmap s).rip = s.rip := by
 
 /-- A byte in a range found inaccessible is inaccessible. -/
 theorem perm_of_unmapped {a : BitVec 64} {size : Nat} (hal : a.toNat % 4096 = 0)
-    (hfit : a.toNat + size ≤ 2 ^ 64) (h : s.unmapped a size = true)
+    (hfit : a.toNat + size ≤ addrTop) (h : s.unmapped a size = true)
     {x : BitVec 64} (hx : (x - a).toNat < size) : s.perm x = .none := by
-  have := (State.unmapped_iff hal hfit).mp h _ hx
+  have := (State.unmapped_iff hal (Nat.le_trans hfit (by decide))).mp h _ hx
   rwa [BitVec.ofNat_toNat, BitVec.setWidth_eq, show a + (x - a) = x by bv_omega] at this
 
 /-- **Fresh memory is a new block.** An `mmap` in the modelled form returns
@@ -412,7 +417,8 @@ theorem mmap_ok {sys : Syscall} {len : BitVec 64} {S : Shape} {tag : Option Nat}
         obtain ⟨hal, -, htop, hun⟩ := hok
         have hsz4 : (len.toNat + 4095) / 4096 * 4096 % 4096 = 0 := by omega
         generalize hsize : (len.toNat + 4095) / 4096 * 4096 = size at htop hun hsz4 ⊢
-        have hfit64 : a.toNat + size ≤ 2 ^ 64 := by omega
+        have hT : addrTop = 0x7ffffffff000 := rfl
+        have hfit64 : a.toNat + size ≤ addrTop := by omega
         have hsz : len.toNat ≤ size := by omega
         have hpos : 0 < size := by omega
         have hsz64 : size < 2 ^ 64 := by omega
@@ -894,7 +900,8 @@ theorem mmap_frame (s : State) : Frame s (mmap s) := by
           obtain ⟨hal, -, htop, hun⟩ := hok
           have hsz4 : ((s.getReg .rsi).toNat + 4095) / 4096 * 4096 % 4096 = 0 := by omega
           generalize ((s.getReg .rsi).toNat + 4095) / 4096 * 4096 = size at htop hun hsz4 ⊢
-          have hfit64 : a.toNat + size ≤ 2 ^ 64 := by omega
+          have hT : addrTop = 0x7ffffffff000 := rfl
+          have hfit64 : a.toNat + size ≤ addrTop := by omega
           refine ⟨fun x hx _ => ?_, fun x hx _ => ?_⟩
           · show (s.mapZero a size).perm x = s.perm x
             rw [State.perm_mapZero s hal hsz4 hfit64]
@@ -932,7 +939,7 @@ theorem disjoint_of_unmapped {a b : BitVec 64} {size m k : Nat}
 typed as it was. -/
 theorem mapZero_ok {sys : Syscall} {a : BitVec 64} {size : Nat}
     (h : WellTyped fetch sys Ψ n Γ s) (hal : a.toNat % 4096 = 0) (hsz4 : size % 4096 = 0)
-    (hfit : a.toNat + size ≤ 2 ^ 64)
+    (hfit : a.toNat + size ≤ addrTop)
     (hU : ∀ x : BitVec 64, (x - a).toNat < size → s.perm x = .none)
     (hpos : ∀ x l, Ψ x = some l → 0 < l.size)
     (hin : ∀ x l, Ψ x = some l → ∀ p ∈ l.shape.vals, p.1 + 8 ≤ l.shape.size) :
@@ -1008,7 +1015,7 @@ theorem mapZero_ok {sys : Syscall} {a : BitVec 64} {size : Nat}
 of plain bytes. -/
 theorem mapZero_owned {sys : Syscall} {a : BitVec 64} {size : Nat}
     (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF) (hal : a.toNat % 4096 = 0)
-    (hsz4 : size % 4096 = 0) (hfit64 : a.toNat + size ≤ 2 ^ 64)
+    (hsz4 : size % 4096 = 0) (hfit64 : a.toNat + size ≤ addrTop)
     (hlt : size < 2 ^ 64) (hun : s.unmapped a size = true) :
     WellTyped fetch sys Ψ n { Γ with owned := (a, ShapeOf.raw size) :: Γ.owned }
       (s.mapZero a size) := by
@@ -1070,6 +1077,7 @@ theorem mmapOwn_ok {sys : Syscall} {len : BitVec 64}
       split
       · next hok =>
         obtain ⟨hal, -, htop, hun⟩ := hok
+        have hT : addrTop = 0x7ffffffff000 := rfl
         have hOwn := mapZero_owned h hΨ hal
           (size := (len.toNat + 4095) / 4096 * 4096) (by omega) (by omega) (by omega) hun
         have hlow : a < 0x800000000000 := by
@@ -1094,7 +1102,8 @@ theorem munmap_frame (s : State) : Frame s (munmap s) := by
     obtain ⟨hal, -, htop, hall⟩ := hok
     have hsz4 : ((s.getReg .rsi).toNat + 4095) / 4096 * 4096 % 4096 = 0 := by omega
     generalize ((s.getReg .rsi).toNat + 4095) / 4096 * 4096 = size at htop hall hsz4 ⊢
-    have hfit : (s.getReg .rdi).toNat + size ≤ 2 ^ 64 := by omega
+    have hT : addrTop = 0x7ffffffff000 := rfl
+    have hfit : (s.getReg .rdi).toNat + size ≤ addrTop := by omega
     refine ⟨fun x hx hw => ?_, fun x _ _ => rfl⟩
     show (s.unmap _ size).perm x = s.perm x
     rw [State.perm_unmap s hal hsz4 hfit]
@@ -1126,7 +1135,8 @@ theorem munmap_ok {sys : Syscall} {k : Nat} {a len : BitVec 64} {S : Shape}
     obtain ⟨hal, -, htop, -⟩ := hok
     have hsz4 : (len.toNat + 4095) / 4096 * 4096 % 4096 = 0 := by omega
     rw [← hsz] at htop hsz4 ⊢
-    have hfit : a.toNat + S.size ≤ 2 ^ 64 := by omega
+    have hT : addrTop = 0x7ffffffff000 := rfl
+    have hfit : a.toNat + S.size ≤ addrTop := by omega
     exact ret_ok (h.eraseOwned hΨ hk (s' := s.unmap a (S.size)) rfl rfl rfl (fun x => by
       rw [State.perm_unmap s hal hsz4 hfit]
       split
@@ -1360,13 +1370,15 @@ theorem linux_getrandom_owned {k lo : Nat} {a v : BitVec 64} {S : Shape} {len : 
     hf.ok_owned h hΨ (by decide) hbuf hat hle⟩
 
 /-- `mmap` for a block of a given shape: with 9 in `rax`, the length in
-`rsi`, 3 in `rdx` and 0x22 in `r10`, the call returns an error number or a
+`rsi`, 3 in `rdx`, 0x22 in `r10` and in `rdi` a hint that is not above any
+address a program can have memory at, the call returns an error number or a
 writable pointer to a new block of that shape. The shape must fit in the
 length and each of its typed values must admit zero, since that is what fresh
 memory holds. -/
-theorem linux_mmap {len : BitVec 64} {S : Shape} (hΓ : Γ.regs .rax = .eq 9)
+theorem linux_mmap {len hint : BitVec 64} {S : Shape} (hΓ : Γ.regs .rax = .eq 9)
     (hlen : Γ.regs .rsi = .eq len) (hprot : Γ.regs .rdx = .eq 3)
-    (hflags : Γ.regs .r10 = .eq 0x22) (hfit : S.size ≤ len.toNat)
+    (hflags : Γ.regs .r10 = .eq 0x22) (hhint : Γ.regs .rdi = .eq hint)
+    (hlow : hint.toNat ≤ addrTop) (hfit : S.size ≤ len.toNat)
     (hne : 0 < S.size) (hin : S.fits = true)
     (hzero : S.vals.all (fun p => p.2.zeroOk) = true) :
     SysReturns fetch linux Ψ Γ (Γ.afterSyscall.setReg .rax (.orErr (.ptr S true 0))) := by
@@ -1377,16 +1389,18 @@ theorem linux_mmap {len : BitVec 64} {S : Shape} (hΓ : Γ.regs .rax = .eq 9)
     (fun Ψ₂ a hl => hasTy_ptr.mpr ⟨a, _, hl, rfl, fun _ => rfl, by
       show a = a + BitVec.ofNat 64 0
       simp⟩)
-  exact ⟨Linux.mmap s, by simp [linux, hax], Linux.mmap_rip s, Ψ₂, he₂, hΨ₂, hw⟩
+  have hdi := h.eqReg (by decide) hhint
+  exact ⟨Linux.mmap s, by simp [linux, hax, hdi, hlow], Linux.mmap_rip s, Ψ₂, he₂, hΨ₂, hw⟩
 
 /-- `mmap` for a block of a declared kind: as `linux_mmap`, but the new
 block is of kind `tag`, has that kind's shape, and the result is a pointer
 to a block of that kind. This is how a record that points to others of its
 kind is allocated. -/
-theorem linux_mmap_kind {len : BitVec 64} {tag : Nat} {S : Shape}
+theorem linux_mmap_kind {len hint : BitVec 64} {tag : Nat} {S : Shape}
     (hΓ : Γ.regs .rax = .eq 9) (hkind : Ψ.kinds tag = some S)
     (hlen : Γ.regs .rsi = .eq len) (hprot : Γ.regs .rdx = .eq 3)
-    (hflags : Γ.regs .r10 = .eq 0x22) (hfit : S.size ≤ len.toNat)
+    (hflags : Γ.regs .r10 = .eq 0x22) (hhint : Γ.regs .rdi = .eq hint)
+    (hlow : hint.toNat ≤ addrTop) (hfit : S.size ≤ len.toNat)
     (hne : 0 < S.size) (hin : S.fits = true)
     (hzero : S.vals.all (fun p => p.2.zeroOk) = true) :
     SysReturns fetch linux Ψ Γ (Γ.afterSyscall.setReg .rax (.orErr (.ref tag true 0))) := by
@@ -1398,20 +1412,24 @@ theorem linux_mmap_kind {len : BitVec 64} {tag : Nat} {S : Shape}
     (fun Ψ₂ a hl => hasTy_ref.mpr ⟨a, _, hl, rfl, fun _ => rfl, by
       show a = a + BitVec.ofNat 64 0
       simp⟩)
-  exact ⟨Linux.mmap s, by simp [linux, hax], Linux.mmap_rip s, Ψ₂, he₂, hΨ₂, hw⟩
+  have hdi := h.eqReg (by decide) hhint
+  exact ⟨Linux.mmap s, by simp [linux, hax, hdi, hlow], Linux.mmap_rip s, Ψ₂, he₂, hΨ₂, hw⟩
 
 /-- `mmap` for memory the program is to own: with 9 in `rax`, the length in
 `rsi`, 3 in `rdx` and 0x22 in `r10`, the call continues with an error number
 in `rax`, or with the address of whole pages that the context now owns as a
 block of integers. -/
-theorem linux_mmap_own {next : BitVec 64} {len : BitVec 64} (hΓ : Γ.regs .rax = .eq 9)
+theorem linux_mmap_own {next : BitVec 64} {len hint : BitVec 64} (hΓ : Γ.regs .rax = .eq 9)
     (hlen : Γ.regs .rsi = .eq len) (hprot : Γ.regs .rdx = .eq 3)
-    (hflags : Γ.regs .r10 = .eq 0x22) :
+    (hflags : Γ.regs .r10 = .eq 0x22) (hhint : Γ.regs .rdi = .eq hint)
+    (hlow : hint.toNat ≤ addrTop) :
     StepsTo fetch linux Ψ next Γ .syscall (Linux.mmapOwnCtx Γ len) := by
   intro Ψ₁ _ hΨ n s h _
   have hax := h.eqReg (by decide) hΓ
   obtain ⟨x, hw⟩ := Linux.mmapOwn_ok h hΨ hlen hprot hflags
-  exact ⟨Linux.mmap s, x, by show linux s = _; simp [linux, hax], Linux.mmap_rip s, Ψ₁, .refl _,
+  have hdi := h.eqReg (by decide) hhint
+  exact ⟨Linux.mmap s, x, by show linux s = _; simp [linux, hax, hdi, hlow], Linux.mmap_rip s, Ψ₁,
+    .refl _,
     hΨ, hw⟩
 
 /-- `munmap` of a block the context owns: with 11 in `rax`, the block's
@@ -1460,7 +1478,9 @@ theorem linux_frame (s : State) : (linux s).All (Frame s) := by
   by_cases h : s.getReg .rax = 9
   · rw [h]
     simp only [↓reduceIte]
-    exact Linux.mmap_frame s
+    split
+    · exact Linux.mmap_frame s
+    · trivial
   simp only [h, ↓reduceIte]
   clear h
   by_cases h : s.getReg .rax = 11

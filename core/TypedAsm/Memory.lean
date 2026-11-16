@@ -308,10 +308,12 @@ theorem unmapped_iff {s : State} {a : BitVec 64} {n : Nat} (hal : a.toNat % 4096
       have hpg : (a + BitVec.ofNat 64 i).toNat / 4096 = a.toNat / 4096 + i / 4096 := by
         rw [hnat i hin]; omega
       have hq := hp (i / 4096) (by omega)
-      simp only [Perms.get, hpg]
-      cases hc : s.perms.pages[a.toNat / 4096 + i / 4096]? with
-      | none => exact s.perms.clear _ (by rw [hnat i hin]; omega)
-      | some q => rw [hc] at hq; exact hq
+      by_cases hx : (a + BitVec.ofNat 64 i).toNat < addrTop
+      · simp only [Perms.get, hpg, hx, ↓reduceIte]
+        cases hc : s.perms.pages[a.toNat / 4096 + i / 4096]? with
+        | none => exact s.perms.clear _ (by rw [hnat i hin]; omega)
+        | some q => rw [hc] at hq; exact hq
+      · exact s.perms.get_top (Nat.le_of_not_lt hx)
     · exact hall i hin
   · exact fun h => .inr h
 
@@ -325,7 +327,7 @@ def mapZero (s : State) (a : BitVec 64) (size : Nat) : State :=
 section MapZero
 
 variable (s : State) {a : BitVec 64} {size : Nat} (hal : a.toNat % 4096 = 0)
-  (hsz : size % 4096 = 0) (hfit : a.toNat + size ≤ 2 ^ 64)
+  (hsz : size % 4096 = 0) (hfit : a.toNat + size ≤ addrTop)
 
 include hal hsz hfit
 
@@ -335,7 +337,7 @@ theorem perm_mapZero (x : BitVec 64) :
 
 theorem mem_mapZero (x : BitVec 64) :
     (s.mapZero a size).mem x = if (x - a).toNat < size then 0 else s.mem x :=
-  Memory.get_zero _ x hal hsz hfit
+  Memory.get_zero _ x hal hsz (Nat.le_trans hfit (by decide))
 
 /-- A 64-bit value keeps its value when none of its bytes is in the fresh memory. -/
 theorem load64_mapZero_out {y : BitVec 64}
@@ -396,7 +398,7 @@ def unmap (s : State) (a : BitVec 64) (size : Nat) : State :=
   { s with perms := s.perms.setRange a size .none }
 
 theorem perm_unmap (s : State) {a : BitVec 64} {size : Nat} (hal : a.toNat % 4096 = 0)
-    (hsz : size % 4096 = 0) (hfit : a.toNat + size ≤ 2 ^ 64) (x : BitVec 64) :
+    (hsz : size % 4096 = 0) (hfit : a.toNat + size ≤ addrTop) (x : BitVec 64) :
     (s.unmap a size).perm x = if (x - a).toNat < size then .none else s.perm x :=
   Perms.get_setRange _ .none x hal hsz hfit
 
@@ -405,6 +407,33 @@ theorem canRead_of_canWrite {s : State} {a : BitVec 64} {n : Nat} (h : s.canWrit
     s.canRead a n = true := by
   simp only [canRead, canWrite, List.all_eq_true] at *
   exact fun i hi => Perm.readable_of_writable (h i hi)
+
+/-- A range whose every byte is accessible lies below `addrTop`, without
+wrapping round the end of the address space. -/
+theorem range_top {s : State} {a : BitVec 64} {n : Nat} (hn : 0 < n)
+    (h : ∀ i, i < n → s.perm (a + BitVec.ofNat 64 i) ≠ .none) : a.toNat + n ≤ addrTop := by
+  have hT : addrTop = 0x7ffffffff000 := rfl
+  have h0 := s.lt_top_of_perm (h 0 hn)
+  rw [show a + BitVec.ofNat 64 0 = a by simp] at h0
+  apply Nat.le_of_not_lt
+  intro hgt
+  have hi := s.lt_top_of_perm (h (addrTop - a.toNat) (by omega))
+  rw [BitVec.toNat_add, BitVec.toNat_ofNat] at hi
+  omega
+
+/-- **Readable memory is memory a program can have**: it lies below `addrTop`. -/
+theorem canRead_top {s : State} {a : BitVec 64} {n : Nat} (h : s.canRead a n = true)
+    (hn : 0 < n) : a.toNat + n ≤ addrTop := by
+  simp only [canRead, List.all_eq_true, List.mem_range] at h
+  exact range_top hn fun i hi hp => by
+    have := h i hi
+    rw [hp] at this
+    cases this
+
+/-- **Writable memory is memory a program can have**: it lies below `addrTop`. -/
+theorem canWrite_top {s : State} {a : BitVec 64} {n : Nat} (h : s.canWrite a n = true)
+    (hn : 0 < n) : a.toNat + n ≤ addrTop :=
+  canRead_top (canRead_of_canWrite h) hn
 
 def read8 (s : State) (a : BitVec 64) : Result (BitVec 8) :=
   if s.canRead a 1 then .next (s.load8 a) else .fault .pageFault

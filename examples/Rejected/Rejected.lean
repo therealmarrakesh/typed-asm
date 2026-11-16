@@ -482,11 +482,12 @@ hands back may be an error number, so it cannot be used as a pointer before
 it has been tested. -/
 
 inductive Map
-  | unchecked | notZero | tooShort | shared | noKind
+  | unchecked | notZero | tooShort | shared | noKind | noHint | highHint
   deriving DecidableEq
 
 /-- The arguments of an `mmap` of `len` bytes with the given flags, and the call. -/
 def mmapCall (len flags : BitVec 32) : List (Asm Map) := [
+  .ins (.alu .xor .w32 (.rm_r (.reg .rdi) .rdi)),
   .ins (.mov .w32 (.rm_i (.reg .rax) 9)), .ins (.mov .w32 (.rm_i (.reg .rsi) len)),
   .ins (.mov .w32 (.rm_i (.reg .rdx) 3)), .ins (.mov .w32 (.rm_i (.reg .r10) flags)),
   .ins .syscall]
@@ -497,11 +498,16 @@ def maps : List (Asm Map) :=
   [.label .notZero] ++ mmapCall 16 0x22 ++ [.ins .ud2] ++
   [.label .tooShort] ++ mmapCall 8 0x22 ++ [.ins .ud2] ++
   [.label .shared] ++ mmapCall 16 0x21 ++ [.ins .ud2] ++
-  [.label .noKind] ++ mmapCall 16 0x22 ++ [.ins .ud2]
+  [.label .noKind] ++ mmapCall 16 0x22 ++ [.ins .ud2] ++
+  -- the address asked for left as whatever `rdi` held
+  [.label .noHint] ++ (mmapCall 16 0x22).drop 1 ++ [.ins .ud2] ++
+  -- an address asked for that no program can have memory at
+  [.label .highHint, .ins (.movAbs .rdi 0x800000000000)] ++ (mmapCall 16 0x22).drop 1 ++
+    [.ins .ud2]
 
 def mapFetch : Fetch := Asm.fetch 0 maps
 
-/-- error: at address 23: cannot type `mov rdx, qword ptr [rax]` in the current context
+/-- error: at address 25: cannot type `mov rdx, qword ptr [rax]` in the current context
 • loadField: `rax` must hold a pointer, but its type is `pointer to 16 bytes or an error number`: it must be tested for an error first, and `ty_err` then gives the two cases -/
 #guard_msgs in
 example : BlockOk Φy mapFetch linux Ψ (Asm.addr maps 0 .unchecked) bare := by
@@ -533,6 +539,18 @@ example : BlockOk Φy mapFetch linux Ψ (Asm.addr maps 0 .noKind) bare := by
   ty_steps
   ty_mmap_kind 7
 
+/-- error: `mmap` needs the address asked for in `rdi` to be exactly known (zero leaves the choice to the kernel), but its type is `int` -/
+#guard_msgs in
+example : BlockOk Φy mapFetch linux Ψ (Asm.addr maps 0 .noHint) bare := by
+  ty_steps
+  ty_mmap (.raw 16)
+
+/-- error: `mmap`: the address asked for in `rdi` is above every address a program can have memory at, and the model does not say what the kernel does then -/
+#guard_msgs in
+example : BlockOk Φy mapFetch linux Ψ (Asm.addr maps 0 .highHint) bare := by
+  ty_steps
+  ty_mmap (.raw 16)
+
 /-! ## Memory the program owns
 
 A page the context owns can be used only while it is listed there. Giving it
@@ -546,6 +564,7 @@ inductive Mem
 /-- The arguments of an `mmap` of one page, the call, and the test that
 sends an error number to `done`. -/
 def ownCall : List (Asm Mem) := [
+  .ins (.alu .xor .w32 (.rm_r (.reg .rdi) .rdi)),
   .ins (.mov .w32 (.rm_i (.reg .rax) 9)), .ins (.mov .w32 (.rm_i (.reg .rsi) 4096)),
   .ins (.mov .w32 (.rm_i (.reg .rdx) 3)), .ins (.mov .w32 (.rm_i (.reg .r10) 0x22)),
   .ins .syscall, .ins (.test .w64 (.reg .rax) (.reg .rax)), .jcc .s .done]
@@ -568,7 +587,7 @@ inductive AtMem : Mem → Ctx → Prop
 
 def Φm : CodeTy := .ofLabels owning 0 AtMem
 
-/-- error: at address 50: cannot type `mov rcx, qword ptr [rbx]` in the current context
+/-- error: at address 52: cannot type `mov rcx, qword ptr [rbx]` in the current context
 • loadField: `rbx` must hold a pointer, but its type is `exactly p`
 • loadInt: the address is not known to be inside a block the context owns -/
 #guard_msgs in
@@ -1158,5 +1177,48 @@ theorem signed_ok : BlocksOk Φs signedFetch linux Ψ := by
   -- the tactic finds both facts about the divisor among the hypotheses
   | start a v hv hv1 => ty_block
   | out => ty_block
+
+/-! ## Memory where there can be none
+
+A processor with 48-bit addresses refuses any access from `2 ^ 47` up to the
+kernel's half of the address space, whatever a page table says, and the
+kernel keeps its half and the page before it. No state of the model has
+accessible memory there, so a starting state cannot be given a stack there,
+and a program that is pointed there faults. -/
+
+/-- No state has a writable byte at an address the processor refuses. -/
+example (s : State) : s.canWrite 0x0200000000000000 1 = false := by
+  cases h : s.canWrite 0x0200000000000000 1 with
+  | false => rfl
+  | true => exact absurd (State.canWrite_top h (by decide)) (by decide)
+
+/-- Nor an executable one in the kernel's half. -/
+example (s : State) : s.canExec 0xffffffffff600000 1 = false := by
+  cases h : s.canExec 0xffffffffff600000 1 with
+  | false => rfl
+  | true => exact absurd (State.canExec_top h (by decide)) (by decide)
+
+/-- No entry contract is met by a state whose stack pointer is at such an
+address, whatever the program and however the state was made. -/
+example (entry : BitVec 64) (parts : List (Nat × Perm × List Byte))
+    (blocks : List (BitVec 64 × Layout)) (s : State)
+    (hsp : s.getReg .rsp = 0x0200000000000000) : ¬ Entry entry parts blocks 11 0 s := by
+  intro h
+  have := h.stack_top (by decide)
+  rw [hsp] at this
+  exact absurd this (by decide)
+
+/-- A state made by marking eight bytes below such an address writable, with
+the stack pointer there. -/
+def nowhere : State :=
+  (State.init.setPerm (0x0200000000000000 - 8) 8 .rw).setReg .rsp 0x0200000000000000
+
+/-- Marking the memory writable changed nothing. -/
+example : nowhere.canWrite (0x0200000000000000 - 8) 8 = false := by decide
+
+-- and a `push` there faults
+#guard match exec linux (.push .rax) nowhere with
+  | .fault .pageFault => true
+  | _ => false
 
 end Rejected
