@@ -47,8 +47,7 @@ example : ∃ Γ', Straight Ψ 10 Γ (.store16 (.sib (some .rdi) none 7) .rax) �
   ⟨_, by ty_straight⟩
 
 /-- error: cannot type `mov rax, qword ptr [rbx+8]` in the current context
-• loadField: the block is not known to hold a typed value there: a bound on the index is needed among the hypotheses
-• loadInt: the bytes are not known to be inside the block: a bound on the index is needed among the hypotheses. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
+• the bytes are not known to be inside the block: a bound on the index is needed among the hypotheses. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example (n k : Nat) :
     ∃ Γ', Straight Ψ 10 (walking n k) (.mov .w64 (.r_m .rax (.sib (some .rbx) none 8))) Γ' :=
@@ -60,7 +59,7 @@ example (i : BitVec 64) (hlt : i.toNat < 100) :
   ⟨_, by ty_straight⟩
 
 /-- error: cannot type `mov byte ptr [rsp+rcx*1], al` in the current context
-• store8RM: those bytes are not known to be inside one piece of the stack. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
+• those bytes are not known to be inside one piece of the stack: a bound on the index is needed among the hypotheses. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example (i : BitVec 64) (hlt : i.toNat < 101) :
     ∃ Γ', Straight Ψ 10 (frame i [.raw 100, .raw 4])

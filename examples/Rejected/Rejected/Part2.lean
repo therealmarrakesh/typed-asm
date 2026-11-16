@@ -72,7 +72,7 @@ example : ∃ Γ', Straight Ψ 10 Γ (.store16 (.sib (some .rdx) none 6) .rax) �
   ⟨_, by ty_straight⟩
 
 /-- error: cannot type `mov byte ptr [rbx+rcx*1+7], al` in the current context
-• store8RM: the bytes are not known to be clear of the typed values the block holds. The memory would no longer hold what its type says, and a later use of the value there could fault -/
+• the bytes are not known to be clear of the typed values the block holds. The memory would no longer hold what its type says, and a later use of the value there could fault -/
 #guard_msgs in
 example (i : BitVec 64) (hlt : i.toNat < 64) :
     Straight Ψ 10 (filling i) (.store8 (.sib (some .rbx) (some (.rcx, .s1)) 7) .rax)

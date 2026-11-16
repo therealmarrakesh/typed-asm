@@ -1975,19 +1975,15 @@ private def settledHead (env : Environment) (e : Expr) : Bool :=
     | _ => false
   | _ => false
 
-/-- A block goal brought to the form it is kept in, without `dsimp` over
-the whole of it: the context is opened by the kernel's evaluator, each
-register's type is worked out by itself, and each part is then tidied alone.
-Returns whether it did so. -/
-private def fastNormalize (g : MVarId) (t : Expr) : TacticM Bool := g.withContext do
-  if t.hasExprMVar then return false
-  let args := t.getAppArgs
-  let Γ := args[5]!
+/-- A context brought to the form it is kept in, without `dsimp` over the
+whole of it: it is opened by the kernel's evaluator, each register's type is
+worked out by itself, and each part is then tidied alone. -/
+private def normalCtx (Γ : Expr) : TacticM (Option Expr) := do
   let env ← getEnv
   let lctx ← getLCtx
   let kwhnf (e : Expr) : MetaM Expr := ofExceptKernelException (Kernel.whnf env lctx e)
   let ctxW ← kwhnf Γ
-  unless ctxW.isAppOfArity ``CtxOf.mk 7 do return false
+  unless ctxW.isAppOfArity ``CtxOf.mk 7 do return none
   let nargs := ctxW.getAppArgs
   let (sctx, sprocs) ← ctxSimp
   let tidy (e : Expr) : MetaM Expr := do return (← Meta.dsimp (stripProjs e) sctx sprocs).1
@@ -2003,6 +1999,15 @@ private def fastNormalize (g : MVarId) (t : Expr) : TacticM Bool := g.withContex
     ← tidy (peelField env lctx nargs[4]!), ← tidy (peelField env lctx nargs[5]!),
     ← tidy (peelField env lctx nargs[6]!)]
   if let some c ← workOutCtx ctxN then ctxN ← tidy c
+  return some ctxN
+
+/-- A block goal brought to the form it is kept in, without `dsimp` over
+the whole of it. Returns whether it did so. -/
+private def fastNormalize (g : MVarId) (t : Expr) : TacticM Bool := g.withContext do
+  if t.hasExprMVar then return false
+  let args := t.getAppArgs
+  let Γ := args[5]!
+  let some ctxN ← normalCtx Γ | return false
   let a := args[4]!
   let aN ← if isAddrLit a then pure a else
     match ← addrNat a with
@@ -2412,7 +2417,7 @@ private def explainRule (onStack : Bool) (rule : Name) : TacticM MessageData := 
     saved.restore
 
 /-- Types the instruction in a `Straight Ψ next Γ i ?Γ'` goal, or explains why not. -/
-def typeStraight : TacticM Unit := deep <| withMainContext do
+def typeStraightByRules : TacticM Unit := deep <| withMainContext do
   let goal ← getMainGoal
   let ty := (← instantiateMVars (← goal.getType)).consumeMData
   unless ty.isAppOfArity ``Straight 5 do
@@ -2454,10 +2459,6 @@ def typeStraight : TacticM Unit := deep <| withMainContext do
     msg := msg ++ m!"\n• {why}"
   throwError msg
 
-/-- Types the instruction in a `Straight` goal, choosing the rule from the
-instruction's shape. When no rule applies, the error names the instruction
-and, for each rule that could have applied, the premise that failed. -/
-elab "ty_straight" : tactic => typeStraight
 
 /-- The outcome of trying to take one step in a block. -/
 private inductive StepResult
@@ -2759,6 +2760,12 @@ private def explainReject (atoms : Sym.Atoms) (onStack : Bool) : Sym.Reject → 
   | .divFault =>
     return m!"the divide is not known to produce a result. Dividing by zero, or a quotient \
       that does not fit, is a divide error"
+  | .divThere τ? => do
+    let held ← match τ? with
+      | some τ => ppTy (← Sym.denTy atoms τ)
+      | none => pure "int"
+    return m!"the value there must be exactly known, but has type `{held}`: a divide is typed \
+      only when its divisor is known not to be zero"
   | .noForm => return m!"the checker has no rule for this form of the instruction"
 
 /-- Says, of the program, what a condition a step left could not be shown. -/
@@ -2963,6 +2970,115 @@ private def closeArithLeft : TacticM Unit := do
       let rest := tails[n - 2 - i]!
       gs[i]!.assign (mkApp3 (mkConst ``And.left) tys[i]! rest h)
       h := mkApp3 (mkConst ``And.right) tys[i]! rest h
+
+/-- That what was read of the program's blocks is so: each by looking. -/
+private def blocksProof (Ψ ρ : Expr) (blocks : List (BitVec 64 × Sym.ShapeS × Bool))
+    (lays : Array Expr) : MetaM Expr := do
+  let mut hB := mkApp2 (mkConst ``Sym.BlocksOk.nil) Ψ ρ
+  let mut restL : List (BitVec 64 × Sym.ShapeS × Bool) := []
+  for ((base, Sb, w), lay) in (blocks.zip lays.toList).reverse do
+    let h₁ ← mkEqRefl (← mkAppM ``Option.some #[lay])
+    let h₂ ← mkEqRefl (← mkAppM ``Layout.shape #[lay])
+    let h₃ ← mkEqRefl (toExpr w)
+    hB := mkAppN (mkConst ``Sym.BlocksOk.cons)
+      #[Ψ, ρ, toExpr base, toExpr Sb, toExpr w, toExpr restL, lay, h₁, h₂, h₃, hB]
+    restL := (base, Sb, w) :: restL
+  return hB
+
+/-- Types the instruction in a `Straight Ψ next Γ i ?Γ'` goal by the checker:
+the context is read as data, the checker gives the context after and what
+is left to be shown, and that is shown. Where the checker has no answer, or
+something left cannot be shown, the error says why, of the program. -/
+def typeStraight : TacticM Unit := deep <| withMainContext do
+  let goal ← getMainGoal
+  let ty := (← instantiateMVars (← goal.getType)).consumeMData
+  unless ty.isAppOfArity ``Straight 5 do
+    throwError "ty_straight: the goal is not of the form `Straight Ψ next Γ i Γ'`"
+  let args := ty.getAppArgs
+  let Ψ := args[0]!
+  let next := args[1]!
+  let Γ := args[2]!
+  let Γ' := args[4]!
+  let some instr ← knownInstr args[3]!
+    | throwError "ty_straight: the instruction is not written out: {args[3]!}"
+  let shown := m!"`{instr.toAsm}`"
+  let nextN ← try evalAddr next catch _ =>
+    throwError "ty_straight: the address of the next instruction is not a number: {next}"
+  let nextB := BitVec.ofNat 64 nextN
+  let some ΓN ← normalCtx Γ | throwError "ty_straight: the context is not written out"
+  let mut Ψ' := Ψ
+  for _ in [0:4] do
+    if Ψ'.isAppOfArity ``MemTy.ofList 2 then break
+    let some u ← unfoldDefinition? Ψ' | break
+    Ψ' := u.headBeta
+  let listed := Ψ'.isAppOfArity ``MemTy.ofList 2
+  let (read, atoms) ← (do
+    let some S₀ ← Sym.reifyCtx ΓN | return none
+    let blocks? ← if listed then Sym.reifyBlocks Ψ'.appFn!.appArg! else pure none
+    return some (S₀, blocks?) : Sym.ReifyM _).run {}
+  let some (S₀, blocks?) := read | throwError "ty_straight: the context could not be read"
+  let (blocks, lays) := blocks?.getD ([], #[])
+  let S : Sym.CtxS := { S₀ with blocks := blocks }
+  let refuse (msg : MessageData) : TacticM Unit :=
+    throwError "cannot type {shown} in the current context\n• {msg}"
+  let some (S', cs) := Sym.step nextB S instr
+    | match Sym.why nextB S instr with
+      | .noForm => throwError "the type system has no rule for {shown}"
+      | r => refuse (← explainReject atoms instr.onStack r)
+  let env ← getEnv
+  let lctx ← getLCtx
+  let kwhnf (e : Expr) : MetaM Expr := ofExceptKernelException (Kernel.whnf env lctx e)
+  let ρ := atoms.env
+  let SE := toExpr S
+  unless Kernel.isDefEqGuarded env lctx ΓN (mkApp2 (mkConst ``Sym.CtxS.den) ρ SE) do
+    throwError "ty_straight: the term read from the context does not mean it"
+  -- what is left to be shown, each by itself so that the one that fails is known
+  let mut hn := mkConst ``True.intro
+  let mut allE := mkConst ``True
+  for c in cs.reverse do
+    let leaf ← Sym.denCond atoms c
+    let before ← saveState
+    let h ← try
+        arithLeft.set #[]
+        let h ← closeNeeds env lctx kwhnf pure #[] leaf
+        closeArithLeft
+        pure h
+      catch _ =>
+        before.restore
+        refuse (← explainCond atoms instr c)
+        unreachable!
+    hn := mkApp4 (mkConst ``And.intro) leaf allE (← instantiateMVars h) hn
+    allE := mkApp2 (mkConst ``And) leaf allE
+  let hB ← blocksProof Ψ ρ blocks lays
+  let iE := toExpr instr
+  let nextE := toExpr nextB
+  let x := toExpr (S', cs)
+  let stepE := mkAppN (mkConst ``Sym.step) #[nextE, SE, iE]
+  let h ← mkExpectedTypeHint (← mkEqRefl stepE) (← mkEq stepE (← mkAppM ``Option.some #[x]))
+  let Γ'E ← Sym.denCtx atoms S'
+  let pf ← mkExpectedTypeHint
+    (mkAppN (mkConst ``Sym.step_sound) #[Ψ, nextE, ρ, SE, hB, iE, x, h, hn])
+    (mkAppN (mkConst ``Straight) #[Ψ, next, ΓN, args[3]!, Γ'E])
+  let others := (← getGoals).drop 1
+  if Γ'.isMVar then
+    -- the context after is the checker's answer
+    Γ'.mvarId!.assign Γ'E
+    goal.assign (mkAppN (mkConst ``Straight.regsEta) #[Ψ, next, Γ, Γ'E, args[3]!, pf])
+  else
+    -- a context after that is stated must be the checker's answer
+    let same ← (do
+      let some Γ'N ← normalCtx Γ' | return false
+      return Kernel.isDefEqGuarded env lctx Γ'N Γ'E)
+    unless same do
+      throwError "ty_straight: `{instr.toAsm}` leaves the context{indentExpr Γ'E}\nand not the \
+        one stated"
+    goal.assign (mkAppN (mkConst ``Straight.regsEta) #[Ψ, next, Γ, Γ', args[3]!,
+      mkAppN (mkConst ``Straight.regsEtaAfter) #[Ψ, next, ΓN, Γ', args[3]!, pf]])
+  setGoals others
+
+/-- Types the instruction in a `Straight` goal by the checker. When it is
+refused, the error names the instruction and says why. -/
+elab "ty_straight" : tactic => typeStraight
 
 /-- One instruction that goes on to the next, typed without the tactic
 framework where the checker covers it: the instruction is read from the

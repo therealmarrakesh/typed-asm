@@ -1675,11 +1675,34 @@ theorem ShapeS.look_typed {ρ : Env} {S : ShapeS} {o : Num} {τ : TyS}
     exact ShapeS.den_valAt (S := .mk sz vals) (Option.some.inj h)
   · cases h
 
+/-- What a product is so many times `es` of, where one side of it is `es`
+written out. -/
+def Num.timesOf (x y : Num) (es : Nat) : Option Num :=
+  match y with
+  | .lit a => if a = es then some x else none
+  | _ =>
+    match x with
+    | .lit a => if a = es then some y else none
+    | _ => none
+
+theorem Num.timesOf_spec (ρ : Env) {x y q : Num} {es : Nat} (h : Num.timesOf x y es = some q) :
+    x.den ρ * y.den ρ = q.den ρ * es := by
+  unfold Num.timesOf at h
+  split at h
+  · split at h
+    · next e => cases h; subst e; rfl
+    · cases h
+  · split at h
+    · split at h
+      · next e => cases h; subst e; exact Nat.mul_comm _ _
+      · cases h
+    · cases h
+
 /-- A number as so many times `es` and something less than `es` over, where
 its terms show that. -/
 def Num.divMod : Num → Nat → Option (Num × Nat)
   | .lit m, es => some (.lit (m / es), m % es)
-  | .mul x (.lit a), es => if a = es then some (x, 0) else none
+  | .mul x y, es => (Num.timesOf x y es).map (·, 0)
   | .add p q, es =>
     match p.divMod es, q.divMod es with
     | some (q1, r1), some (q2, r2) =>
@@ -1700,14 +1723,9 @@ theorem Num.divMod_spec (ρ : Env) {es : Nat} (hes : 0 < es) : (o : Num) → {q 
     rw [Nat.mul_comm]; exact (Nat.div_add_mod m es).symm
   | mul x y ihx ihy =>
     intro q r h
-    cases y <;> simp only [Num.divMod, reduceCtorEq] at h
-    split at h
-    · next e =>
-      simp only [Option.some.injEq, Prod.mk.injEq] at h
-      obtain ⟨rfl, rfl⟩ := h
-      subst e
-      exact ⟨rfl, hes⟩
-    · cases h
+    simp only [Num.divMod, Option.map_eq_some_iff, Prod.mk.injEq] at h
+    obtain ⟨q', hq, rfl, rfl⟩ := h
+    exact ⟨Num.timesOf_spec ρ hq, hes⟩
   | add p q' ihp ihq =>
     intro q r h
     simp only [Num.divMod] at h
@@ -1872,10 +1890,55 @@ theorem ShapeS.elemFree_spec {ρ : Env} {S : ShapeS} {o : Num} {k : Nat} {cs : L
       · cases h
   · cases h
 
+/-- What a number is at least, as far as its terms show. -/
+def Num.low : Num → Nat
+  | .lit n => n
+  | .add a b => a.low + b.low
+  | .mul a b => a.low * b.low
+  | _ => 0
+
+theorem Num.low_le (ρ : Env) : (o : Num) → o.low ≤ o.den ρ
+  | .lit _ => Nat.le_refl _
+  | .add a b => Nat.add_le_add (Num.low_le ρ a) (Num.low_le ρ b)
+  | .mul a b => Nat.mul_le_mul (Num.low_le ρ a) (Num.low_le ρ b)
+  | .var _ => Nat.zero_le _
+  | .sub _ _ => Nat.zero_le _
+  | .toNat _ => Nat.zero_le _
+  | .size _ => Nat.zero_le _
+
+/-- Whether every typed value of a list ends at or before a byte. -/
+def ValsS.allBelow : ValsS → Nat → Bool
+  | .nil, _ => true
+  | .cons p _ rest, b => decide (p + 8 ≤ b) && rest.allBelow b
+
+theorem ValsS.den_allBelow (ρ : Env) : (vs : ValsS) → {b o n : Nat} → vs.allBelow b = true →
+    b ≤ o → (vs.den ρ).all (ShapeOf.clearOf o n) = true
+  | .nil, _, _, _, _, _ => rfl
+  | .cons p τ rest, b, o, n, h, hb => by
+    simp only [ValsS.allBelow, Bool.and_eq_true, decide_eq_true_eq] at h
+    show List.all ((p, τ.den ρ) :: rest.den ρ) _ = true
+    rw [List.all_cons, ValsS.den_allBelow ρ rest h.2 hb, Bool.and_true]
+    show (decide (p + 8 ≤ o) || decide (o + n ≤ p)) = true
+    have : p + 8 ≤ o := Nat.le_trans h.1 hb
+    simp [this]
+
+/-- Whether the bytes from a place on are seen to be past every typed value
+of a shape, where the place is not a number written out but is at least one. -/
+def ShapeS.freeAbove : ShapeS → Num → Bool
+  | .mk _ vals, o => vals.allBelow o.low
+  | _, _ => false
+
+theorem ShapeS.den_freeAbove {ρ : Env} {S : ShapeS} {o : Num} {n : Nat}
+    (h : S.freeAbove o = true) : (S.den ρ).free (o.den ρ) n = true := by
+  unfold ShapeS.freeAbove at h
+  split at h
+  · next sz vals => exact ValsS.den_allBelow ρ vals h (Num.low_le ρ o)
+  · cases h
+
 /-- What is left to be shown for `n` bytes of a shape to be plain: nothing
 where the terms show it outright. -/
 def freeConds (S : ShapeS) (o : Num) (n : Nat) : Option (List CondS) :=
-  if S.free o n then some [] else S.elemFree o n
+  if S.free o n then some [] else if S.freeAbove o then some [] else S.elemFree o n
 
 theorem freeConds_spec {ρ : Env} {S : ShapeS} {o : Num} {n : Nat} {cs : List CondS}
     (h : freeConds S o n = some cs) (hc : CondS.all ρ cs) :
@@ -1883,7 +1946,9 @@ theorem freeConds_spec {ρ : Env} {S : ShapeS} {o : Num} {n : Nat} {cs : List Co
   unfold freeConds at h
   split at h
   · next hf => exact ShapeS.den_free hf
-  · exact ShapeS.elemFree_spec h hc
+  · split at h
+    · next hf => exact ShapeS.den_freeAbove hf
+    · exact ShapeS.elemFree_spec h hc
 
 /-- Whether the eight bytes at a byte of an array are seen to be one typed
 value's alone within their element. -/
@@ -1963,14 +2028,14 @@ def load (next : BitVec 64) (Γ : CtxS) (d : Reg) (m : Mem) : Option (CtxS × Li
     | some (pl, cs) =>
       match pl.shape.look pl.off with
       | some (some τ) => some (Γ.setReg d τ, cs)
-      -- plain bytes are a number; where the terms do not say what is there,
-      -- the checker has no answer, since a number might be a loss
+      -- plain bytes are a number
       | some none => (within pl.off 8 pl.shape.size).map fun ws => (Γ.setReg d .int, cs ++ ws)
       | none =>
         -- an element of an array
         match pl.shape.elem pl.off with
         | some (τ, es) => some (Γ.setReg d τ, cs ++ es)
-        | none => none
+        -- what is there cannot be read off the terms: the bytes are a number
+        | none => (within pl.off 8 pl.shape.size).map fun ws => (Γ.setReg d .int, cs ++ ws)
     | none => none
 
 theorem load_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
@@ -2004,7 +2069,15 @@ theorem load_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
         rw [CtxS.den_setReg]
         exact (locate_spec hB (Ψ := Ψ) (next := next) hl h₁).load hd
           (ShapeS.elem_typed (x := (τ, es)) he h₂)
-      · cases h
+      · cases hw : within pl.off 8 pl.shape.size with
+        | none => rw [hw] at h; cases h
+        | some ws =>
+          rw [hw] at h; cases h
+          obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc
+          rw [CtxS.den_setReg]
+          refine .loadInt hd ((locate_spec hB (Ψ := Ψ) (next := next) hl h₁).read ?_)
+          rw [ShapeS.den_size]
+          exact within_spec hw h₂
   · cases h
 
 /-! ### Storing plain bytes -/
@@ -4690,6 +4763,8 @@ inductive Reject
   | divUnknown (r : Reg) (τ : TyS)
   /-- A divide by zero, or one whose quotient does not fit. -/
   | divFault
+  /-- A divide by a value in memory that is not exactly known: what is there. -/
+  | divThere (τ : Option TyS)
   /-- A form the checker has no case for. -/
   | noForm
 
@@ -4767,7 +4842,20 @@ def whyMem (next : BitVec 64) (Γ : CtxS) (m : Mem) (n : Nat) (writing typed : B
 def why (next : BitVec 64) (Γ : CtxS) (i : Instr) : Reject :=
   match i.memOperand?, access? i with
   | some m, some (n, writing) =>
-    whyMem next Γ m n writing (match i with | .mov .w64 (.rm_r (.mem _) _) => true | _ => false)
+    match whyMem next Γ m n writing
+        (match i with | .mov .w64 (.rm_r (.mem _) _) => true | _ => false), i with
+    -- a divide by what is in memory, which is there to be read
+    | .noForm, .mulDiv .div _ _ | .noForm, .mulDiv .idiv _ _ =>
+      match exactly (Γ.regs.get .rax), exactly (Γ.regs.get .rdx), locate next Γ m with
+      | none, _, _ => .divUnknown .rax (Γ.regs.get .rax)
+      | _, none, _ => .divUnknown .rdx (Γ.regs.get .rdx)
+      | _, _, some (pl, _) =>
+        match pl.shape.look pl.off with
+        | some (some (.eq _)) => .divFault
+        | some (some τ) => .divThere (some τ)
+        | _ => .divThere none
+      | _, _, none => .noForm
+    | r, _ => r
   | _, _ =>
     match i with
     | .push _ => .spOperand

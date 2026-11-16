@@ -62,7 +62,7 @@ example : ∃ Γ', Straight Ψ 10 Γ₃ (.mov .w32 (.rm_r (.mem (.sib (some .rsp
   ⟨_, by ty_straight⟩
 
 /-- error: cannot type `mov byte ptr [rbx+rcx*1+16], al` in the current context
-• store8RM: the bytes are not known to be inside the block: a bound on the index is needed among the hypotheses. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
+• the bytes are not known to be inside the block: a bound on the index is needed among the hypotheses. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example (i : BitVec 64) (hlt : i.toNat < 65) :
     Straight Ψ 10 (filling i) (.store8 (.sib (some .rbx) (some (.rcx, .s1)) 16) .rax)
@@ -70,7 +70,7 @@ example (i : BitVec 64) (hlt : i.toNat < 65) :
   ty_straight
 
 /-- error: cannot type `mov byte ptr [rbx+8], al` in the current context
-• store8RM: the bytes are not known to be clear of the typed values the block holds. The memory would no longer hold what its type says, and a later use of the value there could fault -/
+• the bytes are not known to be clear of the typed values the block holds. The memory would no longer hold what its type says, and a later use of the value there could fault -/
 #guard_msgs in
 example (n k : Nat) (hk : k < n) :
     Straight Ψ 10 (walking n k) (.store8 (.sib (some .rbx) none 8) .rax) (walking n k) := by

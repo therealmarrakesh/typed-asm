@@ -104,8 +104,7 @@ example (i : BitVec 64) (h : BlockOk Φ fetch linux Ψ 0 (frame i [.raw 104])) :
   exact h.asTable
 
 /-- error: cannot type `mov rax, qword ptr [rsp+96]` in the current context
-• loadStack: no typed value of that piece of the stack starts at that offset
-• loadInt: the access would reach past the end of the piece of the stack it starts in. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
+• the access would reach past the end of its piece of the stack. Where nothing is known to be, there may be no memory, which is a page fault, or other data, which would be read or overwritten unnoticed -/
 #guard_msgs in
 example (i : BitVec 64) :
     ∃ Γ', Straight Ψ 10 (frame i [.raw 100, .raw 4])

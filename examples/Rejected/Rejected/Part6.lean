@@ -21,7 +21,7 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i0) Γ := by ty_step
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i18) Γ := by ty_block
 
 /-- error: cannot type `mov word ptr [rdx+7], ax` in the current context
-• store16RM: a typed value of the block reaches into those bytes, and plain bytes may not be stored over it. The memory would no longer hold what its type says, and a later use of the value there could fault -/
+• a typed value of the block reaches into those bytes, and plain bytes may not be stored over it. The memory would no longer hold what its type says, and a later use of the value there could fault -/
 #guard_msgs in
 example : ∃ Γ', Straight Ψ 10 Γ (.store16 (.sib (some .rdx) none 7) .rax) Γ' :=
   ⟨_, by ty_straight⟩
@@ -111,14 +111,14 @@ example : ∃ Γ', Straight Ψ 10 (dividing .int)
   ⟨_, by ty_straight⟩
 
 /-- error: cannot type `div qword ptr [rsp]` in the current context
-• divHeld: the value there must be exactly known, but has type `int`: a divide is typed only when its divisor is known not to be zero -/
+• the value there must be exactly known, but has type `int`: a divide is typed only when its divisor is known not to be zero -/
 #guard_msgs in
 example : ∃ Γ', Straight Ψ 10 (dividing .int)
     (.mulDiv .div .w64 (.mem (.sib (some .rsp) none 0))) Γ' :=
   ⟨_, by ty_straight⟩
 
 /-- error: cannot type `div qword ptr [rsp]` in the current context
-• divHeld: the divisor, `c`, is not known to be non-zero: a check is needed before the divide. Dividing by zero is a divide error -/
+• the divisor, `c`, is not known to be non-zero: a check is needed before the divide. Dividing by zero is a divide error -/
 #guard_msgs in
 example (c : BitVec 64) :
     ∃ Γ', Straight Ψ 10 (dividing (.eq c)) (.mulDiv .div .w64 (.mem (.sib (some .rsp) none 0))) Γ' :=
