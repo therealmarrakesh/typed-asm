@@ -2873,9 +2873,13 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       let regsb := mkApp3 (mkConst ``CtxOf.regs) (mkConst ``Ty) Γ rE
       let hΓ ← mkExpectedTypeHint (← mkEqRefl τ) (← mkEq regsb τ)
       let ht ← mkExpectedTypeHint (← mkEqRefl k) (← mkEq kindsE k)
+      let before ← saveState
       goal.assign (mkAppN (mkConst ``BlockOk.openRef)
         #[Φ, fetch, sys, Ψ, a, Γ, rE, tag, w, i, S, hr, hΓ, ht, eta])
-      return ← fastStep rest.mvarId! ty' named
+      -- with no step taken, the pointer is left as it was
+      let r? ← fastStep rest.mvarId! ty' named
+      if r?.isNone then before.restore
+      return r?
   -- where a register is looked into or named first, that is done the long way
   if let .movzx _ _ .w8 (.mem (.sib (some b) none _)) := instr then
     if (← typeOf b).isAppOf ``Ty.str then return none
@@ -2886,8 +2890,37 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         let τ ← typeOf r
         if τ.isAppOf ``Ty.nullable || τ.isAppOf ``Ty.orErr then return none
     | _ => pure ()
+    -- A register the step needs to speak of the value of, of which only that
+    -- it is a number is known, has that value given a name here: the rest of
+    -- the block is typed for every value it may be.
     for r in instr.wantsNamed do
-      if (← typeOf r).isConstOf ``Ty.int then return none
+      if (← typeOf r).isConstOf ``Ty.int then
+        let before ← saveState
+        let name := Name.mkSimple s!"{r.name64}₀"
+        let rE := toExpr r
+        let bv := mkApp (mkConst ``BitVec) (mkNatLit 64)
+        let withName (v : Expr) : Expr × Expr :=
+          let newTy := mkApp (mkConst ``Ty.eq) v
+          (mkAppN Γ.getAppFn (cargs.set! 1
+            (mkApp regs.appFn! (mkAppN regs.appArg!.getAppFn (tbl.set! (1 + regIdx r) newTy)))),
+           mkApp3 (mkConst ``CtxOf.setReg) Γ rE newTy)
+        let allTy ← withLocalDeclD name bv fun v => do
+          mkForallFVars #[v] (mkAppN ty.getAppFn #[Φ, fetch, sys, Ψ, a, (withName v).1])
+        let m ← mkFreshExprSyntheticOpaqueMVar allTy (← goal.getTag)
+        let lam ← withLocalDeclD name bv fun v => do
+          mkLambdaFVars #[v] (mkAppN (mkConst ``BlockOk.regsEta)
+            #[Φ, fetch, sys, Ψ, a, (withName v).2, mkApp m v])
+        if r == .rsp then
+          goal.assign (mkAppN (mkConst ``BlockOk.nameSp) #[Φ, fetch, sys, Ψ, a, Γ, lam])
+        else
+          let hr ← mkDecideProof (← mkAppM ``Ne #[rE, mkConst ``Reg.rsp])
+          goal.assign (mkAppN (mkConst ``BlockOk.name) #[Φ, fetch, sys, Ψ, a, Γ, rE, hr, lam])
+        let (_, g') ← m.mvarId!.intro name
+        let ty' := (← instantiateMVars (← g'.getType)).consumeMData
+        -- with no step taken, the name is not given either
+        let r? ← fastStep g' ty' named
+        if r?.isNone then before.restore
+        return r?
   let iE := toExpr instr
   let lenE := toExpr len
   let next ← mkAppM ``HAdd.hAdd #[a, lenE]
