@@ -4787,6 +4787,130 @@ theorem sysFillBy_spec {ρ : Env} {Γ : CtxS} {b c : Reg} {x : CtxS × List Cond
     · cases h
   · cases h
 
+theorem ShapeS.plain_clear {ρ : Env} {S : ShapeS} (h : S.plain = true) (o n : Nat) :
+    (S.den ρ).clear o n = S.den ρ := by
+  unfold ShapeS.plain at h
+  split at h
+  · rfl
+  · cases h
+
+theorem set_self {α : Type} : (l : List α) → (i : Nat) → (x : α) → l[i]? = some x → l.set i x = l
+  | [], _, _, h => by cases h
+  | y :: l, 0, x, h => by cases h; rfl
+  | y :: l, i + 1, x, h => by
+    show y :: l.set i x = y :: l
+    rw [set_self l i x h]
+
+/-- A call that fills as many bytes as a register says, at an exactly known
+address in a block the context owns. -/
+def sysFillOwned (Γ : CtxS) (b c : Reg) : Option (CtxS × List CondS) :=
+  match Γ.regs.get b, Γ.regs.get c with
+  | .eq p, .eq len =>
+    match findOwned p Γ.owned 0 with
+    | some (_, _, S, j) =>
+      if S.plain then
+        some (Γ.afterSyscall, [.le (j.plus (.toNat len)) S.size, .le S.size (.lit (2 ^ 64))])
+      else none
+    | none => none
+  | _, _ => none
+
+theorem sysFillOwned_spec {ρ : Env} {Γ : CtxS} {b c : Reg} {x : CtxS × List CondS}
+    (h : sysFillOwned Γ b c = some x) (hc : CondS.all ρ x.2) :
+    x.1 = Γ.afterSyscall ∧ ∃ k a S v lo len, (Γ.den ρ).regs b = .eq v ∧
+      (Γ.den ρ).regs c = .eq len ∧ OwnedByte (Γ.den ρ).owned k a S v lo ∧
+      lo + len.toNat ≤ S.size ∧ S.clear lo len.toNat = S := by
+  unfold sysFillOwned at h
+  split at h
+  · next p len hb hcr =>
+    split at h
+    · next k a S j hf =>
+      split at h
+      · next hp =>
+        cases h
+        obtain ⟨i, _, hi, hpa⟩ := findOwned_spec ρ p Γ.owned 0 hf
+        have h1 := hc.1
+        have h2 := hc.2.1
+        simp only [CondS.den, Num.den_plus] at h1 h2
+        refine ⟨rfl, i, a.den ρ, S.den ρ, p.den ρ, j.den ρ, len.den ρ,
+          by rw [CtxS.den_regs, hb]; rfl, by rw [CtxS.den_regs, hcr]; rfl,
+          ⟨by rw [CtxS.den_owned]; exact denOwned_getElem? ρ _ _ _ _ _ hi, hpa, ?_⟩, ?_,
+          ShapeS.plain_clear hp _ _⟩
+        · rw [ShapeS.den_size]; exact h2
+        · rw [ShapeS.den_size]; exact h1
+      · cases h
+    · cases h
+  · cases h
+
+/-- A call that fills as many bytes as a register says, at an address a
+known distance above the stack pointer's value, in one piece of the stack. -/
+def sysFillStack (Γ : CtxS) (b c : Reg) : Option (CtxS × List CondS) :=
+  match Γ.regs.get .rsp, Γ.regs.get b, Γ.regs.get c with
+  | .eq v, .eq p, .eq len =>
+    match findOwned p [(v, .mk (.lit (2 ^ 64)) .nil)] 0 with
+    | some (_, _, _, j) =>
+      match j.lit? with
+      | some d =>
+        if d < 2 ^ 64 then
+          match pieceAt Γ.stack 0 d with
+          | some (_, S, i, _) =>
+            if S.plain then
+              some (Γ.afterSyscall, [.le ((Num.lit i).plus (.toNat len)) S.size])
+            else none
+          | none => none
+        else none
+      | none => none
+    | none => none
+  | _, _, _ => none
+
+theorem sysFillStack_spec {ρ : Env} {Γ : CtxS} {b c : Reg} {x : CtxS × List CondS}
+    (h : sysFillStack Γ b c = some x) (hc : CondS.all ρ x.2) :
+    x.1 = Γ.afterSyscall ∧ ∃ (v d len : BitVec 64) (k i : Nat) (S : Shape),
+      (Γ.den ρ).regs .rsp = .eq v ∧ (Γ.den ρ).regs b = .eq (v + d) ∧
+      (Γ.den ρ).regs c = .eq len ∧ StackAt (Γ.den ρ).stack k S d.toNat i ∧
+      i + len.toNat ≤ S.size ∧ S.clear i len.toNat = S := by
+  unfold sysFillStack at h
+  split at h
+  · next v p len hsp hb hcr =>
+    split at h
+    · next k₀ a₀ S₀ j hf =>
+      split at h
+      · next d hd =>
+        split at h
+        · next hlt =>
+          split at h
+          · next k S i sz hp =>
+            split at h
+            · next hpl =>
+              cases h
+              obtain ⟨n, _, hn, hpa⟩ := findOwned_spec ρ p [(v, .mk (.lit (2 ^ 64)) .nil)] 0 hf
+              have ha : a₀ = v := by
+                cases n with
+                | zero => cases hn; rfl
+                | succ m => cases hn
+              subst ha
+              obtain ⟨jj, hk, hj, hoff, _, _⟩ :=
+                pieceAt_spec ρ (stackTail ρ Γ.stackRest) _ _ _ hp
+              have hkj : k = jj := by omega
+              subst hkj
+              have h1 := hc.1
+              simp only [CondS.den, Num.den_plus] at h1
+              have hdn : j.den ρ = d := Num.lit?_den hd
+              refine ⟨rfl, a₀.den ρ, BitVec.ofNat 64 d, len.den ρ, k, i, S.den ρ,
+                by rw [CtxS.den_regs, hsp]; rfl, ?_, by rw [CtxS.den_regs, hcr]; rfl,
+                ⟨by rw [CtxS.den_stack]; exact denShapes_getElem? ρ _ _ _ _ hj, ?_⟩, ?_,
+                ShapeS.plain_clear hpl _ _⟩
+              · rw [CtxS.den_regs, hb]
+                show Ty.eq (p.den ρ) = _
+                rw [hpa, hdn]
+              · rw [CtxS.den_stack, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hlt]; exact hoff
+              · rw [ShapeS.den_size]; exact h1
+            · cases h
+          · cases h
+        · cases h
+      · cases h
+    · cases h
+  · cases h
+
 /-- **The checker for a system call that returns**: the call is told by the
 number in `rax`, which must be written out. -/
 def stepSys (Γ : CtxS) : Option (CtxS × List CondS) :=
@@ -4796,8 +4920,17 @@ def stepSys (Γ : CtxS) : Option (CtxS × List CondS) :=
       some (Γ.afterSyscall, [])
     else if nr = 5 then sysFill Γ .rsi 144
     else if nr = 228 then sysFill Γ .rsi 16
-    else if nr = 0 then sysFillBy Γ .rsi .rdx
-    else if nr = 318 then sysFillBy Γ .rdi .rsi
+    else if nr = 0 then
+      match sysFillBy Γ .rsi .rdx with
+      | some x => some x
+      | none =>
+        match sysFillOwned Γ .rsi .rdx with
+        | some x => some x
+        | none => sysFillStack Γ .rsi .rdx
+    else if nr = 318 then
+      match sysFillBy Γ .rdi .rsi with
+      | some x => some x
+      | none => sysFillOwned Γ .rdi .rsi
     else none
   | _ => none
 
@@ -4833,13 +4966,39 @@ theorem stepSys_sound {fetch : Fetch} {sys : Syscall} [LikeLinux sys] {Ψ : MemT
         · split at h
           · next e =>
             subst e
-            obtain ⟨hx, S, off, len, hb, hl, hle, hf⟩ := sysFillBy_spec h hc
-            rw [hx, CtxS.den_afterSyscall]; exact linux_read hax hb hl hle hf
+            split at h
+            · next y hy =>
+              cases h
+              obtain ⟨hx, S, off, len, hb, hl, hle, hf⟩ := sysFillBy_spec hy hc
+              rw [hx, CtxS.den_afterSyscall]; exact linux_read hax hb hl hle hf
+            · split at h
+              · next y hy =>
+                cases h
+                obtain ⟨hx, k, a, S, v, lo, len, hb, hl, hat, hle, hcl⟩ := sysFillOwned_spec hy hc
+                rw [hx, CtxS.den_afterSyscall]
+                have := linux_read_owned (fetch := fetch) (sys := sys) (Ψ := Ψ) hax hb hat hl hle
+                rw [hcl, set_self _ _ _ hat.entry] at this
+                exact this
+              · obtain ⟨hx, v, d, len, k, i, S, hsp, hb, hl, hat, hle, hcl⟩ :=
+                  sysFillStack_spec h hc
+                rw [hx, CtxS.den_afterSyscall]
+                have := linux_read_stack (fetch := fetch) (sys := sys) (Ψ := Ψ) hax hsp hb hat hl hle
+                rw [hcl, set_self _ _ _ hat.entry] at this
+                exact this
           · split at h
             · next e =>
               subst e
-              obtain ⟨hx, S, off, len, hb, hl, hle, hf⟩ := sysFillBy_spec h hc
-              rw [hx, CtxS.den_afterSyscall]; exact linux_getrandom hax hb hl hle hf
+              split at h
+              · next y hy =>
+                cases h
+                obtain ⟨hx, S, off, len, hb, hl, hle, hf⟩ := sysFillBy_spec hy hc
+                rw [hx, CtxS.den_afterSyscall]; exact linux_getrandom hax hb hl hle hf
+              · obtain ⟨hx, k, a, S, v, lo, len, hb, hl, hat, hle, hcl⟩ := sysFillOwned_spec h hc
+                rw [hx, CtxS.den_afterSyscall]
+                have := linux_getrandom_owned (fetch := fetch) (sys := sys) (Ψ := Ψ) hax hb hat hl
+                  hle
+                rw [hcl, set_self _ _ _ hat.entry] at this
+                exact this
             · cases h
   · cases h
 

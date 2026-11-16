@@ -2220,7 +2220,10 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         if let .syscall := i then
           if linux?.isNone then break
           if advanced && (stops?.getD #[]).contains at' then break
-          let some (S', cs) := Sym.stepSys cur | break
+          let some (S', cs) := Sym.stepSys cur | do
+            trace[TypedAsm.fast] "system call not stepped: rax {toExpr (cur.regs.get .rax)}, rsi {
+              toExpr (cur.regs.get .rsi)}, rdx {toExpr (cur.regs.get .rdx)}, owned {toExpr cur.owned}"
+            break
           moves := moves.push (.step at' i len' arrived cs)
           steps := steps + 1
           advanced := true
