@@ -33,16 +33,7 @@ asm_typing At blocks blocks room 0
 /-! ## The program is well typed -/
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  refine BlocksOk.of_labels ?_
-  intro l Γ h
-  cases h with
-  | start =>
-    -- the arguments and the `openat`, then the test of what it answered
-    ty_steps
-    ty_branch
-    -- mov r12, rax; lea r13, [rip + buffer]
-    -- the rest: each call that stores into the buffer finds room for what it stores
-    ty_block
+  ty_program
 
 /-! ## Safety -/
 

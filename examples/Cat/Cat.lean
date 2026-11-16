@@ -46,27 +46,7 @@ def Ψ : MemTy := .ofList blocks []
 /-! ## The program is well typed -/
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  refine BlocksOk.of_labels ?_
-  intro l Γ h
-  cases h with
-  | start c =>
-    -- mov r13, [rsp]: the count, exactly; mov r14d, 1, and on into `file`
-    ty_step
-    ty_into (At.file c 1)
-  | file c v =>
-    -- cmp r14, r13; jae done
-    ty_step
-    ty_branch
-    -- carrying on, the argument's number is below the count (`hlt`), so its
-    -- slot is there to load; then the `openat` and the test of its answer
-    ty_steps
-    ty_branch
-    -- mov r12, rax, and on into `next`
-    ty_into (At.next c v)
-  | next c v =>
-    -- xor eax, eax; mov rdi, r12; lea rsi, [rip + buffer]
-    -- the `read`, the test of its result, the `write`, and round again
-    ty_block
+  ty_program
 
 /-! ## The memory typing and the entry contract -/
 

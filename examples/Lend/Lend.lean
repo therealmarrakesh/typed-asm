@@ -62,12 +62,8 @@ asm_typing At blocks blocks room 4
 /-! ## The program is well typed -/
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  refine BlocksOk.of_labels ?_
-  intro l Γ h
-  cases h with
-  | start => ty_call workSig
-  | done => ty_block
-  | work saved ret rest room hK =>
+  ty_program
+  case work saved ret rest room hK =>
     -- make the room the signature guarantees visible, so the local can be allocated
     obtain ⟨m, rfl⟩ := hK.room_split
     -- sub rsp, 16
@@ -78,11 +74,10 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     -- the local, and everything above it, become blocks: the local is handed to `fill`
     ty_stack_detach at 0
     ty_call (fillSig (sp + 0))
-  | filled sp saved ret rest m hK =>
+  case filled sp saved ret rest m hK =>
     -- everything is attached again: the local is a piece of the stack as before
     ty_stack_attach
     ty_block
-  | fill p saved ret rest room hK => ty_block
 
 /-! ## Safety -/
 

@@ -56,25 +56,20 @@ asm_typing At blocks blocks room 1
 /-! ## The program is well typed -/
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  refine BlocksOk.of_labels ?_
-  intro l Γ h
-  cases h with
-  | start =>
+  ty_program
+  case start =>
     -- lea rbx, [rip + table]
     -- the index is checked, then the call goes through the table
     ty_block
     ty_call unary
-  | afterFirst =>
+  case afterFirst =>
     -- a function pointer is loaded from the table into `r12` and called
     ty_steps
     ty_call unary
-  | afterSecond =>
+  case afterSecond =>
     -- `r12` was preserved by the call, and is still a function pointer
     ty_steps
     ty_call unary
-  | afterThird => ty_block
-  | double saved ret rest room hK => ty_block
-  | square saved ret rest room hK => ty_block
 
 /-! ## The memory typing and the entry contract -/
 

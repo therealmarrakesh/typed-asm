@@ -50,18 +50,11 @@ asm_typing At blocks blocks room 1
 /-! ## The program is well typed -/
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  refine BlocksOk.of_labels ?_
-  intro l Γ h
-  cases h with
-  | start =>
+  ty_program
+  case start =>
     -- lea rdi, [rip + array]
     ty_steps
     ty_call (getSig 5)
-  | afterCall => ty_block
-  | get n saved ret rest room hK hn =>
-    -- the index is any integer; call it `v`
-    -- entering `inbounds`, the comparison has found `v` below the length
-    ty_block
 
 /-! ## Safety -/
 

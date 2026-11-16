@@ -4063,6 +4063,53 @@ macro_rules
                case' st => ty_straight
                case' acc => ty_accept $h))
 
+open Lean Meta Elab Tactic in
+/-- Makes the stack room a function was handed visible as what the function
+needs and some more, for each fact in scope that a caller met a signature:
+the room, till then a number nothing is known of, becomes `m + need`. -/
+elab "ty_room" : tactic => withMainContext do
+  for d in ← getLCtx do
+    if d.isImplementationDetail then continue
+    let t ← instantiateMVars d.type
+    unless t.isAppOf ``FnSig.CallerOk || t.isAppOf ``FnSigEx.CallerOk do continue
+    -- only where the room is still a bare variable
+    let room := if t.isAppOf ``FnSig.CallerOk then t.getAppArgs[4]! else t.getAppArgs[6]!
+    unless room.isFVar do continue
+    let h := mkIdent d.userName
+    let m := mkIdent `m
+    let rfl' := mkIdent `rfl
+    evalTactic (← `(tactic| obtain ⟨$m, $rfl'⟩ := ($h).room_split))
+    return
+  throwError "no fact here says a caller met a signature with room still unknown"
+
+open Lean Meta Elab Tactic in
+/-- `ty_program` proves a labelled program well typed block by block,
+`BlocksOk Φ fetch sys Ψ`, as far as that takes no telling: for each context
+declared at a label, the block from that label is typed with `ty_block`,
+and where that leaves nothing over, the label is done. A function's block
+is tried again with its stack room made visible (`ty_room`) if the first
+try does not do.
+
+A label whose block needs something said is left as a goal, untouched and
+named for the label's context, to be proved with `case name args => …`. -/
+elab "ty_program" : tactic => do
+  evalTactic (← `(tactic| (refine BlocksOk.of_labels ?_; intro l Γ h; cases h)))
+  let goals ← getGoals
+  let mut left : List MVarId := []
+  for g in goals do
+    let start ← saveState
+    let mut done := false
+    for withRoom in [false, true] do
+      if done then break
+      try
+        setGoals [g]
+        if withRoom then evalTactic (← `(tactic| ty_room))
+        Tactic.withoutRecover do evalTactic (← `(tactic| ty_block))
+        if (← getGoals).isEmpty then done := true else start.restore
+      catch _ => start.restore
+    unless done do left := left ++ [g]
+  setGoals left
+
 /-! ## What every typing declares
 
 The contexts at the labels and the layouts of the data are a program's

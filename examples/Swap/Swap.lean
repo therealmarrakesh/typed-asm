@@ -50,15 +50,7 @@ asm_typing At blocks blocks room 2
 /-! ## The program is well typed -/
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  refine BlocksOk.of_labels ?_
-  intro l Γ h
-  cases h with
-  | start =>
-    -- lea rdi, [rip + record]
-    ty_block
-  | afterFirst => ty_block
-  | afterSecond => ty_block
-  | swap saved ret rest room hK => ty_block
+  ty_program
 
 /-! ## Safety -/
 

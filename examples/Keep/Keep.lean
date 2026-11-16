@@ -45,17 +45,7 @@ asm_typing At blocks blocks room 3
 /-! ## The program is well typed -/
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  refine BlocksOk.of_labels ?_
-  intro l Γ h
-  cases h with
-  | start =>
-    -- sub rsp, 16
-    -- the stack pointer's value is called `sp`; `lea rbx, [rsp]` is then known
-    ty_block
-  | back sp =>
-    -- the `read` is into the address taken before the call
-    ty_block
-  | pause saved ret rest room hK => ty_block
+  ty_program
 
 /-! ## Safety -/
 

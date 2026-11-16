@@ -62,20 +62,17 @@ theorem decr {n : Nat} (hn : 0 < n) :
 /-! ## The program is well typed -/
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  refine BlocksOk.of_labels ?_
-  intro l Γ h
-  cases h with
-  | start =>
+  ty_program
+  case start =>
     ty_steps
     ty_call (factSig 5)
-  | afterCall => ty_block
-  | fact n saved ret rest room hK =>
+  case fact n saved ret rest room hK =>
     ty_block
     -- going on to recurse: the test found the argument not to be zero
     refine Nat.pos_of_ne_zero (fun h0 => ?_)
     subst h0
     simp [Cond.eval, Flags.ofResult, num] at hcond
-  | again n saved ret rest room hK hn =>
+  case again n saved ret rest room hK hn =>
     -- the argument is not zero, so the caller left at least sixteen bytes
     have hroom : 16 * n ≤ room := hK.room
     obtain ⟨m, rfl⟩ : ∃ m, room = m + 16 := ⟨room - 16, by omega⟩
@@ -83,7 +80,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_call (factSig (n - 1))
     -- the inner call gets exactly one less
     exact Sub.of_eq (decr hn)
-  | afterAgain n saved ret rest m hK => ty_block
 
 /-! ## Safety -/
 

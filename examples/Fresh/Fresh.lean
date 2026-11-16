@@ -55,25 +55,15 @@ asm_typing At blocks blocks room 1
 /-! ## The program is well typed -/
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  refine BlocksOk.of_labels ?_
-  intro l Γ h
-  cases h with
-  | start =>
+  ty_program
+  case start =>
     -- the instruction after the call is ready for a page at any address
     ty_call pageSig returning backCtx
-  | back x =>
-    -- the store makes the first word an address; the `read` makes it a number again
-    iterate 7 ty_step
-    -- xor ecx, ecx, and on into the loop
-    ty_into At.loop x
-  | loop p =>
-    -- the index, whatever it is, is called `i`; past the test it is less than 4096
-    ty_block
-  | done p =>
+  case done p =>
     ty_steps
     ty_munmap
     ty_block
-  | page saved ret rest room frame above hK =>
+  case page saved ret rest room frame above hK =>
     ty_steps
     ty_mmap_own as p
     -- an error number is negative: the test sends control to `fail`

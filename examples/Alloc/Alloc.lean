@@ -43,13 +43,11 @@ def Ψ : MemTy := .ofList blocks [(1, nodeShape)]
 /-! ## The program is well typed -/
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  refine BlocksOk.of_labels ?_
-  intro l Γ h
-  cases h with
-  | start =>
+  ty_program
+  case start =>
     -- xor ebx, ebx: the empty list, and on into `next`
     ty_into At.next
-  | next =>
+  case next =>
     -- the arguments, then the `mmap` for a node
     ty_steps
     ty_mmap_kind 1
@@ -63,7 +61,7 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
       ty_step
       ty_open .r12
       ty_block
-  | print =>
+  case print =>
     -- the link in `rbx` is zero or it is a node
     ty_null .rbx
     · ty_block

@@ -32,13 +32,7 @@ asm_typing At blocks blocks room 0
 /-! ## The program is well typed -/
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  refine BlocksOk.of_labels ?_
-  intro l Γ h
-  cases h with
-  | start =>
-    -- xor eax, eax; xor edi, edi; lea rsi, [rip + buffer]
-    -- the `read`, the test of its result, the way out, the `write`, and round again
-    ty_block
+  ty_program
 
 /-! ## Safety -/
 

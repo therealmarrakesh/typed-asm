@@ -37,10 +37,7 @@ asm_typing At blocks blocks room 0
 /-! ## The program is well typed -/
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  refine BlocksOk.of_labels ?_
-  intro l Γ h
-  cases h with
-  | start => ty_block
+  ty_program
 
 /-! ## The memory typing and the entry contract -/
 

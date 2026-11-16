@@ -78,21 +78,18 @@ theorem decr {n i : Nat} (hi : i < n) :
 /-! ## The program is well typed -/
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  refine BlocksOk.of_labels ?_
-  intro l Γ h
-  cases h with
-  | start =>
+  ty_program
+  case start =>
     -- lea rdi, [rip + array]; mov esi, 5
     ty_steps
     ty_call (sumSig 5)
-  | afterCall => ty_block
-  | sum n saved ret rest room hK =>
+  case sum n saved ret rest room hK =>
     ty_block
     -- entering the loop: the count is not zero, so the invariant holds with `i = 0`
     apply left_ne_zero
     intro h0
     simp [Cond.eval, Flags.ofResult, h0] at hcond
-  | loop n i saved ret rest room hK hi =>
+  case loop n i saved ret rest room hK hi =>
     ty_block
     -- going round again: the counter is the one for `i + 1` elements consumed,
     · exact Sub.of_eq (decr hi)
@@ -102,7 +99,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
       rw [← decr hi] at h0
       simp [Cond.eval, AluOp.apply, subBorrow_zf] at hcond
       exact hcond (by simpa [AluOp.apply] using h0)
-  | done n saved ret rest room hK => ty_block
 
 /-! ## Safety -/
 

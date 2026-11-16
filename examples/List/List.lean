@@ -47,17 +47,15 @@ def Ψ : MemTy := .ofList blocks [(1, nodeShape)]
 /-! ## The program is well typed -/
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  refine BlocksOk.of_labels ?_
-  intro l Γ h
-  cases h with
-  | start =>
+  ty_program
+  case start =>
     -- lea rdi, [rip + list]
     ty_step
     -- `rdi` holds the first node's address, so it points to a node,
     -- and a node has a value and a link
     ty_open .rdi
     ty_block
-  | loop =>
+  case loop =>
     -- the link in `rdi` is zero or it is a node
     ty_null .rdi
     -- zero: the test sends control to `done`, and what follows is not reached

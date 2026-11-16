@@ -51,16 +51,14 @@ asm_typing At blocks blocks room 2
 /-! ## The program is well typed -/
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  refine BlocksOk.of_labels ?_
-  intro l Γ h
-  cases h with
-  | start =>
+  ty_program
+  case start =>
     -- lea r12, [rip + two]: `r12` holds exactly the function's address
     ty_step
     -- so it is a pointer to the function, and the call is through it
     ty_fn_ptr .r12 to twoSig
     ty_call twoSig returning backCtx
-  | back x =>
+  case back x =>
     -- each store gives a first word the type of the other page's address;
     -- each load finds it, and the second leads back to the first page
     ty_steps
@@ -68,7 +66,7 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_steps
     ty_munmap
     ty_block
-  | two saved ret rest room frame above hK =>
+  case two saved ret rest room frame above hK =>
     -- the caller left a slot for the page kept across the second request
     obtain ⟨m, rfl⟩ := hK.room_split
     ty_steps

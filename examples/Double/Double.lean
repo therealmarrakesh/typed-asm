@@ -57,10 +57,8 @@ asm_typing At blocks blocks room 1
 /-! ## The program is well typed -/
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  refine BlocksOk.of_labels ?_
-  intro l Γ h
-  cases h with
-  | start =>
+  ty_program
+  case start =>
     -- the arguments, then the `mmap` for a page to own, at an address called `p`
     ty_steps
     ty_mmap_own as p
@@ -70,14 +68,10 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     · ty_step
       ty_branch
       ty_block
-  | back p =>
+  case back p =>
     -- written out, and given back
     ty_steps
     ty_munmap
-    ty_block
-  | double p saved ret rest room hK => ty_into At.loop p saved ret rest room hK
-  | loop p saved ret rest room hK =>
-    -- the index, whatever it is, is called `i`; past the test it is less than 512
     ty_block
 
 /-! ## Safety -/

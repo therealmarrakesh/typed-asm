@@ -30,17 +30,7 @@ asm_typing At blocks blocks room 2
 /-! ## The program is well typed -/
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  refine BlocksOk.of_labels ?_
-  intro l Γ h
-  cases h with
-  | start =>
-    -- sub rsp, 16
-    -- from here on as in the loop
-    ty_block
-  | loop =>
-    -- the stack pointer's value is called `sp`, so `lea rsi, [rsp]` yields
-    -- a known address and the `read` is checked against the two slots there
-    ty_block
+  ty_program
 
 /-! ## Safety -/
 

@@ -47,17 +47,7 @@ asm_typing At blocks blocks room 3
 /-! ## The program is well typed -/
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  refine BlocksOk.of_labels ?_
-  intro l Γ h
-  cases h with
-  | start =>
-    -- lea rdi, [rip + record]
-    ty_block
-  | afterCall => ty_block
-  | pick saved ret rest room hK =>
-    -- make the two slots the signature guarantees visible, so the frame can be allocated
-    obtain ⟨m, rfl⟩ := hK.room_split
-    ty_block
+  ty_program
 
 /-! ## Safety -/
 

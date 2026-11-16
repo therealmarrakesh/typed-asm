@@ -53,14 +53,12 @@ def Ψ : MemTy := .ofList blocks []
 /-! ## The program is well typed -/
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  refine BlocksOk.of_labels ?_
-  intro l Γ h
-  cases h with
-  | start c =>
+  ty_program
+  case start c =>
     -- mov r13, [rsp]: the count, exactly; mov r14d, 1, and on into `arg`
     ty_step
     ty_into (At.arg c 1)
-  | arg c v =>
+  case arg c v =>
     -- cmp r14, r13; jae done
     ty_step
     ty_branch
@@ -70,7 +68,7 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_step
     -- mov rdi, rsi, and on into `scan`
     ty_into (At.scan c v)
-  | scan c v =>
+  case scan c v =>
     -- the byte at the place reached is zero or it is not
     ty_byte as b
     -- zero: the test sends control to `found`
