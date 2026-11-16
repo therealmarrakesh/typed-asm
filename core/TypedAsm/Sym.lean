@@ -110,6 +110,8 @@ inductive FlagsS
   | any
   /-- All four are defined. -/
   | known
+  /-- At least the named ones are defined. -/
+  | defined (cf zf sf of : Bool)
   /-- They are exactly what an arithmetic or logic operation left. -/
   | alu (op : AluOp) (w : Width) (a b : Val)
   /-- They are exactly what a `test` of two values left. -/
@@ -140,6 +142,7 @@ structure Env where
   flags : List (Flags → Prop) := []
   stack : List (List Shape) := []
   owned : List (List (BitVec 64 × Shape)) := []
+  deriving Inhabited
 
 namespace Val
 
@@ -254,6 +257,7 @@ namespace FlagsS
 def den (ρ : Env) : FlagsS → Flags → Prop
   | .any => Flags.Any
   | .known => Flags.Known
+  | .defined cf zf sf of => Flags.Defined cf zf sf of
   | .alu op .w64 a b => (· = (op.apply (a.den ρ) (b.den ρ)).2)
   | .alu op .w32 a b => (· = (op.apply ((a.den ρ).setWidth 32) ((b.den ρ).setWidth 32)).2)
   | .test a b => (· = Flags.ofResult (a.den ρ &&& b.den ρ) false false)
@@ -1487,6 +1491,218 @@ theorem load_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {d : R
     · cases h
   · cases h
 
+/-! ### Storing plain bytes -/
+
+/-- A shape with `n` bytes made plain, where its terms let that be worked out. -/
+def ShapeS.clear : ShapeS → Num → Nat → Option ShapeS
+  | .mk size .nil, _, _ => some (.mk size .nil)
+  | .mk size vals, .lit i, n => some (.mk size (vals.clear i n))
+  | _, _, _ => none
+
+theorem ShapeS.den_clear {ρ : Env} {S S' : ShapeS} {o : Num} {n : Nat}
+    (h : S.clear o n = some S') : S'.den ρ = (S.den ρ).clear (o.den ρ) n := by
+  unfold ShapeS.clear at h
+  split at h
+  · cases h; rfl
+  · next size vals i _ =>
+    cases h
+    show (⟨_, (vals.clear i n).den ρ⟩ : Shape) = _
+    rw [ValsS.den_clear]; rfl
+  · cases h
+
+theorem denOwned_set (ρ : Env) : (l : List (Val × ShapeS)) → (tail : List (BitVec 64 × Shape)) →
+    (i : Nat) → (x y : Val × ShapeS) → l[i]? = some x →
+    denOwned ρ (l.set i y) tail = (denOwned ρ l tail).set i (y.1.den ρ, y.2.den ρ)
+  | [], _, _, _, _, h => by cases h
+  | (b, T) :: l, tail, 0, x, y, _ => rfl
+  | (b, T) :: l, tail, i + 1, x, y, h => by
+    show (b.den ρ, T.den ρ) :: denOwned ρ (l.set i y) tail = (b.den ρ, T.den ρ) :: _
+    rw [denOwned_set ρ l tail i x y h]
+
+/-- The block an operand was found in is listed where it was found. -/
+theorem locate_listed {Γ : CtxS} {m : Mem} {pl : PlaceS} {cs : List CondS}
+    (h : locate Γ m = some (pl, cs)) :
+    (∀ k a, pl.kind = .owned k a → Γ.owned[k]? = some (a, pl.shape)) ∧
+    (∀ k, pl.kind = .piece k → Γ.stack[k]? = some pl.shape) := by
+  unfold locate at h
+  split at h
+  · next b ix disp =>
+    split at h
+    · -- the stack
+      unfold locateSp at h
+      split at h
+      · split at h
+        · split at h
+          · next k S i sz hp =>
+            cases h
+            obtain ⟨j, hk, hj, _⟩ := pieceAt_spec (default : Env) [] _ _ _ hp
+            refine ⟨fun _ _ e => (by cases e), fun k' e => ?_⟩
+            cases e
+            have : k = j := by omega
+            subst this; exact hj
+          · cases h
+        · split at h
+          · next c k S R hc hp =>
+            cases h
+            obtain ⟨j, hk, hj, _⟩ := pieceIdx_spec (default : Env) [] _ _ _ hp
+            refine ⟨fun _ _ e => (by cases e), fun k' e => ?_⟩
+            cases e
+            have : k = j := by omega
+            subst this; exact hj
+          · cases h
+      · cases h
+    · split at h
+      · cases h; exact ⟨fun _ _ e => (by cases e), fun _ e => (by cases e)⟩
+      · split at h
+        · next p hea =>
+          split at h
+          · next k a S j hf =>
+            cases hfit : fits64 j with
+            | none => rw [hfit] at h; cases h
+            | some cs' =>
+              rw [hfit] at h; cases h
+              obtain ⟨i, hk, hi, _⟩ := findOwned_spec (default : Env) p Γ.owned 0 hf
+              refine ⟨fun k' a' e => ?_, fun _ e => (by cases e)⟩
+              cases e
+              have : k = i := by omega
+              subst this; exact hi
+          · cases h
+        · cases h
+      · cases h
+  · cases h
+
+/-- The context after `n` plain bytes are stored to an operand, and what is
+left to be shown. In a block others may point into the bytes must be plain
+already; in a block the context owns or a piece of the stack, what typed
+values reached into them are forgotten. -/
+def writes (Γ : CtxS) (n : Nat) (m : Mem) : Option (CtxS × List CondS) :=
+  match locate Γ m with
+  | some (pl, cs) =>
+    match within pl.off n pl.shape.size with
+    | some ws =>
+      match pl.kind with
+      | .ptr true => if pl.shape.free pl.off n then some (Γ, cs ++ ws) else none
+      | .block true => if pl.shape.free pl.off n then some (Γ, cs ++ ws) else none
+      | .owned k a =>
+        match pl.shape.clear pl.off n with
+        | some S' => some ({ Γ with owned := Γ.owned.set k (a, S') }, cs ++ ws)
+        | none => none
+      | .piece k =>
+        match pl.shape.clear pl.off n with
+        | some S' => some ({ Γ with stack := Γ.stack.set k S' }, cs ++ ws)
+        | none => none
+      | _ => none
+    | none => none
+  | none => none
+
+theorem writes_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {n : Nat} {m : Mem}
+    {x : CtxS × List CondS} (h : writes Γ n m = some x) (hc : CondS.all ρ x.2) :
+    WriteIntOk Ψ next (Γ.den ρ) n (.mem m) (x.1.den ρ) ∧ ReadOk Ψ next (Γ.den ρ) n (.mem m) := by
+  unfold writes at h
+  split at h
+  · next pl cs hl =>
+    split at h
+    · next ws hw =>
+      have key : ∀ {Γ' : CtxS}, CondS.all ρ (cs ++ ws) →
+          Loc Ψ next (Γ.den ρ) m (pl.kind.den ρ) (pl.shape.den ρ) (pl.off.den ρ) ∧
+          pl.off.den ρ + n ≤ (pl.shape.den ρ).size := fun hc' => by
+        obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc'
+        exact ⟨locate_spec hl h₁, by rw [ShapeS.den_size]; exact within_spec hw h₂⟩
+      obtain ⟨hown, hpiece⟩ := locate_listed hl
+      split at h
+      · next hk =>
+        split at h
+        · next hfree =>
+          cases h
+          obtain ⟨hloc, hin⟩ := key (Γ' := Γ) hc
+          rw [hk] at hloc
+          exact ⟨hloc.writeShared (w := true) (.inl rfl) rfl hin (ShapeS.den_free hfree),
+            hloc.read hin⟩
+        · cases h
+      · next hk =>
+        split at h
+        · next hfree =>
+          cases h
+          obtain ⟨hloc, hin⟩ := key (Γ' := Γ) hc
+          rw [hk] at hloc
+          exact ⟨hloc.writeShared (w := true) (.inr rfl) rfl hin (ShapeS.den_free hfree),
+            hloc.read hin⟩
+        · cases h
+      · next k a hk =>
+        split at h
+        · next S' hcl =>
+          cases h
+          obtain ⟨hloc, hin⟩ := key (Γ' := Γ) hc
+          rw [hk] at hloc
+          refine ⟨?_, hloc.read hin⟩
+          have := hloc.writeOwned (n := n) hin
+          rw [← ShapeS.den_clear hcl] at this
+          have e : CtxS.den ρ { Γ with owned := Γ.owned.set k (a, S') }
+              = { Γ.den ρ with owned := (Γ.den ρ).owned.set k (a.den ρ, S'.den ρ) } := by
+            show ({ Γ.den ρ with owned := denOwned ρ (Γ.owned.set k (a, S')) _ } : Ctx) = _
+            rw [denOwned_set ρ _ _ _ _ _ (hown k a hk)]; rfl
+          rw [e]; exact this
+        · cases h
+      · next k hk =>
+        split at h
+        · next S' hcl =>
+          cases h
+          obtain ⟨hloc, hin⟩ := key (Γ' := Γ) hc
+          rw [hk] at hloc
+          refine ⟨?_, hloc.read hin⟩
+          have := hloc.writePiece (n := n) hin
+          rw [← ShapeS.den_clear hcl] at this
+          have e : CtxS.den ρ { Γ with stack := Γ.stack.set k S' }
+              = { Γ.den ρ with stack := (Γ.den ρ).stack.set k (S'.den ρ) } := by
+            show ({ Γ.den ρ with stack := denShapes ρ (Γ.stack.set k S') _ } : Ctx) = _
+            rw [denShapes_set ρ _ _ _ _ _ (hpiece k hk)]; rfl
+          rw [e]; exact this
+        · cases h
+      · cases h
+    · cases h
+  · cases h
+
+/-- Arithmetic with its first operand in memory. -/
+def aluMem (Γ : CtxS) (op : AluOp) (w : Width) (m : Mem) : Option (CtxS × List CondS) :=
+  if op.writesDst then
+    (writes Γ w.bytes.toNat m).map fun x =>
+      ({ x.1 with flags := .known }, x.2 ++ carryConds Γ.flags op)
+  else (reads Γ w.bytes.toNat m).map fun cs => ({ Γ with flags := .known }, cs)
+
+theorem aluMem_spec {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {op : AluOp} {w : Width}
+    {m : Mem} {x : CtxS × List CondS} (h : aluMem Γ op w m = some x) (hn : CondS.all ρ x.2) :
+    (op.writesDst = true ∧ ∃ Γ', x.1.den ρ = { Γ' with flags := Flags.Known } ∧
+        ReadOk Ψ next (Γ.den ρ) w.bytes.toNat (.mem m) ∧
+        WriteIntOk Ψ next (Γ.den ρ) w.bytes.toNat (.mem m) Γ' ∧
+        (op.readsCarry = true → ∀ f, (Γ.den ρ).flags f → f.cf.isSome = true)) ∨
+    (op.writesDst = false ∧ x.1.den ρ = { Γ.den ρ with flags := Flags.Known } ∧
+        ReadOk Ψ next (Γ.den ρ) w.bytes.toNat (.mem m)) := by
+  unfold aluMem at h
+  split at h
+  · next hwd =>
+    cases hw : writes Γ w.bytes.toNat m with
+    | none => rw [hw] at h; cases h
+    | some y =>
+      rw [hw] at h; cases h
+      obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hn
+      obtain ⟨hwr, hrd⟩ := writes_sound (Ψ := Ψ) (next := next) hw h₁
+      exact .inl ⟨hwd, y.1.den ρ, rfl, hrd, hwr, carryConds_spec h₂⟩
+  · next hwd =>
+    cases hr : reads Γ w.bytes.toNat m with
+    | none => rw [hr] at h; cases h
+    | some cs =>
+      rw [hr] at h; cases h
+      exact .inr ⟨(Bool.not_eq_true _).mp hwd, rfl, reads_sound hr hn⟩
+
+/-- A step that only reads `n` bytes of an operand: what it leaves to be
+shown is that they may be read. -/
+theorem reads_map {Γ : CtxS} {n : Nat} {m : Mem} {f : List CondS → CtxS × List CondS}
+    {x : CtxS × List CondS} (h : (reads Γ n m).map f = some x) :
+    ∃ cs, reads Γ n m = some cs ∧ x = f cs := by
+  cases hr : reads Γ n m with
+  | none => rw [hr] at h; cases h
+  | some cs => rw [hr] at h; cases h; exact ⟨cs, rfl, rfl⟩
+
 /-- **The checker** for an instruction that goes on to the next. It gives the
 context afterwards and what is left to be shown. -/
 def step (next : BitVec 64) (Γ : CtxS) : Instr → Option (CtxS × List CondS)
@@ -1518,6 +1734,31 @@ def step (next : BitVec 64) (Γ : CtxS) : Instr → Option (CtxS × List CondS)
   | .alu op w (.r_m d m) =>
     if d = .rsp then none
     else (reads Γ w.bytes.toNat m).map fun cs => (afterAlu Γ op d, cs ++ carryConds Γ.flags op)
+  | .mov .w32 (.rm_r (.mem m) _) => writes Γ 4 m
+  | .mov w (.rm_i (.mem m) _) => writes Γ w.bytes.toNat m
+  | .store8 m _ => writes Γ 1 m
+  | .store16 m _ => writes Γ 2 m
+  | .alu op w (.rm_r (.mem m) _) => aluMem Γ op w m
+  | .alu op w (.rm_i (.mem m) _) => aluMem Γ op w m
+  | .test w (.mem m) _ =>
+    (reads Γ w.bytes.toNat m).map fun cs => ({ Γ with flags := .known }, cs)
+  | .imul2 w d (.mem m) =>
+    if d = .rsp then none
+    else (reads Γ w.bytes.toNat m).map fun cs =>
+      ({ Γ.setReg d .int with flags := .defined true false false true }, cs)
+  | .imul3 w d (.mem m) _ =>
+    if d = .rsp then none
+    else (reads Γ w.bytes.toNat m).map fun cs =>
+      ({ Γ.setReg d .int with flags := .defined true false false true }, cs)
+  | .popcnt w d (.mem m) =>
+    if d = .rsp then none
+    else (reads Γ w.bytes.toNat m).map fun cs => ({ Γ.setReg d .int with flags := .known }, cs)
+  | .movsxd d (.mem m) =>
+    if d = .rsp then none else (reads Γ 4 m).map fun cs => (Γ.setReg d .int, cs)
+  | .movzx _ d sw (.mem m) =>
+    if d = .rsp then none else (reads Γ sw.bytes m).map fun cs => (Γ.setReg d .int, cs)
+  | .movsx _ d sw (.mem m) =>
+    if d = .rsp then none else (reads Γ sw.bytes m).map fun cs => (Γ.setReg d .int, cs)
   | .alu op w (.rm_r (.reg d) s) =>
     if d = .rsp then none
     else if op = .xor ∧ d = s then
@@ -1625,6 +1866,48 @@ theorem step_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {i : I
         obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hn
         rw [den_afterAlu]
         exact .aluLoad hd (reads_sound hr h₁) (carryConds_spec h₂)
+  · exact .storeInt (writes_sound h hn).1
+  · exact .storeImm (writes_sound h hn).1
+  · exact .store8RM (writes_sound h hn).1
+  · exact .store16RM (writes_sound h hn).1
+  · rcases aluMem_spec (Ψ := Ψ) (next := next) h hn with ⟨hwd, Γ', e, hr, hw, hcf⟩ | ⟨hwd, e, hr⟩
+    · rw [e]; exact .aluStoreR hwd hr hw hcf
+    · rw [e]; exact .cmpR hwd hr
+  · rcases aluMem_spec (Ψ := Ψ) (next := next) h hn with ⟨hwd, Γ', e, hr, hw, hcf⟩ | ⟨hwd, e, hr⟩
+    · rw [e]; exact .aluStoreI hwd hr hw hcf
+    · rw [e]; exact .cmpI hwd hr
+  · obtain ⟨cs, hr, rfl⟩ := reads_map h
+    exact .testRM (reads_sound hr hn)
+  · split at h
+    · cases h
+    · next hd =>
+      obtain ⟨cs, hr, rfl⟩ := reads_map h
+      exact cast_ctx (.imul2RM hd (reads_sound hr hn)) (by rw [CtxS.den_setReg_flags]; rfl)
+  · split at h
+    · cases h
+    · next hd =>
+      obtain ⟨cs, hr, rfl⟩ := reads_map h
+      exact cast_ctx (.imul3RM hd (reads_sound hr hn)) (by rw [CtxS.den_setReg_flags]; rfl)
+  · split at h
+    · cases h
+    · next hd =>
+      obtain ⟨cs, hr, rfl⟩ := reads_map h
+      exact cast_ctx (.popcntRM hd (reads_sound hr hn)) (by rw [CtxS.den_setReg_flags]; rfl)
+  · split at h
+    · cases h
+    · next hd =>
+      obtain ⟨cs, hr, rfl⟩ := reads_map h
+      rw [CtxS.den_setReg]; exact .movsxdRM hd (reads_sound hr hn)
+  · split at h
+    · cases h
+    · next hd =>
+      obtain ⟨cs, hr, rfl⟩ := reads_map h
+      rw [CtxS.den_setReg]; exact .movzxRM hd (reads_sound hr hn)
+  · split at h
+    · cases h
+    · next hd =>
+      obtain ⟨cs, hr, rfl⟩ := reads_map h
+      rw [CtxS.den_setReg]; exact .movsxRM hd (reads_sound hr hn)
   · next op w d s =>
     split at h
     · cases h

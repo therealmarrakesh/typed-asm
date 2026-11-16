@@ -240,6 +240,12 @@ def reifyFlags (e : Expr) : ReifyM FlagsS := do
   let e := e.consumeMData
   if e.isConstOf ``Flags.Any then return .any
   if e.isConstOf ``Flags.Known then return .known
+  if e.isConstOf ``Flags.AfterMul then return .defined true false false true
+  if e.isAppOfArity ``Flags.Defined 4 then
+    let a := e.getAppArgs
+    if let (some cf, some zf, some sf, some of) :=
+        (boolLit? a[0]!, boolLit? a[1]!, boolLit? a[2]!, boolLit? a[3]!) then
+      return .defined cf zf sf of
   -- exactly what an operation left
   if let .lam _ _ body _ := e then
     if let some (_, lhs, rhs) := body.eq? then
@@ -397,6 +403,9 @@ end
 def denFlags (as : Atoms) : FlagsS → MetaM Expr
   | .any => return mkConst ``Flags.Any
   | .known => return mkConst ``Flags.Known
+  | .defined true false false true => return mkConst ``Flags.AfterMul
+  | .defined cf zf sf of =>
+    return mkApp4 (mkConst ``Flags.Defined) (toExpr cf) (toExpr zf) (toExpr sf) (toExpr of)
   | .atom i => return as.flags[i]!
   | .lit f => do
     withLocalDeclD `f (mkConst ``Flags) fun x => do mkLambdaFVars #[x] (← mkEq x (toExpr f))
