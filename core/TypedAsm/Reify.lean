@@ -576,6 +576,12 @@ def denCond (as : Atoms) : CondS → MetaM Expr
   | .le a b => do mkLe (← denNum as a) (← denNum as b)
   | .lt a b => do mkLt (← denNum as a) (← denNum as b)
   | .sub τ υ => do return mkApp2 (mkConst ``Sub) (← denTy as τ) (← denTy as υ)
+  | .eqN a b => do mkEq (← denNum as a) (← denNum as b)
+  | .flagsSub fl fl' => do
+    let P ← denFlags as fl
+    let Q ← denFlags as fl'
+    withLocalDeclD `f (mkConst ``Flags) fun f => do
+      mkForallFVars #[f] (← mkArrow (mkApp P f).headBeta (mkApp Q f).headBeta)
   | .zeroW w v => do mkEq (setWidthE 64 w.bits (← denVal as v)) (toExpr (0 : BitVec w.bits))
   | .nonzeroW w v => do
     mkAppM ``Ne #[setWidthE 64 w.bits (← denVal as v), toExpr (0 : BitVec w.bits)]

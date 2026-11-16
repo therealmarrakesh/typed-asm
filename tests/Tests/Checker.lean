@@ -211,4 +211,31 @@ example : left (reg (reg base .rax (.eq (.lit 1))) .rcx (.eq (.lit 2)))
 example : left { reg (reg base .rax (.eq (.lit 1))) .rcx (.eq (.lit 2)) with flags := .known }
     (.cmov .e .w64 .rax (.reg .rcx)) = some 0 := by decide
 
+/-! ## One context standing for another -/
+
+def needs (Γ Δ : CtxS) : Option Nat := (subCtx Γ Δ).map (·.length)
+
+-- a context stands for itself, and for one that knows less of a register
+example : needs base base = some 0 := by decide
+example : needs (reg base .rax (.eq (v 1))) base = some 0 := by decide
+-- not the other way round without its being shown
+example : needs base (reg base .rax (.eq (v 1))) = some 1 := by decide
+-- exactly known flags stand for defined ones, and anything for none known
+example : needs { base with flags := .alu .cmp .w64 (v 0) (v 1) } { base with flags := .known }
+    = some 0 := by decide
+example : needs base { base with flags := .known } = some 1 := by decide
+-- a slot stands for one of a type its value may be taken at
+example : needs { base with stack := [.mk (.lit 8) (.cons 0 (.eq (v 1)) .nil)] }
+    { base with stack := [.mk (.lit 8) (.cons 0 .int .nil)] } = some 0 := by decide
+-- and for plain bytes, but stacks cut differently do not compare
+example : needs { base with stack := [.mk (.lit 8) (.cons 0 (.eq (v 1)) .nil)] }
+    { base with stack := [.mk (.lit 8) .nil] } = some 0 := by decide
+example : needs { base with stack := [.mk (.lit 16) .nil] }
+    { base with stack := [.mk (.lit 8) .nil, .mk (.lit 8) .nil] } = none := by decide
+-- room that is written differently is left to be shown the same
+example : needs { base with room := .var 0 } { base with room := .add (.var 1) (.lit 8) }
+    = some 1 := by decide
+-- the owned blocks must be written the same
+example : needs { base with owned := [(v 5, .mk (.lit 32) .nil)] } base = none := by decide
+
 end Tests.Checker

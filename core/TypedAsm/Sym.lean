@@ -475,6 +475,10 @@ inductive CondS
   | sub (τ υ : TyS)
   /-- Flags of which this is known decide a condition. -/
   | decides (fl : FlagsS) (c : Cond)
+  /-- Two numbers are the same. -/
+  | eqN (a b : Num)
+  /-- What is known of the flags one way is known the other. -/
+  | flagsSub (fl fl' : FlagsS)
   /-- A value is zero, or is not, at a width. -/
   | zeroW (w : Width) (v : Val)
   | nonzeroW (w : Width) (v : Val)
@@ -489,6 +493,8 @@ def CondS.den (ρ : Env) : CondS → Prop
   | .cf fl => ∀ f, fl.den ρ f → f.cf.isSome = true
   | .sub τ υ => Sub (τ.den ρ) (υ.den ρ)
   | .decides fl c => ∀ f, fl.den ρ f → ∃ b, c.eval f = some b
+  | .eqN a b => a.den ρ = b.den ρ
+  | .flagsSub fl fl' => ∀ f, fl.den ρ f → fl'.den ρ f
   | .zeroW w v => (v.den ρ).setWidth w.bits = 0
   | .nonzeroW w v => (v.den ρ).setWidth w.bits ≠ 0
   | .sfill w d a => (d.den ρ).setWidth w.bits = signFill ((a.den ρ).setWidth w.bits)
@@ -4461,6 +4467,183 @@ theorem walk_sound' {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {
     {W : Walk} (h : walk P code fuel k a Γ = W) (hW : W.holds (BlockOk Φ fetch sys Ψ) ρ) :
     BlockOk Φ fetch sys Ψ a (Γ.den ρ) :=
   walk_sound hcode fuel k a Γ ρ hP (by rw [h]; exact hW)
+
+/-! ## One context standing for another
+
+A block hands over to another, returns, or calls, where the context it has
+reached may stand for the one wanted there: every register's type is one of
+the type wanted, the stack is cut the same way with each piece standing for
+its counterpart, and the rest agrees. On terms this is worked out part by
+part, and what the terms do not show is left to be shown. -/
+
+/-- What is left to be shown for two numbers to be the same. -/
+def eqConds (a b : Num) : List CondS := if a = b then [] else [.eqN a b]
+
+theorem eqConds_spec {ρ : Env} {a b : Num} (h : CondS.all ρ (eqConds a b)) :
+    a.den ρ = b.den ρ := by
+  unfold eqConds at h
+  split at h
+  · next e => rw [e]
+  · exact h.1
+
+/-- What is left to be shown for what is known of the flags one way to be
+known the other. -/
+def flagsConds (fl fl' : FlagsS) : List CondS :=
+  if fl = fl' then []
+  else match fl' with
+    | .any => []
+    | .known => if fl.allDefined then [] else [.flagsSub fl fl']
+    | _ => [.flagsSub fl fl']
+
+theorem flagsConds_spec {ρ : Env} {fl fl' : FlagsS} (h : CondS.all ρ (flagsConds fl fl')) :
+    ∀ f, fl.den ρ f → fl'.den ρ f := by
+  unfold flagsConds at h
+  split at h
+  · next e => rw [e]; exact fun _ hf => hf
+  · split at h
+    · exact fun _ _ => trivial
+    · split at h
+      · next hd => exact fun f hf => FlagsS.allDefined_spec hd f hf
+      · exact h.1
+    · exact h.1
+
+/-- What is left to be shown for every typed value of one list to be found
+in another at the same place, at a type it may stand for. -/
+def valsConds (have' : ValsS) : ValsS → Option (List CondS)
+  | .nil => some []
+  | .cons o τ rest =>
+    match have'.find o, valsConds have' rest with
+    | some υ, some cs => some (subConds υ τ ++ cs)
+    | _, _ => none
+
+theorem ValsS.mem_of_find {ρ : Env} : (vs : ValsS) → {o : Nat} → {τ : TyS} →
+    vs.find o = some τ → (o, τ.den ρ) ∈ vs.den ρ
+  | .nil, _, _, h => by cases h
+  | .cons p υ rest, o, τ, h => by
+    unfold ValsS.find at h
+    show (o, τ.den ρ) ∈ (p, υ.den ρ) :: rest.den ρ
+    by_cases e : (p == o) = true
+    · simp only [e, ↓reduceIte, Option.some.injEq] at h
+      subst h
+      rw [show p = o from by simpa using e]; exact List.mem_cons_self
+    · simp only [e, Bool.false_eq_true, ↓reduceIte] at h
+      exact List.mem_cons_of_mem _ (ValsS.mem_of_find rest h)
+
+theorem valsConds_spec {ρ : Env} {have' : ValsS} : (want : ValsS) → {cs : List CondS} →
+    valsConds have' want = some cs → CondS.all ρ cs →
+    ∀ q ∈ want.den ρ, ∃ p ∈ have'.den ρ, p.1 = q.1 ∧ Sub p.2 q.2
+  | .nil, _, _, _ => fun q hq => by cases hq
+  | .cons o τ rest, cs, h, hc => by
+    unfold valsConds at h
+    split at h
+    · next υ cs' hf hr =>
+      cases h
+      obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc
+      intro q hq
+      rcases List.mem_cons.mp hq with rfl | hq
+      · exact ⟨(o, υ.den ρ), ValsS.mem_of_find _ hf, rfl, subConds_spec h₁⟩
+      · exact valsConds_spec rest hr h₂ q hq
+    · cases h
+
+/-- What is left to be shown for one shape to stand for another. -/
+def shapeConds (S T : ShapeS) : Option (List CondS) :=
+  if S = T then some []
+  else match S, T with
+    | .mk size vals, .mk size' vals' =>
+      (valsConds vals vals').map (eqConds size size' ++ ·)
+    | _, _ => none
+
+theorem shapeConds_spec {ρ : Env} {S T : ShapeS} {cs : List CondS}
+    (h : shapeConds S T = some cs) (hc : CondS.all ρ cs) : SubShape (S.den ρ) (T.den ρ) := by
+  unfold shapeConds at h
+  split at h
+  · next e => rw [e]; exact SubShape.refl _
+  · split at h
+    · obtain ⟨vs, hv, rfl⟩ := Option.map_eq_some_iff.mp h
+      obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc
+      exact ⟨eqConds_spec h₁, valsConds_spec _ hv h₂⟩
+    · cases h
+
+/-- What is left to be shown for one stack to stand for another, piece by piece. -/
+def stackConds : List ShapeS → List ShapeS → Option (List CondS)
+  | [], [] => some []
+  | S :: σ, T :: τ =>
+    match shapeConds S T, stackConds σ τ with
+    | some cs, some ds => some (cs ++ ds)
+    | _, _ => none
+  | _, _ => none
+
+theorem stackConds_spec {ρ : Env} (tail : List Shape) : (σ τ : List ShapeS) →
+    {cs : List CondS} → stackConds σ τ = some cs → CondS.all ρ cs →
+    SubList (denShapes ρ σ tail) (denShapes ρ τ tail)
+  | [], [], _, _, _ => SubList.refl _
+  | S :: σ, T :: τ, cs, h, hc => by
+    unfold stackConds at h
+    split at h
+    · next cs' ds hs hr =>
+      cases h
+      obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc
+      exact .cons (shapeConds_spec hs h₁) (stackConds_spec tail σ τ hr h₂)
+    · cases h
+  | [], _ :: _, _, h, _ => by cases h
+  | _ :: _, [], _, h, _ => by cases h
+
+/-- Every register. -/
+def regList : List Reg :=
+  [.rax, .rcx, .rdx, .rbx, .rsp, .rbp, .rsi, .rdi, .r8, .r9, .r10, .r11, .r12, .r13, .r14, .r15]
+
+theorem mem_regList (r : Reg) : r ∈ regList := by cases r <;> decide
+
+theorem CondS.all_flatMap {ρ : Env} {α : Type} (f : α → List CondS) : (l : List α) →
+    CondS.all ρ (l.flatMap f) → ∀ x ∈ l, CondS.all ρ (f x)
+  | [], _, _, hx => by cases hx
+  | y :: l, h, x, hx => by
+    rw [List.flatMap_cons] at h
+    obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ h
+    rcases List.mem_cons.mp hx with rfl | hx
+    · exact h₁
+    · exact CondS.all_flatMap f l h₂ x hx
+
+/-- What is left to be shown for every register's type in one table to stand
+for its counterpart in another. -/
+def regsConds (m m' : RegMap TyS) : List CondS :=
+  regList.flatMap fun r => subConds (m.get r) (m'.get r)
+
+theorem regsConds_spec {ρ : Env} {m m' : RegMap TyS} (h : CondS.all ρ (regsConds m m'))
+    (r : Reg) : Sub ((m.get r).den ρ) ((m'.get r).den ρ) :=
+  subConds_spec (CondS.all_flatMap _ _ h r (mem_regList r))
+
+/-- **What is left to be shown for one context to stand for another.** The
+stacks must go on as the same thing, and the owned blocks be written the
+same. -/
+def subCtx (Γ Δ : CtxS) : Option (List CondS) :=
+  if Γ.stackRest = Δ.stackRest ∧ Γ.owned = Δ.owned ∧ Γ.ownedRest = Δ.ownedRest then
+    (stackConds Γ.stack Δ.stack).map fun ss =>
+      regsConds Γ.regs Δ.regs ++ (ss ++ (eqConds Γ.room Δ.room ++
+        (flagsConds Γ.flags Δ.flags ++ eqConds Γ.above Δ.above)))
+  else none
+
+theorem subCtx_sound {ρ : Env} {Γ Δ : CtxS} {cs : List CondS} (h : subCtx Γ Δ = some cs)
+    (hc : CondS.all ρ cs) : CtxSub (Γ.den ρ) (Δ.den ρ) := by
+  unfold subCtx at h
+  split at h
+  · next he =>
+    cases hs : stackConds Γ.stack Δ.stack with
+    | none => rw [hs] at h; cases h
+    | some ss =>
+      rw [hs] at h; cases h
+      obtain ⟨hr, hc⟩ := CondS.all_append _ _ hc
+      obtain ⟨hst, hc⟩ := CondS.all_append _ _ hc
+      obtain ⟨hroom, hc⟩ := CondS.all_append _ _ hc
+      obtain ⟨hfl, habove⟩ := CondS.all_append _ _ hc
+      refine ⟨fun r _ => ?_, ?_, eqConds_spec hroom, flagsConds_spec hfl, ?_, ?_,
+        eqConds_spec habove⟩
+      · rw [CtxS.den_regs, CtxS.den_regs]; exact regsConds_spec hr r
+      · rw [CtxS.den_stack, CtxS.den_stack, ← he.1]
+        exact stackConds_spec _ _ _ hs hst
+      · rw [CtxS.den_regs, CtxS.den_regs]; exact regsConds_spec hr .rsp
+      · rw [CtxS.den_owned, CtxS.den_owned, he.2.1, he.2.2]
+  · cases h
 
 end Sym
 
