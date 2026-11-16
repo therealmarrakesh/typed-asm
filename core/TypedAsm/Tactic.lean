@@ -3243,6 +3243,8 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let lctx ← getLCtx
     let kwhnf (e : Expr) : MetaM Expr := ofExceptKernelException (Kernel.whnf env lctx e)
     let r ← kwhnf chk
+    if r.isAppOfArity ``Option.some 2 then
+      trace[TypedAsm.fast] "not yet on contexts as data{if plan?.isSome then " (told)" else ""}: {instr.toAsm}"
     unless r.isAppOfArity ``Option.some 2 do
       trace[TypedAsm.fast] "the checker has no answer{if plan?.isSome then " (told)" else ""}: {r}"
       return none

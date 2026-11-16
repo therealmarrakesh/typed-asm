@@ -443,15 +443,15 @@ theorem Num.minus_spec {ρ : Env} {a : Num} {k : Nat} (h : CondS.all ρ (a.minus
   split
   · next m =>
     by_cases hk : k ≤ m
-    · simp only [if_pos hk]; intro _; simp only [Num.den]; omega
-    · simp only [if_neg hk]; intro h
+    · simp only [hk, ↓reduceIte]; intro _; simp only [Num.den]; omega
+    · simp only [hk, ↓reduceIte]; intro h
       have := h.1; simp only [CondS.den, Num.den] at this ⊢; omega
   · next x m =>
     by_cases hm : m = k
-    · simp only [if_pos hm]; intro _; subst hm; rfl
+    · simp only [hm, ↓reduceIte]; intro _; subst hm; rfl
     · by_cases hk : k ≤ m
-      · simp only [if_neg hm, if_pos hk]; intro _; simp only [Num.den]; omega
-      · simp only [if_neg hm, if_neg hk]; intro h
+      · simp only [hm, hk, ↓reduceIte]; intro _; simp only [Num.den]; omega
+      · simp only [hm, hk, ↓reduceIte]; intro h
         have := h.1; simp only [CondS.den, Num.den] at this ⊢; omega
   · intro h; have := h.1; simp only [CondS.den, Num.den] at this ⊢; omega
 
@@ -468,15 +468,15 @@ theorem Val.den_plusLit (ρ : Env) (a : Val) (d : BitVec 64) :
   · rfl
   · next x m =>
     by_cases h : m + d = 0
-    · rw [if_pos h]
+    · simp only [h, ↓reduceIte]
       show x.den ρ = x.den ρ + m + d
       rw [BitVec.add_assoc, h]; exact (BitVec.add_zero _).symm
-    · rw [if_neg h]
+    · simp only [h, ↓reduceIte]
       show x.den ρ + (m + d) = x.den ρ + m + d
       rw [BitVec.add_assoc]
   · by_cases h : d = 0
-    · rw [if_pos h, h]; exact (BitVec.add_zero _).symm
-    · rw [if_neg h]; rfl
+    · subst h; simp only [↓reduceIte]; exact (BitVec.add_zero _).symm
+    · simp only [h, ↓reduceIte]; rfl
 
 /-- The type of a value after a known amount is added to it, where the type
 is one the terms have a form for. -/
@@ -564,10 +564,12 @@ theorem den_clear (ρ : Env) : (vs : ValsS) → (o n : Nat) →
     show _ = List.filter _ ((p, τ.den ρ) :: rest.den ρ)
     unfold clear
     by_cases h : p + 8 ≤ o ∨ o + n ≤ p
-    · rw [if_pos h, List.filter_cons_of_pos (by simpa [ShapeOf.clearOf] using h)]
+    · simp only [h, ↓reduceIte]
+      rw [List.filter_cons_of_pos (by simpa [ShapeOf.clearOf] using h)]
       show (p, τ.den ρ) :: _ = _
       rw [den_clear ρ rest o n]
-    · rw [if_neg h, List.filter_cons_of_neg (by simpa [ShapeOf.clearOf] using h)]
+    · simp only [h, ↓reduceIte]
+      rw [List.filter_cons_of_neg (by simpa [ShapeOf.clearOf] using h)]
       exact den_clear ρ rest o n
 
 /-- The typed values with one of a given type at byte `i`, in place of
