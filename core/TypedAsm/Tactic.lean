@@ -3151,8 +3151,11 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
   let some instrs ← instrsOf fetch | return none
   let some (instr, len) := instrs[n]? | return none
   if instr.endsBlock then return none
-  -- the address of data makes a pointer, which the long way sees to
-  if let .lea .w64 _ (.rip _) := instr then return none
+  -- the address of data makes a pointer, once the step is taken; the address
+  -- of anything else is left to the long way
+  let leaReg? : Option (Reg × BitVec 64) := match instr with
+    | .lea .w64 d (.rip disp) => some (d, BitVec.ofNat 64 (n + len.toNat) + disp.signExtend 64)
+    | _ => none
   let typeOf (r : Reg) : MetaM Expr := whnf tbl[1 + regIdx r]!
   -- A pointer to a block of a kind is opened where it is reached through or
   -- moved on: it becomes a pointer to a block of the shape that kind has.
@@ -3276,6 +3279,68 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     if listed then
       planHint instr typeOf cargs[2]! cargs[5]! cargs[4]! Ψ'.appFn!.appArg! kwhnf allowKeep
     else pure none
+  if let some (d, v) := leaReg? then
+    unless listed do return none
+    let bsE := Ψ'.appFn!.appArg!
+    let locE := mkApp2 (mkConst ``MemTy.locate) bsE (toExpr v)
+    let some (baseV, i) ← (try evalLocate locE catch _ => pure none) | return none
+    let some g ← run none | return none
+    -- The register holds exactly the address of byte `i` of the block at
+    -- `baseV`: it is a pointer into that block, or to a block of its kind.
+    return ← g.withContext do
+      let gty := (← instantiateMVars (← g.getType)).consumeMData
+      let gargs := gty.getAppArgs
+      let Γg := gargs[5]!
+      let a' := gargs[4]!
+      unless Γg.isAppOfArity ``CtxOf.mk 7 do return some g
+      let gc := Γg.getAppArgs
+      let gregs := gc[1]!
+      unless gregs.isAppOfArity ``RegMap.get 2 && gregs.appArg!.isAppOfArity ``RegMap.mk 17 do
+        return some g
+      let gtbl := gregs.appArg!.getAppArgs
+      let entry := gtbl[1 + regIdx d]!
+      unless entry.isAppOfArity ``Ty.eq 1 do return some g
+      let vE := entry.appArg!
+      let baseE := toExpr baseV
+      let iE := mkNatLit i
+      let blocksE := mkApp2 (mkConst ``MemTy.blocks) Ψ' baseE
+      let lS ← kwhnf blocksE
+      unless lS.isAppOfArity ``Option.some 2 do return some g
+      let l := lS.appArg!
+      let lW ← kwhnf l
+      unless lW.isAppOfArity ``Layout.mk 4 do return some g
+      let shape := lW.getAppArgs[0]!
+      let wr ← kwhnf lW.getAppArgs[1]!
+      let tagW ← kwhnf lW.getAppArgs[2]!
+      let tag? := if tagW.isAppOfArity ``Option.some 2 then some tagW.appArg! else none
+      let newTy := match tag? with
+        | some t => mkApp3 (mkConst ``Ty.ref) t wr iE
+        | none => mkApp3 (mkConst ``Ty.ptr) shape wr iE
+      let Γ' := mkAppN Γg.getAppFn (gc.set! 1
+        (mkApp gregs.appFn! (mkAppN gregs.appArg!.getAppFn (gtbl.set! (1 + regIdx d) newTy))))
+      let rest ← mkFreshExprSyntheticOpaqueMVar
+        (mkAppN gty.getAppFn #[Φ, fetch, sys, Ψ, a', Γ']) (← g.getTag)
+      let rE := toExpr d
+      let raw := mkApp3 (mkConst ``CtxOf.setReg) Γg rE newTy
+      let eta := mkAppN (mkConst ``BlockOk.regsEta) #[Φ, fetch, sys, Ψ, a', raw, rest]
+      let hr ← mkDecideProof (← mkAppM ``Ne #[rE, mkConst ``Reg.rsp])
+      let hΓ ← mkExpectedTypeHint (← mkEqRefl entry)
+        (← mkEq (mkApp3 (mkConst ``CtxOf.regs) (mkConst ``Ty) Γg rE) entry)
+      let locV := mkApp2 (mkConst ``MemTy.locate) bsE vE
+      let hloc ← mkExpectedTypeHint (← mkEqRefl locV) (← mkEq locV (toExpr (some (baseV, i))))
+      let hl ← mkExpectedTypeHint (← mkEqRefl blocksE) (← mkEq blocksE lS)
+      let rhs ← mkAppM ``HAdd.hAdd #[baseE, mkApp2 (mkConst ``BitVec.ofNat) (mkNatLit 64) iE]
+      let hv ← mkExpectedTypeHint (← mkEqRefl vE) (← mkEq vE rhs)
+      let common := #[bsE, Ψ'.appArg!, baseE, Γg, l, Φ, fetch, sys, a', rE, vE, iE]
+      match tag? with
+      | some t =>
+        let tagE := mkApp (mkConst ``Layout.tag) l
+        let htag ← mkExpectedTypeHint (← mkEqRefl tagE) (← mkEq tagE tagW)
+        g.assign (mkAppN (mkConst ``BlockOk.castRef_of)
+          (common ++ #[t, hr, hΓ, hloc, hl, htag, hv, eta]))
+      | none =>
+        g.assign (mkAppN (mkConst ``BlockOk.castPtr_of) (common ++ #[hr, hΓ, hloc, hl, hv, eta]))
+      return some rest.mvarId!
   let plan? ← plan true
   if (plan?.map (·.keep)).getD false then
     -- keeping the type that is there, if what is stored has it; else giving
