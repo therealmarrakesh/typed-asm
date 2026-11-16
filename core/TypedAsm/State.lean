@@ -68,9 +68,10 @@ theorem Perm.readable_of_writable {p : Perm} (h : p.writable = true) : p.readabl
 /-- The errors a call may answer with where the choice is the kernel's and
 not settled by what the program asked: the call would have to wait and was
 asked not to, the device failed, there is no room left, the reader of a pipe
-has gone, the file would grow past a limit, or past the user's quota. -/
+has gone, the file would grow past a limit, or past the user's quota, the
+process or the system has too many files open, or there is no memory. -/
 inductive Errno
-  | again | io | nospc | pipe | fbig | dquot
+  | again | io | nospc | pipe | fbig | dquot | mfile | nfile | nomem
   deriving DecidableEq
 
 /-- The number a call hands back for an error: the negated error number. -/
@@ -81,6 +82,19 @@ def Errno.code : Errno → BitVec 64
   | .pipe => -32
   | .fbig => -27
   | .dquot => -122
+  | .mfile => -24
+  | .nfile => -23
+  | .nomem => -12
+
+/-- The errors a `write` may fail with by the kernel's choice. -/
+def Errno.ofWrite : Errno → Bool
+  | .again | .io | .nospc | .pipe | .fbig | .dquot => true
+  | _ => false
+
+/-- The errors an `openat` may fail with by the kernel's choice. -/
+def Errno.ofOpen : Errno → Bool
+  | .mfile | .nfile | .nomem | .io | .nospc | .dquot => true
+  | _ => false
 
 /-- What one `read` from the outside world delivers: some bytes, or an
 error. -/
@@ -175,15 +189,22 @@ structure World where
   random : Nat → BitVec 8 := fun _ => 0
   drawn : Nat := 0
   /-- What the kernel does with each coming call in which it has a choice:
-  one entry for each `write`, each `read` of a file, and each `getrandom`
-  whose flags it accepts, in the order they are made. A choice the call does
+  one entry for each `write`, each `openat`, each `read` of a file, and each
+  `getrandom` whose flags it accepts, in the order they are made. A choice the call does
   not allow counts as `full`, and so does having none left. What a `read` of
   the program's input delivers is in `input`. -/
   fates : List Fate := []
-  /-- The time, in seconds and nanoseconds, at each successive asking, and
-  how many times it has been asked. -/
-  time : Nat → BitVec 64 × BitVec 64 := fun _ => (0, 0)
+  /-- The clocks, by number, at each successive asking, in nanoseconds: what
+  a clock that can be set reads, or how far a clock that only goes forward
+  has moved on since it was last read. -/
+  time : Nat → Nat → Nat := fun _ _ => 0
+  /-- How many times the time has been asked. -/
   asks : Nat := 0
+  /-- What each clock that only goes forward read when it was last read. -/
+  moved : Nat → Nat := fun _ => 0
+  /-- Whether there is a clock with a number other than the standard ones:
+  the clock of some process, or of a device. -/
+  hasClock : Nat → Bool := fun _ => false
 
 namespace World
 

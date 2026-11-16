@@ -99,7 +99,7 @@ given and the time it will be told. Requests for memory are answered by
 `defaultPlace`. -/
 def startWith (p : Runnable) (args : List String) (input : List Byte) (files : Array File)
     (random : Nat → Byte := fun _ => 0)
-    (time : Nat → BitVec 64 × BitVec 64 := fun _ => (0, 0)) : State :=
+    (time : Nat → Nat → Nat := fun _ _ => 0) : State :=
   let start := match p.startArgs with
     | some f => f ((p.name :: args).map bytesOf)
     | none => p.start
@@ -160,9 +160,10 @@ def main (p : Runnable) (args : List String) (fuel : Nat := 1000000000) : IO UIn
     let now ← IO.monoNanosNow
     let start := p.startWith given input files
       (random := fun i => BitVec.ofNat 8 (((seed + i) * 2654435761) >>> 13))
-      (time := fun i =>
-        let t := now + 1000 * i
-        (BitVec.ofNat 64 (t / 1000000000), BitVec.ofNat 64 (t % 1000000000)))
+      (time := fun c i =>
+        -- a clock that only goes forward starts at this machine's and moves
+        -- on a microsecond at each asking; the others read the same way
+        if Linux.forwardOnly c then (if i = 0 then now else 1000) else now + 1000 * i)
     let (final, outcome) := runMemFinal linux fuel start
     let out ← IO.getStdout
     out.write (ByteArray.mk (final.world.output.map fun b => b.toNat.toUInt8).toArray)

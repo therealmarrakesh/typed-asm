@@ -117,4 +117,64 @@ def readOf (buf count : BitVec 64) (input : List ReadEvent) (at_ : BitVec 64) :
 -- One with none is a bad address, and nothing is lost.
 #guard readOf 0x11000 16 [.bytes tenBytes] 0x10fff == (-14, mark, 10)
 
+/-! ## `openat` -/
+
+/-- A state about to open the file named `f`, which there is, or `g`, which
+there is not, with these flags. -/
+def opening (name : BitVec 8) (flags : BitVec 64) (fates : List Fate) : State :=
+  let s := (State.init.setPerm 0x10000 4096 .rw).storeBytes 0x10000 [name, 0]
+  let s := (((s.setReg .rax 257).setReg .rdi 0xffffff9c).setReg .rsi 0x10000).setReg .rdx flags
+  { s with world := { fates := fates, files := #[{ path := [0x66] }] } }
+
+def opened (name : BitVec 8) (flags : BitVec 64) (fates : List Fate := []) : BitVec 64 :=
+  (Linux.openat (opening name flags fates)).getReg .rax
+
+-- The file there is: the lowest free descriptor.
+#guard opened 0x66 0 == 3
+-- Asked for as a directory, which it is not.
+#guard opened 0x66 0x10000 == -20
+-- Opened only to name it: it has a descriptor, which cannot be read.
+#guard opened 0x66 0x200000 == 3
+#guard (Linux.read (((Linux.openat (opening 0x66 0x200000 [])).setReg .rdi 3).setReg .rdx 1)
+  ).getReg .rax == -9
+-- The process has too many files open.
+#guard opened 0x66 0 [.fail .mfile] == -24
+-- An error that is not one an `openat` fails with changes nothing.
+#guard opened 0x66 0 [.fail .pipe] == 3
+-- No such file; and one to be made as a directory, which cannot be.
+#guard opened 0x67 0 == -2
+#guard opened 0x67 0x10040 == -22
+
+/-! ## `clock_gettime` -/
+
+/-- A state about to ask clock `c` the time, with the clocks as given. -/
+def asking (c : BitVec 64) (time : Nat → Nat → Nat) (hasClock : Nat → Bool := fun _ => false) :
+    State :=
+  let s := State.init.setPerm 0x10000 4096 .rw
+  let s := ((s.setReg .rax 228).setReg .rdi c).setReg .rsi 0x10000
+  { s with world := { time := time, hasClock := hasClock } }
+
+/-- The result, and the seconds and nanoseconds stored. -/
+def told (t : State) : BitVec 64 × BitVec 64 × BitVec 64 :=
+  (t.getReg .rax, t.load64 0x10000, t.load64 0x10008)
+
+/-- Clock 0 reads five seconds and seven nanoseconds, less a nanosecond at
+each asking; every other clock moves on ten nanoseconds each time. -/
+def clocks : Nat → Nat → Nat := fun c i => if c = 0 then 5000000007 - i else 10
+
+-- Each clock has its own time.
+#guard told (Linux.clockGettime (asking 0 clocks)) == (0, 5, 7)
+#guard told (Linux.clockGettime (asking 1 clocks)) == (0, 0, 10)
+-- A clock that only goes forward has moved on at the second asking.
+#guard told (Linux.clockGettime ((Linux.clockGettime (asking 1 clocks)).setReg .rax 228))
+  == (0, 0, 20)
+-- The time of day may have been set back.
+#guard told (Linux.clockGettime ((Linux.clockGettime (asking 0 clocks)).setReg .rax 228))
+  == (0, 5, 6)
+-- Not a clock.
+#guard (Linux.clockGettime (asking 10 clocks)).getReg .rax == -22
+#guard (Linux.clockGettime (asking 12 clocks)).getReg .rax == -22
+-- The clock of some process, where the world has one.
+#guard (Linux.clockGettime (asking 12 clocks (· == 12))).getReg .rax == 0
+
 end Tests.Syscalls

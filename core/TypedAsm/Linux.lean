@@ -27,13 +27,14 @@ What the model leaves out, none of which touches the above:
   signal is ignored.
 * There are no directories. A file is found by its whole name, spelled
   exactly as in `World.files`, and a relative name needs `AT_FDCWD`.
-* `openat` understands the access mode and `O_CREAT`, `O_EXCL`, `O_TRUNC`
-  and `O_APPEND`; other flags are ignored. Permissions are two switches per
-  file, not owners and modes.
+* `openat` understands the access mode and `O_CREAT`, `O_EXCL`, `O_TRUNC`,
+  `O_APPEND`, `O_DIRECTORY` and `O_PATH`; other flags are ignored.
+  Permissions are two switches per file, not owners and modes.
 * The standard streams are not files: they cannot be sought, and `fstat`
   describes them as pipes. `fstat` fills in the kind, the size and the block
   counts; every field the model does not track is zero.
-* Every clock tells the same time, the one the world supplies.
+* Each clock has its own time, which the world supplies. The clocks that
+  only go forward never go back; nothing relates one clock to another.
 * `mmap` is modelled in one form only: fresh, private, zeroed memory that
   can be read and written (`PROT_READ|PROT_WRITE`,
   `MAP_PRIVATE|MAP_ANONYMOUS`), at an address the kernel chooses. Any other
@@ -158,7 +159,11 @@ def writeBy (d : Fate) (s : State) : State :=
   | some .stdout =>
     if 0 < count ∧ most = 0 then ret s (-14)
     else match d with
-      | .fail e => ret s e.code
+      | .fail e =>
+        if e.ofWrite then ret s e.code
+        else
+          ret { s with world := { s.world with writes := s.loadBytes buf n :: s.world.writes } }
+            (BitVec.ofNat 64 n)
       | _ =>
         ret { s with world := { s.world with writes := s.loadBytes buf n :: s.world.writes } }
           (BitVec.ofNat 64 n)
@@ -169,10 +174,16 @@ def writeBy (d : Fate) (s : State) : State :=
       match s.world.files[i]? with
       | none => ret s (-9)
       | some f =>
+        let start := if app then f.size else pos
         match d with
-        | .fail e => ret s e.code
+        | .fail e =>
+          if e.ofWrite then ret s e.code
+          else
+            ret { s with
+                world := { s.world.setFd fd (.file i (start + n) r w app) with
+                  files := s.world.files.setIfInBounds i (f.write start (s.loadBytes buf n)) } }
+              (BitVec.ofNat 64 n)
         | _ =>
-          let start := if app then f.size else pos
           ret { s with
               world := { s.world.setFd fd (.file i (start + n) r w app) with
                 files := s.world.files.setIfInBounds i (f.write start (s.loadBytes buf n)) } }
@@ -248,8 +259,10 @@ def cstring (s : State) : Nat → BitVec 64 → Except (BitVec 64) (List (BitVec
 
 /-- `openat(dirfd, path, flags, mode)`: open the file with that name, making
 it first if `O_CREAT` asks and there is none. The result is the lowest
-descriptor not in use. -/
-def openat (s : State) : State :=
+descriptor not in use. There are no directories, so a file asked for as one
+(`O_DIRECTORY`) is refused. A file opened only to name it (`O_PATH`) can be
+neither read nor written. -/
+def openatIn (s : State) : State :=
   match cstring s 4096 (s.getReg .rsi) with
   | .error e => ret s e
   | .ok path =>
@@ -259,10 +272,12 @@ def openat (s : State) : State :=
     let excl := flags / 0x80 % 2 == 1
     let trunc := flags / 0x200 % 2 == 1
     let app := flags / 0x400 % 2 == 1
-    let r := access != 1
-    let w := access != 0
+    let dir := flags / 0x10000 % 2 == 1
+    let named := flags / 0x200000 % 2 == 1
+    let r := access != 1 && !named
+    let w := access != 0 && !named
     let fd := s.world.freeFd
-    if access == 3 then ret s (-22)
+    if access == 3 && !named then ret s (-22)
     else if path.isEmpty then ret s (-2)
     else if path.head? != some 0x2f && (s.getReg .rdi).setWidth 32 != (-100 : BitVec 32) then
       ret s (-9)
@@ -273,6 +288,7 @@ def openat (s : State) : State :=
         | none => ret s (-2)
         | some f =>
           if creat && excl then ret s (-17)
+          else if dir then ret s (-20)
           else if (r && !f.mayRead) || (w && !f.mayWrite) then ret s (-13)
           else
             ret { s with
@@ -281,13 +297,21 @@ def openat (s : State) : State :=
               (BitVec.ofNat 64 fd)
       | none =>
         if creat then
-          if s.world.mayCreate then
+          if dir then ret s (-22)
+          else if s.world.mayCreate then
             ret { s with
                 world := { s.world.setFd fd (.file s.world.files.size 0 r w app) with
                   files := s.world.files.push { path := path } } }
               (BitVec.ofNat 64 fd)
           else ret s (-13)
         else ret s (-2)
+
+/-- `openat`, with the kernel doing what the world says: it may refuse for
+want of memory, room, or descriptors, whatever was asked. -/
+def openat (s : State) : State :=
+  match (nextFate s).1 with
+  | .fail e => if e.ofOpen then ret (nextFate s).2 e.code else openatIn (nextFate s).2
+  | _ => openatIn (nextFate s).2
 
 /-- `close(fd)`. -/
 def close (s : State) : State :=
@@ -340,16 +364,54 @@ def fstat (s : State) : State :=
       leBytes 8 ((size + 511) / 512) ++ List.replicate 72 0
     if s.canWrite buf 144 then give s buf (data.take 144) 0 s.world else ret s (-14)
 
-/-- `clock_gettime(clock, buf)`: store the time, seconds then nanoseconds,
-16 bytes, at `buf`. -/
+/-- The standard clocks, by number: 0 to 11, but for 10, which is none. -/
+def standardClock (c : Nat) : Bool :=
+  decide (c < 12) && c != 10
+
+/-- The clocks that only go forward: `CLOCK_MONOTONIC` (1), the two that
+count processor time (2, 3), `CLOCK_MONOTONIC_RAW` (4),
+`CLOCK_MONOTONIC_COARSE` (6), `CLOCK_BOOTTIME` (7) and its alarm (9). The
+others tell the time of day, which can be set back. -/
+def forwardOnly (c : Nat) : Bool :=
+  c == 1 || c == 2 || c == 3 || c == 4 || c == 6 || c == 7 || c == 9
+
+/-- What clock `c` reads now, in nanoseconds. -/
+def clockNow (w : World) (c : Nat) : Nat :=
+  if forwardOnly c then w.moved c + w.time c w.asks else w.time c w.asks
+
+/-- `clock_gettime(clock, buf)`: store the time by that clock, seconds then
+nanoseconds, 16 bytes, at `buf`. A number that is not a standard clock's may
+be the clock of some process or device, which there is or is not: the world
+says. -/
 def clockGettime (s : State) : State :=
   let buf := s.getReg .rsi
-  if 12 ≤ fdArg s .rdi then ret s (-22)
+  let c := fdArg s .rdi
+  if !(standardClock c || s.world.hasClock c) then ret s (-22)
   else if s.canWrite buf 16 then
-    let now := s.world.time s.world.asks
-    give s buf ((leBytes 8 now.1.toNat ++ leBytes 8 now.2.toNat).take 16) 0
-      { s.world with asks := s.world.asks + 1 }
+    let now := clockNow s.world c
+    give s buf ((leBytes 8 (now / 1000000000) ++ leBytes 8 (now % 1000000000)).take 16) 0
+      { s.world with
+        asks := s.world.asks + 1
+        moved := fun k => if k = c ∧ forwardOnly c = true then now else s.world.moved k }
   else ret s (-14)
+
+/-- **A clock that only goes forward never goes back**: what it reads at one
+asking is no less than what it read at the last. -/
+theorem clockGettime_forward (s : State) (c : Nat) :
+    s.world.moved c ≤ (clockGettime s).world.moved c := by
+  simp only [clockGettime]
+  split
+  · exact Nat.le_refl _
+  · split
+    · show s.world.moved c ≤ if c = fdArg s .rdi ∧ forwardOnly (fdArg s .rdi) = true
+        then clockNow s.world (fdArg s .rdi) else s.world.moved c
+      split
+      · next h =>
+        rw [h.1]
+        simp only [clockNow, h.2, ↓reduceIte]
+        omega
+      · exact Nat.le_refl _
+    · exact Nat.le_refl _
 
 /-- Whether the call number `318` was handed flags the kernel refuses: a bit
 it does not know, or both `GRND_RANDOM` (2) and `GRND_INSECURE` (4). -/
@@ -1021,13 +1083,27 @@ theorem writeBy_stdout (d : Fate) (s : State)
           (min (s.getReg .rdx).toNat 0x7ffff000))) :=
       fun d' => ⟨Nat.le_trans (taken_le _ _) hmost, fun hpos => taken_pos _ (by omega)⟩
     cases d with
-    | fail e => exact .inl ⟨by rw [ret_rax]; cases e <;> decide, rfl⟩
+    | fail e =>
+      by_cases hw : e.ofWrite = true
+      · simp only [hw, ↓reduceIte]
+        exact .inl ⟨by rw [ret_rax]; cases e <;> decide, rfl⟩
+      · simp only [hw, Bool.false_eq_true, ↓reduceIte]
+        exact .inr ⟨_, (hcount (.fail e)).1, (hcount (.fail e)).2, ret_rax _ _, rfl⟩
     | full => exact .inr ⟨_, (hcount .full).1, (hcount .full).2, ret_rax _ _, rfl⟩
     | short k => exact .inr ⟨_, (hcount (.short k)).1, (hcount (.short k)).2, ret_rax _ _, rfl⟩
 
-theorem openat_only (s : State) : OnlyWorld s (openat s) := by
-  simp only [openat]
+theorem openatIn_only (s : State) : OnlyWorld s (openatIn s) := by
+  simp only [openatIn]
   only_world
+
+theorem openat_only (s : State) : OnlyWorld s (openat s) := by
+  have key : ∀ t, OnlyWorld (nextFate s).2 t → OnlyWorld s t := fun t ⟨v, w, e⟩ => ⟨v, w, e⟩
+  simp only [openat]
+  split
+  · split
+    · exact key _ (OnlyWorld.same _ _)
+    · exact key _ (openatIn_only _)
+  · exact key _ (openatIn_only _)
 
 theorem close_only (s : State) : OnlyWorld s (close s) := by
   simp only [close]
