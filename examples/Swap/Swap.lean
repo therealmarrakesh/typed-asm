@@ -57,8 +57,7 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     -- lea rdi, [rip + record]
     ty_step
     ty_block
-    ty_call swapSig
-  | afterFirst => ty_block; ty_call swapSig
+  | afterFirst => ty_block
   | afterSecond => ty_block
   | swap saved ret rest room hK => ty_block
 

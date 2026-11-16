@@ -70,7 +70,7 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     · ty_step
       ty_branch
       ty_steps
-      ty_call (doubleSig p)
+      ty_block
   | back p =>
     -- written out, and given back
     ty_steps

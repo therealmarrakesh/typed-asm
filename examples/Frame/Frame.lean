@@ -54,7 +54,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     -- lea rdi, [rip + record]
     ty_step
     ty_block
-    ty_call pickSig
   | afterCall => ty_block
   | pick saved ret rest room hK =>
     -- make the two slots the signature guarantees visible, so the frame can be allocated

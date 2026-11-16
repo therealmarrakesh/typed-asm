@@ -2769,6 +2769,10 @@ private inductive Finish
   /-- This instruction needs information the tactic does not have. -/
   | needsHelp (msg : MessageData)
 
+/-- Types a direct `call` that ends a block, to a function whose signature
+is read from the context declared at the label it calls. -/
+syntax "ty_call_auto" : tactic
+
 /-- Whether a jump goes forward: to the instruction after it or beyond. -/
 private def jumpsForward : Instr → Bool
   | .jmp (.rel d) | .jcc _ d => !d.msb
@@ -3036,7 +3040,29 @@ elab "ty_block" : tactic => do
     | .forks blocks l =>
       left := left ++ l
       work := blocks ++ work
-    | .needsHelp _ => stuck := stuck ++ (← getGoals)
+    | .needsHelp _ =>
+      -- A direct call is typed with the signature the function's own label
+      -- declares, where that settles everything; where it leaves something
+      -- open, such as which of a family of signatures is meant, the call is
+      -- left for `ty_call` to be told.
+      let before ← saveState
+      let auto ← match instr with
+        | .call (.rel _) =>
+          try
+            setGoals [goal]
+            Tactic.withoutRecover do evalTactic (← `(tactic| ty_call_auto))
+            let gs ← getGoals
+            let mut open_ := false
+            for g in gs do
+              unless ← isProp (← g.getType) do open_ := true
+            if open_ then before.restore; pure none else pure (some gs)
+          catch _ =>
+            before.restore
+            pure none
+        | _ => pure none
+      match auto with
+      | some gs => left := left ++ gs
+      | none => stuck := stuck ++ (← getGoals)
   setGoals (stuck ++ left ++ others)
 
 /-- Types a conditional jump in the middle of a block. The side that jumps
@@ -3168,6 +3194,14 @@ elab "ty_call " sig:term : tactic => do
     if t.isAppOf ``FnSig.At || t.isAppOf ``CtxSub || t.isForall || t.isAppOf ``LE.le ||
         t.isAppOf ``Sub || t.isAppOf ``Eq then continue
     left := left ++ (← proveAtLabel g (pure []))
+  -- What the argument registers hold is compared with what the function
+  -- expects before anything else: where the signature was left to be found,
+  -- and is one of a family, this is what says which.
+  for g in gs do
+    if ← g.isAssigned then continue
+    let t ← instantiateMVars (← g.getType)
+    if t.isForall && !t.isAppOf ``FnSig.At then
+      left := left ++ (← runOn g (do evalTactic (← `(tactic| sub_regs))))
   for g in gs do
     if ← g.isAssigned then continue
     let t ← instantiateMVars (← g.getType)
@@ -3200,6 +3234,9 @@ elab "ty_call " sig:term : tactic => do
           | none => throw e
       left := left ++ after
   setGoals (left ++ others)
+
+macro_rules
+  | `(tactic| ty_call_auto) => `(tactic| ty_call ?_)
 
 /-- `ty_call sig returning ret` types a `call` that ends a block, direct or
 through a pointer, to
