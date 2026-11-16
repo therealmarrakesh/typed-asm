@@ -1,15 +1,10 @@
 # TypedAsm
 
-An x86-64 assembler embedded in Lean 4, with a type system for instructions
-and the machine state they act on. Programs and their types can be checked
-and computed over directly.
-
-## What this is
-
-Programs are ordinary x86-64 assembly, written as Lean terms. Their types and
-semantics are defined in Lean as well: a program is typed by a judgment
-proved sound, and reasoned about against the same semantics that defines how
-it runs.
+TypedAsm is a typed x86-64 macro-assembler embedded in Lean 4. It defines an
+instruction set, machine semantics (including a model of Linux system calls),
+and typing rules for registers, the stack, and memory. Authors write assembly
+as Lean terms, generate instruction sequences with Lean functions and macros,
+and state and prove properties of those programs in Lean.
 
 ## Status
 
