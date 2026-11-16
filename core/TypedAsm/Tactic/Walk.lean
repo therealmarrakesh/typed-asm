@@ -1474,6 +1474,27 @@ initialize castRef : IO.Ref (Option (Sym.CtxS → Sym.CtxS → Option Sym.CtxS))
 /-- The context the last search compared, where it was so made ready. -/
 initialize castCtx : IO.Ref (Option Sym.CtxS) ← IO.mkRef none
 
+/-- What was shown where an ending was looked for, with what it is a proof
+of: the walk's leaf is the same statement wherever the walk names no value,
+and is then not shown a second time. -/
+initialize leafProofs : IO.Ref (Array (Expr × Expr)) ← IO.mkRef #[]
+
+/-- Keeps the proof an ending was found with, where it speaks of no value
+the walk names. -/
+def keepLeaf (named : Array (Nat × Reg)) (g : Expr) : MetaM Unit := do
+  unless named.isEmpty do return
+  let pf ← instantiateMVars g
+  if pf.hasExprMVar then return
+  let ty ← instantiateMVars (← g.mvarId!.getType)
+  leafProofs.modify (·.push (ty, pf))
+
+/-- The proof kept of a statement, if there is one and everything it refers
+to is still there. -/
+def keptLeaf? (ty : Expr) : MetaM (Option Expr) := do
+  let some (_, pf) := (← leafProofs.get).find? (·.1 == ty) | return none
+  let env ← getEnv
+  return if pf.getUsedConstants.all env.contains then some pf else none
+
 /-- A hand-over found: at which instruction, to which label's context and
 which of them, with the parameters it is taken at. The parameters may speak
 of the values the walk names, by the variables in `temps` that stood for
@@ -1748,6 +1769,7 @@ def findEnter (Φ : Expr) (atoms : Sym.Atoms) (named : Array (Nat × Reg))
           catch e =>
             trace[TypedAsm.fast] "{kName}: {e.toMessageData}"
             throw e
+          keepLeaf named g
           let info : EnterInfo := ⟨at', t, Δ, lName, kName, params, (named.map (·.1)).zip temps⟩
           return some (info, { atoms'' with val := unnamed atoms''.val }))
         catch e =>
@@ -1936,6 +1958,7 @@ def findLeave (atoms : Sym.Atoms) (named : Array (Nat × Reg)) (cur : Sym.CtxS)
         | do trace[TypedAsm.fast] "return: the contexts do not compare"; return none
       let g ← mkFreshExprSyntheticOpaqueMVar (← leaveType atoms'' i Δ cs)
       solveLeave g.mvarId! i Δ0 mid hmid Δ cs atoms''
+      keepLeaf named g
       let mut vals := atoms''.val
       for (k, _) in named do
         if k < vals.size then vals := vals.set! k (toExpr (0 : BitVec 64))
@@ -2160,6 +2183,7 @@ def findCall (Φ : Expr) (atoms : Sym.Atoms) (named : Array (Nat × Reg))
               paramsFn, (named.map (·.1)).zip temps⟩
             let g ← mkFreshExprSyntheticOpaqueMVar (← callType Φ atoms₂ info (rc ++ cs))
             solveCall g.mvarId! Φ info R0 paramsR paramsFn (rc ++ cs) atoms₂
+            keepLeaf named g
             let mut vals := atoms₂.val
             for (k, _) in named do
               if k < vals.size then vals := vals.set! k (toExpr (0 : BitVec 64))
@@ -2373,6 +2397,7 @@ def findCallAll (Φ : Expr) (atoms : Sym.Atoms) (named : Array (Nat × Reg))
               (named.map (·.1)).zip temps⟩
             let g ← mkFreshExprSyntheticOpaqueMVar (← callAllType Φ atoms₂ info (rc ++ cs))
             solveCallAll g.mvarId! Φ info paramsFn (rc ++ cs) atoms₂
+            keepLeaf named g
             let mut vals := atoms₂.val
             for (k, _) in named do
               if k < vals.size then vals := vals.set! k (toExpr (0 : BitVec 64))
@@ -2574,6 +2599,7 @@ def findCallVia (Φ : Expr) (atoms : Sym.Atoms) (named : Array (Nat × Reg))
             (named.map (·.1)).zip temps⟩
           let g ← mkFreshExprSyntheticOpaqueMVar (← viaCallType Φ atoms₂ info all)
           solveCallVia g.mvarId! Φ info R0 Δ0 paramsR all atoms₂
+          keepLeaf named g
           let mut vals := atoms₂.val
           for (k, _) in named do
             if k < vals.size then vals := vals.set! k (toExpr (0 : BitVec 64))
@@ -2663,6 +2689,7 @@ def findJumpVia (atoms : Sym.Atoms) (named : Array (Nat × Reg)) (cur : Sym.CtxS
       let info : ViaJump := ⟨at', Δ, τ, Δ0⟩
       let g ← mkFreshExprSyntheticOpaqueMVar (← viaJumpType atoms'' info (hc ++ cs))
       solveJumpVia g.mvarId! info (hc ++ cs) atoms''
+      keepLeaf named g
       let mut vals := atoms''.val
       for (k, _) in named do
         if k < vals.size then vals := vals.set! k (toExpr (0 : BitVec 64))
@@ -2838,6 +2865,7 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     -- The context the last run left is the one this one starts from, as a
     -- rule: its term is kept, with what its variables stand for, and is not
     -- read again. It is used only if all it mentions is still in scope.
+    leafProofs.set #[]
     let kept? : Option (Sym.CtxS × Sym.Atoms) ← (do
       let some (Γc, Sc, ac) ← symKept.get | return none
       unless Γc == Γ do return none
@@ -3496,7 +3524,9 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       let temps := info.temps.map (·.2)
       let reals := info.temps.map fun (k, _) => atoms.val.getD k (toExpr (0 : BitVec 64))
       let params := info.params.map (·.replaceFVars temps reals)
-      let m ← mkFreshExprSyntheticOpaqueMVar (← sideType Φ atoms t.toNat Δ cs branch?)
+      let leafTy ← sideType Φ atoms t.toNat Δ cs branch?
+      if let some pf ← keptLeaf? leafTy then return pf
+      let m ← mkFreshExprSyntheticOpaqueMVar leafTy
       try solveSide m.mvarId! branch? Φ info.lName info.kName params t.toNat Δ cs atoms
       catch e =>
         trace[TypedAsm.fast] "handing over failed where it was found to succeed: {e.toMessageData}"
@@ -3606,7 +3636,9 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         let temps := info.temps.map (·.2)
         let reals := info.temps.map fun (k, _) => atoms.val.getD k (toExpr (0 : BitVec 64))
         let inst (e : Expr) := e.replaceFVars temps reals
-        let m ← mkFreshExprSyntheticOpaqueMVar (← callType Φ atoms info cs)
+        let leafTy ← callType Φ atoms info cs
+        if let some pf ← keptLeaf? leafTy then return pf
+        let m ← mkFreshExprSyntheticOpaqueMVar leafTy
         try
           solveCall m.mvarId! Φ info (inst info.R0) (info.paramsR.map inst)
             (info.paramsFn.map inst) cs atoms
@@ -3651,7 +3683,9 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         let temps := info.temps.map (·.2)
         let reals := info.temps.map fun (k, _) => atoms.val.getD k (toExpr (0 : BitVec 64))
         let inst (e : Expr) := e.replaceFVars temps reals
-        let m ← mkFreshExprSyntheticOpaqueMVar (← callAllType Φ atoms info cs)
+        let leafTy ← callAllType Φ atoms info cs
+        if let some pf ← keptLeaf? leafTy then return pf
+        let m ← mkFreshExprSyntheticOpaqueMVar leafTy
         try solveCallAll m.mvarId! Φ info (info.paramsFn.map inst) cs atoms
         catch e =>
           trace[TypedAsm.fast] "calling failed where it was found to succeed: {e.toMessageData}"
@@ -3661,7 +3695,9 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         instantiateMVars m
       | .jumpVia _ _ cs =>
         let some info := jvia? | throwError "the block jumps where no context was read"
-        let m ← mkFreshExprSyntheticOpaqueMVar (← viaJumpType atoms info cs)
+        let leafTy ← viaJumpType atoms info cs
+        if let some pf ← keptLeaf? leafTy then return pf
+        let m ← mkFreshExprSyntheticOpaqueMVar leafTy
         try solveJumpVia m.mvarId! info cs atoms
         catch e =>
           trace[TypedAsm.fast] "jumping failed where it was found to succeed: {e.toMessageData}"
@@ -3674,7 +3710,9 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         let temps := info.temps.map (·.2)
         let reals := info.temps.map fun (k, _) => atoms.val.getD k (toExpr (0 : BitVec 64))
         let inst (e : Expr) := e.replaceFVars temps reals
-        let m ← mkFreshExprSyntheticOpaqueMVar (← viaCallType Φ atoms info cs)
+        let leafTy ← viaCallType Φ atoms info cs
+        if let some pf ← keptLeaf? leafTy then return pf
+        let m ← mkFreshExprSyntheticOpaqueMVar leafTy
         try
           solveCallVia m.mvarId! Φ info (inst info.R0) (inst info.Δ0) (info.paramsR.map inst) cs
             atoms
@@ -3710,7 +3748,9 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
             (← mkAppM ``And.intro #[← mkEqRefl some', ← instantiateMVars m])
       | .leave i Δ cs =>
         let some info := leave? | throwError "the block returns where no context was read"
-        let m ← mkFreshExprSyntheticOpaqueMVar (← leaveType atoms i Δ cs)
+        let leafTy ← leaveType atoms i Δ cs
+        if let some pf ← keptLeaf? leafTy then return pf
+        let m ← mkFreshExprSyntheticOpaqueMVar leafTy
         try solveLeave m.mvarId! i info.Δ0 info.mid info.hmid Δ cs atoms
         catch e =>
           trace[TypedAsm.fast] "returning failed where it was found to succeed: {e.toMessageData}"
