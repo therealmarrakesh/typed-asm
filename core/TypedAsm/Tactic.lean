@@ -3594,6 +3594,37 @@ private def jumpsForward : Instr → Bool
   | .jmp (.rel d) | .jcc _ d => !d.msb
   | _ => false
 
+/-- The addresses of the labels a labelled code typing declares a context
+at: where a block may hand over to another. -/
+private def declaredLabels (Φ : Expr) : MetaM (Array Nat) := do
+  let mut f := Φ
+  for _ in [0:4] do
+    if f.isAppOf ``CodeTy.ofLabels then break
+    let some f' ← unfoldDefinition? f | return #[]
+    f := f'.headBeta
+  unless f.isAppOf ``CodeTy.ofLabels && f.getAppNumArgs ≥ 3 do return #[]
+  let args := f.getAppArgs
+  let T := args[args.size - 1]!
+  let base := args[args.size - 2]!
+  let prog := args[args.size - 3]!
+  let .const tn _ := T.getAppFn | return #[]
+  let some (.inductInfo info) := (← getEnv).find? tn | return #[]
+  let mut labels : Array Name := #[]
+  for c in info.ctors do
+    let some ci := (← getEnv).find? c | continue
+    let l ← forallTelescope ci.type fun _ body => do
+      let xs := body.getAppArgs
+      if xs.size ≥ 2 then pure xs[xs.size - 2]!.getAppFn.constName? else pure none
+    if let some l := l then
+      unless labels.contains l do labels := labels.push l
+  let mut out : Array Nat := #[]
+  for l in labels do
+    try
+      if let some n ← addrNat (← mkAppM ``Asm.addr #[prog, base, mkConst l]) then
+        out := out.push n
+    catch _ => pure ()
+  return out
+
 /-- Types the control transfer at the head of a block goal. -/
 private def finishBlockCore (goal : MVarId) (instr : Instr) : TacticM Finish := do
   match instr with
@@ -3729,9 +3760,21 @@ private def finishBlockCore (goal : MVarId) (instr : Instr) : TacticM Finish := 
         left := left ++ (← runOn g (do evalTactic (← `(tactic| sub_regs))))
     return .done left
   | .jcc _ _ =>
-    -- First try to end the block here, with the next instruction at a label.
+    -- First try to end the block here, where the next instruction is at a
+    -- label with a context of its own: elsewhere that cannot succeed, and
+    -- trying costs as much as the branch itself.
     let before ← saveState
+    let atLabel ← (do
+      let ty := (← instantiateMVars (← goal.getType)).consumeMData
+      unless ty.isAppOfArity ``BlockOk 6 do return true
+      let some n ← addrNat ty.getAppArgs[4]! | return true
+      let some m ← instrsOf ty.getAppArgs[1]! | return true
+      let some (_, len) := m[n]? | return true
+      let labels ← declaredLabels ty.getAppArgs[0]!
+      if labels.isEmpty then return true
+      return labels.contains (n + len.toNat) : TacticM Bool) <|> pure true
     try
+      unless atLabel do throwError "not at a label"
       let gs ← runOn goal (do evalTactic (← `(tactic|
         refine BlockOk.last (by ty_fetch) (HasType.jcc ?dec ?taken ?fall))))
       let dec ← goalNamed gs `dec
@@ -3859,37 +3902,6 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
         if let some (key', _, _) ← trailKey g then trailRef.modify (·.insert key' t)
       catch _ => pure ()
   return r
-
-/-- The addresses of the labels a labelled code typing declares a context
-at: where a block may hand over to another. -/
-private def declaredLabels (Φ : Expr) : MetaM (Array Nat) := do
-  let mut f := Φ
-  for _ in [0:4] do
-    if f.isAppOf ``CodeTy.ofLabels then break
-    let some f' ← unfoldDefinition? f | return #[]
-    f := f'.headBeta
-  unless f.isAppOf ``CodeTy.ofLabels && f.getAppNumArgs ≥ 3 do return #[]
-  let args := f.getAppArgs
-  let T := args[args.size - 1]!
-  let base := args[args.size - 2]!
-  let prog := args[args.size - 3]!
-  let .const tn _ := T.getAppFn | return #[]
-  let some (.inductInfo info) := (← getEnv).find? tn | return #[]
-  let mut labels : Array Name := #[]
-  for c in info.ctors do
-    let some ci := (← getEnv).find? c | continue
-    let l ← forallTelescope ci.type fun _ body => do
-      let xs := body.getAppArgs
-      if xs.size ≥ 2 then pure xs[xs.size - 2]!.getAppFn.constName? else pure none
-    if let some l := l then
-      unless labels.contains l do labels := labels.push l
-  let mut out : Array Nat := #[]
-  for l in labels do
-    try
-      if let some n ← addrNat (← mkAppM ``Asm.addr #[prog, base, mkConst l]) then
-        out := out.push n
-    catch _ => pure ()
-  return out
 
 /-- Where the instruction after the one here is at a label with a context
 of its own, the block is ended with this instruction and handed over to
