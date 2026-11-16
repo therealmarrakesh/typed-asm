@@ -37,7 +37,6 @@ inductive At : Label → Ctx → Prop
   | start (c : BitVec 64) : At .start (textsCtx 0 c)
   | arg (c v : BitVec 64) : At .arg (loopCtx c v)
   | scan (c v : BitVec 64) : At .scan (scanCtx c v)
-  | done (c : BitVec 64) : At .done (textsCtx 0 c)
 
 /-- The code typing: those contexts, at the addresses of their labels. -/
 def Φ : CodeTy := .ofLabels code base At
@@ -75,7 +74,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     · ty_block
     -- not zero: so not the text's last byte, and the place may move on
     · ty_block
-  | done c => ty_block
 
 /-! ## The memory typing and the entry contract -/
 

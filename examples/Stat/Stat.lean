@@ -17,7 +17,6 @@ namespace Stat
 /-- The contexts allowed at each label: nothing is known about any register. -/
 inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 0)
-  | fail : At .fail (entryCtx 0)
 
 /-- The buffer: 144 plain bytes, writable. That is the
 size of what `fstat` stores, the largest of the three things stored here. -/
@@ -46,7 +45,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
       (by decide) (fun _ => rfl) ?_
     -- the rest: each call that stores into the buffer finds room for what it stores
     ty_block
-  | fail => ty_block
 
 /-! ## Safety -/
 

@@ -2682,7 +2682,8 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
     let rest ← goalNamed gs `rest
     discard <| runOn dec decideCond
     let mut blocks : List MVarId := []
-    for side in [taken, rest] do
+    -- the side that carries on first: it is the one `ty_branch` leaves as the goal
+    for side in [rest, taken] do
       let [side'] ← runOn side introBranch | throwError "unexpected goals"
       unless ← closeIfImpossible side' do
         let [side''] ← runOn side' (do evalTactic (← `(tactic| ty_normalize)))
@@ -2737,25 +2738,6 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
   | _ =>
     return .needsHelp m!"`{instr.toAsm}` is not handled by `ty_block`"
 
-/-- Types a conditional jump in the middle of a block. The side that jumps
-is settled as `ty_block` would settle it; the side that carries on is left
-as the goal, so that something can be said about it before going further. -/
-elab "ty_branch" : tactic => do
-  let others := (← getGoals).drop 1
-  let saved ← saveState
-  match ← typeStep with
-  | .endOfBlock instr =>
-    let goal ← getMainGoal
-    match ← finishBlock goal instr with
-    | .done l => setGoals (l ++ others)
-    | .continues rest l => setGoals (rest :: l ++ others)
-    | .forks blocks l => setGoals (blocks ++ l ++ others)
-    | .needsHelp m => throwError m
-  | .stepped =>
-    saved.restore
-    throwError "ty_branch: the instruction here does not transfer control; use `ty_step`"
-  | .notABlock => throwError "ty_branch: the goal is not a block"
-
 /-- Types a whole block of a labelled program: the straight-line
 instructions, then the control transfer that ends it. Jump targets are found
 by label. Conditional jumps in the middle of the block are followed.
@@ -2793,6 +2775,32 @@ elab "ty_block" : tactic => do
       work := blocks ++ work
     | .needsHelp _ => stuck := stuck ++ (← getGoals)
   setGoals (stuck ++ left ++ others)
+
+/-- Types a conditional jump in the middle of a block. The side that jumps
+is settled as `ty_block` would settle it; the side that carries on is left
+as the goal, so that something can be said about it before going further. -/
+elab "ty_branch" : tactic => do
+  let others := (← getGoals).drop 1
+  let saved ← saveState
+  match ← typeStep with
+  | .endOfBlock instr =>
+    let goal ← getMainGoal
+    match ← finishBlock goal instr with
+    | .done l => setGoals (l ++ others)
+    | .continues rest l => setGoals (rest :: l ++ others)
+    | .forks blocks l =>
+      -- the side that carries on is the goal; what the jump leads to is
+      -- typed in place, as `ty_block` types it
+      let rest :: taken := blocks | setGoals (l ++ others)
+      let mut left : List MVarId := []
+      for g in taken do
+        left := left ++ (← runOn g (do evalTactic (← `(tactic| ty_block))))
+      setGoals (rest :: left ++ l ++ others)
+    | .needsHelp m => throwError m
+  | .stepped =>
+    saved.restore
+    throwError "ty_branch: the instruction here does not transfer control; use `ty_step`"
+  | .notABlock => throwError "ty_branch: the goal is not a block"
 
 /-- `ty_call sig` types a `call` that ends a block, to a function with
 signature `sig`. The callee and the return point are found by label. Left as
