@@ -308,6 +308,24 @@ example : ((castWanted kept (reg base .rbx (.ptr rec2 true (.lit 0))) regList ho
 -- and left alone where that context wants the number
 example : (castWanted kept holding regList holding false).isNone = true := by decide
 
+/-! ## A call that ends the program -/
+
+/-- Whether the walk ends the program at a `syscall`, and with what status. -/
+def ends (Γ : CtxS) : Option (Option Val) :=
+  match exitAt Γ .syscall with
+  | some (.exit v) => some v
+  | _ => none
+
+-- `exit` and `exit_group` end the walk, with the status where it is exactly known
+example : ends (reg (reg base .rax (.eq (.lit 60))) .rdi (.eq (.lit 3))) = some (some (.lit 3)) := by
+  decide
+example : ends (reg base .rax (.eq (.lit 231))) = some none := by decide
+-- another call does not, nor does a number that is not known
+example : ends (reg base .rax (.eq (.lit 1))) = none := by decide
+example : ends base = none := by decide
+-- and no other instruction does
+example : (exitAt (reg base .rax (.eq (.lit 60))) .nop).isNone = true := by decide
+
 /-! ## Why an instruction is refused -/
 
 def isReason (Γ : CtxS) (i : Instr) (p : Reject → Bool) : Bool :=

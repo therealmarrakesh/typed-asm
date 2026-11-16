@@ -2529,6 +2529,35 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       let found ← try findCall Φ atoms named cur at' t next' finally castRef.set none
       let some (info, atoms') := found | return none
       return some (info, atoms', .jump at' i len')
+    -- When a call ends the program, for the system the block is typed
+    -- against: any status, or one exactly known and as wanted.
+    let sysE := sys.consumeMData
+    let isLinux (e : Expr) := e.consumeMData.isConstOf ``linux
+    let (endsE, hEnds, wantQ?) : Expr × Expr × Option Expr :=
+      if isLinux sysE then (mkConst ``ExitAny, mkConst ``linux_endsWhen, none)
+      else if sysE.isAppOfArity ``Syscall.exitsOnly 2 && isLinux sysE.getAppArgs[0]! then
+        let Q := sysE.getAppArgs[1]!
+        (mkApp (mkConst ``ExitAs) Q, mkApp (mkConst ``linux_endsWhen_only) Q, some Q)
+      else if sysE.isAppOfArity ``Syscall.writesOnly 2 && isLinux sysE.getAppArgs[0]! then
+        (mkConst ``ExitAny, mkApp (mkConst ``linux_endsWhen_writes) sysE.getAppArgs[1]!, none)
+      else if sysE.isAppOfArity ``Syscall.writesOnly 2 &&
+          sysE.getAppArgs[0]!.consumeMData.isAppOfArity ``Syscall.exitsOnly 2 &&
+          isLinux sysE.getAppArgs[0]!.consumeMData.getAppArgs[0]! then
+        let Q := sysE.getAppArgs[0]!.consumeMData.getAppArgs[1]!
+        (mkApp (mkConst ``ExitAs) Q,
+          mkApp2 (mkConst ``linux_endsWhen_only_writes) Q sysE.getAppArgs[1]!, some Q)
+      else (mkConst ``ExitNever, mkApp (mkConst ``Syscall.endsWhen_never) sys, none)
+    let endsKnown := !endsE.isConstOf ``ExitNever
+    -- A call that ends the program: the walk ends there. Where the status
+    -- is to be as wanted and is not exactly known, it is left to the long
+    -- way, which says so.
+    let exitEnd (at' : Nat) (cur : Sym.CtxS) : TacticM (Option WalkMove) := do
+      unless endsKnown do return none
+      if ← enterOff.get then return none
+      let some (i, len') := instrs[at']? | return none
+      let some (.exit v) := Sym.exitAt cur i | return none
+      if wantQ?.isSome && v.isNone then return none
+      return some (.jump at' i len')
     -- the first variable a name may take: the table may grow past it later
     let k₀ := atoms.val.size
     let mut atoms := atoms
@@ -2577,7 +2606,10 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
                 atoms := atoms'
                 call? := some info
                 pure (S₀, moves.push mv, atEnd, arrived)
-              | none => pure (S₀, moves, atEnd, arrived)
+              | none =>
+                match ← exitEnd atEnd arrived with
+                | some mv => pure (S₀, moves.push mv, atEnd, arrived)
+                | none => pure (S₀, moves, atEnd, arrived)
       | .inl (none, none) => return none
       | .inl (none, some S₀) =>
         -- the block may begin with the jump that hands it over
@@ -2598,7 +2630,10 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
               atoms := atoms'
               leave? := some info
               pure (S₀, #[mv], n, S₀)
-            | none => return none
+            | none =>
+              match ← exitEnd n S₀ with
+              | some mv => pure (S₀, #[mv], n, S₀)
+              | none => return none
       | .inl (some (_, _, _, .noForm), some S₀) =>
         -- the block may be nothing but a return
         match ← retLeave atoms #[] n S₀ with
@@ -2644,10 +2679,12 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       | .enter _ _ _ => none
       | .leave _ _ _ => none
       | .call .. => none
+      | .exit _ => none
     let rec enters? : Sym.Walk → Bool
       | .enter _ _ _ => true
       | .leave _ _ _ => true
       | .call .. => true
+      | .exit _ => false
       | .conds _ rest => enters? rest
       | .name _ rest => enters? rest
       | .both l r => enters? l || enters? r
@@ -2661,6 +2698,15 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       trace[TypedAsm.fast] "the checker did not hand the block over as found"
       enterOff.set true
       throwError "the block was not handed over as found"
+    let rec exits? : Sym.Walk → Bool
+      | .exit _ => true
+      | .conds _ rest => exits? rest
+      | .name _ rest => exits? rest
+      | .both l r => exits? l || exits? r
+      | .err _ l r => exits? l || exits? r
+      | .byte _ l r => exits? l || exits? r
+      | .branch _ _ l r => exits? l || exits? r
+      | _ => false
     let S'? := final W
     let ρ := atoms.env
     let SE := toExpr S
@@ -2853,6 +2899,30 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           throw e
         trace[TypedAsm.fast] "called within the walk"
         instantiateMVars m
+      | .exit v =>
+        match wantQ?, v with
+        | none, _ => pure (mkConst ``True.intro)
+        | some _, none => throwError "the status the program ends with is not exactly known"
+        | some Q, some V =>
+          -- the status as the walk's names have it, and that it is as wanted
+          let val ← Sym.denVal atoms V
+          let want := (mkApp Q (← mkAppM ``BitVec.setWidth #[mkNatLit 32, val])).headBeta
+          let m ← mkFreshExprSyntheticOpaqueMVar want
+          let left ← try
+              runOn m.mvarId! (do evalTactic (← `(tactic|
+                first | (dsimp only; decide) | decide | rfl | (dsimp only; ty_arith) | ty_arith)))
+            catch _ => pure [m.mvarId!]
+          unless left.isEmpty do
+            trace[TypedAsm.fast] "the status is not shown to be as wanted within the walk"
+            enterOff.set true
+            throwError "the status is not shown to be as wanted"
+          trace[TypedAsm.fast] "ended within the walk"
+          let some' ← mkAppM ``Option.some #[val]
+          let pred ← withLocalDeclD `v bv fun x => do
+            mkLambdaFVars #[x] (mkAnd (← mkEq some' (← mkAppM ``Option.some #[x]))
+              (mkApp Q (← mkAppM ``BitVec.setWidth #[mkNatLit 32, x])))
+          return mkApp4 (mkConst ``Exists.intro [1]) bv pred val
+            (← mkAppM ``And.intro #[← mkEqRefl some', ← instantiateMVars m])
       | .leave i Δ cs =>
         let some info := leave? | throwError "the block returns where no context was read"
         let m ← mkFreshExprSyntheticOpaqueMVar (← leaveType atoms i Δ cs)
@@ -2877,7 +2947,8 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         mkAppM ``And.intro #[hz, hm]
     let hW ← down W atoms #[] #[]
     let rests ← restRef.get
-    if rests.isEmpty && enters.isEmpty && leave?.isNone && call?.isNone then return none
+    if rests.isEmpty && enters.isEmpty && leave?.isNone && call?.isNone && !exits? W then
+      return none
     -- two more moves than the driver counted: a context made ready to be
     -- compared is a move of the checker's
     let fuelE := mkNatLit (moves.size + 2)
@@ -2890,7 +2961,8 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let walkE := mkAppN (mkConst ``Sym.walk) #[PE, codeE, fuelE, mkNatLit k₀, a, SE]
     let hwalk ← mkExpectedTypeHint (← mkEqRefl walkE) (← mkEq walkE WE)
     goal.assign (mkAppN (mkConst ``Sym.walk_sound')
-      #[Φ, fetch, sys, Ψ, ρ, PE, codeE, hP, hcode, hsys, fuelE, mkNatLit k₀, a, SE, WE, hwalk, hW])
+      #[Φ, fetch, sys, Ψ, ρ, PE, codeE, endsE, hP, hcode, hsys, hEnds, fuelE, mkNatLit k₀, a, SE,
+        WE, hwalk, hW])
     -- the values named are in the goals for the rest of the block
     let mut goals : List MVarId := []
     let mut newVals : Array Expr := #[]

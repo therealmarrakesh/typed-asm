@@ -2047,6 +2047,50 @@ theorem linux_exit_group_only_writes {Q : BitVec 32 → Prop}
     rw [Syscall.writesOnly_eq (fun e => by rw [hax] at e; exact absurd e (by decide))]
     exact Syscall.exitsOnly_exit (by simp [linux, hax, State.readReg, hdi]) hQ⟩
 
+/-! ## Ending, for the checker
+
+One statement of when a call ends the program, for each system a program is
+typed against: the checker's walk ends a block at such a call. -/
+
+/-- `sys.EndsWhen E`: a call with 60 or 231 in `rax` ends the program, where
+`E` holds of what is known of `rdi`: the value it holds exactly, if any. -/
+def Syscall.EndsWhen (sys : Syscall) (E : Option (BitVec 64) → Prop) : Prop :=
+  ∀ (fetch : Fetch) (Ψ : MemTy) (Γ : Ctx) (o : Option (BitVec 64)), E o →
+    (Γ.regs .rax = .eq 60 ∨ Γ.regs .rax = .eq 231) → (∀ v, o = some v → Γ.regs .rdi = .eq v) →
+    SysExits fetch sys Ψ Γ
+
+/-- Any status will do. -/
+def ExitAny : Option (BitVec 64) → Prop := fun _ => True
+
+/-- The status must be exactly known, and as `Q` wants. -/
+def ExitAs (Q : BitVec 32 → Prop) : Option (BitVec 64) → Prop :=
+  fun o => ∃ v, o = some v ∧ Q (v.setWidth 32)
+
+/-- No call is taken to end the program. -/
+def ExitNever : Option (BitVec 64) → Prop := fun _ => False
+
+theorem Syscall.endsWhen_never (sys : Syscall) : sys.EndsWhen ExitNever :=
+  fun _ _ _ _ h => h.elim
+
+theorem linux_endsWhen : linux.EndsWhen ExitAny :=
+  fun _ _ _ _ _ hax _ => hax.elim (fun h => linux_exit h) (fun h => linux_exit_group h)
+
+theorem linux_endsWhen_only (Q : BitVec 32 → Prop) : (linux.exitsOnly Q).EndsWhen (ExitAs Q) :=
+  fun _ _ _ _ ⟨v, ho, hQ⟩ hax hd =>
+    hax.elim (fun h => linux_exit_only h (hd v ho) hQ)
+      (fun h => linux_exit_group_only h (hd v ho) hQ)
+
+theorem linux_endsWhen_writes (R : BitVec 64 → List (BitVec 8) → Prop) :
+    (linux.writesOnly R).EndsWhen ExitAny :=
+  fun _ _ _ _ _ hax _ => hax.elim (fun h => linux_exit_writes h) (fun h => linux_exit_group_writes h)
+
+theorem linux_endsWhen_only_writes (Q : BitVec 32 → Prop)
+    (R : BitVec 64 → List (BitVec 8) → Prop) :
+    ((linux.exitsOnly Q).writesOnly R).EndsWhen (ExitAs Q) :=
+  fun _ _ _ _ ⟨v, ho, hQ⟩ hax hd =>
+    hax.elim (fun h => linux_exit_only_writes h (hd v ho) hQ)
+      (fun h => linux_exit_group_only_writes h (hd v ho) hQ)
+
 /-- `openat`: with 257 in `rax`, the call returns, whatever its arguments. A
 name that cannot be read is refused by the kernel, not a fault. -/
 theorem linux_openat (hΓ : Γ.regs .rax = .eq 257) :
