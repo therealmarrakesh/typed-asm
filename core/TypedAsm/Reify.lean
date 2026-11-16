@@ -438,6 +438,7 @@ def denCtx (as : Atoms) (Γ : CtxS) : MetaM Expr := do
 /-- Something left to be shown, written out as the proposition it is. -/
 def denCond (as : Atoms) : CondS → MetaM Expr
   | .le a b => do mkLe (← denNum as a) (← denNum as b)
+  | .lt a b => do mkLt (← denNum as a) (← denNum as b)
   | .cf fl => do
     let P ← denFlags as fl
     withLocalDeclD `f (mkConst ``Flags) fun f => do

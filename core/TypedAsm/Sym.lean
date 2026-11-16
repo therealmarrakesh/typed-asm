@@ -187,6 +187,19 @@ theorem den_plus (ρ : Env) (a b : Num) : (plus a b).den ρ = a.den ρ + b.den �
     · rfl
   · rfl
 
+/-- Two numbers added, whichever way round the one that is written is. -/
+def plus' : Num → Num → Num
+  | .lit 0, b => b
+  | .lit m, .add x (.lit n) => .add x (.lit (m + n))
+  | a, b => plus a b
+
+theorem den_plus' (ρ : Env) (a b : Num) : (plus' a b).den ρ = a.den ρ + b.den ρ := by
+  unfold plus'
+  split
+  · simp only [den]; omega
+  · simp only [den]; omega
+  · exact den_plus ρ a b
+
 end Num
 
 namespace Val
@@ -342,11 +355,14 @@ end CtxS
 inductive CondS
   /-- One number is at most another. -/
   | le (a b : Num)
+  /-- One number is less than another. -/
+  | lt (a b : Num)
   /-- Flags of which this is known have the carry flag defined. -/
   | cf (fl : FlagsS)
 
 def CondS.den (ρ : Env) : CondS → Prop
   | .le a b => a.den ρ ≤ b.den ρ
+  | .lt a b => a.den ρ < b.den ρ
   | .cf fl => ∀ f, fl.den ρ f → f.cf.isSome = true
 
 /-- All of a list of things left to be shown. -/
@@ -958,18 +974,258 @@ theorem reach_some {ρ : Env} {Γ : CtxS} {x : IndexReg} {sc : Scale} {disp : Bi
     · cases h
   · cases h
 
+/-! ### Blocks the context owns
+
+An address is a term. Taken apart into the terms it is a sum of, it is seen
+to be in an owned block when the block's own address is among them: what is
+left over is how far into the block it is. -/
+
+/-- The sum of what a list of terms stand for. -/
+def sumV (ρ : Env) : List Val → BitVec 64
+  | [] => 0
+  | t :: ts => t.den ρ + sumV ρ ts
+
+theorem sumV_append (ρ : Env) : (as bs : List Val) → sumV ρ (as ++ bs) = sumV ρ as + sumV ρ bs
+  | [], bs => by simp [sumV]
+  | a :: as, bs => by
+    show a.den ρ + sumV ρ (as ++ bs) = a.den ρ + sumV ρ as + sumV ρ bs
+    rw [sumV_append ρ as bs, BitVec.add_assoc]
+
+/-- The terms a value is the sum of, and the number among them. -/
+def Val.summands : Val → List Val × BitVec 64
+  | .lit n => ([], n)
+  | .add a b => (a.summands.1 ++ b.summands.1, a.summands.2 + b.summands.2)
+  | .app2 (.alu .add .w64) a b => (a.summands.1 ++ b.summands.1, a.summands.2 + b.summands.2)
+  | v => ([v], 0)
+
+theorem Val.den_summands (ρ : Env) : (v : Val) → v.den ρ = sumV ρ v.summands.1 + v.summands.2 := by
+  intro v
+  induction v with
+  | lit n => simp [Val.summands, sumV, Val.den]
+  | var i => simp [Val.summands, sumV]
+  | add a b iha ihb =>
+    simp only [Val.summands, Val.den, sumV_append]
+    rw [iha, ihb]; ac_rfl
+  | shl a k _ => simp [Val.summands, sumV]
+  | app1 f a _ => simp [Val.summands, sumV]
+  | app2 f a b iha ihb =>
+    cases f with
+    | alu op w =>
+      cases op <;> cases w <;> try (simp [Val.summands, sumV])
+      simp only [Val.den, Op2.den, sumV_append, AluOp.apply, addCarry_fst]
+      rw [iha, ihb]; ac_rfl
+
+/-- A list of terms with one occurrence of a term taken out. -/
+def removeV (a : Val) : List Val → Option (List Val)
+  | [] => none
+  | t :: ts => if t = a then some ts else (removeV a ts).map (t :: ·)
+
+theorem removeV_spec (ρ : Env) (a : Val) : (l : List Val) → {l' : List Val} →
+    removeV a l = some l' → sumV ρ l = a.den ρ + sumV ρ l'
+  | [], _, h => by cases h
+  | t :: ts, l', h => by
+    unfold removeV at h
+    split at h
+    · next e => cases h; subst e; rfl
+    · cases hr : removeV a ts with
+      | none => rw [hr] at h; cases h
+      | some r =>
+        rw [hr] at h; cases h
+        show t.den ρ + sumV ρ ts = a.den ρ + (t.den ρ + sumV ρ r)
+        rw [removeV_spec ρ a ts hr]; ac_rfl
+
+/-- A list of terms with one occurrence of each of some terms taken out. -/
+def removeAll : List Val → List Val → Option (List Val)
+  | [], l => some l
+  | a :: as, l =>
+    match removeV a l with
+    | some l' => removeAll as l'
+    | none => none
+
+theorem removeAll_spec (ρ : Env) : (as l : List Val) → {l' : List Val} →
+    removeAll as l = some l' → sumV ρ l = sumV ρ as + sumV ρ l'
+  | [], l, _, h => by cases h; simp [sumV]
+  | a :: as, l, l', h => by
+    unfold removeAll at h
+    split at h
+    · next r hr =>
+      show _ = a.den ρ + sumV ρ as + sumV ρ l'
+      rw [removeV_spec ρ a l hr, removeAll_spec ρ as r h, BitVec.add_assoc]
+    · cases h
+
+/-- A term of an address as a number of bytes: an index scaled is that many. -/
+def offTerm : Val → Num
+  | .shl c s => .mul (.toNat c) (.lit (2 ^ s))
+  | t => .toNat t
+
+theorem offTerm_spec (ρ : Env) (t : Val) : BitVec.ofNat 64 ((offTerm t).den ρ) = t.den ρ := by
+  unfold offTerm
+  split
+  · next c s =>
+    apply BitVec.eq_of_toNat_eq
+    simp only [Num.den, Val.den, BitVec.toNat_ofNat, BitVec.toNat_shiftLeft, Nat.shiftLeft_eq]
+  · simp [Num.den]
+
+/-- The terms of an address left over, as a number of bytes. -/
+def offNum : List Val → Num
+  | [] => .lit 0
+  | t :: ts => (offTerm t).plus' (offNum ts)
+
+theorem offNum_spec (ρ : Env) : (ts : List Val) → BitVec.ofNat 64 ((offNum ts).den ρ) = sumV ρ ts
+  | [] => rfl
+  | t :: ts => by
+    show BitVec.ofNat 64 (((offTerm t).plus' (offNum ts)).den ρ) = t.den ρ + sumV ρ ts
+    rw [Num.den_plus', BitVec.ofNat_add, offTerm_spec, offNum_spec ρ ts]
+
+/-- The address a memory operand names, where the registers it is computed
+from hold exactly known values. -/
+def ea (Γ : CtxS) : Mem → Option Val
+  | .sib (some b) none disp =>
+    if b = .rsp then none
+    else match exactly (Γ.regs.get b) with
+      | some v => some (.add v (.lit (disp.signExtend 64)))
+      | none => none
+  | .sib (some b) (some (x, sc)) disp =>
+    if b = .rsp then none
+    else match exactly (Γ.regs.get b), exactly (Γ.regs.get x.toReg) with
+      | some v, some c => some (.add (.add v (.shl c sc.shift)) (.lit (disp.signExtend 64)))
+      | _, _ => none
+  | .sib none none disp => some (.lit (disp.signExtend 64))
+  | .sib none (some (x, sc)) disp =>
+    match exactly (Γ.regs.get x.toReg) with
+    | some c => some (.add (.shl c sc.shift) (.lit (disp.signExtend 64)))
+    | none => none
+  | .rip _ => none
+
+theorem ea_spec {ρ : Env} {Γ : CtxS} {m : Mem} {p : Val} (h : ea Γ m = some p) :
+    EaIs (Γ.den ρ) m (p.den ρ) := by
+  unfold ea at h
+  split at h
+  · split at h
+    · cases h
+    · next hb =>
+      split at h
+      · next v hv => cases h; exact .base hb (by rw [CtxS.den_regs, exactly_den hv])
+      · cases h
+  · split at h
+    · cases h
+    · next hb =>
+      split at h
+      · next v c hv hc =>
+        cases h
+        exact .indexed hb (by rw [CtxS.den_regs, exactly_den hv])
+          (by rw [CtxS.den_regs, exactly_den hc])
+      · cases h
+  · cases h; exact .abs
+  · split at h
+    · next c hc => cases h; exact .absIndexed (by rw [CtxS.den_regs, exactly_den hc])
+    · cases h
+  · cases h
+
+theorem addr_split (A R kp kb : BitVec 64) : A + R + kp = A + kb + (R + (kp - kb)) := by
+  calc A + R + kp = A + (R + (kp - kb + kb)) := by rw [BitVec.sub_add_cancel, BitVec.add_assoc]
+    _ = A + kb + (R + (kp - kb)) := by ac_rfl
+
+/-- How far into a block at `a` the address `p` is, given the terms of `p`
+left when those of `a` are taken out. -/
+def ownedOff (r : List Val) (p a : Val) : Num :=
+  (offNum r).plus' (.lit (p.summands.2 - a.summands.2).toNat)
+
+/-- Whether an address so far into a block is taken to be in it: not where
+the distance is a number and the block is shorter. -/
+def ownedHere (r : List Val) (j : Num) (S : ShapeS) : Bool :=
+  match r, j.lit?, S.size.lit? with
+  | [], some jn, some sz => decide (jn < sz)
+  | _, _, _ => true
+
+/-- The owned block an address is in and how far in: the first whose own
+address is among the terms of the address, and, where the rest is a number,
+that has that many bytes. -/
+def findOwned (p : Val) : List (Val × ShapeS) → Nat → Option (Nat × Val × ShapeS × Num)
+  | [], _ => none
+  | (a, S) :: rest, k =>
+    match removeAll a.summands.1 p.summands.1 with
+    | some r =>
+      if ownedHere r (ownedOff r p a) S then some (k, a, S, ownedOff r p a)
+      else findOwned p rest (k + 1)
+    | none => findOwned p rest (k + 1)
+
+theorem denOwned_getElem? (ρ : Env) : (l : List (Val × ShapeS)) →
+    (tail : List (BitVec 64 × Shape)) → (i : Nat) → (a : Val) → (S : ShapeS) →
+    l[i]? = some (a, S) → (denOwned ρ l tail)[i]? = some (a.den ρ, S.den ρ)
+  | [], _, _, _, _, h => by cases h
+  | (b, T) :: l, tail, 0, a, S, h => by cases h; rfl
+  | (b, T) :: l, tail, i + 1, a, S, h => by
+    show (denOwned ρ l tail)[i]? = _
+    exact denOwned_getElem? ρ l tail i a S h
+
+theorem findOwned_spec (ρ : Env) (p : Val) : (l : List (Val × ShapeS)) → (k₀ : Nat) →
+    {k : Nat} → {a : Val} → {S : ShapeS} → {j : Num} → findOwned p l k₀ = some (k, a, S, j) →
+    ∃ i, k = k₀ + i ∧ l[i]? = some (a, S) ∧ p.den ρ = a.den ρ + BitVec.ofNat 64 (j.den ρ)
+  | [], _, _, _, _, _, h => by cases h
+  | (b, T) :: l, k₀, k, a, S, j, h => by
+    have later : findOwned p l (k₀ + 1) = some (k, a, S, j) →
+        ∃ i, k = k₀ + i ∧ ((b, T) :: l)[i]? = some (a, S) ∧
+          p.den ρ = a.den ρ + BitVec.ofNat 64 (j.den ρ) := fun h' => by
+      obtain ⟨i, hk, hi, hp⟩ := findOwned_spec ρ p l (k₀ + 1) h'
+      exact ⟨i + 1, by omega, hi, hp⟩
+    unfold findOwned at h
+    split at h
+    · next r hr =>
+      split at h
+      · cases h
+        refine ⟨0, rfl, rfl, ?_⟩
+        unfold ownedOff
+        rw [Num.den_plus', BitVec.ofNat_add, offNum_spec]
+        have hp := Val.den_summands ρ p
+        have hb := Val.den_summands ρ b
+        have hrm := removeAll_spec ρ _ _ hr
+        show _ = _ + (_ + BitVec.ofNat 64 (p.summands.2 - b.summands.2).toNat)
+        rw [BitVec.ofNat_toNat, BitVec.setWidth_eq, hp, hb, hrm]
+        exact addr_split _ _ _ _
+      · exact later h
+    · exact later h
+
+/-- What is left to be shown for a number to be one a register can hold. -/
+def fits64 (j : Num) : Option (List CondS) :=
+  match j.lit? with
+  | some n => if n < 2 ^ 64 then some [] else none
+  | none => some [.lt j (.lit (2 ^ 64))]
+
+theorem fits64_spec {ρ : Env} {j : Num} {cs : List CondS} (h : fits64 j = some cs)
+    (hc : CondS.all ρ cs) : j.den ρ < 2 ^ 64 := by
+  unfold fits64 at h
+  split at h
+  · next n hn =>
+    split at h
+    · next hlt => rw [Num.lit?_den hn]; exact hlt
+    · cases h
+  · cases h; exact hc.1
+
 /-- **Where an operand's bytes are**, found from the context's terms, and
 what is left to be shown for it to be so. -/
-def locate (Γ : CtxS) : Mem → Option (PlaceS × List CondS)
+def locate (Γ : CtxS) (m : Mem) : Option (PlaceS × List CondS) :=
+  match m with
   | .sib (some b) ix disp =>
     if b = .rsp then none
     else match Γ.regs.get b, reach Γ ix disp with
       | .ptr S w off, some d => some (⟨.ptr w, S, off.plus d⟩, [])
+      | .eq _, _ =>
+        -- an exactly known address: in a block the context owns
+        match ea Γ m with
+        | some p =>
+          match findOwned p Γ.owned 0 with
+          | some (k, a, S, j) => (fits64 j).map fun cs => (⟨.owned k a, S, j⟩, cs)
+          | none => none
+        | none => none
       | _, _ => none
   | _ => none
 
+theorem CtxS.den_owned (ρ : Env) (Γ : CtxS) :
+    (Γ.den ρ).owned = denOwned ρ Γ.owned (ownedTail ρ Γ.ownedRest) := rfl
+
 theorem locate_spec {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {m : Mem}
-    {x : PlaceS × List CondS} (h : locate Γ m = some x) (_hc : CondS.all ρ x.2) :
+    {x : PlaceS × List CondS} (h : locate Γ m = some x) (hc : CondS.all ρ x.2) :
     Loc Ψ next (Γ.den ρ) m (x.1.kind.den ρ) (x.1.shape.den ρ) (x.1.off.den ρ) := by
   unfold locate at h
   split at h
@@ -989,6 +1245,22 @@ theorem locate_spec {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {m : 
       | some xs =>
         obtain ⟨c, hx, he⟩ := reach_some (ρ := ρ) (x := xs.1) (sc := xs.2) hr
         exact .indexed hb hΓ' hx he
+    · split at h
+      · next p hea =>
+        split at h
+        · next k a S j hf =>
+          cases hfit : fits64 j with
+          | none => rw [hfit] at h; cases h
+          | some cs =>
+            rw [hfit] at h; cases h
+            obtain ⟨i, hk, hi, hp⟩ := findOwned_spec ρ p Γ.owned 0 hf
+            have hki : k = i := by omega
+            subst hki
+            exact .owned (ea_spec hea)
+              (by rw [CtxS.den_owned]; exact denOwned_getElem? ρ _ _ _ _ _ hi) hp
+              (fits64_spec hfit hc)
+        · cases h
+      · cases h
     · cases h
   · cases h
 
