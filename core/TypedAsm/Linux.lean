@@ -1937,16 +1937,92 @@ theorem linux_exit_group_only {Q : BitVec 32 → Prop} {v : BitVec 64}
   exact ⟨v.setWidth 32,
     Syscall.exitsOnly_exit (by simp [linux, hax, State.readReg, hdi]) hQ⟩
 
-variable {sys : Syscall} [LikeLinux sys]
+/-- An operating system that does what `linux` does wherever `linux` lets
+the program go on, for every call but `write`. The rules for the other
+calls that return hold for any such: also for a system made to refuse some
+writes. -/
+class LikeLinuxNW (sys : Syscall) : Prop where
+  next : ∀ {s t : State}, s.getReg .rax ≠ 1 → linux s = .next t → sys s = .next t
+
+instance {sys : Syscall} [LikeLinux sys] : LikeLinuxNW sys := ⟨fun _ h => LikeLinux.next h⟩
+
+instance {sys : Syscall} [LikeLinuxNW sys] (R : BitVec 64 → List (BitVec 8) → Prop) :
+    LikeLinuxNW (sys.writesOnly R) :=
+  ⟨fun hne h => (Syscall.writesOnly_eq (fun e => absurd e hne)).trans (LikeLinuxNW.next hne h)⟩
+
+variable {sys : Syscall} [LikeLinuxNW sys]
 
 /-- `write`: with 1 in `rax`, the call returns, whatever its arguments. A
 buffer that cannot be read is refused by the kernel, not a fault. -/
-theorem linux_write (hΓ : Γ.regs .rax = .eq 1) :
+theorem linux_write {sys : Syscall} [LikeLinux sys] (hΓ : Γ.regs .rax = .eq 1) :
     SysReturns fetch sys Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   exact ⟨Linux.write s, LikeLinux.next (by simp [linux, hax]), (Linux.write_only s).rip, Ψ₁, .refl _, hΨ,
     (Linux.write_only s).ok h⟩
+
+/-- The bytes at an address inside a block that says its bytes are that
+part of what it says. -/
+theorem WellTyped.loadBytes_said {sys : Syscall} {base : BitVec 64} {l : Layout}
+    {bs : List (BitVec 8)} {off cnt : Nat} (h : WellTyped fetch sys Ψ n Γ s)
+    (hl : Ψ base = some l) (hs : l.said = some bs) (hin : off + cnt ≤ bs.length) :
+    s.loadBytes (base + BitVec.ofNat 64 off) cnt = (bs.drop off).take cnt := by
+  apply List.ext_getElem
+  · simp only [State.loadBytes, List.length_map, List.length_range, List.length_take,
+      List.length_drop]
+    omega
+  · intro k hk₁ hk₂
+    simp only [State.loadBytes, List.length_map, List.length_range] at hk₁
+    simp only [State.loadBytes, List.getElem_map, List.getElem_range, List.getElem_take,
+      List.getElem_drop]
+    have := h.said base l bs hl hs (off + k) (by omega)
+    rw [← this]
+    congr 1
+    bv_omega
+
+/-- **`write`, where only what satisfies `R` is let through**: with 1 in
+`rax`, the descriptor exactly known, and the buffer an exactly known place
+in a block that says its bytes, as many of them as `rdx` exactly says, the
+call returns if that part of what the block says satisfies `R`. -/
+theorem linux_write_only {sys : Syscall} [LikeLinux sys]
+    {R : BitVec 64 → List (BitVec 8) → Prop} {fd a cnt base : BitVec 64} {l : Layout}
+    {bs : List (BitVec 8)} {off : Nat}
+    (hΓ : Γ.regs .rax = .eq 1) (hfd : Γ.regs .rdi = .eq fd) (hbuf : Γ.regs .rsi = .eq a)
+    (hcnt : Γ.regs .rdx = .eq cnt) (hl : Ψ base = some l) (hs : l.said = some bs)
+    (ha : a = base + BitVec.ofNat 64 off) (hin : off + cnt.toNat ≤ bs.length)
+    (hR : R fd ((bs.drop off).take cnt.toNat)) :
+    SysReturns fetch (sys.writesOnly R) Ψ Γ Γ.afterSyscall := by
+  intro Ψ₁ he hΨ n s h
+  have hax := h.eqReg (by decide) hΓ
+  have hdi := h.eqReg (by decide) hfd
+  have hsi := h.eqReg (by decide) hbuf
+  have hdx := h.eqReg (by decide) hcnt
+  have hoff : s.offered = (bs.drop off).take cnt.toNat := by
+    unfold State.offered
+    rw [hsi, hdx, ha]
+    exact h.loadBytes_said (he.blocks base l hl) hs hin
+  have hgo : (sys.writesOnly R) s = sys s :=
+    Syscall.writesOnly_eq (fun _ => by rw [hdi, hoff]; exact hR)
+  exact ⟨Linux.write s, hgo.trans (LikeLinux.next (by simp [linux, hax])), (Linux.write_only s).rip,
+    Ψ₁, .refl _, hΨ, (Linux.write_only s).ok h⟩
+
+/-- A call that ends the program under some system ends it under that
+system made to refuse unwanted writes: it is no `write`. -/
+theorem linux_exit_writes {R : BitVec 64 → List (BitVec 8) → Prop} (hΓ : Γ.regs .rax = .eq 60) :
+    SysExits fetch (linux.writesOnly R) Ψ Γ := by
+  intro _ _ _ n s h
+  have hax := h.eqReg (by decide) hΓ
+  exact ⟨s.readReg .w32 .rdi, by
+    rw [Syscall.writesOnly_eq (fun e => by rw [hax] at e; exact absurd e (by decide))]
+    simp [linux, hax]⟩
+
+theorem linux_exit_group_writes {R : BitVec 64 → List (BitVec 8) → Prop}
+    (hΓ : Γ.regs .rax = .eq 231) : SysExits fetch (linux.writesOnly R) Ψ Γ := by
+  intro _ _ _ n s h
+  have hax := h.eqReg (by decide) hΓ
+  exact ⟨s.readReg .w32 .rdi, by
+    rw [Syscall.writesOnly_eq (fun e => by rw [hax] at e; exact absurd e (by decide))]
+    simp [linux, hax]⟩
 
 /-- `openat`: with 257 in `rax`, the call returns, whatever its arguments. A
 name that cannot be read is refused by the kernel, not a fault. -/
@@ -1954,7 +2030,7 @@ theorem linux_openat (hΓ : Γ.regs .rax = .eq 257) :
     SysReturns fetch sys Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
-  exact ⟨Linux.openat s, LikeLinux.next (by simp [linux, hax]), (Linux.openat_only s).rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.openat s, LikeLinuxNW.next (by rw [hax]; decide) (by simp [linux, hax]), (Linux.openat_only s).rip, Ψ₁, .refl _, hΨ,
     (Linux.openat_only s).ok h⟩
 
 /-- `close`: with 3 in `rax`, the call returns, whatever its argument. -/
@@ -1962,7 +2038,7 @@ theorem linux_close (hΓ : Γ.regs .rax = .eq 3) :
     SysReturns fetch sys Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
-  exact ⟨Linux.close s, LikeLinux.next (by simp [linux, hax]), (Linux.close_only s).rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.close s, LikeLinuxNW.next (by rw [hax]; decide) (by simp [linux, hax]), (Linux.close_only s).rip, Ψ₁, .refl _, hΨ,
     (Linux.close_only s).ok h⟩
 
 /-- `fsync`: with 74 in `rax`, the call returns, whatever its argument. -/
@@ -1970,7 +2046,7 @@ theorem linux_fsync (hΓ : Γ.regs .rax = .eq 74) :
     SysReturns fetch sys Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
-  exact ⟨Linux.fsync s, LikeLinux.next (by simp [linux, hax]), (Linux.fsync_only s).rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.fsync s, LikeLinuxNW.next (by rw [hax]; decide) (by simp [linux, hax]), (Linux.fsync_only s).rip, Ψ₁, .refl _, hΨ,
     (Linux.fsync_only s).ok h⟩
 
 /-- `fdatasync`: with 75 in `rax`, likewise. -/
@@ -1978,7 +2054,7 @@ theorem linux_fdatasync (hΓ : Γ.regs .rax = .eq 75) :
     SysReturns fetch sys Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
-  exact ⟨Linux.fsync s, LikeLinux.next (by simp [linux, hax]), (Linux.fsync_only s).rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.fsync s, LikeLinuxNW.next (by rw [hax]; decide) (by simp [linux, hax]), (Linux.fsync_only s).rip, Ψ₁, .refl _, hΨ,
     (Linux.fsync_only s).ok h⟩
 
 /-- `getpid`: with 39 in `rax`, the call returns. -/
@@ -1986,7 +2062,7 @@ theorem linux_getpid (hΓ : Γ.regs .rax = .eq 39) :
     SysReturns fetch sys Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
-  exact ⟨Linux.getpid s, LikeLinux.next (by simp [linux, hax]), (Linux.getpid_only s).rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.getpid s, LikeLinuxNW.next (by rw [hax]; decide) (by simp [linux, hax]), (Linux.getpid_only s).rip, Ψ₁, .refl _, hΨ,
     (Linux.getpid_only s).ok h⟩
 
 /-- `lseek`: with 8 in `rax`, the call returns, whatever its arguments. -/
@@ -1994,7 +2070,7 @@ theorem linux_lseek (hΓ : Γ.regs .rax = .eq 8) :
     SysReturns fetch sys Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
-  exact ⟨Linux.lseek s, LikeLinux.next (by simp [linux, hax]), (Linux.lseek_only s).rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.lseek s, LikeLinuxNW.next (by rw [hax]; decide) (by simp [linux, hax]), (Linux.lseek_only s).rip, Ψ₁, .refl _, hΨ,
     (Linux.lseek_only s).ok h⟩
 
 /-- `read`: with 0 in `rax`, the call returns, provided the buffer in `rsi`
@@ -2008,7 +2084,7 @@ theorem linux_read {S : Shape} {off : Nat} {len : BitVec 64} (hΓ : Γ.regs .rax
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.read_fills s
   rw [h.eqReg (by decide) hlen] at hf
-  exact ⟨Linux.read s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.read s, LikeLinuxNW.next (by rw [hax]; decide) (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok h hΨ (by decide) hbuf hle hfree⟩
 
 /-- `read` into the stack: with 0 in `rax`, the call returns, provided the
@@ -2026,7 +2102,7 @@ theorem linux_read_stack {v d len : BitVec 64} {k i : Nat} {S : Shape}
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.read_fills s
   rw [h.eqReg (by decide) hlen] at hf
-  exact ⟨Linux.read s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.read s, LikeLinuxNW.next (by rw [hax]; decide) (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok_stack h hΨ (by decide) hsp hbuf hat hle⟩
 
 /-- `fstat`: with 5 in `rax`, the call returns, provided the buffer in `rsi`
@@ -2039,7 +2115,7 @@ theorem linux_fstat {S : Shape} {off : Nat} (hΓ : Γ.regs .rax = .eq 5)
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.fstat_fills s
-  exact ⟨Linux.fstat s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.fstat s, LikeLinuxNW.next (by rw [hax]; decide) (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok h hΨ (by decide) hbuf hle hfree⟩
 
 /-- `fstat` into the stack: as `linux_fstat`, with the buffer a known
@@ -2053,7 +2129,7 @@ theorem linux_fstat_stack {v d : BitVec 64} {k i : Nat} {S : Shape}
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.fstat_fills s
-  exact ⟨Linux.fstat s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.fstat s, LikeLinuxNW.next (by rw [hax]; decide) (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok_stack h hΨ (by decide) hsp hbuf hat hle⟩
 
 /-- `clock_gettime`: with 228 in `rax`, the call returns, provided the buffer
@@ -2066,7 +2142,7 @@ theorem linux_clock_gettime {S : Shape} {off : Nat} (hΓ : Γ.regs .rax = .eq 22
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.clockGettime_fills s
-  exact ⟨Linux.clockGettime s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.clockGettime s, LikeLinuxNW.next (by rw [hax]; decide) (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok h hΨ (by decide) hbuf hle hfree⟩
 
 /-- `clock_gettime` into the stack. -/
@@ -2079,7 +2155,7 @@ theorem linux_clock_gettime_stack {v d : BitVec 64} {k i : Nat} {S : Shape}
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.clockGettime_fills s
-  exact ⟨Linux.clockGettime s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.clockGettime s, LikeLinuxNW.next (by rw [hax]; decide) (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok_stack h hΨ (by decide) hsp hbuf hat hle⟩
 
 /-- `getrandom`: with 318 in `rax`, the call returns, provided the buffer in
@@ -2094,7 +2170,7 @@ theorem linux_getrandom {S : Shape} {off : Nat} {len : BitVec 64}
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.getrandom_fills s
   rw [h.eqReg (by decide) hlen] at hf
-  exact ⟨Linux.getrandom s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.getrandom s, LikeLinuxNW.next (by rw [hax]; decide) (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok h hΨ (by decide) hbuf hle hfree⟩
 
 /-- `getrandom` into the stack. -/
@@ -2109,7 +2185,7 @@ theorem linux_getrandom_stack {v d len : BitVec 64} {k i : Nat} {S : Shape}
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.getrandom_fills s
   rw [h.eqReg (by decide) hlen] at hf
-  exact ⟨Linux.getrandom s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.getrandom s, LikeLinuxNW.next (by rw [hax]; decide) (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok_stack h hΨ (by decide) hsp hbuf hat hle⟩
 
 /-- `read` into memory the program owns: the buffer lies inside an owned
@@ -2125,7 +2201,7 @@ theorem linux_read_owned {k lo : Nat} {a v : BitVec 64} {S : Shape} {len : BitVe
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.read_fills s
   rw [h.eqReg (by decide) hlen] at hf
-  exact ⟨Linux.read s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.read s, LikeLinuxNW.next (by rw [hax]; decide) (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok_owned h hΨ (by decide) hbuf hat hle⟩
 
 /-- `fstat` into memory the program owns: the buffer lies inside an owned
@@ -2139,7 +2215,7 @@ theorem linux_fstat_owned {k lo : Nat} {a v : BitVec 64} {S : Shape}
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.fstat_fills s
-  exact ⟨Linux.fstat s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.fstat s, LikeLinuxNW.next (by rw [hax]; decide) (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok_owned h hΨ (by decide) hbuf hat hle⟩
 
 /-- `clock_gettime` into memory the program owns: the buffer lies inside an owned
@@ -2153,7 +2229,7 @@ theorem linux_clock_gettime_owned {k lo : Nat} {a v : BitVec 64} {S : Shape}
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.clockGettime_fills s
-  exact ⟨Linux.clockGettime s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.clockGettime s, LikeLinuxNW.next (by rw [hax]; decide) (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok_owned h hΨ (by decide) hbuf hat hle⟩
 
 /-- `getrandom` into memory the program owns: the buffer lies inside an owned
@@ -2169,7 +2245,7 @@ theorem linux_getrandom_owned {k lo : Nat} {a v : BitVec 64} {S : Shape} {len : 
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.getrandom_fills s
   rw [h.eqReg (by decide) hlen] at hf
-  exact ⟨Linux.getrandom s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.getrandom s, LikeLinuxNW.next (by rw [hax]; decide) (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok_owned h hΨ (by decide) hbuf hat hle⟩
 
 /-- `mmap` for a block of a given shape: with 9 in `rax`, the length in
@@ -2193,7 +2269,7 @@ theorem linux_mmap {len : BitVec 64} {S : Shape} (hΓ : Γ.regs .rax = .eq 9)
       show a = a + BitVec.ofNat 64 0
       simp⟩)
   have hdi := h.eqReg (by decide) hhint
-  exact ⟨Linux.mmap s, LikeLinux.next (by simp [linux, hax, hdi]), Linux.mmap_rip s, Ψ₂, he₂, hΨ₂, hw⟩
+  exact ⟨Linux.mmap s, LikeLinuxNW.next (by rw [hax]; decide) (by simp [linux, hax, hdi]), Linux.mmap_rip s, Ψ₂, he₂, hΨ₂, hw⟩
 
 /-- `mmap` for a block of a declared kind: as `linux_mmap`, but the new
 block is of kind `tag`, has that kind's shape, and the result is a pointer
@@ -2216,7 +2292,7 @@ theorem linux_mmap_kind {len : BitVec 64} {tag : Nat} {S : Shape}
       show a = a + BitVec.ofNat 64 0
       simp⟩)
   have hdi := h.eqReg (by decide) hhint
-  exact ⟨Linux.mmap s, LikeLinux.next (by simp [linux, hax, hdi]), Linux.mmap_rip s, Ψ₂, he₂, hΨ₂, hw⟩
+  exact ⟨Linux.mmap s, LikeLinuxNW.next (by rw [hax]; decide) (by simp [linux, hax, hdi]), Linux.mmap_rip s, Ψ₂, he₂, hΨ₂, hw⟩
 
 /-- `mmap` for memory the program is to own: with 9 in `rax`, the length in
 `rsi`, 3 in `rdx` and 0x22 in `r10`, the call continues with an error number
@@ -2230,7 +2306,7 @@ theorem linux_mmap_own {next : BitVec 64} {len : BitVec 64} (hΓ : Γ.regs .rax 
   have hax := h.eqReg (by decide) hΓ
   obtain ⟨x, hw⟩ := Linux.mmapOwn_ok h hΨ hlen hprot hflags
   have hdi := h.eqReg (by decide) hhint
-  exact ⟨Linux.mmap s, x, (LikeLinux.next (by simp [linux, hax, hdi]) : sys s = _), Linux.mmap_rip s, Ψ₁,
+  exact ⟨Linux.mmap s, x, (LikeLinuxNW.next (by rw [hax]; decide) (by simp [linux, hax, hdi]) : sys s = _), Linux.mmap_rip s, Ψ₁,
     .refl _,
     hΨ, hw⟩
 
@@ -2244,7 +2320,7 @@ theorem linux_munmap {k : Nat} {a len : BitVec 64} {S : Shape} (hΓ : Γ.regs .r
     SysReturns fetch sys Ψ Γ { Γ.afterSyscall with owned := Γ.owned.eraseIdx k } := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
-  exact ⟨Linux.munmap s, LikeLinux.next (by simp [linux, hax]), Linux.munmap_rip s, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.munmap s, LikeLinuxNW.next (by rw [hax]; decide) (by simp [linux, hax]), Linux.munmap_rip s, Ψ₁, .refl _, hΨ,
     Linux.munmap_ok h hΨ hdi hsi hk hsz⟩
 
 /-! ## Memory the program cannot write stays as it was -/

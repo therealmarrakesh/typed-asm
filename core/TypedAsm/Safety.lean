@@ -232,4 +232,83 @@ theorem Safe.of_exitsOnly {s : State} (h : Safe fetch (sys.exitsOnly Q) s) :
     rw [hf] at hsafe
     exact (Syscall.safe_of_exitsOnly hsafe).2 c hc
 
+/-! ## What a program writes
+
+The same device says what a program writes. The system is made to refuse a
+`write` unless what the program offers it satisfies a condition; a program
+shown safe under that system offers only such writes, under the plain one. -/
+
+/-- What a `write` about to be made offers the kernel: the bytes at `rsi`,
+as many as `rdx` says. The kernel may take fewer. -/
+def State.offered (s : State) : List (BitVec 8) :=
+  s.loadBytes (s.getReg .rsi) (s.getReg .rdx).toNat
+
+/-- The operating system `sys`, refusing a `write` unless the descriptor and
+the bytes offered satisfy `R`. -/
+noncomputable def Syscall.writesOnly (sys : Syscall) (R : BitVec 64 → List (BitVec 8) → Prop) :
+    Syscall :=
+  fun s =>
+    haveI := Classical.propDecidable (s.getReg .rax = 1 → R (s.getReg .rdi) s.offered)
+    if s.getReg .rax = 1 → R (s.getReg .rdi) s.offered then sys s else .stuck
+
+variable {R : BitVec 64 → List (BitVec 8) → Prop}
+
+theorem Syscall.writesOnly_eq {s : State} (h : s.getReg .rax = 1 → R (s.getReg .rdi) s.offered) :
+    sys.writesOnly R s = sys s := by
+  simp only [Syscall.writesOnly]
+  rw [ite_cond_eq_true _ _ (eq_true h)]
+
+/-- What the stricter system lets through is what the plain one does, and
+if it is a `write`, what was offered satisfies the condition. -/
+theorem Syscall.safe_of_writesOnly {s : State} (h : (sys.writesOnly R s).isSafe = true) :
+    sys.writesOnly R s = sys s ∧ (s.getReg .rax = 1 → R (s.getReg .rdi) s.offered) := by
+  haveI := Classical.propDecidable (s.getReg .rax = 1 → R (s.getReg .rdi) s.offered)
+  by_cases hR : s.getReg .rax = 1 → R (s.getReg .rdi) s.offered
+  · exact ⟨Syscall.writesOnly_eq hR, hR⟩
+  · simp only [Syscall.writesOnly] at h
+    rw [ite_cond_eq_false _ _ (eq_false hR)] at h
+    exact absurd h (by simp [Result.isSafe])
+
+/-- A step the stricter system lets through is the plain system's step. -/
+theorem step_of_writesOnly {s : State} (h : (step fetch (sys.writesOnly R) s).isSafe = true) :
+    step fetch (sys.writesOnly R) s = step fetch sys s := by
+  unfold step at h ⊢
+  cases hf : fetch s.rip with
+  | none => rfl
+  | some x =>
+    obtain ⟨i, len⟩ := x
+    rw [hf] at h
+    by_cases hi : i = .syscall
+    · subst hi
+      exact (Syscall.safe_of_writesOnly h).1
+    · exact exec_congr hi _
+
+/-- A run under the plain system, from a state safe under the stricter one,
+is a run under the stricter one. -/
+theorem Steps.writesOnly {s s' : State} (hs : Steps fetch sys s s') :
+    Safe fetch (sys.writesOnly R) s → Steps fetch (sys.writesOnly R) s s' := by
+  induction hs with
+  | refl => exact fun _ => .refl _
+  | step hstep _ ih =>
+    intro h
+    have e := step_of_writesOnly (h _ (.refl _))
+    have hw := e.trans hstep
+    exact .step hw (ih fun s'' hs'' => h s'' (.step hw hs''))
+
+/-- **A program safe under the system that refuses unwanted writes is safe,
+and writes only as wanted**: wherever it reaches a `write`, the descriptor
+and the bytes it offers satisfy `R`. -/
+theorem Safe.of_writesOnly {s : State} (h : Safe fetch (sys.writesOnly R) s) :
+    Safe fetch sys s ∧
+      ∀ s', Steps fetch sys s s' → ∀ len, fetch s'.rip = some (.syscall, len) →
+        s'.getReg .rax = 1 → R (s'.getReg .rdi) s'.offered := by
+  refine ⟨fun s' hs' => ?_, fun s' hs' len hf hax => ?_⟩
+  · have hsafe := h s' (hs'.writesOnly h)
+    rw [step_of_writesOnly hsafe] at hsafe
+    exact hsafe
+  · have hsafe := h s' (hs'.writesOnly h)
+    unfold TypedAsm.step at hsafe
+    rw [hf] at hsafe
+    exact (Syscall.safe_of_writesOnly hsafe).2 hax
+
 end TypedAsm
