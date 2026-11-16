@@ -2560,20 +2560,29 @@ private def introBranch : TacticM Unit := do
   let hge := mkIdent `hge
   -- only where the flags are those of a comparison: matching the lemmas
   -- against flags of another kind would set about computing them
-  let isCmp ← withMainContext do
-    let some d := (← getLCtx).findFromUserName? `hcond | pure false
+  -- only where the flags are those of a comparison and the condition is one
+  -- of "below" and "not below": the lemma is picked from the condition and
+  -- the way it went. Matching a lemma against flags or a condition of
+  -- another kind would set about computing them.
+  let lemma? : Option (Name × Bool) ← withMainContext do
+    let some d := (← getLCtx).findFromUserName? `hcond | pure none
     let t ← instantiateMVars d.type
-    pure (t.find? (·.isConstOf ``AluOp.cmp)).isSome
-  if isCmp then try
-    Tactic.withoutRecover do evalTactic (← `(tactic| first
-      | (have $hlt := cmp_below $hcond
-         try simp only [BitVec.toNat_ofNat, Nat.reduceMod, Nat.reducePow] at $hlt:ident)
-      | (have $hlt := cmp_not_ae $hcond
-         try simp only [BitVec.toNat_ofNat, Nat.reduceMod, Nat.reducePow] at $hlt:ident)
-      | (have $hge := cmp_not_below $hcond
-         try simp only [BitVec.toNat_ofNat, Nat.reduceMod, Nat.reducePow] at $hge:ident)
-      | (have $hge := cmp_ae $hcond
-         try simp only [BitVec.toNat_ofNat, Nat.reduceMod, Nat.reducePow] at $hge:ident)))
+    unless (t.find? (·.isConstOf ``AluOp.cmp)).isSome do return none
+    let some (_, lhs, rhs) := t.eq? | pure none
+    unless lhs.isAppOfArity ``Cond.eval 2 do return none
+    let c := lhs.appArg!
+    let went := rhs.isAppOfArity ``Option.some 2 && rhs.appArg!.isConstOf ``Bool.true
+    let wentNot := rhs.isAppOfArity ``Option.some 2 && rhs.appArg!.isConstOf ``Bool.false
+    if c.isConstOf ``Cond.b && went then pure (some (``cmp_below, true))
+    else if c.isConstOf ``Cond.b && wentNot then pure (some (``cmp_not_below, false))
+    else if c.isConstOf ``Cond.ae && went then pure (some (``cmp_ae, false))
+    else if c.isConstOf ``Cond.ae && wentNot then pure (some (``cmp_not_ae, true))
+    else pure none
+  if let some (lem, below) := lemma? then try
+    let name := if below then hlt else hge
+    Tactic.withoutRecover do evalTactic (← `(tactic|
+      (have $name := $(mkIdent lem) $hcond
+       try simp only [BitVec.toNat_ofNat, Nat.reduceMod, Nat.reducePow] at $name:ident)))
   catch _ => pure ()
 
 /-- Closes a goal reached under an assumption about a condition that the
