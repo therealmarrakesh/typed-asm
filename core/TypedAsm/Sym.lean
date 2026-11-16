@@ -59,6 +59,11 @@ inductive Op2
   | imul (w : Width)
   /-- The second value if a condition came out true, else the first, at a width. -/
   | cmov (w : Width) (b : Bool)
+  /-- Quotient and remainder at a width, unsigned and signed. -/
+  | udiv (w : Width)
+  | urem (w : Width)
+  | sdiv (w : Width)
+  | srem (w : Width)
   deriving DecidableEq, Repr
 
 def Op1.den : Op1 → BitVec 64 → BitVec 64
@@ -80,6 +85,10 @@ def Op2.den : Op2 → BitVec 64 → BitVec 64 → BitVec 64
   | .alu op .w32, a, b => (op.apply (a.setWidth 32) (b.setWidth 32)).1.setWidth 64
   | .imul w, a, b => (imulTrunc (a.setWidth w.bits) (b.setWidth w.bits)).1.setWidth 64
   | .cmov w b, x, a => (if b then a.setWidth w.bits else x.setWidth w.bits).setWidth 64
+  | .udiv w, a, b => (a.setWidth w.bits / b.setWidth w.bits).setWidth 64
+  | .urem w, a, b => (a.setWidth w.bits % b.setWidth w.bits).setWidth 64
+  | .sdiv w, a, b => ((a.setWidth w.bits).sdiv (b.setWidth w.bits)).setWidth 64
+  | .srem w, a, b => ((a.setWidth w.bits).srem (b.setWidth w.bits)).setWidth 64
 
 /-- A 64-bit value as a term. -/
 inductive Val
@@ -432,6 +441,13 @@ inductive CondS
   | sub (τ υ : TyS)
   /-- Flags of which this is known decide a condition. -/
   | decides (fl : FlagsS) (c : Cond)
+  /-- A value is zero, or is not, at a width. -/
+  | zeroW (w : Width) (v : Val)
+  | nonzeroW (w : Width) (v : Val)
+  /-- One value is the sign of another in every bit, at a width. -/
+  | sfill (w : Width) (d a : Val)
+  /-- A signed divide of one value by another does not overflow, at a width. -/
+  | noOvf (w : Width) (a b : Val)
 
 def CondS.den (ρ : Env) : CondS → Prop
   | .le a b => a.den ρ ≤ b.den ρ
@@ -439,6 +455,11 @@ def CondS.den (ρ : Env) : CondS → Prop
   | .cf fl => ∀ f, fl.den ρ f → f.cf.isSome = true
   | .sub τ υ => Sub (τ.den ρ) (υ.den ρ)
   | .decides fl c => ∀ f, fl.den ρ f → ∃ b, c.eval f = some b
+  | .zeroW w v => (v.den ρ).setWidth w.bits = 0
+  | .nonzeroW w v => (v.den ρ).setWidth w.bits ≠ 0
+  | .sfill w d a => (d.den ρ).setWidth w.bits = signFill ((a.den ρ).setWidth w.bits)
+  | .noOvf w a b =>
+    (a.den ρ).setWidth w.bits ≠ BitVec.intMin w.bits ∨ (b.den ρ).setWidth w.bits ≠ -1#w.bits
 
 /-- All of a list of things left to be shown. -/
 def CondS.all (ρ : Env) : List CondS → Prop
@@ -1100,6 +1121,10 @@ theorem Val.den_summands (ρ : Env) : (v : Val) → v.den ρ = sumV ρ v.summand
       rw [iha, ihb]; ac_rfl
     | imul w => simp [Val.summands, sumV]
     | cmov w b => simp [Val.summands, sumV]
+    | udiv w => simp [Val.summands, sumV]
+    | urem w => simp [Val.summands, sumV]
+    | sdiv w => simp [Val.summands, sumV]
+    | srem w => simp [Val.summands, sumV]
 
 /-- A list of terms with one occurrence of a term taken out. -/
 def removeV (a : Val) : List Val → Option (List Val)
@@ -2348,9 +2373,104 @@ theorem den_afterMulS (ρ : Env) (Γ : CtxS) :
   unfold afterMulS
   rw [CtxS.den_setReg_flags, CtxS.den_setReg]; rfl
 
+/-- What is left to be shown for a value to be zero at a width: nothing
+where it is a number that is. -/
+def zeroConds (w : Width) (v : Val) : Option (List CondS) :=
+  match v with
+  | .lit n => if n.setWidth w.bits = 0 then some [] else none
+  | v => some [.zeroW w v]
+
+theorem zeroConds_spec {ρ : Env} {w : Width} {v : Val} {cs : List CondS}
+    (h : zeroConds w v = some cs) (hc : CondS.all ρ cs) : (v.den ρ).setWidth w.bits = 0 := by
+  unfold zeroConds at h
+  split at h
+  · split at h
+    · next hz => exact hz
+    · cases h
+  · cases h; exact hc.1
+
+/-- What is left to be shown for a value not to be zero at a width. -/
+def nonzeroConds (w : Width) (v : Val) : Option (List CondS) :=
+  match v with
+  | .lit n => if n.setWidth w.bits = 0 then none else some []
+  | v => some [.nonzeroW w v]
+
+theorem nonzeroConds_spec {ρ : Env} {w : Width} {v : Val} {cs : List CondS}
+    (h : nonzeroConds w v = some cs) (hc : CondS.all ρ cs) : (v.den ρ).setWidth w.bits ≠ 0 := by
+  unfold nonzeroConds at h
+  split at h
+  · split at h
+    · cases h
+    · next hz => exact hz
+  · cases h; exact hc.1
+
+/-- A divide of exactly known values that are not all numbers: it is typed
+where it is shown not to fault, and its results are exactly known. -/
+def divide (Γ : CtxS) (op : MulDivOp) (w : Width) (r : Reg) (a d b : Val) :
+    Option (CtxS × List CondS) :=
+  if r = .rsp then none
+  else match op with
+    | .div =>
+      match zeroConds w d, nonzeroConds w b with
+      | some c₁, some c₂ =>
+        some ({ (Γ.setReg .rax (.eq (.mk2 (.udiv w) a b))).setReg .rdx
+          (.eq (.mk2 (.urem w) a b)) with flags := .lit Flags.unknown }, c₁ ++ c₂)
+      | _, _ => none
+    | .idiv =>
+      match nonzeroConds w b with
+      | some c₂ =>
+        some ({ (Γ.setReg .rax (.eq (.mk2 (.sdiv w) a b))).setReg .rdx
+          (.eq (.mk2 (.srem w) a b)) with flags := .lit Flags.unknown },
+          .sfill w d a :: .noOvf w a b :: c₂)
+      | none => none
+    | _ => none
+
+theorem divide_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {op : MulDivOp}
+    {w : Width} {r : Reg} {a d b : Val} {x : CtxS × List CondS}
+    (ha : (Γ.den ρ).regs .rax = .eq (a.den ρ)) (hd : (Γ.den ρ).regs .rdx = .eq (d.den ρ))
+    (hb : (Γ.den ρ).regs r = .eq (b.den ρ))
+    (h : divide Γ op w r a d b = some x) (hn : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) (.mulDiv op w (.reg r)) (x.1.den ρ) := by
+  unfold divide at h
+  split at h
+  · cases h
+  next hr =>
+  have ctx : ∀ (f g : Op2),
+      CtxS.den ρ { (Γ.setReg .rax (.eq (.mk2 f a b))).setReg .rdx (.eq (.mk2 g a b)) with
+        flags := .lit Flags.unknown }
+      = { ((Γ.den ρ).setReg .rax (.eq (f.den (a.den ρ) (b.den ρ)))).setReg .rdx
+          (.eq (g.den (a.den ρ) (b.den ρ))) with flags := (· = Flags.unknown) } := by
+    intro f g
+    rw [CtxS.den_setReg_flags, CtxS.den_setReg]
+    show ({ CtxOf.setReg (CtxOf.setReg _ _ (.eq ((Val.mk2 f a b).den ρ))) _
+      (.eq ((Val.mk2 g a b).den ρ)) with flags := _ } : Ctx) = _
+    rw [Val.den_mk2, Val.den_mk2]; rfl
+  split at h
+  · split at h
+    · next c₁ c₂ h₁ h₂ =>
+      cases h
+      obtain ⟨hc₁, hc₂⟩ := CondS.all_append _ _ hn
+      have hz := zeroConds_spec h₁ hc₁
+      have hnz := nonzeroConds_spec h₂ hc₂
+      refine cast_ctx (.mulDivExact hr ha hd hb
+        (by rw [hz]; exact MulDivOp.eval_div _ _ hnz)) ?_
+      exact ctx (.udiv w) (.urem w)
+    · cases h
+  · split at h
+    · next c₂ h₂ =>
+      cases h
+      have hnz := nonzeroConds_spec h₂ hn.2.2
+      refine cast_ctx (.mulDivExact hr ha hd hb
+        (by rw [show (d.den ρ).setWidth w.bits = _ from hn.1]
+            exact MulDivOp.eval_idiv _ _ hnz hn.2.1)) ?_
+      exact ctx (.sdiv w) (.srem w)
+    · cases h
+  · cases h
+
 /-- The checker for the widening multiplies and the divides. Values that are
 numbers are multiplied or divided at once; a multiply of anything else gives
-numbers; a divide of anything else has no answer here. -/
+numbers; a divide of exactly known values is typed where it is shown not to
+fault. -/
 def stepMulDiv (Γ : CtxS) (op : MulDivOp) (w : Width) (src : RM) : Option (CtxS × List CondS) :=
   match src with
   | .reg r =>
@@ -2366,7 +2486,10 @@ def stepMulDiv (Γ : CtxS) (op : MulDivOp) (w : Width) (src : RM) : Option (CtxS
       match op with
       | .mul => some (afterMulS Γ, [])
       | .imul => some (afterMulS Γ, [])
-      | _ => none
+      | op =>
+        match exactly (Γ.regs.get .rax), exactly (Γ.regs.get .rdx), exactly (Γ.regs.get r) with
+        | some a, some d, some b => divide Γ op w r a d b
+        | _, _, _ => none
   | .mem m =>
     match op with
     | .mul => (reads Γ w.bytes.toNat m).map fun cs => (afterMulS Γ, cs)
@@ -2396,7 +2519,11 @@ theorem stepMulDiv_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} 
     · split at h
       · cases h; rw [den_afterMulS]; exact .mulRM (.reg _)
       · cases h; rw [den_afterMulS]; exact .imulRM (.reg _)
-      · cases h
+      · split at h
+        · next a d b ha hd hb =>
+          exact divide_sound (by rw [CtxS.den_regs, exactly_den ha])
+            (by rw [CtxS.den_regs, exactly_den hd]) (by rw [CtxS.den_regs, exactly_den hb]) h hn
+        · cases h
   · next m =>
     split at h
     · obtain ⟨cs, hr, rfl⟩ := reads_map h

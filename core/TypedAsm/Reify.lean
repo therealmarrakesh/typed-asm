@@ -380,6 +380,18 @@ partial def denVal (as : Atoms) : Val → MetaM Expr
     let pick ← mkAppM ``ite #[← mkEq (toExpr b) (mkConst ``Bool.true),
       setWidthE 64 w.bits (← denVal as a), setWidthE 64 w.bits (← denVal as x)]
     return setWidthE w.bits 64 pick
+  | .app2 (.udiv w) a b => do
+    return setWidthE w.bits 64 (← mkAppM ``HDiv.hDiv #[setWidthE 64 w.bits (← denVal as a),
+      setWidthE 64 w.bits (← denVal as b)])
+  | .app2 (.urem w) a b => do
+    return setWidthE w.bits 64 (← mkAppM ``HMod.hMod #[setWidthE 64 w.bits (← denVal as a),
+      setWidthE 64 w.bits (← denVal as b)])
+  | .app2 (.sdiv w) a b => do
+    return setWidthE w.bits 64 (← mkAppM ``BitVec.sdiv #[setWidthE 64 w.bits (← denVal as a),
+      setWidthE 64 w.bits (← denVal as b)])
+  | .app2 (.srem w) a b => do
+    return setWidthE w.bits 64 (← mkAppM ``BitVec.srem #[setWidthE 64 w.bits (← denVal as a),
+      setWidthE 64 w.bits (← denVal as b)])
   | .app2 (.imul w) a b => do
     let r ← mkAppM ``imulTrunc #[setWidthE 64 w.bits (← denVal as a),
       setWidthE 64 w.bits (← denVal as b)]
@@ -504,6 +516,17 @@ def denCond (as : Atoms) : CondS → MetaM Expr
   | .le a b => do mkLe (← denNum as a) (← denNum as b)
   | .lt a b => do mkLt (← denNum as a) (← denNum as b)
   | .sub τ υ => do return mkApp2 (mkConst ``Sub) (← denTy as τ) (← denTy as υ)
+  | .zeroW w v => do mkEq (setWidthE 64 w.bits (← denVal as v)) (toExpr (0 : BitVec w.bits))
+  | .nonzeroW w v => do
+    mkAppM ``Ne #[setWidthE 64 w.bits (← denVal as v), toExpr (0 : BitVec w.bits)]
+  | .sfill w d a => do
+    mkEq (setWidthE 64 w.bits (← denVal as d))
+      (← mkAppM ``signFill #[setWidthE 64 w.bits (← denVal as a)])
+  | .noOvf w a b => do
+    let l ← mkAppM ``Ne #[setWidthE 64 w.bits (← denVal as a),
+      mkApp (mkConst ``BitVec.intMin) (mkNatLit w.bits)]
+    let r ← mkAppM ``Ne #[setWidthE 64 w.bits (← denVal as b), toExpr (-1 : BitVec w.bits)]
+    return mkApp2 (mkConst ``Or) l r
   | .decides fl c => do
     let P ← denFlags as fl
     withLocalDeclD `f (mkConst ``Flags) fun f => do
