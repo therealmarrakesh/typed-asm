@@ -1491,6 +1491,120 @@ theorem ShapeS.look_typed {ρ : Env} {S : ShapeS} {o : Num} {τ : TyS}
     exact ShapeS.den_valAt (S := .mk sz vals) (Option.some.inj h)
   · cases h
 
+/-- A number as so many times `es` and something less than `es` over, where
+its terms show that. -/
+def Num.divMod : Num → Nat → Option (Num × Nat)
+  | .lit m, es => some (.lit (m / es), m % es)
+  | .mul x (.lit a), es => if a = es then some (x, 0) else none
+  | .add p q, es =>
+    match p.divMod es, q.divMod es with
+    | some (q1, r1), some (q2, r2) =>
+      some (q1.plus' (q2.plus (.lit ((r1 + r2) / es))), (r1 + r2) % es)
+    | _, _ => none
+  | _, _ => none
+
+theorem Num.divMod_spec (ρ : Env) {es : Nat} (hes : 0 < es) : (o : Num) → {q : Num} → {r : Nat} →
+    o.divMod es = some (q, r) → o.den ρ = q.den ρ * es + r ∧ r < es := by
+  intro o
+  induction o with
+  | lit m =>
+    intro q r h
+    simp only [Num.divMod, Option.some.injEq, Prod.mk.injEq] at h
+    obtain ⟨rfl, rfl⟩ := h
+    refine ⟨?_, Nat.mod_lt _ hes⟩
+    show m = m / es * es + m % es
+    rw [Nat.mul_comm]; exact (Nat.div_add_mod m es).symm
+  | mul x y ihx ihy =>
+    intro q r h
+    cases y <;> simp only [Num.divMod, reduceCtorEq] at h
+    split at h
+    · next e =>
+      simp only [Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨rfl, rfl⟩ := h
+      subst e
+      exact ⟨rfl, hes⟩
+    · cases h
+  | add p q' ihp ihq =>
+    intro q r h
+    simp only [Num.divMod] at h
+    split at h
+    · next q1 r1 q2 r2 hp hq =>
+      simp only [Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨rfl, rfl⟩ := h
+      obtain ⟨e1, _⟩ := ihp hp
+      obtain ⟨e2, _⟩ := ihq hq
+      refine ⟨?_, Nat.mod_lt _ hes⟩
+      show p.den ρ + q'.den ρ = _
+      rw [Num.den_plus', Num.den_plus, e1, e2]
+      show _ = (q1.den ρ + (q2.den ρ + (r1 + r2) / es)) * es + (r1 + r2) % es
+      have := Nat.div_add_mod (r1 + r2) es
+      rw [Nat.mul_comm] at this
+      simp only [Nat.add_mul]
+      omega
+    · cases h
+  | var _ => intro q r h; cases h
+  | sub _ _ _ _ => intro q r h; cases h
+  | toNat _ => intro q r h; cases h
+  | size _ => intro q r h; cases h
+
+/-- Whether every typed value of a list ends within `es` bytes. -/
+def ValsS.allFit : ValsS → Nat → Bool
+  | .nil, _ => true
+  | .cons p _ rest, es => decide (p + 8 ≤ es) && rest.allFit es
+
+theorem ValsS.den_allFit (ρ : Env) : (vs : ValsS) → (es : Nat) →
+    ((vs.den ρ).all fun p => decide (p.1 + 8 ≤ es)) = vs.allFit es
+  | .nil, _ => rfl
+  | .cons p τ rest, es => by
+    show List.all ((p, τ.den ρ) :: rest.den ρ) _ = _
+    rw [List.all_cons, ValsS.den_allFit ρ rest es]
+    rfl
+
+/-- The typed value at a byte of an array, where the terms show which
+element the byte is in, and what is left to be shown: that there is such an
+element. -/
+def ShapeS.elem : ShapeS → Num → Option (TyS × List CondS)
+  | .rep n (.mk (.lit es) vals), o =>
+    if es = 0 ∨ vals.allFit es = false then none
+    else match o.divMod es with
+      | some (q, f) =>
+        match vals.find f with
+        | some τ => some (τ, [.lt q n])
+        | none => none
+      | none => none
+  | _, _ => none
+
+theorem ShapeS.elem_typed {ρ : Env} {S : ShapeS} {o : Num} {x : TyS × List CondS}
+    (h : S.elem o = some x) (hc : CondS.all ρ x.2) :
+    (S.den ρ).valAt (o.den ρ) = some (x.1.den ρ) := by
+  unfold ShapeS.elem at h
+  split at h
+  · next n es vals =>
+    split at h
+    · cases h
+    · next hne =>
+      have hes : 0 < es := Nat.pos_of_ne_zero fun e => hne (.inl e)
+      have hfit : vals.allFit es = true := by
+        cases hf : vals.allFit es with
+        | true => rfl
+        | false => exact absurd (.inr hf) hne
+      split at h
+      · next q f hd =>
+        split at h
+        · next τ hτ =>
+          cases h
+          obtain ⟨ho, _⟩ := Num.divMod_spec ρ hes o hd
+          have hf : ((ShapeS.mk (.lit es) vals).den ρ).fits = true := by
+            show (vals.den ρ).all _ = true
+            rw [ValsS.den_allFit]; exact hfit
+          have hv : ((ShapeS.mk (.lit es) vals).den ρ).valAt f = some (τ.den ρ) :=
+            ShapeS.den_valAt (S := .mk (.lit es) vals) hτ
+          have := ShapeOf.valAt_rep hf (n := n.den ρ) (i := q.den ρ) hc.1 hv
+          rw [ho]; exact this
+        · cases h
+      · cases h
+  · cases h
+
 /-- Whether `n` bytes of a shape are seen from its terms to be plain. -/
 def ShapeS.free : ShapeS → Num → Nat → Bool
   | .mk _ .nil, _, _ => true
@@ -1544,7 +1658,11 @@ def load (Γ : CtxS) (d : Reg) (m : Mem) : Option (CtxS × List CondS) :=
       -- plain bytes are a number; where the terms do not say what is there,
       -- the checker has no answer, since a number might be a loss
       | some none => (within pl.off 8 pl.shape.size).map fun ws => (Γ.setReg d .int, cs ++ ws)
-      | none => none
+      | none =>
+        -- an element of an array
+        match pl.shape.elem pl.off with
+        | some (τ, es) => some (Γ.setReg d τ, cs ++ es)
+        | none => none
     | none => none
 
 theorem load_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {d : Reg} {m : Mem}
@@ -1570,7 +1688,14 @@ theorem load_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {d : R
         refine .loadInt hd ((locate_spec (Ψ := Ψ) (next := next) hl h₁).read ?_)
         rw [ShapeS.den_size]
         exact within_spec hw h₂
-    · cases h
+    · split at h
+      · next τ es he =>
+        cases h
+        obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc
+        rw [CtxS.den_setReg]
+        exact (locate_spec (Ψ := Ψ) (next := next) hl h₁).load hd
+          (ShapeS.elem_typed (x := (τ, es)) he h₂)
+      · cases h
   · cases h
 
 /-! ### Storing plain bytes -/
