@@ -59,10 +59,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   case start =>
     -- the instruction after the call is ready for a page at any address
     ty_call pageSig returning backCtx
-  case done p =>
-    ty_steps
-    ty_munmap
-    ty_block
   case page saved ret rest room frame above hK =>
     ty_steps
     ty_mmap_own as p

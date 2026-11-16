@@ -58,14 +58,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     -- so it is a pointer to the function, and the call is through it
     ty_fn_ptr .r12 to twoSig
     ty_call twoSig returning backCtx
-  case back x =>
-    -- each store gives a first word the type of the other page's address;
-    -- each load finds it, and the second leads back to the first page
-    ty_steps
-    ty_munmap
-    ty_steps
-    ty_munmap
-    ty_block
   case two saved ret rest room frame above hK =>
     -- the caller left a slot for the page kept across the second request
     obtain ⟨m, rfl⟩ := hK.room_split

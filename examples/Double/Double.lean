@@ -58,21 +58,6 @@ asm_typing At blocks blocks room 1
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   ty_program
-  case start =>
-    -- the arguments, then the `mmap` for a page to own, at an address called `p`
-    ty_steps
-    ty_mmap_own as p
-    -- an error number is negative: the test sends control to `fail`
-    · ty_block
-    -- a page: the `read` is into it, and it is handed to `double`
-    · ty_step
-      ty_branch
-      ty_block
-  case back p =>
-    -- written out, and given back
-    ty_steps
-    ty_munmap
-    ty_block
 
 /-! ## Safety -/
 

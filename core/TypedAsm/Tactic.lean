@@ -2817,8 +2817,23 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
         catch _ => throwError "`syscall`: the operating system here is not the Linux model"
       return .done gs
     | some 9 =>
-      return .needsHelp m!"`syscall`: an `mmap` needs the layout of the new block; use \
-        `ty_mmap <shape>` or `ty_mmap_kind <kind>`"
+      -- Unless it is said what the new memory is to hold, the program owns
+      -- it as plain bytes: the block goes on twice, for the error and for
+      -- the address.
+      let before ← saveState
+      try
+        setGoals [goal]
+        Tactic.withoutRecover do evalTactic (← `(tactic| ty_mmap_own as $(mkIdent `p)))
+        return .forks (← getGoals) []
+      catch _ =>
+        before.restore
+        return .needsHelp m!"`syscall`: an `mmap` needs the layout of the new block; use \
+          `ty_mmap <shape>` or `ty_mmap_kind <kind>`"
+    | some 11 =>
+      -- giving back a block the context owns
+      setGoals [goal]
+      evalTactic (← `(tactic| ty_munmap))
+      return .forks (← getGoals) []
     | some nr =>
       throwError "`syscall`: call number {nr} has no rule. The calls that can be typed are \
         {typedCalls}"
