@@ -166,6 +166,33 @@ theorem MemTy.WF.text_outside_bytes (hΨ : Ψ.WF) {a b : BitVec 64} {l l' : Layo
       (by omega) (by omega)
     exact hd.1 (by decide)
 
+/-- A block that may be written says nothing of its bytes. -/
+theorem MemTy.WF.said_none (hΨ : Ψ.WF) {a : BitVec 64} {l : Layout} (hl : Ψ a = some l)
+    (hw : l.writable = true) : l.said = none := by
+  cases hs : l.said with
+  | none => rfl
+  | some bs => have := (hΨ.said a l bs hl hs).1; rw [hw] at this; cases this
+
+/-- A byte of a block that says its bytes lies outside any run of bytes of
+another block's shape: of a block that says nothing of its own. -/
+theorem MemTy.WF.said_outside_bytes (hΨ : Ψ.WF) {a b : BitVec 64} {l l' : Layout}
+    {lo cnt : Nat} (hl : Ψ a = some l) (hn : l.said = none) (hle : lo + cnt ≤ l.shape.size)
+    (hc : 0 < cnt) (hl' : Ψ b = some l') {bs : List (BitVec 8)} (hs : l'.said = some bs)
+    {k : Nat} (hk : k < bs.length) :
+    BitVec.ofNat 64 cnt ≤ (b + BitVec.ofNat 64 k) - (a + BitVec.ofNat 64 lo) := by
+  have hsz := hΨ.size_lt a l hl
+  have hsz' := hΨ.size_lt b l' hl'
+  have hlen := (hΨ.said b l' bs hl' hs).2
+  have hab : b ≠ a := by
+    rintro rfl
+    have e : l' = l := Option.some.inj (hl'.symm.trans hl)
+    subst e
+    rw [hn] at hs; cases hs
+  have hd := (hΨ.disjoint a b l l' hl hl' (Ne.symm hab)).mono (o := lo) (p := k)
+    (n' := cnt) (m' := 1) hsz hsz' (by simp only [Layout.size]; omega) (by omega)
+    (by omega) (by omega)
+  exact hd.1 (by decide)
+
 /-- Owned blocks stay as the context says across a change that leaves their
 permissions, their fields and the stack region as they were. -/
 theorem OwnedOk.frame {H : Ty → BitVec 64 → Prop} {Γ Γ' : Ctx} {s s' : State}
@@ -230,6 +257,7 @@ theorem congr {t : State} (h : WellTyped fetch sys Ψ ix Γ s) (hr : t.regs = s.
     stackHeap := fun a l hl => by rw [hb]; exact h.stackHeap a l hl
     owned := h.owned.frame rfl hp hb rfl (fun b _ i _ => State.load64_congr hm _)
     text := fun a l hl ht => by rw [hm]; exact h.text a l hl ht
+    said := fun a l bs hl hs k hk => by rw [hm]; exact h.said a l bs hl hs k hk
     sp := by rw [hg]; exact h.sp }
 
 /-- A state matching a context matches every weaker context. -/
@@ -259,6 +287,7 @@ theorem sub {Δ : Ctx} (h : WellTyped fetch sys Ψ ix Γ s) (hs : CtxSub Γ Δ) 
     stackHeap := fun a l hl => by rw [hb, hz]; exact h.stackHeap a l hl
     owned := h.owned.frame hs.owned.symm rfl hb hz (fun _ _ _ _ => rfl)
     text := h.text
+    said := h.said
     sp := h.sp.sub hs.sp }
 
 /-- Writing a value of type `τ` to a register other than `rsp`. -/
@@ -290,6 +319,7 @@ theorem setReg {r : Reg} {τ : Ty} {v : BitVec 64} (h : WellTyped fetch sys Ψ i
     stackHeap := fun a l hl => by rw [hb]; exact h.stackHeap a l hl
     owned := h.owned.frame rfl hp hb rfl (fun b _ i _ => State.load64_congr hm _)
     text := fun a l hl ht => by rw [hm]; exact h.text a l hl ht
+    said := fun a l bs hl hs k hk => by rw [hm]; exact h.said a l bs hl hs k hk
     sp := by
       rw [hsp]
       simp only [CtxOf.setReg, Ne.symm hr, ↓reduceIte]
@@ -302,6 +332,7 @@ theorem setFlags {f : Flags} {P : Flags → Prop} (h : WellTyped fetch sys Ψ ix
     stackFits := h.stackFits, stack := h.stack, heapPerm := h.heapPerm, heap := h.heap, stackHeap := h.stackHeap,
     owned := h.owned.frame rfl rfl rfl rfl (fun _ _ _ _ => rfl),
     text := h.text,
+    said := h.said,
     sp := h.sp }
 
 /-- The last byte of a block's text lies outside any run of bytes of the
@@ -313,6 +344,19 @@ theorem text_outside_stack {lo cnt : Nat} (h : WellTyped fetch sys Ψ ix Γ s) (
       (b + BitVec.ofNat 64 (l'.size - 1)) - (stackBase Γ s + BitVec.ofNat 64 lo) := by
   have hpos := hΨ.nonempty b l' hl'
   have hd := (h.stackHeap b l' hl').mono (o := lo) (p := l'.size - 1) (n' := cnt)
+    (m' := 1) h.stackSize_lt (hΨ.size_lt b l' hl') hle (by omega) hc (by omega)
+  exact hd.1 (by decide)
+
+/-- A byte of a block that says its bytes lies outside any run of bytes of
+the stack region. -/
+theorem said_outside_stack {lo cnt : Nat} (h : WellTyped fetch sys Ψ ix Γ s) (hΨ : Ψ.WF)
+    (hle : lo + cnt ≤ stackSize Γ) (hc : 0 < cnt) {b : BitVec 64} {l' : Layout}
+    (hl' : Ψ b = some l') {bs : List (BitVec 8)} (hs : l'.said = some bs) {k : Nat}
+    (hk : k < bs.length) :
+    BitVec.ofNat 64 cnt ≤
+      (b + BitVec.ofNat 64 k) - (stackBase Γ s + BitVec.ofNat 64 lo) := by
+  have hlen := (hΨ.said b l' bs hl' hs).2
+  have hd := (h.stackHeap b l' hl').mono (o := lo) (p := k) (n' := cnt)
     (m' := 1) h.stackSize_lt (hΨ.size_lt b l' hl') hle (by omega) hc (by omega)
   exact hd.1 (by decide)
 
@@ -419,6 +463,7 @@ theorem setSp {Γ' : Ctx} (h : WellTyped fetch sys Ψ ix Γ s)
     owned := h.owned.frame howned rfl (by simp only [stackBase, hroom])
       (by simp only [stackSize, hstack, hroom]) (fun _ _ _ _ => rfl)
     text := h.text
+    said := h.said
     sp := hv }
 
 /-- **The stack grows by a piece.** The stack pointer moves down by the
@@ -500,6 +545,12 @@ theorem growStack {s' : State} {X : Shape} {m : Nat} (h : WellTyped fetch sys Ψ
           (by simp only [stackSize, hroom]; omega) hc hl'
         rwa [htop] at hout)]
       exact h.text b l' hl' ht
+    said := fun b l' bs hl' hs k hk => by
+      rw [hmem _ (fun hc => by
+        have hout := h.said_outside_stack hΨ (lo := m) (cnt := X.size)
+          (by simp only [stackSize, hroom]; omega) hc hl' hs hk
+        rwa [htop] at hout)]
+      exact h.said b l' bs hl' hs k hk
     sp := by
       show HasTy fetch sys Ψ ix ((Γ.moveSp _).regs .rsp) _
       rw [CtxOf.moveSp_sp, hsp, BitVec.sub_eq_add_neg]
@@ -554,6 +605,7 @@ theorem shrinkStack {top rest : List Shape} {k : Nat} (h : WellTyped fetch sys �
     stackHeap := fun b l' hl' => by rw [hb, hz]; exact h.stackHeap b l' hl'
     owned := h.owned.frame rfl hp hb hz (fun b _ i _ => State.load64_congr hm _)
     text := fun a l hl ht => by rw [hm]; exact h.text a l hl ht
+    said := fun a l bs hl hs k hk => by rw [hm]; exact h.said a l bs hl hs k hk
     sp := by
       show HasTy fetch sys Ψ ix ((Γ.moveSp _).regs .rsp) _
       rw [CtxOf.moveSp_sp, hsp]
@@ -647,7 +699,7 @@ keeps the state well typed**, provided each typed value of the block either
 keeps clear of the run or is of its type afterwards. -/
 theorem writeHeap {a : BitVec 64} {l : Layout} {lo cnt : Nat} {s' : State}
     (h : WellTyped fetch sys Ψ ix Γ s) (hΨ : Ψ.WF) (hl : Ψ a = some l)
-    (hle : lo + cnt ≤ l.shape.size)
+    (hwr : l.writable = true) (hle : lo + cnt ≤ l.shape.size)
     (hregs : s'.regs = s.regs) (hflags : s'.flags = s.flags) (hperm : s'.perm = s.perm)
     (hframe : ∀ y, Disjoint (a + BitVec.ofNat 64 lo) cnt y 8 → s'.load64 y = s.load64 y)
     (hmem : ∀ x, BitVec.ofNat 64 cnt ≤ x - (a + BitVec.ofNat 64 lo) → s'.mem x = s.mem x)
@@ -710,29 +762,34 @@ theorem writeHeap {a : BitVec 64} {l : Layout} {lo cnt : Nat} {s' : State}
     text := fun b l' hl' ht => by
       rw [hM _ (fun hc => hΨ.text_outside_bytes hl hle hc hl' ht)]
       exact h.text b l' hl' ht
+    said := fun b l' bs hl' hs k hk => by
+      rw [hM _ (fun hc => hΨ.said_outside_bytes hl (hΨ.said_none hl hwr) hle hc hl' hs hk)]
+      exact h.said b l' bs hl' hs k hk
     sp := by rw [hg]; exact h.sp }
 
 /-- A change confined to plain bytes of a block keeps the state well typed. -/
 theorem writeHeapFree {a : BitVec 64} {l : Layout} {lo cnt : Nat} {s' : State}
     (h : WellTyped fetch sys Ψ ix Γ s) (hΨ : Ψ.WF) (hl : Ψ a = some l)
+    (hwr : l.writable = true)
     (hle : lo + cnt ≤ l.shape.size) (hfree : l.shape.free lo cnt = true)
     (hregs : s'.regs = s.regs) (hflags : s'.flags = s.flags) (hperm : s'.perm = s.perm)
     (hframe : ∀ y, Disjoint (a + BitVec.ofNat 64 lo) cnt y 8 → s'.load64 y = s.load64 y)
     (hmem : ∀ x, BitVec.ofNat 64 cnt ≤ x - (a + BitVec.ofNat 64 lo) → s'.mem x = s.mem x) :
     WellTyped fetch sys Ψ ix Γ s' :=
-  h.writeHeap hΨ hl hle hregs hflags hperm hframe hmem
+  h.writeHeap hΨ hl hwr hle hregs hflags hperm hframe hmem
     (fun p hp => .inl (ShapeOf.clearOf_of_free hfree p hp))
 
 /-- Storing a value of its type over a typed value of a block, where no
 other typed value reaches into those eight bytes. -/
 theorem storeHeap {a : BitVec 64} {l : Layout} {o : Nat} {τ : Ty} {v : BitVec 64}
     (h : WellTyped fetch sys Ψ ix Γ s) (hΨ : Ψ.WF) (hl : Ψ a = some l)
+    (hwr : l.writable = true)
     (hi : l.shape.valAt o = some τ) (hso : l.shape.sole o = true)
     (hv : HasTy fetch sys Ψ ix τ v) :
     WellTyped fetch sys Ψ ix Γ (s.store64 (a + BitVec.ofNat 64 o) v) := by
   have hm := ShapeOf.mem_of_valAt hi
   have hof := hΨ.fits a l hl _ hm
-  refine h.writeHeap hΨ hl (lo := o) (cnt := 8) hof (State.store64_regs _ _ _)
+  refine h.writeHeap hΨ hl hwr (lo := o) (cnt := 8) hof (State.store64_regs _ _ _)
     (State.store64_flags _ _ _) (State.store64_perm _ _ _)
     (fun y hd => State.load64_store64_disjoint s v hd)
     (fun x hx => State.mem_store_of_disjoint s .w64 _ _ v hx) (fun p hp => ?_)
@@ -827,6 +884,11 @@ theorem writeOwned {s' : State} {k : Nat} {a : BitVec 64} {S S' : Shape} {lo cnt
       rw [hM _ (fun hc => ((hhp b l hl).mono (o := lo) (p := l.size - 1) (n' := cnt) (m' := 1)
         hsz (hΨ.size_lt b l hl) (by omega) (by omega) (by omega) (by omega)).1 (by decide))]
       exact h.text b l hl ht
+    said := fun b l bs hl hs j hj => by
+      have hlen := (hΨ.said b l bs hl hs).2
+      rw [hM _ (fun hc => ((hhp b l hl).mono (o := lo) (p := j) (n' := cnt) (m' := 1)
+        hsz (hΨ.size_lt b l hl) (by omega) (by omega) (by omega) (by omega)).1 (by decide))]
+      exact h.said b l bs hl hs j hj
     owned := {
       perm := fun c hc' => by
         obtain ⟨m, hm, rfl⟩ := List.mem_iff_getElem.mp hc'
@@ -908,7 +970,7 @@ theorem addOwned {b : BitVec 64 × Shape} (h : WellTyped fetch sys Ψ ix Γ s)
     WellTyped fetch sys Ψ ix { Γ with owned := b :: Γ.owned } s :=
   { regs := h.regs, flags := h.flags, stackPerm := h.stackPerm, stackBound := h.stackBound,
     stackFits := h.stackFits, stack := h.stack, heapPerm := h.heapPerm, heap := h.heap, stackHeap := h.stackHeap,
-    sp := h.sp, text := h.text,
+    sp := h.sp, text := h.text, said := h.said,
     owned :=
       { perm := fun c hc => by
           rcases List.mem_cons.mp hc with rfl | hc
@@ -996,6 +1058,7 @@ theorem eraseOwned {s' : State} {k : Nat} {a : BitVec 64} {S : Shape}
     stackHeap := fun b l hl => by rw [hb]; exact h.stackHeap b l hl
     sp := by rw [hg]; exact h.sp
     text := fun b l hl ht => by rw [hmem]; exact h.text b l hl ht
+    said := fun b l bs hl hs k hk => by rw [hmem]; exact h.said b l bs hl hs k hk
     owned := {
       perm := fun c hc => by
         obtain ⟨m, hm, hmk, rfl⟩ := List.mem_eraseIdx_iff_getElem.mp hc
@@ -1129,6 +1192,12 @@ theorem writeStack {s' : State} {k : Nat} {S S' : Shape} {i cnt : Nat}
           (cnt := cnt) (by simp only [stackSize]; omega) hc hl
         rwa [haddr] at hout)]
       exact h.text b l hl ht
+    said := fun b l bs hl hs j hj => by
+      rw [hM _ (fun hc => by
+        have hout := h.said_outside_stack hΨ (lo := Γ.room + (stackOff Γ.stack k + i))
+          (cnt := cnt) (by simp only [stackSize]; omega) hc hl hs hj
+        rwa [haddr] at hout)]
+      exact h.said b l bs hl hs j hj
     sp := by rw [hg]; exact h.sp }
 
 /-- A change confined to a run of bytes of a piece of the stack keeps the
@@ -1523,7 +1592,7 @@ theorem WriteIntOk.writeRM {w : Width} {rm : RM} {Γ' : Ctx}
       rw [State.ea_indexed s hx hD, hva, byte_add]
     have hc := h.canWrite_bytes (m := w.bytes.toNat) hl (hwr rfl) hin
     refine ⟨s.store w (a + BitVec.ofNat 64 (off + d)) v, ?_, State.rip_store _ _ _ _,
-      h.writeHeapFree hΨ hl hin hfree (State.regs_store _ _ _ _) (State.flags_store _ _ _ _)
+      h.writeHeapFree hΨ hl (hwr rfl) hin hfree (State.regs_store _ _ _ _) (State.flags_store _ _ _ _)
         (State.perm_store _ _ _ _)
         (fun y hd => State.load64_store_range s w v hd)
         (fun x hx => State.mem_store_range s w v hx)⟩
@@ -1533,7 +1602,7 @@ theorem WriteIntOk.writeRM {w : Width} {rm : RM} {Γ' : Ctx}
       simp only [State.ea, hrip, haddr]
     have hc := h.canWrite_bytes (m := w.bytes.toNat) hl hwr hin
     refine ⟨s.store w (base + BitVec.ofNat 64 d) v, ?_, State.rip_store _ _ _ _,
-      h.writeHeapFree hΨ hl hin hfree (State.regs_store _ _ _ _) (State.flags_store _ _ _ _)
+      h.writeHeapFree hΨ hl hwr hin hfree (State.regs_store _ _ _ _) (State.flags_store _ _ _ _)
         (State.perm_store _ _ _ _)
         (fun y hd => State.load64_store_range s w v hd)
         (fun x hx => State.mem_store_range s w v hx)⟩
@@ -1542,7 +1611,7 @@ theorem WriteIntOk.writeRM {w : Width} {rm : RM} {Γ' : Ctx}
     have hea : s.ea m = base + BitVec.ofNat 64 d := by rw [hm.sound h, hp]
     have hc := h.canWrite_bytes (m := w.bytes.toNat) hl hwr hin
     refine ⟨s.store w (base + BitVec.ofNat 64 d) v, ?_, State.rip_store _ _ _ _,
-      h.writeHeapFree hΨ hl hin hfree (State.regs_store _ _ _ _) (State.flags_store _ _ _ _)
+      h.writeHeapFree hΨ hl hwr hin hfree (State.regs_store _ _ _ _) (State.flags_store _ _ _ _)
         (State.perm_store _ _ _ _)
         (fun y hd => State.load64_store_range s w v hd)
         (fun x hx => State.mem_store_range s w v hx)⟩
@@ -1578,7 +1647,7 @@ theorem WriteIntOk.writeRM {w : Width} {rm : RM} {Γ' : Ctx}
       rw [State.ea_byte s b hdisp, hva, byte_add]
     have hc := h.canWrite_bytes (m := w.bytes.toNat) hl (hwr rfl) hin
     refine ⟨s.store w (a + BitVec.ofNat 64 (off + d)) v, ?_, State.rip_store _ _ _ _,
-      h.writeHeapFree hΨ hl hin hfree (State.regs_store _ _ _ _) (State.flags_store _ _ _ _)
+      h.writeHeapFree hΨ hl (hwr rfl) hin hfree (State.regs_store _ _ _ _) (State.flags_store _ _ _ _)
         (State.perm_store _ _ _ _)
         (fun y hd => State.load64_store_range s w v hd)
         (fun x hx => State.mem_store_range s w v hx)⟩
@@ -1619,7 +1688,7 @@ theorem WriteIntOk.writeRM8 {rm : RM} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 1 
       rw [State.ea_indexed s hx hD, hva, byte_add]
     have hc := h.canWrite_bytes (m := 1) hl (hwr rfl) hin
     refine ⟨s.store8 (a + BitVec.ofNat 64 (off + d)) v, ?_, rfl,
-      h.writeHeapFree hΨ hl hin hfree rfl rfl rfl
+      h.writeHeapFree hΨ hl (hwr rfl) hin hfree rfl rfl rfl
         (fun y hd => State.load64_store8_range s v hd)
         (fun x hx => State.mem_store8_range s v hx)⟩
     simp only [State.writeRM8, hea, State.write8, hc, ite_true, Result.through_next]
@@ -1628,7 +1697,7 @@ theorem WriteIntOk.writeRM8 {rm : RM} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 1 
       simp only [State.ea, hrip, haddr]
     have hc := h.canWrite_bytes (m := 1) hl hwr hin
     refine ⟨s.store8 (base + BitVec.ofNat 64 d) v, ?_, rfl,
-      h.writeHeapFree hΨ hl hin hfree rfl rfl rfl
+      h.writeHeapFree hΨ hl hwr hin hfree rfl rfl rfl
         (fun y hd => State.load64_store8_range s v hd)
         (fun x hx => State.mem_store8_range s v hx)⟩
     simp only [State.writeRM8, hea, State.write8, hc, ite_true, Result.through_next]
@@ -1636,7 +1705,7 @@ theorem WriteIntOk.writeRM8 {rm : RM} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 1 
     have hea : s.ea m = base + BitVec.ofNat 64 d := by rw [hm.sound h, hp]
     have hc := h.canWrite_bytes (m := 1) hl hwr hin
     refine ⟨s.store8 (base + BitVec.ofNat 64 d) v, ?_, rfl,
-      h.writeHeapFree hΨ hl hin hfree rfl rfl rfl
+      h.writeHeapFree hΨ hl hwr hin hfree rfl rfl rfl
         (fun y hd => State.load64_store8_range s v hd)
         (fun x hx => State.mem_store8_range s v hx)⟩
     simp only [State.writeRM8, hea, State.write8, hc, ite_true, Result.through_next]
@@ -1671,7 +1740,7 @@ theorem WriteIntOk.writeRM8 {rm : RM} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 1 
       rw [State.ea_byte s b hdisp, hva, byte_add]
     have hc := h.canWrite_bytes (m := 1) hl (hwr rfl) hin
     refine ⟨s.store8 (a + BitVec.ofNat 64 (off + d)) v, ?_, rfl,
-      h.writeHeapFree hΨ hl hin hfree rfl rfl rfl
+      h.writeHeapFree hΨ hl (hwr rfl) hin hfree rfl rfl rfl
         (fun y hd => State.load64_store8_range s v hd)
         (fun x hx => State.mem_store8_range s v hx)⟩
     simp only [State.writeRM8, hea, State.write8, hc, ite_true, Result.through_next]
@@ -1708,7 +1777,7 @@ theorem WriteIntOk.write16 {m : Mem} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 2 (
       rw [State.ea_indexed s hx hD, hva, byte_add]
     have hc := h.canWrite_bytes (m := 2) hl (hwr rfl) hin
     refine ⟨s.store16 (a + BitVec.ofNat 64 (off + d)) v, ?_, rfl,
-      h.writeHeapFree hΨ hl hin hfree rfl rfl rfl
+      h.writeHeapFree hΨ hl (hwr rfl) hin hfree rfl rfl rfl
         (fun y hd => State.load64_store16_range s v hd)
         (fun x hx => State.mem_store16_range s v hx)⟩
     simp only [hea, State.write16, hc, ite_true]
@@ -1717,7 +1786,7 @@ theorem WriteIntOk.write16 {m : Mem} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 2 (
       simp only [State.ea, hrip, haddr]
     have hc := h.canWrite_bytes (m := 2) hl hwr hin
     refine ⟨s.store16 (base + BitVec.ofNat 64 d) v, ?_, rfl,
-      h.writeHeapFree hΨ hl hin hfree rfl rfl rfl
+      h.writeHeapFree hΨ hl hwr hin hfree rfl rfl rfl
         (fun y hd => State.load64_store16_range s v hd)
         (fun x hx => State.mem_store16_range s v hx)⟩
     simp only [hea, State.write16, hc, ite_true]
@@ -1725,7 +1794,7 @@ theorem WriteIntOk.write16 {m : Mem} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 2 (
     have hea : s.ea m = base + BitVec.ofNat 64 d := by rw [hm.sound h, hp]
     have hc := h.canWrite_bytes (m := 2) hl hwr hin
     refine ⟨s.store16 (base + BitVec.ofNat 64 d) v, ?_, rfl,
-      h.writeHeapFree hΨ hl hin hfree rfl rfl rfl
+      h.writeHeapFree hΨ hl hwr hin hfree rfl rfl rfl
         (fun y hd => State.load64_store16_range s v hd)
         (fun x hx => State.mem_store16_range s v hx)⟩
     simp only [hea, State.write16, hc, ite_true]
@@ -1759,7 +1828,7 @@ theorem WriteIntOk.write16 {m : Mem} {Γ' : Ctx} (hw : WriteIntOk Ψ next Γ 2 (
       rw [State.ea_byte s b hdisp, hva, byte_add]
     have hc := h.canWrite_bytes (m := 2) hl (hwr rfl) hin
     refine ⟨s.store16 (a + BitVec.ofNat 64 (off + d)) v, ?_, rfl,
-      h.writeHeapFree hΨ hl hin hfree rfl rfl rfl
+      h.writeHeapFree hΨ hl (hwr rfl) hin hfree rfl rfl rfl
         (fun y hd => State.load64_store16_range s v hd)
         (fun x hx => State.mem_store16_range s v hx)⟩
     simp only [hea, State.write16, hc, ite_true]
@@ -2371,7 +2440,7 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
     have hea : s.ea (.sib (some b) none disp) = a + BitVec.ofNat 64 (off + k) := by
       rw [State.ea_byte s b hdisp, hva, byte_add]
     refine ⟨s.store64 (a + BitVec.ofNat 64 (off + k)) (s.getReg src), ?_,
-      State.store64_rip _ _ _, h.storeHeap hΨ hl hi hso ((h.regs src hs).sub hsub)⟩
+      State.store64_rip _ _ _, h.storeHeap hΨ hl (hw rfl) hi hso ((h.regs src hs).sub hsub)⟩
     simp [exec, State.writeRM, Operands.src, Operands.dst, hea,
       State.readReg_w64, State.write_w64 _ (h.canWrite_bytes hl (hw rfl) hfit)]
   | @loadOwned d m k a p off S τ hd hm hat hv =>
@@ -2470,7 +2539,7 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
     have hea : s.ea (.sib (some b) (some (x, sc)) disp) = a + BitVec.ofNat 64 (off + k) := by
       rw [State.ea_indexed s hx hD, hva, byte_add]
     refine ⟨s.store64 (a + BitVec.ofNat 64 (off + k)) (s.getReg src), ?_,
-      State.store64_rip _ _ _, h.storeHeap hΨ hl hi hso ((h.regs src hs).sub hsub)⟩
+      State.store64_rip _ _ _, h.storeHeap hΨ hl (hwr rfl) hi hso ((h.regs src hs).sub hsub)⟩
     simp [exec, State.writeRM, Operands.src, Operands.dst, hea,
       State.readReg_w64, State.write_w64 _ (h.canWrite_bytes hl (hwr rfl) hfit)]
   | @loadGlobal d base l k disp τ hd hl haddr hi =>
@@ -2488,7 +2557,7 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
     have hea : s.ea (.rip disp) = base + BitVec.ofNat 64 k := by
       simp only [State.ea, hrip, haddr]
     refine ⟨s.store64 (base + BitVec.ofNat 64 k) (s.getReg src), ?_,
-      State.store64_rip _ _ _, h.storeHeap hΨ hl hi hso ((h.regs src hs).sub hsub)⟩
+      State.store64_rip _ _ _, h.storeHeap hΨ hl hwr hi hso ((h.regs src hs).sub hsub)⟩
     simp [exec, State.writeRM, Operands.src, Operands.dst, hea,
       State.readReg_w64, State.write_w64 _ (h.canWrite_bytes hl hwr hfit)]
   | @storePlaced src m p base l k τ hs hm hl hwr haddr hi hso hsub =>
@@ -2496,7 +2565,7 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
     have hfit := hΨ.fits _ l hl _ hmem
     have hea : s.ea m = base + BitVec.ofNat 64 k := by rw [hm.sound h, haddr]
     refine ⟨s.store64 (base + BitVec.ofNat 64 k) (s.getReg src), ?_,
-      State.store64_rip _ _ _, h.storeHeap hΨ hl hi hso ((h.regs src hs).sub hsub)⟩
+      State.store64_rip _ _ _, h.storeHeap hΨ hl hwr hi hso ((h.regs src hs).sub hsub)⟩
     simp [exec, State.writeRM, Operands.src, Operands.dst, hea,
       State.readReg_w64, State.write_w64 _ (h.canWrite_bytes hl hwr hfit)]
   | @loadStack r d k i S disp τ hd hdisp hat hi =>

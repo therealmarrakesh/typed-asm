@@ -123,6 +123,10 @@ structure Entry (entry : BitVec 64) (parts : List (Nat × Perm × List Byte))
   room_lt : 8 * (room + above) < 2 ^ 64
   /-- The text of each block that has some ends in a zero byte. -/
   text : ∀ x ∈ blocks, x.2.text ≠ 0 → s.mem (x.1 + BitVec.ofNat 64 (x.2.size - 1)) = 0
+  /-- Each block that says its bytes holds them. -/
+  said : SaidHeld s blocks
+  /-- And such a block may not be written, and says all its bytes. -/
+  saidOk : MemTy.saidOk blocks = true
 
 /-- **The stack of a starting state is where a program can have memory.** No
 state meets an entry contract with its stack at an address the processor
@@ -266,6 +270,7 @@ theorem Entry.matchesStack {H : Ty → BitVec 64 → Prop} {s : State} {σ : Lis
     simpa only [stackBase, stackSize, entryCtx, hσ] using this
   sp := hint _
   text := fun a l hl => h.text (a, l) (MemTy.mem_of_ofList hl)
+  said := fun a l b hl => h.said (a, l) (MemTy.mem_of_ofList hl) b
   owned := OwnedOk.nil rfl
 
 /-- A state meeting the entry contract matches the entry context, provided
@@ -315,7 +320,7 @@ whatever there is to read. -/
 theorem Entry.withWorld {s : State}
     (h : Entry entry parts blocks room above s) (w : World) :
     Entry entry parts blocks room above { s with world := w } :=
-  ⟨h.rip, h.loaded, h.perms, h.stack, h.apart, h.room_lt, h.text⟩
+  ⟨h.rip, h.loaded, h.perms, h.stack, h.apart, h.room_lt, h.text, h.said, h.saidOk⟩
 
 /-- A state with the program loaded, its blocks and its stack, and `rip` set
 to the entry, meets the entry contract. -/
@@ -327,9 +332,11 @@ theorem Entry.ofLoad {p : State} (hroom : 8 * (room + above) < 2 ^ 64)
     (hapart : ∀ x ∈ blocks,
       Disjoint (p.getReg .rsp - BitVec.ofNat 64 (8 * room)) (8 * (room + above)) x.1 x.2.size)
     (htext : ∀ x ∈ blocks, x.2.text ≠ 0 → p.mem (x.1 + BitVec.ofNat 64 (x.2.size - 1)) = 0 := by
-      decide) :
+      decide)
+    (hsaid : saidCheck p blocks = true := by decide) :
     Entry entry parts blocks room above { p with rip := entry } :=
-  ⟨rfl, fun g hg => (hloaded g hg).congr rfl rfl, hblocks, hstack, hapart, hroom, htext⟩
+  ⟨rfl, fun g hg => (hloaded g hg).congr rfl rfl, hblocks, hstack, hapart, hroom, htext,
+    (saidCheck_spec hsaid).1, saidOk_of_check hsaid⟩
 
 /-! ## A starting state with arguments
 
@@ -508,7 +515,8 @@ theorem Entry.ofLoadSlots {p : State} (args : List (List Byte)) (hroom : 8 * roo
       p.canRead x.1 x.2.size = true ∧ (x.2.writable = true → p.canWrite x.1 x.2.size = true))
     (hfarBlocks : ∀ x ∈ blocks, x.1.toNat + x.2.size ≤ 0x7ffe0000)
     (htext : ∀ x ∈ blocks, x.2.text ≠ 0 → p.mem (x.1 + BitVec.ofNat 64 (x.2.size - 1)) = 0 := by
-      decide) :
+      decide)
+    (hsaid : saidCheck p blocks = true := by decide) :
     Entry entry parts blocks room above { p.withArgs room args with rip := entry } := by
   have hbase : argBase.toNat = 0x7fff0000 := rfl
   have hsp : ({ p.withArgs room args with rip := entry } : State).getReg .rsp = argBase :=
@@ -521,7 +529,16 @@ theorem Entry.ofLoadSlots {p : State} (args : List (List Byte)) (hroom : 8 * roo
   have hmem : ∀ x : BitVec 64, x.toNat < 0x7ffe0000 →
       ({ p.withArgs room args with rip := entry } : State).mem x = p.mem x :=
     fun x hx => State.mem_withArgs_below p room args (by omega)
-  refine ⟨rfl, ?_, ?_, ?_, ?_, by omega, ?_⟩
+  refine ⟨rfl, ?_, ?_, ?_, ?_, by omega, ?_, ?_, saidOk_of_check hsaid⟩
+  rotate_right
+  · -- the blocks that say their bytes are below the stack too
+    intro x hx b hb k hk
+    have hf := hfarBlocks x hx
+    have hlen := (saidCheck_spec hsaid).2 x hx b hb
+    rw [hmem _ (by
+      rw [BitVec.toNat_add, BitVec.toNat_ofNat]
+      omega)]
+    exact (saidCheck_spec hsaid).1 x hx b hb k hk
   · intro g hg k hk
     have hf := hfar g hg
     have hx : (BitVec.ofNat 64 g.1 + BitVec.ofNat 64 k).toNat < 0x7ffe0000 := by
@@ -573,9 +590,10 @@ theorem Entry.ofLoadArgs {p : State} (args : List (List Byte)) (hroom : 8 * room
       p.canRead x.1 x.2.size = true ∧ (x.2.writable = true → p.canWrite x.1 x.2.size = true))
     (hfarBlocks : ∀ x ∈ blocks, x.1.toNat + x.2.size ≤ 0x7ffe0000)
     (htext : ∀ x ∈ blocks, x.2.text ≠ 0 → p.mem (x.1 + BitVec.ofNat 64 (x.2.size - 1)) = 0 := by
-      decide) :
+      decide)
+    (hsaid : saidCheck p blocks = true := by decide) :
     Entry entry parts blocks room above { p.withArgs room args with rip := entry } :=
-  Entry.ofLoadSlots args hroom (by omega) hloaded hfar hblocks hfarBlocks htext
+  Entry.ofLoadSlots args hroom (by omega) hloaded hfar hblocks hfarBlocks htext hsaid
 
 /-! ## A program that goes through its arguments
 
@@ -647,11 +665,12 @@ theorem EntryArgs.ofLoad {p : State} (args : List (List Byte)) (hroom : 8 * room
       p.canRead x.1 x.2.size = true ∧ (x.2.writable = true → p.canWrite x.1 x.2.size = true))
     (hfarBlocks : ∀ x ∈ blocks, x.1.toNat + x.2.size ≤ 0x7ffe0000)
     (htext : ∀ x ∈ blocks, x.2.text ≠ 0 → p.mem (x.1 + BitVec.ofNat 64 (x.2.size - 1)) = 0 := by
-      decide) :
+      decide)
+    (hsaid : saidCheck p blocks = true := by decide) :
     EntryArgs entry parts blocks room { p.withArgs room args with rip := entry } := by
   have hcnt := argCount_toNat args
   refine ⟨argCount args,
-    Entry.ofLoadSlots args hroom (by omega) hloaded hfar hblocks hfarBlocks htext, ?_⟩
+    Entry.ofLoadSlots args hroom (by omega) hloaded hfar hblocks hfarBlocks htext hsaid, ?_⟩
   -- the count is the first word of what was put on the stack
   have hd : ({ p.withArgs room args with rip := entry } : State).HasData argBase (argBytes args) :=
     (State.hasData_withArgs p room args).congr rfl

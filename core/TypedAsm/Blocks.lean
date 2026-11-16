@@ -71,11 +71,20 @@ theorem MemTy.kinds_of_eq : ∀ {bs : List (BitVec 64 × Layout)},
       · rw [hy] at ht; cases ht; exact h.1
       · exact ih h.2 x hx' tag ht
 
+/-- Whether each block that says its bytes may not be written and says all
+of them. -/
+def MemTy.saidOk (bs : List (BitVec 64 × Layout)) : Bool :=
+  bs.all fun x =>
+    match x.2.said with
+    | none => true
+    | some b => !x.2.writable && b.length == x.2.size
+
 /-- A list of blocks that passes the check is a well-formed memory typing,
 provided each block of a kind has the shape listed for that kind. For
 concrete lists that is true by computation, and is proved without being asked. -/
 theorem MemTy.wf_of_check {bs : List (BitVec 64 × Layout)} (h : MemTy.check bs = true)
-    (hk : MemTy.declared kinds bs = MemTy.actual bs := by rfl) :
+    (hk : MemTy.declared kinds bs = MemTy.actual bs := by rfl)
+    (hs : MemTy.saidOk bs = true := by decide) :
     (MemTy.ofList bs kinds).WF := by
   simp only [MemTy.check, Bool.and_eq_true, List.all_eq_true, decide_eq_true_eq,
     Bool.or_eq_true] at h
@@ -90,6 +99,10 @@ theorem MemTy.wf_of_check {bs : List (BitVec 64 × Layout)} (h : MemTy.check bs 
     exact ShapeOf.fits_mem (h.1 _ (MemTy.mem_of_ofList hl)).2 p hp
   · intro a l hl tag ht
     exact MemTy.kinds_of_eq hk _ (MemTy.mem_of_ofList hl) tag ht
+  · intro a l b hl hb
+    have := List.all_eq_true.mp hs _ (MemTy.mem_of_ofList hl)
+    simp only [hb, Bool.and_eq_true, Bool.not_eq_true', beq_iff_eq] at this
+    exact this
 
 /-- The parts of "the state matches the context" that are decided by
 computation: permissions, sizes, and that no block overlaps the stack. -/
@@ -98,6 +111,50 @@ def stateCheck (bs : List (BitVec 64 × Layout)) (Γ : Ctx) (s : State) : Bool :
   bs.all (fun x =>
     s.canRead x.1 x.2.size && (!x.2.writable || s.canWrite x.1 x.2.size) &&
     decide (Disjoint (stackBase Γ s) (stackSize Γ) x.1 x.2.size))
+
+/-- That each block that says its bytes holds them. -/
+def SaidHeld (s : State) (bs : List (BitVec 64 × Layout)) : Prop :=
+  ∀ x ∈ bs, ∀ b : List (BitVec 8), x.2.said = some b →
+    ∀ k (hk : k < b.length), s.mem (x.1 + BitVec.ofNat 64 k) = b[k]
+
+/-- The same, as a check on a state: each such block's bytes are looked at,
+and it says as many as it has. -/
+def saidCheck (s : State) (bs : List (BitVec 64 × Layout)) : Bool :=
+  bs.all fun x =>
+    match x.2.said with
+    | none => true
+    | some b =>
+      !x.2.writable && b.length == x.2.size &&
+        (List.range b.length).all fun k => s.mem (x.1 + BitVec.ofNat 64 k) == b.getD k 0
+
+theorem saidCheck_spec {s : State} {bs : List (BitVec 64 × Layout)} (h : saidCheck s bs = true) :
+    SaidHeld s bs ∧ ∀ x ∈ bs, ∀ b : List (BitVec 8), x.2.said = some b → b.length = x.2.size := by
+  have key : ∀ x ∈ bs, ∀ b : List (BitVec 8), x.2.said = some b →
+      b.length = x.2.size ∧ ∀ k (hk : k < b.length), s.mem (x.1 + BitVec.ofNat 64 k) = b[k] := by
+    intro x hx b hb
+    have := List.all_eq_true.mp h x hx
+    simp only [hb, Bool.and_eq_true, beq_iff_eq, List.all_eq_true, List.mem_range] at this
+    refine ⟨this.1.2, fun k hk => ?_⟩
+    rw [this.2 k hk, List.getD_eq_getElem?_getD, List.getElem?_eq_getElem hk]; rfl
+  exact ⟨fun x hx b hb => (key x hx b hb).2, fun x hx b hb => (key x hx b hb).1⟩
+
+/-- Blocks whose said bytes were checked in a state are well formed in what
+they say. -/
+theorem saidOk_of_check {s : State} {bs : List (BitVec 64 × Layout)} (h : saidCheck s bs = true) :
+    MemTy.saidOk bs = true := by
+  refine List.all_eq_true.mpr fun x hx => ?_
+  have := List.all_eq_true.mp h x hx
+  cases hb : x.2.said with
+  | none => rfl
+  | some b =>
+    simp only [hb, Bool.and_eq_true] at this
+    simp only [Bool.and_eq_true]
+    exact this.1
+
+theorem MemTy.saidOk_append {bs cs : List (BitVec 64 × Layout)} (h₁ : MemTy.saidOk bs = true)
+    (h₂ : MemTy.saidOk cs = true) : MemTy.saidOk (bs ++ cs) = true := by
+  unfold MemTy.saidOk at *
+  rw [List.all_append, h₁, h₂]; rfl
 
 /-- A state matches a context if the computed checks pass and the registers,
 flags, the stack's typed values and the blocks' hold what the context says. -/
@@ -111,6 +168,8 @@ theorem Matches.ofCheck {H : Ty → BitVec 64 → Prop} {bs : List (BitVec 64 ×
       H p.2 (s.load64 (x.1 + BitVec.ofNat 64 p.1)))
     (hrsp : H (Γ.regs .rsp) (s.getReg .rsp))
     (htext : ∀ x ∈ bs, x.2.text ≠ 0 → s.mem (x.1 + BitVec.ofNat 64 (x.2.size - 1)) = 0)
+    (hsaid : ∀ x ∈ bs, ∀ b : List (BitVec 8), x.2.said = some b →
+      ∀ k (hk : k < b.length), s.mem (x.1 + BitVec.ofNat 64 k) = b[k])
     (howned : Γ.owned = []) :
     Matches H (MemTy.ofList bs kinds) Γ s := by
   simp only [stateCheck, Bool.and_eq_true, List.all_eq_true, decide_eq_true_eq,
@@ -133,6 +192,7 @@ theorem Matches.ofCheck {H : Ty → BitVec 64 → Prop} {bs : List (BitVec 64 ×
     stackHeap := fun a l hl => (hb _ (MemTy.mem_of_ofList hl)).2
     sp := hrsp
     text := fun a l hl => htext _ (MemTy.mem_of_ofList hl)
+    said := fun a l b hl => hsaid _ (MemTy.mem_of_ofList hl) b
     owned :=
       { perm := fun b hb => by rw [howned] at hb; cases hb
         size_lt := fun b hb => by rw [howned] at hb; cases hb

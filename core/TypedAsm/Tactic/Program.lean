@@ -130,7 +130,7 @@ elab_rules : command
         let items ← runs.toArray.mapM fun (a, size, w) => do
           let wq := if w then mkIdent ``true else mkIdent ``false
           `(((($(Syntax.mkNumLit (toString a)) : BitVec 64)),
-            (⟨ShapeOf.raw $(Syntax.mkNumLit (toString size)), $wq, none, 0⟩ : Layout)))
+            (⟨ShapeOf.raw $(Syntax.mkNumLit (toString size)), $wq, none, 0, none⟩ : Layout)))
         let blocks := id `blocks
         elabCommand (← `(
           /-- The program's blocks of memory: its labelled runs of data, as plain

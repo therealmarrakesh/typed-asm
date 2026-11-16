@@ -34,7 +34,7 @@ theorem soundness_blocks_ext {Ψ Ψ' : MemTy} {s : State} (hB : BlocksOk Φ fetc
 /-- A block of text for each argument: where it is and how long, counting
 the zero that ends it. -/
 def argLayouts (texts : List (BitVec 64 × Nat)) : List (BitVec 64 × Layout) :=
-  texts.map fun t => (t.1, ⟨.raw 0, false, none, t.2⟩)
+  texts.map fun t => (t.1, ⟨.raw 0, false, none, t.2, none⟩)
 
 /-- What a program that reads its arguments needs of its starting state: the
 entry contract, with the number of arguments at `[rsp]`, the address of each
@@ -75,10 +75,21 @@ theorem MemTy.declared_argLayouts (texts : List (BitVec 64 × Nat)) :
   | nil => exact ⟨rfl, rfl⟩
   | cons t ts ih => exact ih
 
+/-- The blocks of text say nothing of their bytes. -/
+theorem argLayouts_said (texts : List (BitVec 64 × Nat)) :
+    ∀ x ∈ argLayouts texts, x.2.said = none := by
+  intro x hx
+  obtain ⟨t, -, rfl⟩ := List.mem_map.mp hx
+  rfl
+
+theorem argLayouts_saidOk (texts : List (BitVec 64 × Nat)) :
+    MemTy.saidOk (argLayouts texts) = true :=
+  List.all_eq_true.mpr fun x hx => by rw [argLayouts_said texts x hx]
+
 /-- The address of a text is where the memory typing has a block of text. -/
 theorem MemTy.ofList_text {blocks : List (BitVec 64 × Layout)} {texts : List (BitVec 64 × Nat)}
     {t : BitVec 64 × Nat} (ht : t ∈ texts) (hno : ∀ x ∈ blocks, x.1 ≠ t.1) :
-    ∃ n, MemTy.ofList (blocks ++ argLayouts texts) kinds t.1 = some ⟨.raw 0, false, none, n⟩ := by
+    ∃ n, MemTy.ofList (blocks ++ argLayouts texts) kinds t.1 = some ⟨.raw 0, false, none, n, none⟩ := by
   show ∃ n, ((blocks ++ argLayouts texts).find? (·.1 = t.1)).map (·.2) = some _
   have hnone : blocks.find? (·.1 = t.1) = none := by
     rw [List.find?_eq_none]
@@ -87,7 +98,7 @@ theorem MemTy.ofList_text {blocks : List (BitVec 64 × Layout)} {texts : List (B
   rw [List.find?_append, hnone, Option.none_or]
   have hsome : ((argLayouts texts).find? (·.1 = t.1)).isSome = true := by
     rw [List.find?_isSome]
-    exact ⟨(t.1, ⟨.raw 0, false, none, t.2⟩), List.mem_map.mpr ⟨t, ht, rfl⟩, by simp⟩
+    exact ⟨(t.1, ⟨.raw 0, false, none, t.2, none⟩), List.mem_map.mpr ⟨t, ht, rfl⟩, by simp⟩
   obtain ⟨y, hy⟩ := Option.isSome_iff_exists.mp hsome
   obtain ⟨u, -, rfl⟩ := List.mem_map.mp (List.mem_of_find?_eq_some hy)
   exact ⟨u.2, by rw [hy]; rfl⟩
@@ -121,7 +132,7 @@ theorem EntryTexts.wellTyped {s : State}
       simp only [MemTy.declared, MemTy.actual, List.filterMap_append] at hk ⊢
       have := MemTy.declared_argLayouts (kinds := kinds) texts
       simp only [MemTy.declared, MemTy.actual] at this
-      rw [this.1, this.2, hk])
+      rw [this.1, this.2, hk]) hE.saidOk
   refine ⟨BitVec.ofNat 64 texts.length, _, MemTy.ofList_ext blocks _, hWF, hE.rip, hE.loaded,
     fun n => ?_⟩
   refine hE.matchesStack HasTy.int (fun x hx p hp => ?_) (by
@@ -315,12 +326,15 @@ theorem Entry.addBlocks {above : Nat} {s : State} {extra : List (BitVec 64 × La
       s.canRead x.1 x.2.size = true ∧ (x.2.writable = true → s.canWrite x.1 x.2.size = true))
     (hapart : ∀ x ∈ extra,
       Disjoint (s.getReg .rsp - BitVec.ofNat 64 (8 * room)) (8 * (room + above)) x.1 x.2.size)
-    (htext : ∀ x ∈ extra, x.2.text ≠ 0 → s.mem (x.1 + BitVec.ofNat 64 (x.2.size - 1)) = 0) :
+    (htext : ∀ x ∈ extra, x.2.text ≠ 0 → s.mem (x.1 + BitVec.ofNat 64 (x.2.size - 1)) = 0)
+    (hsaid : SaidHeld s extra) (hok : MemTy.saidOk extra = true) :
     Entry entry parts (blocks ++ extra) room above s :=
   ⟨h.rip, h.loaded,
     fun x hx => (List.mem_append.mp hx).elim (h.perms x) (hperm x), h.stack,
     fun x hx => (List.mem_append.mp hx).elim (h.apart x) (hapart x), h.room_lt,
-    fun x hx => (List.mem_append.mp hx).elim (h.text x) (htext x)⟩
+    fun x hx => (List.mem_append.mp hx).elim (h.text x) (htext x),
+    fun x hx => (List.mem_append.mp hx).elim (h.said x) (hsaid x),
+    MemTy.saidOk_append h.saidOk hok⟩
 
 /-! ## The model's starting states meet the contract -/
 
@@ -334,7 +348,8 @@ theorem EntryTexts.ofLoad {p : State} (args : List (List Byte)) (hroom : 8 * roo
     (hfarBlocks : ∀ x ∈ blocks, x.1.toNat + x.2.size ≤ 0x7ffe0000)
     (hcheck : MemTy.check blocks = true)
     (htext : ∀ x ∈ blocks, x.2.text ≠ 0 → p.mem (x.1 + BitVec.ofNat 64 (x.2.size - 1)) = 0 := by
-      decide) :
+      decide)
+    (hsaid : saidCheck p blocks = true := by decide) :
     EntryTexts entry parts blocks room { p.withArgs room args with rip := entry } := by
   have hbase : argBase.toNat = 0x7fff0000 := rfl
   -- names for the pieces
@@ -347,7 +362,7 @@ theorem EntryTexts.ofLoad {p : State} (args : List (List Byte)) (hroom : 8 * roo
   have hE : Entry entry parts blocks room (given.length + 5) S := by
     rw [← hS, ← hg]
     exact Entry.ofLoadSlots args hroom (by have := argsGiven_length_le args; omega) hloaded
-      hfar hblocks hfarBlocks htext
+      hfar hblocks hfarBlocks htext hsaid
   have hsp : S.getReg .rsp = argBase := by
     rw [← hS]; exact State.getReg_withArgs p room args
   -- what was put on the stack is there
@@ -375,7 +390,7 @@ theorem EntryTexts.ofLoad {p : State} (args : List (List Byte)) (hroom : 8 * roo
     show (T.map _).length = _
     rw [List.length_map, hTlen]
   have hmem : ∀ x ∈ argLayouts texts,
-      ∃ t ∈ T, x = (BitVec.ofNat 64 t.1, ⟨.raw 0, false, none, t.2⟩) := by
+      ∃ t ∈ T, x = (BitVec.ofNat 64 t.1, ⟨.raw 0, false, none, t.2, none⟩) := by
     intro x hx
     obtain ⟨u, hu, rfl⟩ := List.mem_map.mp hx
     obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hu
@@ -384,6 +399,8 @@ theorem EntryTexts.ofLoad {p : State} (args : List (List Byte)) (hroom : 8 * roo
   · -- the contract, with the texts as blocks
     rw [htl]
     refine hE.addBlocks ?_ ?_ ?_
+      (fun x hx b hb => by rw [argLayouts_said texts x hx] at hb; cases hb)
+      (argLayouts_saidOk texts)
     · intro x hx
       obtain ⟨t, ht, rfl⟩ := hmem x hx
       obtain ⟨h1, h2, h3⟩ := hT t ht

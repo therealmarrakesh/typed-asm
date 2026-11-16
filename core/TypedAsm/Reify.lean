@@ -330,7 +330,7 @@ def reifyBlocks (bs : Expr) : ReifyM (Option (List (BitVec 64 × ShapeS × Bool)
     let .lit (.natVal a) ← kwhnf (mkApp2 (mkConst ``BitVec.toNat) (mkNatLit 64) cell.getAppArgs[2]!)
       | return none
     let lay ← whnf cell.getAppArgs[3]!
-    unless lay.isAppOfArity ``Layout.mk 4 do return none
+    unless lay.isAppOfArity ``Layout.mk 5 do return none
     let some w := boolLit? (← whnf lay.getAppArgs[1]!) | return none
     let S ← reifyShape lay.getAppArgs[0]!
     out := out.push (BitVec.ofNat 64 a, S, w)
@@ -352,7 +352,7 @@ def reifyProg (bs kinds : Expr) : ReifyM (Option (Prog × Array Expr × Array Ex
   let mut tagLayouts : Array Expr := #[]
   for ((base, _, _), layE) in blocks.zip layouts.toList do
     let lay ← whnf layE
-    unless lay.isAppOfArity ``Layout.mk 4 do return none
+    unless lay.isAppOfArity ``Layout.mk 5 do return none
     let tag ← whnf lay.getAppArgs[2]!
     if tag.isAppOfArity ``Option.some 2 then
       let .lit (.natVal t) ← kwhnf tag.appArg! | return none

@@ -569,6 +569,11 @@ structure Layout where
   but never writes, and its last byte is zero: a name, a message, an argument
   the program was given. A block that is only text has a shape of no bytes. -/
   text : Nat
+  /-- The bytes the whole block holds, where that is said: a message, a
+  table of constants. A block that says its bytes is never written, so it
+  holds them for as long as the program runs, and what a program writes out
+  from it is known. -/
+  said : Option (List (BitVec 8)) := none
 
 /-- The size of a block in bytes: what its shape describes, then its text. -/
 def Layout.size (l : Layout) : Nat :=
@@ -914,6 +919,9 @@ structure MemTy.WF (Ψ : MemTy) : Prop where
   nonempty : ∀ a l, Ψ a = some l → 0 < l.size
   fits : ∀ a l, Ψ a = some l → ∀ p ∈ l.shape.vals, p.1 + 8 ≤ l.shape.size
   kinds : ∀ a l, Ψ a = some l → ∀ tag, l.tag = some tag → Ψ.kinds tag = some l.shape
+  /-- A block that says its bytes may not be written, and says all of them. -/
+  said : ∀ a l (bs : List (BitVec 8)), Ψ a = some l → l.said = some bs →
+    l.writable = false ∧ bs.length = l.size
 
 /-! ## What the types mean
 
@@ -980,6 +988,9 @@ structure Matches (H : Ty → BitVec 64 → Prop) (Ψ : MemTy) (Γ : Ctx) (s : S
   sp : H (Γ.regs .rsp) (s.getReg .rsp)
   /-- The text of each block that has some ends in a zero byte. -/
   text : ∀ a l, Ψ a = some l → l.text ≠ 0 → s.mem (a + BitVec.ofNat 64 (l.size - 1)) = 0
+  /-- A block that says its bytes holds them. -/
+  said : ∀ a l (bs : List (BitVec 8)), Ψ a = some l → l.said = some bs →
+    ∀ k (hk : k < bs.length), s.mem (a + BitVec.ofNat 64 k) = bs[k]
   /-- The owned blocks are there and hold what the context says. -/
   owned : OwnedOk H Ψ Γ s
 
@@ -1189,6 +1200,7 @@ theorem Matches.imp {H H' : Ty → BitVec 64 → Prop} {Γ : Ctx} {s : State}
     stackHeap := h.stackHeap
     sp := himp _ _ h.sp
     text := h.text
+    said := h.said
     owned := { h.owned with vals := fun b hb p hp => himp _ _ (h.owned.vals b hb p hp) } }
 
 /-- A state well typed at a step count is well typed at every smaller one. -/

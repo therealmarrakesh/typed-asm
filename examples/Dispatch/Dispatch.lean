@@ -46,7 +46,7 @@ inductive At : Label → Ctx → Prop
   | square (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     unary.CallerOk saved ret rest room → At .square (unary.entry saved ret rest room)
 
-def tableLayout : Layout := ⟨⟨16, [(0, unary.ty), (8, unary.ty)]⟩, false, none, 0⟩
+def tableLayout : Layout := ⟨⟨16, [(0, unary.ty), (8, unary.ty)]⟩, false, none, 0, none⟩
 
 /-- One memory block: the table. -/
 def blocks : List (BitVec 64 × Layout) := [(dataBase, tableLayout)]

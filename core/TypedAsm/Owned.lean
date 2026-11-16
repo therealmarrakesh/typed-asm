@@ -45,7 +45,8 @@ theorem add_ext (hN : Ψ a = none) : Ψ.Ext (Ψ.add a L) :=
 theorem add_wf (hΨ : Ψ.WF) (hpos : 0 < L.size) (hlt : L.size < 2 ^ 64)
     (hdis : ∀ b lb, Ψ b = some lb → Disjoint a L.size b lb.size)
     (hin : ∀ p ∈ L.shape.vals, p.1 + 8 ≤ L.shape.size)
-    (hkind : ∀ t, L.tag = some t → Ψ.kinds t = some L.shape) : (Ψ.add a L).WF := by
+    (hkind : ∀ t, L.tag = some t → Ψ.kinds t = some L.shape)
+    (hsaid : L.said = none := by rfl) : (Ψ.add a L).WF := by
   constructor
   · intro x l hl
     rcases add_cases hl with ⟨-, rfl⟩ | ⟨-, hl'⟩
@@ -71,6 +72,10 @@ theorem add_wf (hΨ : Ψ.WF) (hpos : 0 < L.size) (hlt : L.size < 2 ^ 64)
     rcases add_cases hl with ⟨-, rfl⟩ | ⟨-, hl'⟩
     · exact hkind t ht
     · exact hΨ.kinds x l hl' t ht
+  · intro x l b hl hb
+    rcases add_cases hl with ⟨-, rfl⟩ | ⟨-, hl'⟩
+    · rw [hsaid] at hb; cases hb
+    · exact hΨ.said x l b hl' hb
 
 end MemTy
 
@@ -84,7 +89,8 @@ theorem WellTyped.addBlock {a : BitVec 64} {L : Layout} (h : WellTyped fetch sys
     (hvals : ∀ p ∈ L.shape.vals,
       HasTy fetch sys Ψ n p.2 (s.load64 (a + BitVec.ofNat 64 p.1)))
     (hstack : Disjoint (stackBase Γ s) (stackSize Γ) a L.size) (htext : L.text = 0)
-    (howned : ∀ c ∈ Γ.owned, Disjoint c.1 c.2.size a L.size) :
+    (howned : ∀ c ∈ Γ.owned, Disjoint c.1 c.2.size a L.size)
+    (hsaid : L.said = none := by rfl) :
     WellTyped fetch sys (Ψ.add a L) n Γ s :=
   have he := MemTy.add_ext (L := L) hN
   { regs := fun r hr => (h.regs r hr).ext he
@@ -110,6 +116,10 @@ theorem WellTyped.addBlock {a : BitVec 64} {L : Layout} (h : WellTyped fetch sys
       rcases MemTy.add_cases hl with ⟨rfl, rfl⟩ | ⟨-, hl'⟩
       · exact absurd htext ht
       · exact h.text x l hl' ht
+    said := fun x l b hl hb => by
+      rcases MemTy.add_cases hl with ⟨rfl, rfl⟩ | ⟨-, hl'⟩
+      · rw [hsaid] at hb; cases hb
+      · exact h.said x l b hl' hb
     owned :=
       { perm := h.owned.perm
         size_lt := h.owned.size_lt
@@ -129,7 +139,7 @@ theorem freeze_ok {r : Reg} {k : Nat} {base : BitVec 64} {S : Shape} {tag : Opti
     {τ : Ty} (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF) (hr : r ≠ .rsp)
     (hΓ : Γ.regs r = .eq base) (hk : Γ.owned[k]? = some (base, S)) (hne : 0 < S.size)
     (hkind : ∀ t, tag = some t → Ψ.kinds t = some S)
-    (hτ : ∀ Ψ₂ : MemTy, Ψ₂ base = some ⟨S, true, tag, 0⟩ → HasTy fetch sys Ψ₂ n τ base) :
+    (hτ : ∀ Ψ₂ : MemTy, Ψ₂ base = some ⟨S, true, tag, 0, none⟩ → HasTy fetch sys Ψ₂ n τ base) :
     ∃ Ψ₂ : MemTy, Ψ.Ext Ψ₂ ∧ Ψ₂.WF ∧
       WellTyped fetch sys Ψ₂ n (({ Γ with owned := Γ.owned.eraseIdx k } : Ctx).setReg r τ) s := by
   obtain ⟨hklt, hkeq⟩ := List.getElem?_eq_some_iff.mp hk
@@ -146,9 +156,9 @@ theorem freeze_ok {r : Reg} {k : Nat} {base : BitVec 64} {S : Shape} {tag : Opti
     | some l =>
       have hd := (hhp base l hl).1 (by have := hΨ.nonempty base l hl; omega)
       exact absurd hd (by bv_omega)
-  have hsize : (⟨S, true, tag, 0⟩ : Layout).size = S.size := by simp [Layout.size]
+  have hsize : (⟨S, true, tag, 0, none⟩ : Layout).size = S.size := by simp [Layout.size]
   have h₀ := h.eraseOwned hΨ hk (s' := s) rfl rfl rfl (fun _ => .inl rfl)
-  have hB := h₀.addBlock (a := base) (L := ⟨S, true, tag, 0⟩) hN
+  have hB := h₀.addBlock (a := base) (L := ⟨S, true, tag, 0, none⟩) hN
     (by rw [hsize]; exact ⟨State.canRead_of_canWrite hpm, fun _ => hpm⟩)
     (fun p hp => h.owned.vals _ hin p hp)
     (by rw [hsize]; exact hst) rfl
@@ -158,7 +168,7 @@ theorem freeze_ok {r : Reg} {k : Nat} {base : BitVec 64} {S : Shape} {tag : Opti
       rw [hkeq] at hd
       rw [hsize]
       exact hd.symm)
-  refine ⟨Ψ.add base ⟨S, true, tag, 0⟩, MemTy.add_ext hN,
+  refine ⟨Ψ.add base ⟨S, true, tag, 0, none⟩, MemTy.add_ext hN,
     MemTy.add_wf hΨ (by rw [hsize]; omega) (by rw [hsize]; exact hsz)
       (fun b lb hl => by rw [hsize]; exact hhp b lb hl) (h.owned.fits _ hin) hkind, ?_⟩
   refine hB.retype hr ?_
@@ -448,7 +458,7 @@ theorem WellTyped.permOwned {L : List (BitVec 64 × Shape)}
     WellTyped fetch sys Ψ n { Γ with owned := L } s :=
   { regs := h.regs, flags := h.flags, stackPerm := h.stackPerm, stackBound := h.stackBound,
     stackFits := h.stackFits, stack := h.stack, heapPerm := h.heapPerm, heap := h.heap, stackHeap := h.stackHeap,
-    sp := h.sp, text := h.text,
+    sp := h.sp, text := h.text, said := h.said,
     owned :=
       { perm := fun b hb => h.owned.perm b (hp.subset hb)
         size_lt := fun b hb => h.owned.size_lt b (hp.subset hb)
@@ -590,6 +600,7 @@ theorem WellTyped.repiece {pre mid mid' post : List Shape}
     stackHeap := fun a l hl => by rw [hb, hz]; exact h.stackHeap a l hl
     owned := h.owned.frame rfl rfl hb hz (fun _ _ _ _ => rfl)
     text := h.text
+    said := h.said
     sp := h.sp }
 
 theorem eq_take_cons_drop {α : Type} {l : List α} {k : Nat} {x : α} (h : l[k]? = some x) :
@@ -760,6 +771,7 @@ theorem WellTyped.detach {v : BitVec 64} {top : List Shape} {S : Shape}
       stackHeap := fun a l hl => (h.stackHeap a l hl).prefix_left hle hlt (hΨ.size_lt a l hl)
       sp := h.sp
       text := h.text
+      said := h.said
       owned :=
         { perm := h.owned.perm
           size_lt := h.owned.size_lt
@@ -899,6 +911,7 @@ theorem WellTyped.attach {v : BitVec 64} {S : Shape} {rest : List (BitVec 64 × 
       exact (h1.union_right h2 (by omega)).symm
     sp := h.sp
     text := h.text
+    said := h.said
     owned :=
       { perm := fun c hc => h.owned.perm c (hsub c hc)
         size_lt := fun c hc => h.owned.size_lt c (hsub c hc)

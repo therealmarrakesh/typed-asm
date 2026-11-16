@@ -26,9 +26,9 @@ inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 0)
 
 /-- The table: eight bytes, holding a pointer to the record. -/
-def tableLayout : Layout := ⟨⟨8, [(0, pair)]⟩, false, none, 0⟩
+def tableLayout : Layout := ⟨⟨8, [(0, pair)]⟩, false, none, 0, none⟩
 
-def recordLayout : Layout := ⟨.raw 16, true, none, 0⟩
+def recordLayout : Layout := ⟨.raw 16, true, none, 0, none⟩
 
 def blocks : List (BitVec 64 × Layout) := [(dataBase, tableLayout), (recordAddr, recordLayout)]
 

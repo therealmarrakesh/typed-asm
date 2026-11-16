@@ -650,7 +650,7 @@ theorem mmap_ok {sys : Syscall} {len : BitVec 64} {S : Shape} {tag : Option Nat}
     (hin : ∀ p ∈ S.vals, p.1 + 8 ≤ S.size)
     (hzero : ∀ p ∈ S.vals, p.2.zeroOk = true)
     (hkind : ∀ t, tag = some t → Ψ.kinds t = some S)
-    (hτ : ∀ (Ψ₂ : MemTy) (a : BitVec 64), Ψ₂ a = some ⟨S, true, tag, 0⟩ →
+    (hτ : ∀ (Ψ₂ : MemTy) (a : BitVec 64), Ψ₂ a = some ⟨S, true, tag, 0, none⟩ →
       HasTy fetch sys Ψ₂ n τ a) :
     ∃ Ψ₂ : MemTy, Ψ.Ext Ψ₂ ∧ Ψ₂.WF ∧
       WellTyped fetch sys Ψ₂ n (Γ.afterSyscall.setReg .rax (.orErr τ)) (mmap s) := by
@@ -704,7 +704,7 @@ theorem mmap_ok {sys : Syscall} {len : BitVec 64} {S : Shape} {tag : Option Nat}
             have hr := State.canRead_iff.mp (h.heapPerm a l hl).1 0 (hΨ.nonempty a l hl)
             rw [show a + BitVec.ofNat 64 0 = a by simp, hU a (by simpa using hpos)] at hr
             exact absurd hr (by decide)
-        let L : Layout := ⟨S, true, tag, 0⟩
+        let L : Layout := ⟨S, true, tag, 0, none⟩
         let Ψ₂ : MemTy := ⟨fun x => if x = a then some L else Ψ x, Ψ.kinds⟩
         have hcases : ∀ x l, Ψ₂ x = some l → (x = a ∧ l = L) ∨ (x ≠ a ∧ Ψ x = some l) := by
           intro x l hl
@@ -748,6 +748,10 @@ theorem mmap_ok {sys : Syscall} {len : BitVec 64} {S : Shape} {tag : Option Nat}
             rcases hcases x l hl with ⟨-, rfl⟩ | ⟨-, hl'⟩
             · exact hkind t ht
             · exact hΨ.kinds x l hl' t ht
+          · intro x l b hl hb
+            rcases hcases x l hl with ⟨-, hlL⟩ | ⟨-, hl'⟩
+            · rw [hlL] at hb; cases hb
+            · exact hΨ.said x l b hl' hb
         -- what was accessible before is as it was
         have hout : ∀ y : BitVec 64, s.canRead y 8 = true →
             ∀ j : BitVec 64, j < 8 → ¬ ((y + j) - a).toNat < size := by
@@ -848,7 +852,20 @@ theorem mmap_ok {sys : Syscall} {len : BitVec 64} {S : Shape} {tag : Option Nat}
                 · next hin =>
                   have hn := hU _ hin
                   rw [hn] at hr
-                · exact h.text x l hl' ht }
+                · exact h.text x l hl' ht
+            said := fun x l b hl hb k hk => by
+              rcases hcases x l hl with ⟨-, hlL⟩ | ⟨-, hl'⟩
+              · rw [hlL] at hb; cases hb
+              · -- the byte is readable, so it is not in the fresh memory
+                have hlb := (hΨ.said x l b hl' hb).2
+                have hr := State.canRead_iff.mp (h.heapPerm x l hl').1 k (by omega)
+                rw [State.mem_mapZero s hal hsz4 hfit64]
+                split
+                · next hin =>
+                  have hn := hU _ hin
+                  rw [hn] at hr
+                  exact absurd hr (by decide)
+                · exact h.said x l b hl' hb k hk }
         have hM : WellTyped fetch sys Ψ₂ n Γ
             { s.mapZero a size with world := { s.world with asked := s.world.asked + 1 } } :=
           hM₀.congr rfl rfl rfl rfl
@@ -925,11 +942,11 @@ theorem storeBytes_ok {sys : Syscall} {r : Reg} {S : Shape} {off cnt : Nat}
     WellTyped fetch sys Ψ n Γ (s.storeBytes (s.getReg r) data) := by
   have hp := h.regs r hr
   rw [hbuf] at hp
-  obtain ⟨a, l, hl, rfl, -, hva⟩ := hasTy_ptr.mp hp
+  obtain ⟨a, l, hl, rfl, hwr, hva⟩ := hasTy_ptr.mp hp
   have hsz := hΨ.size_lt a l hl
   simp only [Layout.size] at hsz
   rw [hva]
-  refine h.writeHeapFree hΨ hl (lo := off) (cnt := cnt) hle hfree rfl rfl rfl
+  refine h.writeHeapFree hΨ hl (hwr rfl) (lo := off) (cnt := cnt) hle hfree rfl rfl rfl
     (fun y hd => ?_) (fun x hx => ?_)
   · by_cases hc : cnt = 0
     · have hz : data = [] := List.length_eq_zero_iff.mp (by omega)
@@ -1658,7 +1675,9 @@ theorem mapZero_ok {sys : Syscall} {a : BitVec 64} {size : Nat}
     (hfit : a.toNat + size ≤ addrTop)
     (hU : ∀ x : BitVec 64, (x - a).toNat < size → s.perm x = .none)
     (hpos : ∀ x l, Ψ x = some l → 0 < l.size)
-    (hin : ∀ x l, Ψ x = some l → ∀ p ∈ l.shape.vals, p.1 + 8 ≤ l.shape.size) :
+    (hin : ∀ x l, Ψ x = some l → ∀ p ∈ l.shape.vals, p.1 + 8 ≤ l.shape.size)
+    (hsd : ∀ x l (b : List (BitVec 8)), Ψ x = some l → l.said = some b →
+      l.writable = false ∧ b.length = l.size) :
     WellTyped fetch sys Ψ n Γ (s.mapZero a size) := by
   have hout : ∀ y : BitVec 64, s.canRead y 8 = true →
       ∀ j : BitVec 64, j < 8 → ¬ ((y + j) - a).toNat < size := by
@@ -1725,7 +1744,17 @@ theorem mapZero_ok {sys : Syscall} {a : BitVec 64} {size : Nat}
           have := hpos x l hl; omega)
         have hn := hU _ hin
         rw [hn] at hr
-      · exact h.text x l hl ht }
+      · exact h.text x l hl ht
+    said := fun x l b hl hb k hk => by
+      have hlb := (hsd x l b hl hb).2
+      rw [State.mem_mapZero s hal hsz4 hfit]
+      split
+      · next hin =>
+        have hr := State.canRead_iff.mp (h.heapPerm x l hl).1 k (by omega)
+        have hn := hU _ hin
+        rw [hn] at hr
+        exact absurd hr (by decide)
+      · exact h.said x l b hl hb k hk }
 
 /-- Fresh memory, found where nothing was accessible, may be owned as a block
 of plain bytes. -/
@@ -1737,7 +1766,7 @@ theorem mapZero_owned {sys : Syscall} {a : BitVec 64} {size : Nat}
       (s.mapZero a size) := by
   have hU : ∀ x : BitVec 64, (x - a).toNat < size → s.perm x = .none :=
     fun x hx => perm_of_unmapped hal hfit64 hun hx
-  have hZ := mapZero_ok h hal hsz4 hfit64 hU hΨ.nonempty hΨ.fits
+  have hZ := mapZero_ok h hal hsz4 hfit64 hU hΨ.nonempty hΨ.fits hΨ.said
   have hnew : (s.mapZero a size).canWrite a size = true := by
     rw [State.canWrite_iff]
     intro i hi
