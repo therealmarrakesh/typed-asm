@@ -40,8 +40,10 @@ What the model leaves out, none of which touches the above:
 * `openat` understands the access mode and `O_CREAT`, `O_EXCL`, `O_TRUNC`,
   `O_APPEND`, `O_DIRECTORY` and `O_PATH`; other flags are ignored.
   Permissions are two switches per file, not owners and modes.
-* The standard streams are not files: they cannot be sought, and `fstat`
-  describes them as pipes. `fstat` fills in the kind, the size and the block
+* The standard streams are pipes unless the world says otherwise
+  (`World.fds`): as pipes they cannot be sought, and `fstat` describes them
+  so. A world in which descriptor 0 is a file is a program started with its
+  input redirected from one. `fstat` fills in the kind, the size and the block
   counts; every field the model does not track is zero.
 * Each clock has its own time, which the world supplies. The clocks that
   only go forward never go back; nothing relates one clock to another.
@@ -382,7 +384,10 @@ def fstat (s : State) : State :=
       leBytes 8 0 ++ leBytes 8 0 ++ leBytes 8 1 ++ leBytes 4 mode ++ leBytes 4 0 ++ leBytes 4 0 ++
       leBytes 4 0 ++ leBytes 8 0 ++ leBytes 8 size ++ leBytes 8 4096 ++
       leBytes 8 ((size + 511) / 512) ++ List.replicate 72 0
-    if s.canWrite buf 144 then give s buf (data.take 144) 0 s.world else ret s (-14)
+    -- into a buffer that is not all writable the kernel stores what it can
+    -- before it reports the bad address
+    if s.canWrite buf 144 then give s buf (data.take 144) 0 s.world
+    else give s buf (data.take (writableRun s buf 144)) (-14) s.world
 
 /-- The standard clocks, by number: 0 to 11, but for 10, which is none. -/
 def standardClock (c : Nat) : Bool :=
@@ -407,31 +412,33 @@ def clockGettime (s : State) : State :=
   let buf := s.getReg .rsi
   let c := fdArg s .rdi
   if !(standardClock c || s.world.hasClock c) then ret s (-22)
-  else if s.canWrite buf 16 then
+  else
     let now := clockNow s.world c
-    give s buf ((leBytes 8 (now / 1000000000) ++ leBytes 8 (now % 1000000000)).take 16) 0
-      { s.world with
-        asks := s.world.asks + 1
-        moved := fun k => if k = c ∧ forwardOnly c = true then now else s.world.moved k }
-  else ret s (-14)
+    let data := leBytes 8 (now / 1000000000) ++ leBytes 8 (now % 1000000000)
+    let w := { s.world with
+      asks := s.world.asks + 1
+      moved := fun k => if k = c ∧ forwardOnly c = true then now else s.world.moved k }
+    -- the clock is read either way; into a buffer that is not all writable
+    -- the kernel stores what it can before it reports the bad address
+    if s.canWrite buf 16 then give s buf (data.take 16) 0 w
+    else give s buf (data.take (writableRun s buf 16)) (-14) w
 
 /-- **A clock that only goes forward never goes back**: what it reads at one
 asking is no less than what it read at the last. -/
 theorem clockGettime_forward (s : State) (c : Nat) :
     s.world.moved c ≤ (clockGettime s).world.moved c := by
+  have key : s.world.moved c ≤ if c = fdArg s .rdi ∧ forwardOnly (fdArg s .rdi) = true
+      then clockNow s.world (fdArg s .rdi) else s.world.moved c := by
+    split
+    · next h =>
+      rw [h.1]
+      simp only [clockNow, h.2, ↓reduceIte]
+      omega
+    · exact Nat.le_refl _
   simp only [clockGettime]
   split
   · exact Nat.le_refl _
-  · split
-    · show s.world.moved c ≤ if c = fdArg s .rdi ∧ forwardOnly (fdArg s .rdi) = true
-        then clockNow s.world (fdArg s .rdi) else s.world.moved c
-      split
-      · next h =>
-        rw [h.1]
-        simp only [clockNow, h.2, ↓reduceIte]
-        omega
-      · exact Nat.le_refl _
-    · exact Nat.le_refl _
+  · split <;> exact key
 
 /-- Whether the call number `318` was handed flags the kernel refuses: a bit
 it does not know, or both `GRND_RANDOM` (2) and `GRND_INSECURE` (4). -/
@@ -1067,6 +1074,8 @@ local macro "fills" : tactic =>
     | (with_reducible exact Fills.same _ _ _ _)
     | (with_reducible exact Fills.only _ _ _ _ _)
     | (with_reducible exact fills_give (by assumption) (List.length_take_le _ _))
+    | (with_reducible exact (fills_give (canWrite_writableRun _ _ _)
+        (List.length_take_le _ _)).mono (writableRun_le _ _ _))
     | split))
 
 theorem writeBy_only (d : Fate) (s : State) : OnlyWorld s (writeBy d s) := by

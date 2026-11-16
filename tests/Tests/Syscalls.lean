@@ -172,6 +172,12 @@ def clocks : Nat → Nat → Nat := fun c i => if c = 0 then 5000000007 - i else
 -- The time of day may have been set back.
 #guard told (Linux.clockGettime ((Linux.clockGettime (asking 0 clocks)).setReg .rax 228))
   == (0, 5, 6)
+-- A buffer with eight writable bytes of the sixteen: the seconds are stored,
+-- and the call reports the bad address.
+#guard
+  let t := Linux.clockGettime ((asking 0 clocks).setReg .rsi 0x10ff8)
+  t.getReg .rax == -14 && t.load64 0x10ff8 == 5
+
 -- Not a clock.
 #guard (Linux.clockGettime (asking 10 clocks)).getReg .rax == -22
 #guard (Linux.clockGettime (asking 12 clocks)).getReg .rax == -22
