@@ -2695,6 +2695,14 @@ the last block to pass an address is the one remembered. -/
 initialize trailRef :
     IO.Ref (Std.HashMap (UInt64 × Nat) (Std.HashMap String (Nat × String))) ← IO.mkRef {}
 
+/-- What a walk through a block does at each move: gives a value a name,
+opens a pointer to a block of a kind, or steps over an instruction, with the
+context it was come to with and what the step left to be shown. -/
+private inductive WalkMove
+  | name (k : Nat) (r : Reg)
+  | opened
+  | step (at' : Nat) (i : Instr) (len : BitVec 64) (arrived : Sym.CtxS) (cs : List Sym.CondS)
+
 /-- Arithmetic left to be shown by the steps of a run, not yet settled. -/
 initialize arithLeft : IO.Ref (Array MVarId) ← IO.mkRef #[]
 
@@ -2872,48 +2880,7 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
   let some instrs ← instrsOf fetch | return none
   let some (instr, len) := instrs[n]? | return none
   if instr.endsBlock then return none
-  -- the address of data makes a pointer, once the step is taken; the address
-  -- of anything else is left to the long way
-  let leaReg? : Option (Reg × BitVec 64) := match instr with
-    | .lea .w64 d (.rip disp) => some (d, BitVec.ofNat 64 (n + len.toNat) + disp.signExtend 64)
-    | _ => none
   let typeOf (r : Reg) : MetaM Expr := whnf tbl[1 + regIdx r]!
-  -- A pointer to a block of a kind is opened where it is reached through or
-  -- moved on: it becomes a pointer to a block of the shape that kind has.
-  let toOpen? : Option Reg := match instr with
-    | .alu .add .w64 (.rm_i (.reg d) _) => some d
-    | i => match i.memOperand? with
-      | some (.sib (some b) _ _) => some b
-      | _ => none
-  if let some b := toOpen? then
-    let τ ← typeOf b
-    if τ.isAppOfArity ``Ty.ref 3 && b != .rsp then
-      let tag := τ.getAppArgs[0]!
-      let w := τ.getAppArgs[1]!
-      let i := τ.getAppArgs[2]!
-      let kindsE := mkApp2 (mkConst ``MemTy.kinds) Ψ tag
-      let k ← ofExceptKernelException (Kernel.whnf (← getEnv) (← getLCtx) kindsE)
-      unless k.isAppOfArity ``Option.some 2 do return none
-      let S := k.appArg!
-      let newTy := mkApp3 (mkConst ``Ty.ptr) S w i
-      let Γ' := mkAppN Γ.getAppFn (cargs.set! 1
-        (mkApp regs.appFn! (mkAppN regs.appArg!.getAppFn (tbl.set! (1 + regIdx b) newTy))))
-      let ty' := mkAppN ty.getAppFn #[Φ, fetch, sys, Ψ, a, Γ']
-      let rest ← mkFreshExprSyntheticOpaqueMVar ty' (← goal.getTag)
-      let rE := toExpr b
-      let raw := mkApp3 (mkConst ``CtxOf.setReg) Γ rE newTy
-      let eta := mkAppN (mkConst ``BlockOk.regsEta) #[Φ, fetch, sys, Ψ, a, raw, rest]
-      let hr ← mkDecideProof (← mkAppM ``Ne #[rE, mkConst ``Reg.rsp])
-      let regsb := mkApp3 (mkConst ``CtxOf.regs) (mkConst ``Ty) Γ rE
-      let hΓ ← mkExpectedTypeHint (← mkEqRefl τ) (← mkEq regsb τ)
-      let ht ← mkExpectedTypeHint (← mkEqRefl k) (← mkEq kindsE k)
-      let before ← saveState
-      goal.assign (mkAppN (mkConst ``BlockOk.openRef)
-        #[Φ, fetch, sys, Ψ, a, Γ, rE, tag, w, i, S, hr, hΓ, ht, eta])
-      -- with no step taken, the pointer is left as it was
-      let r? ← fastStep rest.mvarId! ty' named
-      if r?.isNone then before.restore
-      return r?
   -- where a register is looked into or named first, that is done the long way
   if let .movzx _ _ .w8 (.mem (.sib (some b) none _)) := instr then
     if (← typeOf b).isAppOf ``Ty.str then return none
@@ -2924,37 +2891,6 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         let τ ← typeOf r
         if τ.isAppOf ``Ty.nullable || τ.isAppOf ``Ty.orErr then return none
     | _ => pure ()
-    -- A register the step needs to speak of the value of, of which only that
-    -- it is a number is known, has that value given a name here: the rest of
-    -- the block is typed for every value it may be.
-    for r in instr.wantsNamed do
-      if (← typeOf r).isConstOf ``Ty.int then
-        let before ← saveState
-        let name := Name.mkSimple s!"{r.name64}₀"
-        let rE := toExpr r
-        let bv := mkApp (mkConst ``BitVec) (mkNatLit 64)
-        let withName (v : Expr) : Expr × Expr :=
-          let newTy := mkApp (mkConst ``Ty.eq) v
-          (mkAppN Γ.getAppFn (cargs.set! 1
-            (mkApp regs.appFn! (mkAppN regs.appArg!.getAppFn (tbl.set! (1 + regIdx r) newTy)))),
-           mkApp3 (mkConst ``CtxOf.setReg) Γ rE newTy)
-        let allTy ← withLocalDeclD name bv fun v => do
-          mkForallFVars #[v] (mkAppN ty.getAppFn #[Φ, fetch, sys, Ψ, a, (withName v).1])
-        let m ← mkFreshExprSyntheticOpaqueMVar allTy (← goal.getTag)
-        let lam ← withLocalDeclD name bv fun v => do
-          mkLambdaFVars #[v] (mkAppN (mkConst ``BlockOk.regsEta)
-            #[Φ, fetch, sys, Ψ, a, (withName v).2, mkApp m v])
-        if r == .rsp then
-          goal.assign (mkAppN (mkConst ``BlockOk.nameSp) #[Φ, fetch, sys, Ψ, a, Γ, lam])
-        else
-          let hr ← mkDecideProof (← mkAppM ``Ne #[rE, mkConst ``Reg.rsp])
-          goal.assign (mkAppN (mkConst ``BlockOk.name) #[Φ, fetch, sys, Ψ, a, Γ, rE, hr, lam])
-        let (_, g') ← m.mvarId!.intro name
-        let ty' := (← instantiateMVars (← g'.getType)).consumeMData
-        -- with no step taken, the name is not given either
-        let r? ← fastStep g' ty' named
-        if r?.isNone then before.restore
-        return r?
   let iE := toExpr instr
   let lenE := toExpr len
   let next ← mkAppM ``HAdd.hAdd #[a, lenE]
@@ -2997,7 +2933,6 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let waits (S : Sym.CtxS) (i : Instr) (at' next' : Nat) : Bool :=
       i.endsBlock || (stops?.getD #[]).contains next' || (stops?.getD #[]).contains at' ||
       (match i with
-        | .lea .w64 _ (.rip _) => true
         | .test _ (.reg r) (.reg r') =>
           r == r' && (match S.regs.get r with
             | .nullable _ | .orErr _ => true
@@ -3006,22 +2941,32 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           (match S.regs.get b with
             | .str _ => true
             | _ => false)
-        | _ => false) ||
-      (match i with
-        | .alu .add .w64 (.rm_i (.reg d) _) => (match S.regs.get d with | .ref .. => true | _ => false)
-        | i => match i.memOperand? with
-          | some (.sib (some b) _ _) => (match S.regs.get b with | .ref .. => true | _ => false)
-          | _ => false)
-    let ((result, blocks?), atoms) ← (do
+        | _ => false)
+    let ((result, prog?), atoms) ← (do
       let some S₀ ← (match kept? with
         | some (Sc, _) => pure (some Sc)
         | none => Sym.reifyCtx Γ) | return (none, none)
-      let mut blocks? : Option (List (BitVec 64 × Sym.ShapeS × Bool) × Array Expr) := none
+      -- The program's blocks and kinds are read where the walk may need
+      -- them: a pointer to a block of a kind is held, or an instruction ahead
+      -- reaches data by where it is or takes its address.
+      let ahead : Bool := Id.run do
+        let mut at' := n
+        for _ in [0:256] do
+          let some (i, len') := instrs[at']? | return false
+          if needsBlocks i || (i matches .lea .w64 _ (.rip _)) then return true
+          if i.endsBlock then return false
+          at' := at' + len'.toNat
+        return false
+      let held := allRegs.any fun r => (match S₀.regs.get r with | .ref .. => true | _ => false)
+      let prog? ← if listed && (ahead || held) then
+          Sym.reifyProg Ψ'.appFn!.appArg! Ψ'.appArg!
+        else pure none
+      let P : Sym.Prog := (prog?.map (·.1)).getD {}
       let mut cur := S₀
       let mut at' := n
-      -- a step taken, or a value named: what the walk does, in order
-      let mut moves : Array (Sum (Nat × Reg) (Nat × Instr × BitVec 64 × Sym.CtxS × List Sym.CondS))
-        := #[]
+      let mut moves : Array WalkMove := #[]
+      -- the context each instruction of the walk was come to with
+      let mut arrived := S₀
       let mut steps := 0
       let mut k := (← get).val.size
       let limit := if stops?.isSome then 4096 else 1
@@ -3030,41 +2975,49 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         let some (i, len') := instrs[at']? | break
         let next' := at' + len'.toNat
         if steps > 0 && waits cur i at' next' then break
-        if needsBlocks i && blocks?.isNone then
-          blocks? ← Sym.reifyBlocks Ψ'.appFn!.appArg!
-        let B := (blocks?.map (·.1)).getD []
-        -- a value the instruction needs to speak of is named first
+        -- a pointer to a block of a kind that is reached through is opened
+        if let some (r, tag, w, off) := Sym.toOpen cur i then
+          let some Sk := Sym.lookupNat P.kinds tag | break
+          if r == .rsp then break
+          moves := moves.push .opened
+          cur := cur.setReg r (.ptr Sk w off)
+          continue
+        -- a value the instruction needs to speak of is named
         if let some r := Sym.toName cur i then
-          if steps == 0 then break
-          unless cur.under k && Sym.blocksUnder k B do break
-          moves := moves.push (.inl (k, r))
+          unless cur.under k && Sym.blocksUnder k P.blocks && Sym.kindsUnder k P.kinds do break
+          moves := moves.push (.name k r)
           cur := cur.setReg r (.eq (.var k))
           k := k + 1
           continue
-        let some (S', cs) := Sym.step (BitVec.ofNat 64 at' + len') { cur with blocks := B } i
-          | break
-        moves := moves.push (.inr (at', i, len', cur, cs))
+        -- the address of something that is not data is left to the long way,
+        -- which makes it a pointer to code
+        if let .lea .w64 _ (.rip disp) := i then
+          if (Sym.blockAt P.blocks (BitVec.ofNat 64 at' + len' + disp.signExtend 64)).isNone then
+            break
+        let some (S', cs) :=
+          Sym.step (BitVec.ofNat 64 at' + len') { cur with blocks := P.blocks } i | break
+        moves := moves.push (.step at' i len' arrived cs)
         steps := steps + 1
-        cur := S'
+        cur := Sym.castData P S' i
+        arrived := cur
         at' := next'
-        if i matches .lea .w64 _ (.rip _) then break
-      -- a name given with no step after it is not given
-      while moves.back?.any (·.isLeft) do
+      -- what was done toward an instruction not then stepped over is not done
+      for _ in [0:moves.size] do
         match moves.back? with
-        | some (.inl (_, _)) => moves := moves.pop
-        | _ => break
-      if steps == 0 then return (none, blocks?)
-      return (some (S₀, moves, at'), blocks?) : Sym.ReifyM _).run ((kept?.map (·.2)).getD {})
-    let some (S₀, moves, atEnd) := result | return none
-    let B := (blocks?.map (·.1)).getD []
+        | some (.step ..) => break
+        | some _ => moves := moves.pop
+        | none => break
+      if steps == 0 then return (none, prog?)
+      return (some (S₀, moves, at', arrived), prog?) : Sym.ReifyM _).run ((kept?.map (·.2)).getD {})
+    let some (S₀, moves, atEnd, arrived) := result | return none
+    let P : Sym.Prog := (prog?.map (·.1)).getD {}
     let S := { S₀ with blocks := [] }
     -- the context at the end: the walk again, as the checker makes it
     let k₀ := atoms.val.size
     let code : List (BitVec 64 × Instr × BitVec 64) :=
       moves.toList.filterMap fun
-        | .inr (at', i, len', _, _) => some (BitVec.ofNat 64 at', i, len')
-        | .inl _ => none
-    let P : Sym.Prog := { blocks := B }
+        | .step at' i len' _ _ => some (BitVec.ofNat 64 at', i, len')
+        | _ => none
     let W := Sym.walk P code moves.size k₀ (BitVec.ofNat 64 n) S
     let rec final : Sym.Walk → Option Sym.CtxS
       | .stop _ Γ => some Γ
@@ -3073,17 +3026,34 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let some S' := final W | return none
     let ρ := atoms.env
     let SE := toExpr S
-    -- that the blocks read are the memory typing's: each by looking
+    -- that what was read of the program is so: each part by looking
     let mut hB := mkApp2 (mkConst ``Sym.BlocksOk.nil) Ψ ρ
-    let mut restL : List (BitVec 64 × Sym.ShapeS × Bool) := []
-    if let some (bl, lays) := blocks? then
-      for ((base, Sb, w), lay) in (bl.zip lays.toList).reverse do
+    let mut hT := mkConst ``True.intro
+    let mut hK := mkConst ``True.intro
+    if let some (Pr, lays, tagLays) := prog? then
+      let mut restL : List (BitVec 64 × Sym.ShapeS × Bool) := []
+      for ((base, Sb, w), lay) in (Pr.blocks.zip lays.toList).reverse do
         let h₁ ← mkEqRefl (← mkAppM ``Option.some #[lay])
         let h₂ ← mkEqRefl (← mkAppM ``Layout.shape #[lay])
         let h₃ ← mkEqRefl (toExpr w)
         hB := mkAppN (mkConst ``Sym.BlocksOk.cons)
           #[Ψ, ρ, toExpr base, toExpr Sb, toExpr w, toExpr restL, lay, h₁, h₂, h₃, hB]
         restL := (base, Sb, w) :: restL
+      let mut restT : List (BitVec 64 × Nat) := []
+      for ((base, t), lay) in (Pr.tags.zip tagLays.toList).reverse do
+        let h₁ ← mkEqRefl (← mkAppM ``Option.some #[lay])
+        let h₂ ← mkEqRefl (← mkAppM ``Option.some #[mkNatLit t])
+        hT := mkAppN (mkConst ``Sym.TagsOk.cons)
+          #[Ψ, toExpr base, mkNatLit t, toExpr restT, lay, h₁, h₂, hT]
+        restT := (base, t) :: restT
+      let mut restK : List (Nat × Sym.ShapeS) := []
+      for (t, Sk) in Pr.kinds.reverse do
+        let lhs := mkApp2 (mkConst ``MemTy.kinds) Ψ (mkNatLit t)
+        let rhs ← mkAppM ``Option.some #[mkApp2 (mkConst ``Sym.ShapeS.den) ρ (toExpr Sk)]
+        let h ← mkExpectedTypeHint (← mkEqRefl lhs) (← mkEq lhs rhs)
+        hK := mkApp4 (mkConst ``And.intro) (← mkEq lhs rhs)
+          (mkApp3 (mkConst ``Sym.KindsOk) Ψ ρ (toExpr restK)) h hK
+        restK := (t, Sk) :: restK
     if kept?.isNone then
       unless Kernel.isDefEqGuarded env lctx Γ (mkApp2 (mkConst ``Sym.CtxS.den) ρ SE) do
         trace[TypedAsm.fast] "the term read from the context does not mean it"
@@ -3130,8 +3100,8 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         mkAppM ``And.intro #[← instantiateMVars hn, hrest]
       | .name k rest =>
         let r := (moves.toList.findSome? fun
-          | .inl (k', r) => if k' == k then some r else none
-          | .inr _ => none).getD .rax
+          | .name k' r => if k' == k then some r else none
+          | _ => none).getD .rax
         let name := Name.mkSimple s!"{r.name64}₀"
         withLocalDeclD name bv fun v => do
           let pad := atoms.val ++ Array.replicate (k + 1 - atoms.val.size) (toExpr (0 : BitVec 64))
@@ -3143,8 +3113,7 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let fuelE := mkNatLit moves.size
     let PE := toExpr P
     let WE := toExpr W
-    let hP := mkAppN (mkConst ``Sym.Prog.Ok.mk)
-      #[Ψ, ρ, PE, hB, mkConst ``True.intro, mkConst ``True.intro]
+    let hP := mkAppN (mkConst ``Sym.Prog.Ok.mk) #[Ψ, ρ, PE, hB, hT, hK]
     let walkE := mkAppN (mkConst ``Sym.walk) #[PE, codeE, fuelE, mkNatLit k₀, a, SE]
     let hwalk ← mkExpectedTypeHint (← mkEqRefl walkE) (← mkEq walkE WE)
     goal.assign (mkAppN (mkConst ``Sym.walk_sound')
@@ -3161,7 +3130,7 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let mut atoms' := atoms
     let mut j := 0
     for mv in moves do
-      if let .inl (k, _) := mv then
+      if let .name k _ := mv then
         if j < newVals.size then
           let pad := atoms'.val ++ Array.replicate (k + 1 - atoms'.val.size) (toExpr (0 : BitVec 64))
           atoms' := { atoms' with val := pad.set! k newVals[j]! }
@@ -3170,88 +3139,26 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     -- which instruction of the walk gave each register, and the flags, what
     -- the context says of them at its end
     let stepsL := moves.toList.filterMap fun
-      | .inr x => some x
-      | .inl _ => none
+      | .step at' i len' before cs => some (at', i, len', before, cs)
+      | _ => none
     if stepsL.length > 1 then
       let key₀ := (fetch.hash, n)
       let mut t := (← trailRef.get)[key₀]?.getD {}
-      let afters := (stepsL.drop 1).map (·.2.2.2.1) ++ [S']
+      let afters := (stepsL.drop 1).map (·.2.2.2.1) ++ [arrived]
       for ((at', i, _, before, _), after) in stepsL.zip afters do
         for r in allRegs do
           unless before.regs.get r == after.regs.get r do
             -- a register only given a name holds what it held
             let onlyNamed := (match before.regs.get r, after.regs.get r with
               | .int, .eq (.var k) => moves.any fun
-                | .inl (k', r') => k' == k && r' == r
-                | .inr _ => false
+                | .name k' r' => k' == k && r' == r
+                | _ => false
               | _, _ => false)
             unless onlyNamed do t := t.insert r.name64 (at', i.toAsm)
         unless before.flags == after.flags do t := t.insert "flags" (at', i.toAsm)
       trailRef.modify (·.insert (fetch.hash, atEnd) t)
       trailDone.set true
     return some g
-  if let some (d, v) := leaReg? then
-    unless listed do return none
-    let bsE := Ψ'.appFn!.appArg!
-    let locE := mkApp2 (mkConst ``MemTy.locate) bsE (toExpr v)
-    let some (baseV, i) ← (try evalLocate locE catch _ => pure none) | return none
-    let some g ← symStep | return none
-    -- The register holds exactly the address of byte `i` of the block at
-    -- `baseV`: it is a pointer into that block, or to a block of its kind.
-    return ← g.withContext do
-      let gty := (← instantiateMVars (← g.getType)).consumeMData
-      let gargs := gty.getAppArgs
-      let Γg := gargs[5]!
-      let a' := gargs[4]!
-      unless Γg.isAppOfArity ``CtxOf.mk 7 do return some g
-      let gc := Γg.getAppArgs
-      let gregs := gc[1]!
-      unless gregs.isAppOfArity ``RegMap.get 2 && gregs.appArg!.isAppOfArity ``RegMap.mk 17 do
-        return some g
-      let gtbl := gregs.appArg!.getAppArgs
-      let entry := gtbl[1 + regIdx d]!
-      unless entry.isAppOfArity ``Ty.eq 1 do return some g
-      let vE := entry.appArg!
-      let baseE := toExpr baseV
-      let iE := mkNatLit i
-      let blocksE := mkApp2 (mkConst ``MemTy.blocks) Ψ' baseE
-      let lS ← kwhnf blocksE
-      unless lS.isAppOfArity ``Option.some 2 do return some g
-      let l := lS.appArg!
-      let lW ← kwhnf l
-      unless lW.isAppOfArity ``Layout.mk 4 do return some g
-      let shape := lW.getAppArgs[0]!
-      let wr ← kwhnf lW.getAppArgs[1]!
-      let tagW ← kwhnf lW.getAppArgs[2]!
-      let tag? := if tagW.isAppOfArity ``Option.some 2 then some tagW.appArg! else none
-      let newTy := match tag? with
-        | some t => mkApp3 (mkConst ``Ty.ref) t wr iE
-        | none => mkApp3 (mkConst ``Ty.ptr) shape wr iE
-      let Γ' := mkAppN Γg.getAppFn (gc.set! 1
-        (mkApp gregs.appFn! (mkAppN gregs.appArg!.getAppFn (gtbl.set! (1 + regIdx d) newTy))))
-      let rest ← mkFreshExprSyntheticOpaqueMVar
-        (mkAppN gty.getAppFn #[Φ, fetch, sys, Ψ, a', Γ']) (← g.getTag)
-      let rE := toExpr d
-      let raw := mkApp3 (mkConst ``CtxOf.setReg) Γg rE newTy
-      let eta := mkAppN (mkConst ``BlockOk.regsEta) #[Φ, fetch, sys, Ψ, a', raw, rest]
-      let hr ← mkDecideProof (← mkAppM ``Ne #[rE, mkConst ``Reg.rsp])
-      let hΓ ← mkExpectedTypeHint (← mkEqRefl entry)
-        (← mkEq (mkApp3 (mkConst ``CtxOf.regs) (mkConst ``Ty) Γg rE) entry)
-      let locV := mkApp2 (mkConst ``MemTy.locate) bsE vE
-      let hloc ← mkExpectedTypeHint (← mkEqRefl locV) (← mkEq locV (toExpr (some (baseV, i))))
-      let hl ← mkExpectedTypeHint (← mkEqRefl blocksE) (← mkEq blocksE lS)
-      let rhs ← mkAppM ``HAdd.hAdd #[baseE, mkApp2 (mkConst ``BitVec.ofNat) (mkNatLit 64) iE]
-      let hv ← mkExpectedTypeHint (← mkEqRefl vE) (← mkEq vE rhs)
-      let common := #[bsE, Ψ'.appArg!, baseE, Γg, l, Φ, fetch, sys, a', rE, vE, iE]
-      match tag? with
-      | some t =>
-        let tagE := mkApp (mkConst ``Layout.tag) l
-        let htag ← mkExpectedTypeHint (← mkEqRefl tagE) (← mkEq tagE tagW)
-        g.assign (mkAppN (mkConst ``BlockOk.castRef_of)
-          (common ++ #[t, hr, hΓ, hloc, hl, htag, hv, eta]))
-      | none =>
-        g.assign (mkAppN (mkConst ``BlockOk.castPtr_of) (common ++ #[hr, hΓ, hloc, hl, hv, eta]))
-      return some rest.mvarId!
   symStep
 
 /-- What a register holding the address `v` may be made a pointer to, where

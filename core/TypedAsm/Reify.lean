@@ -337,6 +337,37 @@ def reifyBlocks (bs : Expr) : ReifyM (Option (List (BitVec 64 × ShapeS × Bool)
   unless l.isAppOfArity ``List.nil 1 do return none
   return some (out.toList, layouts)
 
+/-- What the checker is given of the program, read from the lists its
+memory typing is made of: the blocks, which of them are of a declared kind,
+and the shape each kind has. With the layout each block was read from, and
+for each block of a kind the layout it is. -/
+def reifyProg (bs kinds : Expr) : ReifyM (Option (Prog × Array Expr × Array Expr)) := do
+  let env ← getEnv
+  let lctx ← getLCtx
+  let kwhnf (e : Expr) : MetaM Expr := ofExceptKernelException (Kernel.whnf env lctx e)
+  let some (blocks, layouts) ← reifyBlocks bs | return none
+  let mut tags : Array (BitVec 64 × Nat) := #[]
+  let mut tagLayouts : Array Expr := #[]
+  for ((base, _, _), layE) in blocks.zip layouts.toList do
+    let lay ← whnf layE
+    unless lay.isAppOfArity ``Layout.mk 4 do return none
+    let tag ← whnf lay.getAppArgs[2]!
+    if tag.isAppOfArity ``Option.some 2 then
+      let .lit (.natVal t) ← kwhnf tag.appArg! | return none
+      tags := tags.push (base, t)
+      tagLayouts := tagLayouts.push layE
+  let mut ks : Array (Nat × ShapeS) := #[]
+  let mut l ← whnf kinds
+  for _ in [0:256] do
+    unless l.isAppOfArity ``List.cons 3 do break
+    let cell ← whnf l.getAppArgs[1]!
+    unless cell.isAppOfArity ``Prod.mk 4 do return none
+    let .lit (.natVal t) ← kwhnf cell.getAppArgs[2]! | return none
+    ks := ks.push (t, ← reifyShape cell.getAppArgs[3]!)
+    l ← whnf l.appArg!
+  unless l.isAppOfArity ``List.nil 1 do return none
+  return some ({ blocks, tags := tags.toList, kinds := ks.toList }, layouts, tagLayouts)
+
 /-! ## Back to a context as written -/
 
 private def listE (ty : Expr) (xs : Array Expr) (tail : Option Expr := none) : Expr :=
