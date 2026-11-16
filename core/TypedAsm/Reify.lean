@@ -43,6 +43,7 @@ deriving instance ToExpr for Sym.TyS, Sym.ShapeS, Sym.ValsS
 deriving instance ToExpr for Sym.FlagsS
 deriving instance ToExpr for Sym.CtxS
 deriving instance ToExpr for Sym.CondS
+deriving instance BEq for Sym.TyS, Sym.ShapeS, Sym.ValsS
 
 namespace Sym
 
@@ -58,6 +59,10 @@ structure Atoms where
   flags : Array Expr := #[]
   stack : Array Expr := #[]
   owned : Array Expr := #[]
+  /-- Types and shapes a context names by a definition: the term each was
+  read as, and the name, so that it is written back as it was. -/
+  tyNames : Array (TyS × Expr) := #[]
+  shapeNames : Array (ShapeS × Expr) := #[]
 
 abbrev ReifyM := StateT Atoms MetaM
 
@@ -175,6 +180,16 @@ partial def reifyTy (e : Expr) : ReifyM TyS := do
   if e.isAppOfArity ``Ty.str 1 then
     let some m := boolLit? e.appArg! | return ← asAtom
     return .str m
+  -- a type named by a definition is read as what it is defined to be
+  if e.getAppFn.isConst && !(e.getAppFn.constName!.getPrefix == ``Ty) then
+    if let some e' ← unfoldDefinition? e then
+      let saved ← get
+      let τ ← reifyTy e'.headBeta
+      match τ with
+      | .atom _ => set saved
+      | τ =>
+        modify fun s => { s with tyNames := s.tyNames.push (τ, e) }
+        return τ
   asAtom
 
 /-- The term for a shape as it is written. -/
@@ -206,6 +221,16 @@ partial def reifyShape (e : Expr) : ReifyM ShapeS := do
     match ← vals e.getAppArgs[2]! with
     | some vs => return .mk (← reifyNum e.getAppArgs[1]!) vs
     | none => set saved
+  -- a shape named by a definition is read as what it is defined to be
+  if e.getAppFn.isConst && !(e.getAppFn.constName!.getPrefix == ``ShapeOf) then
+    if let some e' ← unfoldDefinition? e then
+      let saved ← get
+      let S ← reifyShape e'.headBeta
+      match S with
+      | .atom _ => set saved
+      | S =>
+        modify fun s => { s with shapeNames := s.shapeNames.push (S, e) }
+        return S
   asAtom
 
 end
@@ -334,7 +359,9 @@ partial def denNum (as : Atoms) : Num → MetaM Expr
 mutual
 
 /-- A type term written out. -/
-partial def denTy (as : Atoms) : TyS → MetaM Expr
+partial def denTy (as : Atoms) (τ : TyS) : MetaM Expr := do
+  if let some (_, e) := as.tyNames.find? (·.1 == τ) then return e
+  match τ with
   | .int => return mkConst ``Ty.int
   | .eq v => return mkApp (mkConst ``Ty.eq) (← denVal as v)
   | .ptr S w off => return mkApp3 (mkConst ``Ty.ptr) (← denShape as S) (toExpr w) (← denNum as off)
@@ -345,7 +372,9 @@ partial def denTy (as : Atoms) : TyS → MetaM Expr
   | .atom i => return as.ty[i]!
 
 /-- A shape term written out. -/
-partial def denShape (as : Atoms) : ShapeS → MetaM Expr
+partial def denShape (as : Atoms) (S : ShapeS) : MetaM Expr := do
+  if let some (_, e) := as.shapeNames.find? (·.1 == S) then return e
+  match S with
   | .mk size .nil => return mkApp2 (mkConst ``ShapeOf.raw) (mkConst ``Ty) (← denNum as size)
   | .mk (.lit 8) (.cons 0 τ .nil) =>
     return mkApp2 (mkConst ``ShapeOf.slot) (mkConst ``Ty) (← denTy as τ)

@@ -1,5 +1,4 @@
-import TypedAsm.Program
-import TypedAsm.Blocks
+import TypedAsm.Loc
 import TypedAsm.RegMap
 
 /-!
@@ -897,6 +896,239 @@ theorem storeStack_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} 
     · cases h
   · cases h
 
+/-! ## Operands in memory
+
+The checker finds where an operand's bytes are by looking at the terms: the
+block a pointer points into, from the pointer's type. What it finds is a
+`Loc`, and what the instruction needs of the place, that so many bytes are
+inside it, is worked out where the numbers are written and left to be shown
+where they are not. -/
+
+/-- The kind of place an operand is in, as terms. -/
+inductive KindS
+  | ptr (writable : Bool)
+  | owned (k : Nat) (a : Val)
+  | piece (k : Nat)
+  | block (writable : Bool)
+
+def KindS.den (ρ : Env) : KindS → Kind
+  | .ptr w => .ptr w
+  | .owned k a => .owned k (a.den ρ)
+  | .piece k => .piece k
+  | .block w => .block w
+
+/-- Where an operand's bytes are, as terms: the kind of place, the shape of
+the block or piece, and the byte. -/
+structure PlaceS where
+  kind : KindS
+  shape : ShapeS
+  off : Num
+
+/-- How many bytes on from its base an operand reaches: its displacement,
+and with an index that holds an exactly known value, that value scaled. -/
+def reach (Γ : CtxS) : Option (IndexReg × Scale) → BitVec 32 → Option Num
+  | none, disp => if disp.toNat < 2 ^ 31 then some (.lit disp.toNat) else none
+  | some (x, sc), disp =>
+    if disp.toNat < 2 ^ 31 then
+      match exactly (Γ.regs.get x.toReg) with
+      | some c => some (Num.plus (.mul (.toNat c) (.lit (2 ^ sc.shift))) (.lit disp.toNat))
+      | none => none
+    else none
+
+theorem reach_none {ρ : Env} {Γ : CtxS} {disp : BitVec 32} {d : Num}
+    (h : reach Γ none disp = some d) : byteDisp (d.den ρ) disp := by
+  simp only [reach] at h
+  split at h
+  · next hlt => cases h; exact byteDisp_toNat hlt
+  · cases h
+
+theorem reach_some {ρ : Env} {Γ : CtxS} {x : IndexReg} {sc : Scale} {disp : BitVec 32} {d : Num}
+    (h : reach Γ (some (x, sc)) disp = some d) :
+    ∃ c, (Γ.den ρ).regs x.toReg = .eq c ∧
+      (c <<< sc.shift) + disp.signExtend 64 = BitVec.ofNat 64 (d.den ρ) := by
+  simp only [reach] at h
+  split at h
+  · next hlt =>
+    split at h
+    · next c hc =>
+      cases h
+      refine ⟨c.den ρ, by rw [CtxS.den_regs, exactly_den hc], ?_⟩
+      rw [Num.den_plus]
+      exact Check.index_bytes (c.den ρ) sc disp hlt
+    · cases h
+  · cases h
+
+/-- **Where an operand's bytes are**, found from the context's terms, and
+what is left to be shown for it to be so. -/
+def locate (Γ : CtxS) : Mem → Option (PlaceS × List CondS)
+  | .sib (some b) ix disp =>
+    if b = .rsp then none
+    else match Γ.regs.get b, reach Γ ix disp with
+      | .ptr S w off, some d => some (⟨.ptr w, S, off.plus d⟩, [])
+      | _, _ => none
+  | _ => none
+
+theorem locate_spec {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {m : Mem}
+    {x : PlaceS × List CondS} (h : locate Γ m = some x) (_hc : CondS.all ρ x.2) :
+    Loc Ψ next (Γ.den ρ) m (x.1.kind.den ρ) (x.1.shape.den ρ) (x.1.off.den ρ) := by
+  unfold locate at h
+  split at h
+  · next b ix disp =>
+    split at h
+    · cases h
+    next hb =>
+    split at h
+    · next S w off d hΓ hr =>
+      cases h
+      have hΓ' : (Γ.den ρ).regs b = .ptr (S.den ρ) w (off.den ρ) := by
+        rw [CtxS.den_regs, hΓ]; rfl
+      show Loc Ψ next _ _ (.ptr w) (S.den ρ) ((off.plus d).den ρ)
+      rw [Num.den_plus]
+      cases ix with
+      | none => exact .field hb hΓ' (reach_none hr)
+      | some xs =>
+        obtain ⟨c, hx, he⟩ := reach_some (ρ := ρ) (x := xs.1) (sc := xs.2) hr
+        exact .indexed hb hΓ' hx he
+    · cases h
+  · cases h
+
+/-- What is left to be shown for `n` bytes from byte `o` to be inside a
+block of a given length: nothing where the numbers are written and it is so. -/
+def within (o : Num) (n : Nat) (size : Num) : Option (List CondS) :=
+  match (o.plus (.lit n)).lit?, size.lit? with
+  | some a, some b => if a ≤ b then some [] else none
+  | _, _ => some [.le (o.plus (.lit n)) size]
+
+theorem within_spec {ρ : Env} {o : Num} {n : Nat} {size : Num} {cs : List CondS}
+    (h : within o n size = some cs) (hc : CondS.all ρ cs) : o.den ρ + n ≤ size.den ρ := by
+  unfold within at h
+  split at h
+  · next a b ha hb =>
+    split at h
+    · next hle =>
+      have := Num.lit?_den (ρ := ρ) ha
+      rw [Num.den_plus] at this
+      rw [Num.lit?_den hb]
+      show o.den ρ + n ≤ b
+      have e : (Num.lit n).den ρ = n := rfl
+      omega
+    · cases h
+  · cases h
+    have := hc.1
+    simp only [CondS.den, Num.den_plus] at this
+    exact this
+
+/-- Whether no typed value keeps clear of... -/
+def ValsS.allClear : ValsS → Nat → Nat → Bool
+  | .nil, _, _ => true
+  | .cons p _ rest, o, n => (decide (p + 8 ≤ o) || decide (o + n ≤ p)) && rest.allClear o n
+
+theorem ValsS.den_allClear (ρ : Env) : (vs : ValsS) → (o n : Nat) →
+    (vs.den ρ).all (ShapeOf.clearOf o n) = vs.allClear o n
+  | .nil, _, _ => rfl
+  | .cons p τ rest, o, n => by
+    show List.all ((p, τ.den ρ) :: rest.den ρ) _ = _
+    rw [List.all_cons, ValsS.den_allClear ρ rest o n]
+    rfl
+
+/-- What a shape's terms say is at a byte: a typed value, plain bytes, or
+nothing that can be read off them. -/
+def ShapeS.look : ShapeS → Num → Option (Option TyS)
+  | .mk _ .nil, _ => some none
+  | .mk _ vals, .lit i => some (vals.find i)
+  | _, _ => none
+
+theorem ShapeS.look_typed {ρ : Env} {S : ShapeS} {o : Num} {τ : TyS}
+    (h : S.look o = some (some τ)) : (S.den ρ).valAt (o.den ρ) = some (τ.den ρ) := by
+  unfold ShapeS.look at h
+  split at h
+  · cases h
+  · next sz vals i _ =>
+    exact ShapeS.den_valAt (S := .mk sz vals) (Option.some.inj h)
+  · cases h
+
+/-- Whether `n` bytes of a shape are seen from its terms to be plain. -/
+def ShapeS.free : ShapeS → Num → Nat → Bool
+  | .mk _ .nil, _, _ => true
+  | .mk _ vals, .lit i, n => vals.allClear i n
+  | _, _, _ => false
+
+theorem ShapeS.den_free {ρ : Env} {S : ShapeS} {o : Num} {n : Nat} (h : S.free o n = true) :
+    (S.den ρ).free (o.den ρ) n = true := by
+  unfold ShapeS.free at h
+  split at h
+  · rfl
+  · next sz vals i _ =>
+    show (vals.den ρ).all _ = true
+    rw [ValsS.den_allClear]; exact h
+  · cases h
+
+/-- What is left to be shown for `n` bytes to be read from an operand. -/
+def reads (Γ : CtxS) (n : Nat) (m : Mem) : Option (List CondS) :=
+  match locate Γ m with
+  | some (pl, cs) => (within pl.off n pl.shape.size).map (cs ++ ·)
+  | none => none
+
+theorem CondS.all_append {ρ : Env} : (as bs : List CondS) →
+    CondS.all ρ (as ++ bs) → CondS.all ρ as ∧ CondS.all ρ bs
+  | [], _, h => ⟨trivial, h⟩
+  | _ :: as, bs, h => ⟨⟨h.1, (CondS.all_append as bs h.2).1⟩, (CondS.all_append as bs h.2).2⟩
+
+theorem reads_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {n : Nat} {m : Mem}
+    {cs : List CondS} (h : reads Γ n m = some cs) (hc : CondS.all ρ cs) :
+    ReadOk Ψ next (Γ.den ρ) n (.mem m) := by
+  unfold reads at h
+  split at h
+  · next pl cs₀ hl =>
+    cases hw : within pl.off n pl.shape.size with
+    | none => rw [hw] at h; cases h
+    | some ws =>
+      rw [hw] at h; cases h
+      obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc
+      refine (locate_spec (Ψ := Ψ) (next := next) hl h₁).read ?_
+      rw [ShapeS.den_size]
+      exact within_spec hw h₂
+  · cases h
+
+/-- A 64-bit load from memory: the typed value there, or a number. -/
+def load (Γ : CtxS) (d : Reg) (m : Mem) : Option (CtxS × List CondS) :=
+  if d = .rsp then none
+  else match locate Γ m with
+    | some (pl, cs) =>
+      match pl.shape.look pl.off with
+      | some (some τ) => some (Γ.setReg d τ, cs)
+      -- plain bytes are a number; where the terms do not say what is there,
+      -- the checker has no answer, since a number might be a loss
+      | some none => (within pl.off 8 pl.shape.size).map fun ws => (Γ.setReg d .int, cs ++ ws)
+      | none => none
+    | none => none
+
+theorem load_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {d : Reg} {m : Mem}
+    {x : CtxS × List CondS} (h : load Γ d m = some x) (hc : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) (.mov .w64 (.r_m d m)) (x.1.den ρ) := by
+  unfold load at h
+  split at h
+  · cases h
+  next hd =>
+  split at h
+  · next pl cs hl =>
+    split at h
+    · next τ hτ =>
+      cases h
+      rw [CtxS.den_setReg]
+      exact (locate_spec (Ψ := Ψ) (next := next) hl hc).load hd (ShapeS.look_typed hτ)
+    · cases hw : within pl.off 8 pl.shape.size with
+      | none => rw [hw] at h; cases h
+      | some ws =>
+        rw [hw] at h; cases h
+        obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc
+        rw [CtxS.den_setReg]
+        refine .loadInt hd ((locate_spec (Ψ := Ψ) (next := next) hl h₁).read ?_)
+        rw [ShapeS.den_size]
+        exact within_spec hw h₂
+    · cases h
+  · cases h
+
 /-- **The checker** for an instruction that goes on to the next. It gives the
 context afterwards and what is left to be shown. -/
 def step (next : BitVec 64) (Γ : CtxS) : Instr → Option (CtxS × List CondS)
@@ -922,6 +1154,12 @@ def step (next : BitVec 64) (Γ : CtxS) : Instr → Option (CtxS × List CondS)
   | .mov .w64 (.rm_r (.mem (.sib (some .rsp) none disp)) s) => storeStack Γ s disp
   | .push r => push Γ r
   | .pop r => pop Γ r
+  | .mov .w64 (.r_m d m) => load Γ d m
+  | .mov w (.r_m d m) =>
+    if d = .rsp then none else (reads Γ w.bytes.toNat m).map fun cs => (Γ.setReg d .int, cs)
+  | .alu op w (.r_m d m) =>
+    if d = .rsp then none
+    else (reads Γ w.bytes.toNat m).map fun cs => (afterAlu Γ op d, cs ++ carryConds Γ.flags op)
   | .alu op w (.rm_r (.reg d) s) =>
     if d = .rsp then none
     else if op = .xor ∧ d = s then
@@ -1009,6 +1247,26 @@ theorem step_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {i : I
   · exact storeStack_sound h
   · exact push_sound h hn
   · exact pop_sound h
+  · exact load_sound h hn
+  · split at h
+    · cases h
+    · next hd =>
+      cases hr : reads Γ _ _ with
+      | none => rw [hr] at h; cases h
+      | some cs =>
+        rw [hr] at h; cases h
+        rw [CtxS.den_setReg]
+        exact .loadInt hd (reads_sound hr hn)
+  · split at h
+    · cases h
+    · next hd =>
+      cases hr : reads Γ _ _ with
+      | none => rw [hr] at h; cases h
+      | some cs =>
+        rw [hr] at h; cases h
+        obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hn
+        rw [den_afterAlu]
+        exact .aluLoad hd (reads_sound hr h₁) (carryConds_spec h₂)
   · next op w d s =>
     split at h
     · cases h
