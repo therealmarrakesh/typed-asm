@@ -163,6 +163,76 @@ theorem Entry.hasData {s : State} {a : BitVec 64} {bytes : List Byte}
     List.getElem?_eq_getElem hk]
   rfl
 
+/-- The eight bytes a program puts at an address, as a number; a byte it
+does not put there counts as zero. -/
+def partsWord (parts : List (Nat × Perm × List Byte)) (a : BitVec 64) : BitVec 64 :=
+  word64 ((List.range 8).map fun k =>
+    (partsByte parts (a + BitVec.ofNat 64 k).toNat).getD 0) 0
+
+/-- Whether a program puts all eight bytes at an address. -/
+def partsCover (parts : List (Nat × Perm × List Byte)) (a : BitVec 64) : Bool :=
+  (List.range 8).all fun k => (partsByte parts (a + BitVec.ofNat 64 k).toNat).isSome
+
+/-- A 64-bit load from where the program put eight bytes is the number they
+spell. -/
+theorem Entry.load64_parts {s : State} {a : BitVec 64}
+    (h : Entry entry parts blocks room above s) (hc : partsCover parts a = true) :
+    s.load64 a = partsWord parts a := by
+  have hd : s.HasData a ((List.range 8).map fun k =>
+      (partsByte parts (a + BitVec.ofNat 64 k).toNat).getD 0) := by
+    refine h.hasData (List.all_eq_true.mpr fun k hk => ?_)
+    rw [List.length_map, List.length_range] at hk
+    have hk8 := List.mem_range.mp hk
+    have hs := List.all_eq_true.mp hc k hk
+    obtain ⟨b, hb⟩ := Option.isSome_iff_exists.mp hs
+    simp only [List.getD_eq_getElem?_getD, List.getElem?_map, List.getElem?_range hk8,
+      Option.map_some, Option.getD_some, hb, beq_self_eq_true]
+  have := hd.load64 (i := 0) (by simp)
+  rwa [show a + BitVec.ofNat 64 0 = a from by simp] at this
+
+/-- Each typed value of one block is, in the bytes the program puts there,
+what `P` asks of its type. -/
+def FieldsOk (P : Ty → BitVec 64 → Prop) (parts : List (Nat × Perm × List Byte))
+    (a : BitVec 64) : List (Nat × Ty) → Prop
+  | [] => True
+  | p :: ps =>
+    (partsCover parts (a + BitVec.ofNat 64 p.1) = true ∧
+      P p.2 (partsWord parts (a + BitVec.ofNat 64 p.1))) ∧ FieldsOk P parts a ps
+
+/-- The same of every block. -/
+def ValsOk (P : Ty → BitVec 64 → Prop) (parts : List (Nat × Perm × List Byte)) :
+    List (BitVec 64 × Layout) → Prop
+  | [] => True
+  | x :: rest => FieldsOk P parts x.1 x.2.shape.vals ∧ ValsOk P parts rest
+
+/-- **What the data is typed as is settled from the program's bytes.** If
+each typed value of each block is, as the program's bytes spell it, of its
+type, then it is in every state meeting the entry contract. -/
+theorem Entry.valuesOk_of {P : Ty → BitVec 64 → Prop} {s : State}
+    (h : Entry entry parts blocks room above s) (hc : ValsOk P parts blocks) :
+    ∀ x ∈ blocks, ∀ p ∈ x.2.shape.vals, P p.2 (s.load64 (x.1 + BitVec.ofNat 64 p.1)) := by
+  have fields : ∀ (a : BitVec 64) (vs : List (Nat × Ty)), FieldsOk P parts a vs →
+      ∀ p ∈ vs, P p.2 (s.load64 (a + BitVec.ofNat 64 p.1)) := by
+    intro a vs
+    induction vs with
+    | nil => intro _ p hp; cases hp
+    | cons q qs ih =>
+      intro hf p hp
+      rcases List.mem_cons.mp hp with rfl | hp
+      · rw [h.load64_parts hf.1.1]; exact hf.1.2
+      · exact ih hf.2 p hp
+  have all : ∀ bs : List (BitVec 64 × Layout), ValsOk P parts bs →
+      ∀ x ∈ bs, ∀ p ∈ x.2.shape.vals, P p.2 (s.load64 (x.1 + BitVec.ofNat 64 p.1)) := by
+    intro bs
+    induction bs with
+    | nil => intro _ x hx; cases hx
+    | cons y ys ih =>
+      intro hv x hx
+      rcases List.mem_cons.mp hx with rfl | hx
+      · exact fields _ _ hv.1
+      · exact ih hv.2 x hx
+  exact all blocks hc
+
 /-- A state meeting the entry contract matches the entry context with any
 pieces at and above `rsp` that come to the bytes that are there and whose
 typed values are of their types, provided each typed value of each block is

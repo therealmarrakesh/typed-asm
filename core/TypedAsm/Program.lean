@@ -414,6 +414,19 @@ theorem FnSigEx.at_label {ι : Type} [Chosen ι] {sig : FnSigEx ι} {l : L}
     sig.At (CodeTy.ofLabels prog base T) (Asm.addr prog base l) :=
   fun saved ret rest room frame above hK => .intro (h saved ret rest room frame above hK)
 
+/-- The same of an address known to be the label's. -/
+theorem FnSig.at_label_eq {sig : FnSig} {l : L} {v : BitVec 64}
+    (hv : Asm.addr prog base l = v)
+    (h : ∀ saved ret rest room, sig.CallerOk saved ret rest room →
+      T l (sig.entry saved ret rest room)) :
+    sig.At (CodeTy.ofLabels prog base T) v := hv ▸ FnSig.at_label h
+
+theorem FnSigEx.at_label_eq {ι : Type} [Chosen ι] {sig : FnSigEx ι} {l : L} {v : BitVec 64}
+    (hv : Asm.addr prog base l = v)
+    (h : ∀ saved ret rest room frame above, sig.CallerOk saved ret rest room frame above →
+      T l (sig.entry saved ret rest room frame above)) :
+    sig.At (CodeTy.ofLabels prog base T) v := hv ▸ FnSigEx.at_label h
+
 end Labels
 
 /-- In a program typed block by block, the address of a function is a

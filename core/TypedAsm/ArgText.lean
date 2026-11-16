@@ -95,6 +95,12 @@ theorem MemTy.ofList_text {blocks : List (BitVec 64 × Layout)} {texts : List (B
 variable {entry : BitVec 64} {parts : List (Nat × Perm × List Byte)}
   {blocks : List (BitVec 64 × Layout)} {room : Nat}
 
+/-- The contract asks nothing of the outside world. -/
+theorem EntryTexts.withWorld {s : State} (h : EntryTexts entry parts blocks room s)
+    (w : World) : EntryTexts entry parts blocks room { s with world := w } :=
+  let ⟨texts, hE, h1, h2, h3, h4⟩ := h
+  ⟨texts, hE.withWorld w, h1, h2, h3, h4⟩
+
 /-- **A state meeting the contract is well typed** against the program's
 memory typing with a block of text added for each argument, in the context
 for the number of arguments it holds. -/

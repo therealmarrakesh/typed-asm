@@ -12,9 +12,6 @@ open TypedAsm
 
 namespace Args
 
--- Where the data is loaded: the byte that ends a line.
-asm_label dataBase .newline
-
 /-! ## The typing -/
 
 /-- The stack as the program finds it when given `c` arguments: the count,
@@ -41,14 +38,9 @@ inductive At : Label → Ctx → Prop
   | arg (c v : BitVec 64) : At .arg (loopCtx c v)
   | scan (c v : BitVec 64) : At .scan (scanCtx c v)
 
-/-- The code typing: those contexts, at the addresses of their labels. -/
-def Φ : CodeTy := .ofLabels code base At
-
-/-- The program has no memory blocks of its own. The texts of its arguments
-are blocks, but they are there only when it runs. -/
-def blocks : List (BitVec 64 × Layout) := []
-
-def Ψ : MemTy := .ofList blocks []
+-- The program's one block is the byte that ends a line. The texts of its
+-- arguments are blocks too, but they are there only when it runs.
+asm_typing At
 
 /-! ## The program is well typed -/
 
@@ -75,37 +67,9 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     · ty_block
     ty_block
 
-/-! ## The memory typing and the entry contract -/
-
-theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
-
-/-- What the program needs of the state it starts in: its bytes in
-executable memory, and the stack as Linux leaves it for a new program: the
-number of arguments at `[rsp]`, then the address of each one's text, each
-text readable and ended by a zero. Nothing is asked of what the arguments
-say. -/
-abbrev Entry : State → Prop := TypedAsm.EntryTexts entry parts blocks 0
-
 /-! ## Safety -/
 
-/-- **From any state meeting the entry contract, however many arguments it
-was given and whatever they say, the program is safe on the machine that
-fetches instructions by decoding memory.** It never gets stuck and never
-faults. -/
-theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  h.safeMem blocksOk rfl At.start (by simp [blocks])
-
-/-- The starting state used by the simulator meets the entry contract,
-whatever the arguments. -/
-theorem start_entry (args : List (List Byte)) : Entry (startArgs args) := by ty_loaded
-
-/-- The simulator's run is safe whatever arguments it is given. -/
-theorem safeMem (args : List String) : SafeMem linux (startWith args) :=
-  safeMem_of_entry (start_entry _)
+-- Safe however many arguments the program is given and whatever they say.
+asm_safety At.start
 
 end Args
-
--- The proof rests on Lean's three standard axioms and nothing else.
-/-- info: 'Args.safeMem' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms Args.safeMem

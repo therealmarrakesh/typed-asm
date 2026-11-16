@@ -71,45 +71,10 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_steps
     ty_call unary
 
-/-! ## The memory typing and the entry contract -/
-
-/-- The data has the types the blocks claim. The table's entries are
-function pointers because the data holds the addresses of two functions,
-and those functions are well typed. -/
-theorem Entry.valuesOk {s : State} (h : Entry s) (n : Nat) :
-    ∀ x ∈ blocks, ∀ p ∈ x.2.shape.vals,
-      HasTy fetch linux Ψ n p.2 (s.load64 (x.1 + BitVec.ofNat 64 p.1)) := by
-  intro x hx p hp
-  simp only [blocks, List.mem_cons, List.not_mem_nil, or_false] at hx
-  subst hx
-  simp only [tableLayout, List.mem_cons, List.not_mem_nil, or_false] at hp
-  have hd : s.HasData dataBase tableBytes := h.hasData (by decide +kernel)
-  rcases hp with rfl | rfl
-  · have e : word64 tableBytes 0 = Asm.addr code base .double := by decide +kernel
-    rw [hd.load64 (i := 0) (by decide), e]
-    exact blocksOk.hasTy_fn (FnSig.at_label At.double) n
-  · have e : word64 tableBytes 8 = Asm.addr code base .square := by decide +kernel
-    rw [hd.load64 (i := 8) (by decide), e]
-    exact blocksOk.hasTy_fn (FnSig.at_label At.square) n
-
 /-! ## Safety -/
 
-/-- **From any state meeting the entry contract, the program is safe on the
-machine that fetches instructions by decoding memory.** It never gets stuck
-and never faults. -/
-theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  h.safeMem blocksOk memOk At.start h.valuesOk
-
-/-- The starting state used by the simulator meets the entry contract. -/
-theorem start_entry : Entry start := by ty_loaded
-
-/-- The simulator's run is safe, with instructions decoded from memory. -/
-theorem safeMem : SafeMem linux start :=
-  safeMem_of_entry start_entry
+-- The table holds the addresses of `double` and `square`, which are function
+-- pointers because those functions are typed: read from the program's bytes.
+asm_safety At.start
 
 end Dispatch
-
--- The proof rests on Lean's three standard axioms and nothing else.
-/-- info: 'Dispatch.safeMem' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms Dispatch.safeMem
