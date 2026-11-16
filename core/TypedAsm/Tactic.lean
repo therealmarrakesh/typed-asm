@@ -2713,6 +2713,11 @@ with a context of their own to hand over to. Set while a block is walked to
 its end; where it is not set, the checker takes one instruction at a time. -/
 initialize runStops : IO.Ref (Option (Array Nat)) ← IO.mkRef none
 
+/-- Whether the labels with contexts of their own are all known: they are
+where the code typing is made from a family of contexts given label by
+label. Only then does a walk follow a jump to an address that is not one. -/
+initialize labelsKnown : IO.Ref Bool ← IO.mkRef false
+
 /-- Set when a run has recorded for itself which instruction gave each
 register what it holds. -/
 initialize trailDone : IO.Ref Bool ← IO.mkRef false
@@ -2882,7 +2887,8 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
   let some instrs ← instrsOf fetch | return none
   let some (instr, len) := instrs[n]? | return none
   -- a jump may be one the walk follows; nothing else that ends a block is
-  if instr.endsBlock && !(instr matches .jmp (.rel _)) then return none
+  if instr.endsBlock && !(instr matches .jmp (.rel _)) && !(instr matches .jcc _ _) then
+    return none
   let typeOf (r : Reg) : MetaM Expr := whnf tbl[1 + regIdx r]!
   let iE := toExpr instr
   let lenE := toExpr len
@@ -2970,12 +2976,23 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         if let .jmp (.rel d) := i then
           let t := (BitVec.ofNat 64 at' + len' + d.signExtend 64).toNat
           let some stops := stops? | break
+          unless ← labelsKnown.get do break
           if advanced && stops.contains at' then break
           unless at' < t && !stops.contains t do break
           moves := moves.push (.jump at' i len')
           at' := t
           advanced := true
           continue
+        -- a conditional jump forward to an address with no context of its
+        -- own: both sides are typed where they are, and the walk ends in them
+        if let .jcc _ d := i then
+          let t := (BitVec.ofNat 64 at' + len' + d.signExtend 64).toNat
+          let some stops := stops? | break
+          unless ← labelsKnown.get do break
+          if advanced && stops.contains at' then break
+          unless at' < t && !stops.contains t do break
+          moves := moves.push (.split at' i len')
+          break
         if advanced && waits cur i at' next' then break
         -- a value that may be null, or what a system call handed back, is
         -- about to be tested: the block goes on once for each thing it may be
@@ -3047,6 +3064,7 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       | .both _ _ => none
       | .err _ _ _ => none
       | .byte _ _ _ => none
+      | .branch _ _ _ _ => none
     let S'? := final W
     let ρ := atoms.env
     let SE := toExpr S
@@ -3142,6 +3160,26 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
             let body ← down l atoms' ((vs.push v).push hv) ((names.push `e).push `herr)
             mkLambdaFVars #[v, hv] (← instantiateMVars body)
         mkAppM ``And.intro #[hl, ← down r atoms vs names]
+      | .branch fl c taken fall =>
+        -- each side is left as it stands, to be taken up with what the
+        -- flags say of the condition as its first hypotheses
+        let side (child : Sym.Walk) (b : Bool) : TacticM Expr := do
+          let .stop a' Γ' := child | throwError "a branch's side is not where the walk stopped"
+          let Γ'E ← Sym.denCtx atoms Γ'
+          let P ← Sym.denFlags atoms fl
+          let goalTy ← withLocalDeclD `f (mkConst ``Flags) fun f => do
+            let hyp := (mkApp P f).headBeta
+            let ev ← mkEq (← mkAppM ``Cond.eval #[f, toExpr c]) (← mkAppM ``Option.some #[toExpr b])
+            mkForallFVars #[f] (← mkArrow hyp (← mkArrow ev
+              (mkAppN ty.getAppFn #[Φ, fetch, sys, Ψ, toExpr a', Γ'E])))
+          let m ← withLCtx lctx outerInsts <|
+            mkFreshExprSyntheticOpaqueMVar (← mkForallFVars vs goalTy) (← goal.getTag)
+          restRef.modify (·.push (m, names))
+          return mkAppN m vs
+        -- the side that carries on comes first among the goals
+        let hFall ← side fall false
+        let hTaken ← side taken true
+        mkAppM ``And.intro #[hTaken, hFall]
       | .byte k zero more =>
         let hz ← down zero atoms vs names
         let hm ← withLocalDeclD `b bv fun v => do
@@ -3981,6 +4019,20 @@ private def jumpsForward : Instr → Bool
   | .jmp (.rel d) | .jcc _ d => !d.msb
   | _ => false
 
+/-- Whether a code typing is made from a family of contexts given label by
+label, so that the labels with a context of their own can be read off it. -/
+private def declaresByLabel (Φ : Expr) : MetaM Bool := do
+  let mut f := Φ
+  for _ in [0:4] do
+    if f.isAppOf ``CodeTy.ofLabels then break
+    let some f' ← unfoldDefinition? f | return false
+    f := f'.headBeta
+  unless f.isAppOf ``CodeTy.ofLabels && f.getAppNumArgs ≥ 3 do return false
+  let args := f.getAppArgs
+  let .const tn _ := args[args.size - 1]!.getAppFn | return false
+  let some (.inductInfo _) := (← getEnv).find? tn | return false
+  return true
+
 /-- The addresses of the labels a labelled code typing declares a context
 at: where a block may hand over to another. -/
 private def declaredLabels (Φ : Expr) : MetaM (Array Nat) := do
@@ -4423,6 +4475,19 @@ elab "ty_block" : tactic => do
     let mut endInstr? : Option Instr := none
     let mut entered := false
     repeat
+      -- A side of a conditional jump the walk left: what the flags say of the
+      -- condition is brought in, and a side they rule out needs nothing more.
+      let g₀ ← getMainGoal
+      if (← instantiateMVars (← g₀.getType)).consumeMData.isForall then
+        let behind := (← getGoals).drop 1
+        let [g₁] ← runOn g₀ introBranch | throwError "unexpected goals"
+        if ← closeIfImpossible g₁ then
+          setGoals behind
+          entered := true
+          break
+        let [g₂] ← runOn g₁ (do evalTactic (← `(tactic| ty_normalize)))
+          | throwError "unexpected goals"
+        setGoals (g₂ :: behind)
       -- where the next instruction is at a label with a context of its own
       -- that accepts the one reached, the block hands over to it
       let labels ← do
@@ -4438,6 +4503,9 @@ elab "ty_block" : tactic => do
         else pure #[]
       if ← tryInto labels then entered := true; break
       runStops.set (some labels)
+      labelsKnown.set (← do
+        let ty := (← instantiateMVars (← (← getMainGoal).getType)).consumeMData
+        if ty.isAppOfArity ``BlockOk 6 then declaresByLabel ty.getAppArgs[0]! else pure false)
       let r ← try typeStep finally runStops.set none
       match r with
       | .stepped => continue

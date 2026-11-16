@@ -4006,6 +4006,10 @@ inductive Walk
   /-- A byte of text was loaded: the rest with it zero, and with it some
   other byte, named `k`. -/
   | byte (k : Nat) (zero more : Walk)
+  /-- A conditional jump both sides of which are typed where they are: the
+  rest where the condition held, and where it did not, each with that known
+  of the flags. -/
+  | branch (fl : FlagsS) (c : Cond) (taken fall : Walk)
 
 /-- That a walk's conditions hold, and that `P` holds of where it stopped:
 for every value each name may stand for. -/
@@ -4017,6 +4021,9 @@ def Walk.holds (P : BitVec 64 → Ctx → Prop) : Walk → Env → Prop
   | .err k l r, ρ => (∀ e, SysErr e → l.holds P (ρ.setVal k e)) ∧ r.holds P ρ
   | .byte k zero more, ρ =>
     zero.holds P ρ ∧ ∀ b : BitVec 64, b ≠ 0 → b < 256 → more.holds P (ρ.setVal k b)
+  | .branch fl c taken fall, ρ =>
+    (∀ f, fl.den ρ f → c.eval f = some true → taken.holds P ρ) ∧
+      (∀ f, fl.den ρ f → c.eval f = some false → fall.holds P ρ)
 
 /-- The first register an instruction needs the value of that the context
 only knows to hold a number. -/
@@ -4267,6 +4274,27 @@ theorem jumpTo_spec {P : Prog} {a len t : BitVec 64} {i : Instr} (h : jumpTo P a
     · cases h
   · cases h
 
+/-- Where a conditional jump goes that is typed where it is: forward, to an
+address with no context of its own. -/
+def branchTo (P : Prog) (a len : BitVec 64) : Instr → Option (Cond × BitVec 64)
+  | .jcc c d =>
+    if a.toNat < (a + len + d.signExtend 64).toNat ∧
+        P.labels.contains (a + len + d.signExtend 64) = false then
+      some (c, a + len + d.signExtend 64)
+    else none
+  | _ => none
+
+theorem branchTo_spec {P : Prog} {a len t : BitVec 64} {c : Cond} {i : Instr}
+    (h : branchTo P a len i = some (c, t)) :
+    ∃ d, i = .jcc c d ∧ t = a + len + d.signExtend 64 := by
+  unfold branchTo at h
+  split at h
+  · next c' d =>
+    split at h
+    · cases h; exact ⟨d, rfl, rfl⟩
+    · cases h
+  · cases h
+
 /-- The checker walked from an address for at most so many moves, `k` being
 a variable no term yet mentions. Before an instruction, a pointer to a block
 of a kind that it reaches through is opened, and a value it needs to speak
@@ -4280,6 +4308,10 @@ def walk (P : Prog) (code : List (BitVec 64 × Instr × BitVec 64)) :
     | some (i, len) =>
       match jumpTo P a len i with
       | some t => walk P code fuel k t Γ
+      | none =>
+      match branchTo P a len i with
+      | some (c, t) =>
+        .conds (decideConds Γ.flags c) (.branch Γ.flags c (.stop t Γ) (.stop (a + len) Γ))
       | none =>
       match toSplit Γ i with
       | some (r, τ, false) =>
@@ -4331,6 +4363,13 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
       · next t hj =>
         obtain ⟨d, rfl, rfl⟩ := jumpTo_spec hj
         exact .jump (Agrees.lookup code hcode hl) (walk_sound hcode fuel k _ Γ ρ hP h)
+      next =>
+      split at h
+      · next c t hb =>
+        obtain ⟨d, rfl, rfl⟩ := branchTo_spec hb
+        obtain ⟨hdec, htaken, hfall⟩ := h
+        exact .branchIn (Agrees.lookup code hcode hl) (decideConds_spec hdec)
+          (fun f hf hc => htaken f hf hc) (fun f hf hc => hfall f hf hc)
       next =>
       split at h
       · next r τ hsp =>
