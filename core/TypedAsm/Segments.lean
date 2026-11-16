@@ -370,14 +370,16 @@ theorem next_eq (target : L → BitVec 64) (a : Nat) (x : Asm L) (hx : ∀ q, x 
     rw [List.length_replicate]
     have := le_alignUp a n
     omega
-  | ins i => rfl
+  | ins i =>
+    show a + i.size = a + i.encode.length
+    rw [Instr.size_eq]; rfl
   | label l => rfl
-  | jmp l => show a + _ = a + _; simp [len, lineBytes, instr, Instr.length, Instr.encode, le32]
-  | jcc c l => show a + _ = a + _; simp [len, lineBytes, instr, Instr.length, Instr.encode, le32]
-  | call l => show a + _ = a + _; simp [len, lineBytes, instr, Instr.length, Instr.encode, le32]
+  | jmp l => show a + _ = a + _; simp [len, lineBytes, instr, Instr.encode, le32]
+  | jcc c l => show a + _ = a + _; simp [len, lineBytes, instr, Instr.encode, le32]
+  | call l => show a + _ = a + _; simp [len, lineBytes, instr, Instr.encode, le32]
   | ref i l past =>
-    show a + i.length = a + ((i.aim _ _).encode).length
-    rw [← Instr.length_aim i]; rfl
+    show a + i.size = a + ((i.aim _ _).encode).length
+    rw [Instr.size_eq, ← Instr.length_aim i]; rfl
   | bytes bs => rfl
   | quad l => show a + 8 = a + (le64 _).length; simp [le64, le32]
   | space n => show a + n = a + (List.replicate n (0 : Byte)).length; rw [List.length_replicate]

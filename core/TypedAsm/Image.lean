@@ -79,7 +79,7 @@ theorem tableFrom_mem (target : L → BitVec 64) (a : Nat) (p : Perm) (prog : Li
       · next hp =>
         rcases List.mem_cons.mp he with rfl | he
         · subst hp
-          exact ⟨rfl, .inl (by rw [lineBytes_of_instr hi])⟩
+          exact ⟨by rw [← Instr.size_eq], .inl (by rw [lineBytes_of_instr hi])⟩
         · exact ⟨(ih _ _ e he).1, .inr (ih _ _ e he).2⟩
       · exact ⟨(ih _ _ e he).1, .inr (ih _ _ e he).2⟩
     · exact ⟨(ih _ _ e he).1, .inr (ih _ _ e he).2⟩

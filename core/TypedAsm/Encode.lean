@@ -200,6 +200,173 @@ def Instr.encode : Instr → List Byte
 def Instr.length (i : Instr) : Nat :=
   i.encode.length
 
+/-! ## An instruction's length without its bytes
+
+Where a program is laid out, only the lengths of its instructions are
+wanted, and they are wanted for every address in it. The length is worked
+out here from the instruction alone, with no byte made, and is the length
+of the encoding. -/
+
+/-- The length of the `REX` prefix: one byte or none. -/
+def rexLen (w r x b : Bool) (force : Bool := false) : Nat :=
+  if w || r || x || b || force then 1 else 0
+
+theorem rex_length (w r x b force : Bool) : (rex w r x b force).length = rexLen w r x b force := by
+  unfold rex rexLen
+  split <;> rfl
+
+/-- The length of a displacement from a base register. -/
+def dispLen (b : Reg) (disp : BitVec 32) : Nat :=
+  if disp == 0 && b.low != 5 then 0 else if fits8 disp then 1 else 4
+
+theorem dispEnc_length (b : Reg) (disp : BitVec 32) : (dispEnc b disp).2.length = dispLen b disp := by
+  unfold dispEnc dispLen
+  split
+  · rfl
+  · split <;> rfl
+
+/-- The length of a memory operand's bytes, and its two `REX` bits. -/
+def Mem.encLen : Mem → Nat
+  | .rip _ => 5
+  | .sib none _ _ => 6
+  | .sib (some b) none disp => (if b.low == 4 then 2 else 1) + dispLen b disp
+  | .sib (some b) (some _) disp => 2 + dispLen b disp
+
+def Mem.encX : Mem → Bool
+  | .sib _ (some (i, _)) _ => i.toReg.ext
+  | _ => false
+
+def Mem.encB : Mem → Bool
+  | .sib (some b) _ _ => b.ext
+  | _ => false
+
+theorem Mem.encode_length (reg : Nat) (m : Mem) : (m.encode reg).bytes.length = m.encLen := by
+  cases m with
+  | rip d => simp [Mem.encode, Mem.encLen, le32]
+  | sib b i d =>
+    cases b with
+    | none => cases i with
+      | none => simp [Mem.encode, Mem.encLen, le32]
+      | some x => obtain ⟨i, s⟩ := x; simp [Mem.encode, Mem.encLen, le32]
+    | some b => cases i with
+      | none =>
+        simp only [Mem.encode, Mem.encLen]
+        split <;> simp [dispEnc_length] <;> omega
+      | some x =>
+        obtain ⟨i, s⟩ := x
+        simp only [Mem.encode, Mem.encLen]
+        simp [dispEnc_length]; omega
+
+theorem Mem.encode_x (reg : Nat) (m : Mem) : (m.encode reg).x = m.encX := by
+  cases m with
+  | rip d => rfl
+  | sib b i d =>
+    cases b <;> cases i <;> first | rfl | (simp only [Mem.encode, Mem.encX]; split <;> rfl)
+
+theorem Mem.encode_b (reg : Nat) (m : Mem) : (m.encode reg).b = m.encB := by
+  cases m with
+  | rip d => rfl
+  | sib b i d =>
+    cases b <;> cases i <;> first | rfl | (simp only [Mem.encode, Mem.encB]; split <;> rfl)
+
+/-- The same for a register-or-memory operand. -/
+def RM.encLen : RM → Nat
+  | .reg _ => 1
+  | .mem m => m.encLen
+
+def RM.encX : RM → Bool
+  | .reg _ => false
+  | .mem m => m.encX
+
+def RM.encB : RM → Bool
+  | .reg r => r.ext
+  | .mem m => m.encB
+
+theorem RM.encode_length (reg : Nat) (rm : RM) : (rm.encode reg).bytes.length = rm.encLen := by
+  cases rm with
+  | reg r => rfl
+  | mem m => exact Mem.encode_length reg m
+
+theorem RM.encode_x (reg : Nat) (rm : RM) : (rm.encode reg).x = rm.encX := by
+  cases rm with
+  | reg r => rfl
+  | mem m => exact Mem.encode_x reg m
+
+theorem RM.encode_b (reg : Nat) (rm : RM) : (rm.encode reg).b = rm.encB := by
+  cases rm with
+  | reg r => rfl
+  | mem m => exact Mem.encode_b reg m
+
+/-- The length of an instruction of the common shape. -/
+def opLen (w : Bool) (opcode : Nat) (regExt : Bool) (rm : RM) (force : Bool := false)
+    (pre : Nat := 0) : Nat :=
+  pre + rexLen w regExt rm.encX rm.encB force + opcode + rm.encLen
+
+theorem encodeOp_length (w : Bool) (opcode : List Byte) (reg : Nat) (regExt : Bool) (rm : RM)
+    (force : Bool) (pre : List Byte) :
+    (encodeOp w opcode reg regExt rm force pre).length
+      = opLen w opcode.length regExt rm force pre.length := by
+  simp only [encodeOp, opLen, List.length_append, rex_length, RM.encode_length, RM.encode_x,
+    RM.encode_b]
+
+/-- **The number of bytes an instruction occupies, worked out without
+making them.** -/
+def Instr.size : Instr → Nat
+  | .alu _ w (.rm_r dst src) => opLen w.rexW 1 src.ext dst
+  | .alu _ w (.r_m dst src) => opLen w.rexW 1 dst.ext (.mem src)
+  | .alu _ w (.rm_i dst imm) =>
+    if fits8 imm then opLen w.rexW 1 false dst + 1
+    else if dst = .reg .rax then rexLen w.rexW false false false + 5
+    else opLen w.rexW 1 false dst + 4
+  | .test w dst (.reg r) => opLen w.rexW 1 r.ext dst
+  | .test w dst (.imm _) =>
+    if dst = .reg .rax then rexLen w.rexW false false false + 5
+    else opLen w.rexW 1 false dst + 4
+  | .unary _ w dst => opLen w.rexW 1 false dst
+  | .shift _ w dst (.imm n) =>
+    if n == 1 then opLen w.rexW 1 false dst else opLen w.rexW 1 false dst + 1
+  | .shift _ w dst .cl => opLen w.rexW 1 false dst
+  | .mulDiv _ w src => opLen w.rexW 1 false src
+  | .imul2 w dst src => opLen w.rexW 2 dst.ext src
+  | .imul3 w dst src imm =>
+    if fits8 imm then opLen w.rexW 1 dst.ext src + 1 else opLen w.rexW 1 dst.ext src + 4
+  | .popcnt w dst src => opLen w.rexW 2 dst.ext src (pre := 1)
+  | .bswap w r => rexLen w.rexW false false r.ext + 2
+  | .cdq => 1
+  | .cqo => 2
+  | .mov w (.rm_r dst src) => opLen w.rexW 1 src.ext dst
+  | .mov w (.r_m dst src) => opLen w.rexW 1 dst.ext (.mem src)
+  | .mov .w32 (.rm_i (.reg r) _) => rexLen false false false r.ext + 5
+  | .mov w (.rm_i dst _) => opLen w.rexW 1 false dst + 4
+  | .movAbs dst _ => rexLen true false false dst.ext + 9
+  | .store8 dst src => opLen false 1 src.ext (.mem dst) (force := src.byteNeedsRex)
+  | .store16 dst src => opLen false 1 src.ext (.mem dst) (pre := 1)
+  | .movzx w dst .w8 src => opLen w.rexW 2 dst.ext src (force := src.byteNeedsRex)
+  | .movzx w dst .w16 src => opLen w.rexW 2 dst.ext src
+  | .movsx w dst .w8 src => opLen w.rexW 2 dst.ext src (force := src.byteNeedsRex)
+  | .movsx w dst .w16 src => opLen w.rexW 2 dst.ext src
+  | .movsxd dst src => opLen true 1 dst.ext src
+  | .lea w dst addr => opLen w.rexW 1 dst.ext (.mem addr)
+  | .cmov _ w dst src => opLen w.rexW 2 dst.ext src
+  | .setcc _ dst => opLen false 2 false dst (force := dst.byteNeedsRex)
+  | .push r => rexLen false false false r.ext + 1
+  | .pop r => rexLen false false false r.ext + 1
+  | .jmp (.rel _) => 5
+  | .jmp (.ind rm) => opLen false 1 false rm
+  | .jcc _ _ => 6
+  | .call (.rel _) => 5
+  | .call (.ind rm) => opLen false 1 false rm
+  | .ret => 1
+  | .nop => 1
+  | .ud2 => 2
+  | .syscall => 2
+
+theorem Instr.size_eq (i : Instr) : i.size = i.length := by
+  unfold Instr.length
+  fun_cases Instr.encode i <;>
+    simp [Instr.size, encodeOp_length, rex_length, le32, le64, imm8, *] <;>
+    first | omega | simp_all
+
 /-! ## Aiming an instruction at a place
 
 An instruction that reaches memory relative to `rip` names the place by its

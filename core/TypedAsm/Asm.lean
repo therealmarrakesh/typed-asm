@@ -56,12 +56,12 @@ variable {L : Type} [DecidableEq L]
 depend on where it is. A jump or call has the same length whatever its
 offset, so the length is taken from one with offset zero. -/
 def len : Asm L → Nat
-  | .ins i => i.length
+  | .ins i => i.size
   | .label _ => 0
-  | .jmp _ => (Instr.jmp (.rel 0)).length
-  | .jcc c _ => (Instr.jcc c 0).length
-  | .call _ => (Instr.call (.rel 0)).length
-  | .ref i _ _ => i.length
+  | .jmp _ => 5
+  | .jcc _ _ => 6
+  | .call _ => 5
+  | .ref i _ _ => i.size
   | .segment _ => 0
   | .align _ => 0
   | .bytes bs => bs.length
@@ -154,7 +154,7 @@ def tableFrom (target : L → BitVec 64) : Nat → Perm → List (Asm L) → Lis
   | a, p, x :: rest =>
     let more := tableFrom target (next a x) (perm p x) rest
     match instr target (BitVec.ofNat 64 (next a x)) x with
-    | some i => if p = .rx then (a, i, BitVec.ofNat 64 i.length) :: more else more
+    | some i => if p = .rx then (a, i, BitVec.ofNat 64 i.size) :: more else more
     | none => more
 
 /-- The instructions of a program loaded at `base`, each with its address
