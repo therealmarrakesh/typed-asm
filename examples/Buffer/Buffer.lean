@@ -35,7 +35,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   cases h with
   | start =>
     -- sub rsp, 16
-    ty_step
     -- from here on as in the loop
     ty_block
   | loop =>

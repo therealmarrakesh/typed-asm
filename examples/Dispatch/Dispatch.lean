@@ -61,7 +61,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   cases h with
   | start =>
     -- lea rbx, [rip + table]
-    ty_step
     -- the index is checked, then the call goes through the table
     ty_block
     ty_call unary

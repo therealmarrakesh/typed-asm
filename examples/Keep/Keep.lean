@@ -50,9 +50,7 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   cases h with
   | start =>
     -- sub rsp, 16
-    ty_step
     -- the stack pointer's value is called `sp`; `lea rbx, [rsp]` is then known
-    ty_step
     ty_block
   | back sp =>
     -- the `read` is into the address taken before the call

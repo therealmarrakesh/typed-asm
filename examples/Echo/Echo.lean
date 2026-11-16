@@ -37,9 +37,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   cases h with
   | start =>
     -- xor eax, eax; xor edi, edi; lea rsi, [rip + buffer]
-    ty_step
-    ty_step
-    ty_step
     -- the `read`, the test of its result, the way out, the `write`, and round again
     ty_block
 

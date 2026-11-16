@@ -41,8 +41,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_steps
     ty_branch
     -- mov r12, rax; lea r13, [rip + buffer]
-    ty_step
-    ty_step
     -- the rest: each call that stores into the buffer finds room for what it stores
     ty_block
 

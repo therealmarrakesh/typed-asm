@@ -69,7 +69,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     -- a page: the `read` is into it, and it is handed to `double`
     · ty_step
       ty_branch
-      ty_steps
       ty_block
   | back p =>
     -- written out, and given back

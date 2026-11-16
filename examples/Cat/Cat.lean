@@ -65,9 +65,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_into (At.next c v)
   | next c v =>
     -- xor eax, eax; mov rdi, r12; lea rsi, [rip + buffer]
-    ty_step
-    ty_step
-    ty_step
     -- the `read`, the test of its result, the `write`, and round again
     ty_block
 

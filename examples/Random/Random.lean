@@ -38,7 +38,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   cases h with
   | start =>
     -- lea rdi, [rip + buffer]
-    ty_step
     -- the `getrandom`, the test of its result, the `write` of that many bytes, and `exit`
     ty_block
 

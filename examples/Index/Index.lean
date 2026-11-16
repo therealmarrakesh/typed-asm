@@ -55,7 +55,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   cases h with
   | start =>
     -- lea rdi, [rip + array]
-    ty_step
     ty_steps
     ty_call (getSig 5)
   | afterCall => ty_block
