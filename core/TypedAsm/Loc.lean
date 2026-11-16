@@ -142,6 +142,26 @@ theorem storeOwned {k : Nat} {a : BitVec 64} {s : Reg} (h : Loc Ψ next Γ m (.o
     rw [e] at this
     exact this
 
+/-- A 64-bit store over a typed value reached through a writable pointer: a
+value of the type that is there. -/
+theorem storePtr {s : Reg} {τ : Ty} (h : Loc Ψ next Γ m (.ptr true) S o) (hs : s ≠ .rsp)
+    (hv : S.valAt o = some τ) (hso : S.sole o = true) (hsub : Sub (Γ.regs s) τ) :
+    Straight Ψ next Γ (.mov .w64 (.rm_r (.mem m) s)) Γ := by
+  cases h with
+  | field hb hΓ hd => exact .storeField hb hs hΓ hd hv hso hsub
+  | indexed hb hΓ hx he => exact .storeIndexed hb hs hΓ hx he hv hso hsub
+
+/-- A 64-bit store over a typed value of a block the context owns, of a
+value of the type that is there: the context stays as it is. -/
+theorem storeOwnedKeep {k : Nat} {a : BitVec 64} {s : Reg} {τ : Ty}
+    (h : Loc Ψ next Γ m (.owned k a) S o) (hs : s ≠ .rsp) (hv : S.valAt o = some τ)
+    (hso : S.sole o = true) (hsub : Sub (Γ.regs s) τ) :
+    Straight Ψ next Γ (.mov .w64 (.rm_r (.mem m) s)) Γ := by
+  cases h with
+  | owned he ho hp hj =>
+    have e := toNat_ofNat_lt hj
+    exact .storeOwnedKeep hs he ⟨ho, hp⟩ (by rw [e]; exact hv) (by rw [e]; exact hso) hsub
+
 end Loc
 
 end TypedAsm

@@ -43,7 +43,6 @@ deriving instance ToExpr for Sym.TyS, Sym.ShapeS, Sym.ValsS
 deriving instance ToExpr for Sym.FlagsS
 deriving instance ToExpr for Sym.CtxS
 deriving instance ToExpr for Sym.CondS
-deriving instance BEq for Sym.TyS, Sym.ShapeS, Sym.ValsS
 
 namespace Sym
 
@@ -494,6 +493,7 @@ def denCtx (as : Atoms) (Γ : CtxS) : MetaM Expr := do
 def denCond (as : Atoms) : CondS → MetaM Expr
   | .le a b => do mkLe (← denNum as a) (← denNum as b)
   | .lt a b => do mkLt (← denNum as a) (← denNum as b)
+  | .sub τ υ => do return mkApp2 (mkConst ``Sub) (← denTy as τ) (← denTy as υ)
   | .cf fl => do
     let P ← denFlags as fl
     withLocalDeclD `f (mkConst ``Flags) fun f => do

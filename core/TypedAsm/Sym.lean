@@ -131,6 +131,8 @@ inductive ValsS
 
 end
 
+deriving instance DecidableEq for TyS, ShapeS, ValsS
+
 /-- What is known of the flags, as a term. -/
 inductive FlagsS
   /-- Nothing. -/
@@ -420,11 +422,14 @@ inductive CondS
   | lt (a b : Num)
   /-- Flags of which this is known have the carry flag defined. -/
   | cf (fl : FlagsS)
+  /-- A value of one type is one of another. -/
+  | sub (τ υ : TyS)
 
 def CondS.den (ρ : Env) : CondS → Prop
   | .le a b => a.den ρ ≤ b.den ρ
   | .lt a b => a.den ρ < b.den ρ
   | .cf fl => ∀ f, fl.den ρ f → f.cf.isSome = true
+  | .sub τ υ => Sub (τ.den ρ) (υ.den ρ)
 
 /-- All of a list of things left to be shown. -/
 def CondS.all (ρ : Env) : List CondS → Prop
@@ -1729,6 +1734,193 @@ theorem writes_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {n :
     · cases h
   · cases h
 
+/-! ### Storing a register's eight bytes -/
+
+/-- How many typed values reach into the eight bytes at a place. -/
+def ValsS.hits : ValsS → Nat → Nat
+  | .nil, _ => 0
+  | .cons p _ rest, o => (if p + 8 ≤ o ∨ o + 8 ≤ p then 0 else 1) + rest.hits o
+
+theorem ValsS.den_hits (ρ : Env) : (vs : ValsS) → (o : Nat) →
+    ((vs.den ρ).filter fun p => !ShapeOf.clearOf o 8 p).length = vs.hits o
+  | .nil, _ => rfl
+  | .cons p τ rest, o => by
+    show (List.filter _ ((p, τ.den ρ) :: rest.den ρ)).length = _
+    unfold ValsS.hits
+    by_cases h : p + 8 ≤ o ∨ o + 8 ≤ p
+    · have hc : ShapeOf.clearOf o 8 (p, τ.den ρ) = true := by
+        simp only [ShapeOf.clearOf, Bool.or_eq_true, decide_eq_true_eq]; exact h
+      rw [List.filter_cons_of_neg (by simp [hc])]
+      simp only [h, ↓reduceIte, Nat.zero_add]
+      exact ValsS.den_hits ρ rest o
+    · have hc : ShapeOf.clearOf o 8 (p, τ.den ρ) = false := by
+        simp only [ShapeOf.clearOf, Bool.or_eq_false_iff, decide_eq_false_iff_not]
+        exact ⟨fun h1 => h (.inl h1), fun h2 => h (.inr h2)⟩
+      rw [List.filter_cons_of_pos (by simp [hc])]
+      simp only [h, ↓reduceIte, List.length_cons]
+      rw [ValsS.den_hits ρ rest o]; omega
+
+/-- Whether the eight bytes at a place are seen from the terms to be one
+typed value's alone. -/
+def ShapeS.sole : ShapeS → Num → Bool
+  | .mk _ vals, .lit i => vals.hits i == 1
+  | _, _ => false
+
+theorem ShapeS.den_sole {ρ : Env} {S : ShapeS} {o : Num} (h : S.sole o = true) :
+    (S.den ρ).sole (o.den ρ) = true := by
+  unfold ShapeS.sole at h
+  split at h
+  · next sz vals i =>
+    show ((vals.den ρ).filter _).length == 1
+    rw [ValsS.den_hits]; exact h
+  · cases h
+
+/-- A shape with a typed value put at a place, where the terms let that be
+worked out. -/
+def ShapeS.set : ShapeS → Num → TyS → Option ShapeS
+  | .mk size vals, .lit i, τ => some (.mk size (vals.set i τ))
+  | _, _, _ => none
+
+theorem ShapeS.den_set {ρ : Env} {S S' : ShapeS} {o : Num} {τ : TyS}
+    (h : S.set o τ = some S') : S'.den ρ = (S.den ρ).set (o.den ρ) (τ.den ρ) := by
+  unfold ShapeS.set at h
+  split at h
+  · cases h
+    show (⟨_, (_, _) :: (ValsS.clear _ _ 8).den ρ⟩ : Shape) = _
+    rw [ValsS.den_clear]; rfl
+  · cases h
+
+/-- Whether a value of one type is seen from the terms to be one of another:
+the same type, any type where a number is wanted, a type where it or nothing
+is wanted. -/
+def TyS.subB (τ υ : TyS) : Bool :=
+  decide (τ = υ) ||
+    match υ with
+    | .int => true
+    | .nullable υ' => decide (τ = υ')
+    | .orErr υ' => decide (τ = υ')
+    | _ => false
+
+theorem TyS.subB_sound {ρ : Env} {τ υ : TyS} (h : τ.subB υ = true) : Sub (τ.den ρ) (υ.den ρ) := by
+  unfold TyS.subB at h
+  rcases Bool.or_eq_true _ _ |>.mp h with h | h
+  · rw [of_decide_eq_true h]; exact .refl _
+  · split at h
+    · exact .int _
+    · rw [of_decide_eq_true h]; exact .nullable (.refl _)
+    · rw [of_decide_eq_true h]; exact .orErr (.refl _)
+    · cases h
+
+/-- What is left to be shown for a value of one type to be stored where
+another is. -/
+def subConds (τ υ : TyS) : List CondS := if τ.subB υ then [] else [.sub τ υ]
+
+theorem subConds_spec {ρ : Env} {τ υ : TyS} (h : CondS.all ρ (subConds τ υ)) :
+    Sub (τ.den ρ) (υ.den ρ) := by
+  unfold subConds at h
+  split at h
+  · next hs => exact TyS.subB_sound hs
+  · exact h.1
+
+/-- A store into a block the context owns that changes what the bytes hold:
+a number is stored as plain bytes, and anything else gives the bytes its type. -/
+def storeOwnedNew (Γ : CtxS) (s : Reg) (m : Mem) (pl : PlaceS) (cs : List CondS) (k : Nat)
+    (a : Val) : Option (CtxS × List CondS) :=
+  match Γ.regs.get s with
+  | .int => writes Γ 8 m
+  | τ =>
+    match pl.shape.set pl.off τ, within pl.off 8 pl.shape.size with
+    | some S', some ws => some ({ Γ with owned := Γ.owned.set k (a, S') }, cs ++ ws)
+    | _, _ => none
+
+/-- A 64-bit store of a register to memory. -/
+def store (Γ : CtxS) (s : Reg) (m : Mem) : Option (CtxS × List CondS) :=
+  if s = .rsp then none
+  else match locate Γ m with
+    | some (pl, cs) =>
+      match pl.kind with
+      | .ptr true =>
+        match pl.shape.look pl.off with
+        | some (some τ) =>
+          if pl.shape.sole pl.off then some (Γ, cs ++ subConds (Γ.regs.get s) τ) else none
+        | some none => writes Γ 8 m
+        | none => none
+      | .owned k a =>
+        match pl.shape.look pl.off with
+        | some (some τ) =>
+          -- the type that is there is kept where what is stored has it
+          if pl.shape.sole pl.off ∧ (Γ.regs.get s).subB τ = true then some (Γ, cs)
+          else storeOwnedNew Γ s m pl cs k a
+        | _ => storeOwnedNew Γ s m pl cs k a
+      | .piece _ => writes Γ 8 m
+      | _ => none
+    | none => none
+
+theorem storeOwnedNew_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {s : Reg}
+    {m : Mem} {pl : PlaceS} {cs : List CondS} {k : Nat} {a : Val} {x : CtxS × List CondS}
+    (hs : s ≠ .rsp) (hl : locate Γ m = some (pl, cs)) (hk : pl.kind = .owned k a)
+    (h : storeOwnedNew Γ s m pl cs k a = some x) (hc : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) (.mov .w64 (.rm_r (.mem m) s)) (x.1.den ρ) := by
+  unfold storeOwnedNew at h
+  split at h
+  · exact .storeInt (writes_sound h hc).1
+  · split at h
+    · next S' ws hset hw =>
+      cases h
+      obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc
+      have hloc := locate_spec (Ψ := Ψ) (next := next) hl h₁
+      rw [hk] at hloc
+      have hin : pl.off.den ρ + 8 ≤ (pl.shape.den ρ).size := by
+        rw [ShapeS.den_size]; exact within_spec hw h₂
+      have := hloc.storeOwned hs hin
+      rw [CtxS.den_regs, ← ShapeS.den_set hset] at this
+      have e : CtxS.den ρ { Γ with owned := Γ.owned.set k (a, S') }
+          = { Γ.den ρ with owned := (Γ.den ρ).owned.set k (a.den ρ, S'.den ρ) } := by
+        show ({ Γ.den ρ with owned := denOwned ρ (Γ.owned.set k (a, S')) _ } : Ctx) = _
+        rw [denOwned_set ρ _ _ _ _ _ ((locate_listed hl).1 k a hk)]; rfl
+      rw [e]; exact this
+    · cases h
+
+theorem store_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {s : Reg} {m : Mem}
+    {x : CtxS × List CondS} (h : store Γ s m = some x) (hc : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) (.mov .w64 (.rm_r (.mem m) s)) (x.1.den ρ) := by
+  unfold store at h
+  split at h
+  · cases h
+  next hs =>
+  split at h
+  · next pl cs hl =>
+    split at h
+    · next hk =>
+      split at h
+      · next τ hτ =>
+        split at h
+        · next hso =>
+          cases h
+          obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc
+          have hloc := locate_spec (Ψ := Ψ) (next := next) hl h₁
+          rw [hk] at hloc
+          exact hloc.storePtr hs (ShapeS.look_typed hτ) (ShapeS.den_sole hso)
+            (by rw [CtxS.den_regs]; exact subConds_spec h₂)
+        · cases h
+      · exact .storeInt (writes_sound h hc).1
+      · cases h
+    · next k a hk =>
+      split at h
+      · next τ hτ =>
+        split at h
+        · next hkeep =>
+          cases h
+          have hloc := locate_spec (Ψ := Ψ) (next := next) hl hc
+          rw [hk] at hloc
+          exact hloc.storeOwnedKeep hs (ShapeS.look_typed hτ) (ShapeS.den_sole hkeep.1)
+            (by rw [CtxS.den_regs]; exact TyS.subB_sound hkeep.2)
+        · exact storeOwnedNew_sound hs hl hk h hc
+      · exact storeOwnedNew_sound hs hl hk h hc
+    · exact .storeInt (writes_sound h hc).1
+    · cases h
+  · cases h
+
 /-- A narrower value in a register extended into another: exactly known
 where the source is. -/
 def extendReg (Γ : CtxS) (d r : Reg) (f : Op1) : Option (CtxS × List CondS) :=
@@ -1960,12 +2152,12 @@ def stepMov (next : BitVec 64) (Γ : CtxS) (w : Width) (ops : Operands) :
     else some (Γ.setReg d (.eq (.lit ((imm.signExtend w.bits).setWidth 64))), [])
   | .w64, (.r_m r (.sib (some .rsp) none disp)) => loadStack Γ r disp
   | .w64, (.rm_r (.mem (.sib (some .rsp) none disp)) s) => storeStack Γ s disp
+  | .w64, (.rm_r (.mem m) s) => store Γ s m
   | .w64, (.r_m d m) => load Γ d m
   | w, (.r_m d m) =>
     if d = .rsp then none else (reads Γ w.bytes.toNat m).map fun cs => (Γ.setReg d .int, cs)
   | .w32, (.rm_r (.mem m) _) => writes Γ 4 m
   | w, (.rm_i (.mem m) _) => writes Γ w.bytes.toNat m
-  | _, _ => none
 
 theorem stepMov_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
     
@@ -1999,6 +2191,7 @@ theorem stepMov_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
     · next hd => cases h; rw [CtxS.den_setReg]; exact .movRI hd
   · exact loadStack_sound h
   · exact storeStack_sound h
+  · exact store_sound h hn
   · exact load_sound h hn
   · split at h
     · cases h
@@ -2011,7 +2204,6 @@ theorem stepMov_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
         exact .loadInt hd (reads_sound hr hn)
   · exact .storeInt (writes_sound h hn).1
   · exact .storeImm (writes_sound h hn).1
-  · cases h
 
 /-- The checker for `lea`. -/
 def stepLea (next : BitVec 64) (Γ : CtxS) (w : Width) (d : Reg) (m : Mem) :
