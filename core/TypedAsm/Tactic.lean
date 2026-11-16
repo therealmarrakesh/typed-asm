@@ -4157,30 +4157,55 @@ elab "ty_room" : tactic => withMainContext do
 
 open Lean Meta Elab Tactic in
 /-- `ty_program` proves a labelled program well typed block by block,
-`BlocksOk Φ fetch sys Ψ`, as far as that takes no telling: for each context
-declared at a label, the block from that label is typed with `ty_block`,
-and where that leaves nothing over, the label is done. A function's block
-is tried again with its stack room made visible (`ty_room`) if the first
-try does not do.
+`BlocksOk Φ fetch sys Ψ`: for each context declared at a label, the block
+from that label is typed with `ty_block`, a function's block with its stack
+room made visible first (`ty_room`).
 
-A label whose block needs something said is left as a goal, untouched and
-named for the label's context, to be proved with `case name args => …`. -/
-elab "ty_program" : tactic => do
+A label whose block needs something said is given a case after it,
+
+```
+ty_program
+case next =>
+  ty_into At.loop
+```
+
+named for the label's context and binding its arguments, as with `case`.
+Such a label's block is typed only as its case says, and not tried first
+without. A label with no case whose block does not type by itself is left as
+a goal. -/
+syntax (name := tyProgram) "ty_program" (Lean.Parser.Tactic.case)* : tactic
+
+open Lean Meta Elab Tactic in
+@[tactic tyProgram] def evalTyProgram : Tactic := fun stx => do
+  let arms := stx[1].getArgs
   evalTactic (← `(tactic| (refine BlocksOk.of_labels ?_; intro l Γ h; cases h)))
   let goals ← getGoals
+  -- the label each case is for
+  let named := arms.map fun arm => (arm[1].getSepArgs[0]![0][0].getId.eraseMacroScopes, arm)
+  let mut used : Array Name := #[]
   let mut left : List MVarId := []
   for g in goals do
-    let start ← saveState
-    let mut done := false
-    for withRoom in [false, true] do
-      if done then break
+    let tag := (← g.getTag).eraseMacroScopes
+    match named.find? (fun x => !x.1.isAnonymous && x.1.isSuffixOf tag) with
+    | some (name, arm) =>
+      used := used.push name
+      setGoals [g]
+      evalTactic arm
+      left := left ++ (← getGoals)
+    | none =>
+      let start ← saveState
+      let mut done := false
       try
         setGoals [g]
-        if withRoom then evalTactic (← `(tactic| ty_room))
+        let before ← saveState
+        try evalTactic (← `(tactic| ty_room)) catch _ => before.restore
         Tactic.withoutRecover do evalTactic (← `(tactic| ty_block))
         if (← getGoals).isEmpty then done := true else start.restore
       catch _ => start.restore
-    unless done do left := left ++ [g]
+      unless done do left := left ++ [g]
+  for (name, arm) in named do
+    unless used.contains name do
+      throwErrorAt arm "no context is declared under the name `{name}`"
   setGoals left
 
 /-! ## What every typing declares
@@ -4360,7 +4385,6 @@ private partial def typeValue (bOk : Ident) (g : MVarId) : TacticM Unit := g.wit
     throwError "ty_values: not a statement that a value has a type{indentExpr t}"
   let v := args[5]!
   let w ← evalNat (← mkAppM ``BitVec.toNat #[v])
-  let wq := Syntax.mkNumLit (toString w)
   let run (tac : TacticM (TSyntax `tactic)) : TacticM (List MVarId) := do
     setGoals [g]
     Tactic.withoutRecover do evalTactic (← tac)
