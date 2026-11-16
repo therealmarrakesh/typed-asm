@@ -86,7 +86,7 @@ theorem holds_inside {s : State} {seg g : Nat × Perm × List Byte} (h : inside 
       omega
     have hget : seg.2.2[g.1 - seg.1 + k]? = some g.2.2[k] := by
       have h1 : ((seg.2.2.drop (g.1 - seg.1)).take g.2.2.length)[k]? = g.2.2[k]? := by rw [hbytes]
-      rw [List.getElem?_take, if_pos hk, List.getElem?_drop] at h1
+      rw [List.getElem?_take, ite_eq_left hk, List.getElem?_drop] at h1
       rw [h1, List.getElem?_eq_getElem hk]
     rw [hi, hget]
     rfl
@@ -117,7 +117,7 @@ theorem holds_clear {s : State} {seg g : Nat × Perm × List Byte} (h : clear se
       rw [State.perm_setPerm, hempty]
       simp only [List.length_nil, State.pagesOf, BitVec.toNat_ofNat, Nat.zero_mod, ↓reduceIte,
         Nat.add_zero]
-      rw [if_neg (by omega)]
+      rw [ite_eq_right (by omega)]
       exact hp hrx
   · have hx : (BitVec.ofNat 64 g.1 + BitVec.ofNat 64 k).toNat = g.1 + k := by
       rw [BitVec.toNat_add, BitVec.toNat_ofNat, BitVec.toNat_ofNat]
@@ -193,7 +193,7 @@ theorem holds_setPerm {s : State} {g : Nat × Perm × List Byte} {base len : Bit
   · rw [h] at hk; cases hk
   · rw [State.perm_setPerm]
     simp only [State.pagesOf, h, ↓reduceIte, Nat.add_zero]
-    rw [if_neg (by omega)]
+    rw [ite_eq_right (by omega)]
     exact hp hrx
   · have hx : (BitVec.ofNat 64 g.1 + BitVec.ofNat 64 k).toNat = g.1 + k := by
       rw [BitVec.toNat_add, BitVec.toNat_ofNat, BitVec.toNat_ofNat]
