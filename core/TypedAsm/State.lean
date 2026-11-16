@@ -189,9 +189,9 @@ structure World where
   random : Nat → BitVec 8 := fun _ => 0
   drawn : Nat := 0
   /-- What the kernel does with each coming call in which it has a choice:
-  one entry for each `write`, each `openat`, each `close`, each `read` of a
-  file, and each `getrandom` whose flags it accepts, in the order they are
-  made. A choice the call does
+  one entry for each `write`, each `openat`, each `close`, each `fsync`,
+  each `read` of a file, and each `getrandom` whose flags it accepts, in the
+  order they are made. A choice the call does
   not allow counts as `full`, and so does having none left. What a `read` of
   the program's input delivers is in `input`. -/
   fates : List Fate := []
@@ -206,6 +206,8 @@ structure World where
   /-- Whether there is a clock with a number other than the standard ones:
   the clock of some process, or of a device. -/
   hasClock : Nat → Bool := fun _ => false
+  /-- The number of the process. -/
+  pid : Nat := 1
 
 namespace World
 

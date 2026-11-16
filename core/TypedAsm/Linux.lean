@@ -365,6 +365,31 @@ def lseek (s : State) : State :=
   | some _ => ret s (-29)
   | none => ret s (-9)
 
+/-- `fsync(fd)` and `fdatasync(fd)` when the kernel does `d` with it: have
+what was written to a file put where it will last. Nothing the program can
+see changes but the answer. On a file it is zero, or the failure of the
+device or the want of room that the writing ran into. The program's input
+and output are not files here, and for them the call is refused. -/
+def fsyncBy (d : Fate) (s : State) : State :=
+  match s.world.fd? (fdArg s .rdi) with
+  | some (.file _ _ _ _ _) =>
+    ret s (match d with
+      | .fail .io => -5
+      | .fail .nospc => -28
+      | .fail .dquot => -122
+      | _ => 0)
+  | some _ => ret s (-22)
+  | none => ret s (-9)
+
+/-- `fsync(fd)`, with the kernel doing what the world says. -/
+def fsync (s : State) : State :=
+  fsyncBy (nextFate s).1 (nextFate s).2
+
+/-- `getpid()`: the number of the process, which the world gives. It cannot
+fail. -/
+def getpid (s : State) : State :=
+  ret s (BitVec.ofNat 64 s.world.pid)
+
 /-- The low `n` bytes of a number, least significant first. -/
 def leBytes (n v : Nat) : List (BitVec 8) :=
   (List.range n).map fun i => BitVec.ofNat 8 (v >>> (8 * i))
@@ -549,6 +574,9 @@ def linux : Syscall := fun s =>
   else if s.getReg .rax = 8 then .next (Linux.lseek s)
   else if s.getReg .rax = 228 then .next (Linux.clockGettime s)
   else if s.getReg .rax = 257 then .next (Linux.openat s)
+  else if s.getReg .rax = 74 then .next (Linux.fsync s)
+  else if s.getReg .rax = 75 then .next (Linux.fsync s)
+  else if s.getReg .rax = 39 then .next (Linux.getpid s)
   else if s.getReg .rax = 318 then .next (Linux.getrandom s)
   else .next (Linux.ret s (-38))
 
@@ -1145,6 +1173,16 @@ theorem close_only (s : State) : OnlyWorld s (close s) := by
 theorem lseek_only (s : State) : OnlyWorld s (lseek s) := by
   simp only [lseek]
   only_world
+
+theorem fsyncBy_only (d : Fate) (s : State) : OnlyWorld s (fsyncBy d s) := by
+  simp only [fsyncBy]
+  only_world
+
+theorem fsync_only (s : State) : OnlyWorld s (fsync s) := by
+  obtain ⟨v, w, e⟩ := fsyncBy_only (nextFate s).1 (nextFate s).2
+  exact ⟨v, w, e⟩
+
+theorem getpid_only (s : State) : OnlyWorld s (getpid s) := .same s _
 
 /-- A call that stored within a smaller room stored within a larger one. -/
 theorem Fills.mono {buf : BitVec 64} {room room' : Nat} {t : State} (hf : Fills s buf room t)
@@ -1864,6 +1902,30 @@ theorem linux_close (hΓ : Γ.regs .rax = .eq 3) :
   exact ⟨Linux.close s, by simp [linux, hax], (Linux.close_only s).rip, Ψ₁, .refl _, hΨ,
     (Linux.close_only s).ok h⟩
 
+/-- `fsync`: with 74 in `rax`, the call returns, whatever its argument. -/
+theorem linux_fsync (hΓ : Γ.regs .rax = .eq 74) :
+    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+  intro Ψ₁ _ hΨ n s h
+  have hax := h.eqReg (by decide) hΓ
+  exact ⟨Linux.fsync s, by simp [linux, hax], (Linux.fsync_only s).rip, Ψ₁, .refl _, hΨ,
+    (Linux.fsync_only s).ok h⟩
+
+/-- `fdatasync`: with 75 in `rax`, likewise. -/
+theorem linux_fdatasync (hΓ : Γ.regs .rax = .eq 75) :
+    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+  intro Ψ₁ _ hΨ n s h
+  have hax := h.eqReg (by decide) hΓ
+  exact ⟨Linux.fsync s, by simp [linux, hax], (Linux.fsync_only s).rip, Ψ₁, .refl _, hΨ,
+    (Linux.fsync_only s).ok h⟩
+
+/-- `getpid`: with 39 in `rax`, the call returns. -/
+theorem linux_getpid (hΓ : Γ.regs .rax = .eq 39) :
+    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+  intro Ψ₁ _ hΨ n s h
+  have hax := h.eqReg (by decide) hΓ
+  exact ⟨Linux.getpid s, by simp [linux, hax], (Linux.getpid_only s).rip, Ψ₁, .refl _, hΨ,
+    (Linux.getpid_only s).ok h⟩
+
 /-- `lseek`: with 8 in `rax`, the call returns, whatever its arguments. -/
 theorem linux_lseek (hΓ : Γ.regs .rax = .eq 8) :
     SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
@@ -2194,6 +2256,24 @@ theorem linux_frame (s : State) : (linux s).All (Frame s) := by
   · rw [h]
     simp only [↓reduceIte]
     exact (Linux.openat_only s).frame
+  simp only [h, ↓reduceIte]
+  clear h
+  by_cases h : s.getReg .rax = 74
+  · rw [h]
+    simp only [↓reduceIte]
+    exact (Linux.fsync_only s).frame
+  simp only [h, ↓reduceIte]
+  clear h
+  by_cases h : s.getReg .rax = 75
+  · rw [h]
+    simp only [↓reduceIte]
+    exact (Linux.fsync_only s).frame
+  simp only [h, ↓reduceIte]
+  clear h
+  by_cases h : s.getReg .rax = 39
+  · rw [h]
+    simp only [↓reduceIte]
+    exact (Linux.getpid_only s).frame
   simp only [h, ↓reduceIte]
   clear h
   by_cases h : s.getReg .rax = 318

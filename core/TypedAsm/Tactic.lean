@@ -2494,7 +2494,8 @@ private def syscallNumber (ctx : Expr) : MetaM (Option Nat) := do
 its number, its name and its rule. -/
 private def plainCalls : List (Nat × String × Name) :=
   [(1, "write", ``linux_write), (3, "close", ``linux_close), (8, "lseek", ``linux_lseek),
-   (257, "openat", ``linux_openat)]
+   (257, "openat", ``linux_openat), (74, "fsync", ``linux_fsync),
+   (75, "fdatasync", ``linux_fdatasync), (39, "getpid", ``linux_getpid)]
 
 /-- A system call that stores into a buffer: its number and name, the rule
 for a buffer in a memory block and the rule for one on the stack, the
@@ -2512,8 +2513,9 @@ private def isStepCall (nr : Nat) : Bool :=
 
 /-- The names of the calls that can be typed, for messages. -/
 private def typedCalls : String :=
-  "`read` (0), `write` (1), `close` (3), `fstat` (5), `lseek` (8), `mmap` (9), `exit` (60), \
-   `clock_gettime` (228), `exit_group` (231), `openat` (257) and `getrandom` (318)"
+  "`read` (0), `write` (1), `close` (3), `fstat` (5), `lseek` (8), `mmap` (9), `getpid` (39), \
+   `exit` (60), `fsync` (74), `fdatasync` (75), `clock_gettime` (228), `exit_group` (231), \
+   `openat` (257) and `getrandom` (318)"
 
 /-- The shape of a system call's rule: what it leaves to be found out. -/
 private inductive SysShape

@@ -216,4 +216,42 @@ def cat (fates : List Fate) : State × Outcome :=
   let t := Linux.close { s with world := { fates := [.fail .io] } }
   t.getReg .rax == -5 && (t.world.fd? 1).isNone
 
+/-! ## `fsync`, `fdatasync` and `getpid` -/
+
+/-- A state about to make call `nr` on descriptor `fd`, with one file open
+as descriptor 3. -/
+def syncing (nr fd : Nat) (fates : List Fate) : State :=
+  let s := (State.init.setReg .rax (BitVec.ofNat 64 nr)).setReg .rdi (BitVec.ofNat 64 fd)
+  { s with world := {
+      files := #[{ path := bytesOf "f" }]
+      fds := [(0, .stdin), (1, .stdout), (3, .file 0 0 true true false)]
+      fates := fates } }
+
+-- On a file the answer is zero, or what the device or the want of room did.
+#guard match linux (syncing 74 3 []) with
+  | .next t => t.getReg .rax == 0
+  | _ => false
+#guard match linux (syncing 74 3 [.fail .io]) with
+  | .next t => t.getReg .rax == -5
+  | _ => false
+#guard match linux (syncing 75 3 [.fail .nospc]) with
+  | .next t => t.getReg .rax == -28
+  | _ => false
+-- The program's output is not a file, and a descriptor not open is none.
+#guard match linux (syncing 74 1 []) with
+  | .next t => t.getReg .rax == -22
+  | _ => false
+#guard match linux (syncing 75 9 []) with
+  | .next t => t.getReg .rax == -9
+  | _ => false
+-- The call uses up the kernel's decision, and changes nothing else.
+#guard match linux (syncing 74 3 [.fail .io, .short 1]) with
+  | .next t => t.world.fates.length == 1 && (t.world.fd? 3).isSome
+  | _ => false
+
+-- The number of the process is whatever the world says it is.
+#guard match linux { (State.init.setReg .rax 39) with world := { pid := 4242 } } with
+  | .next t => t.getReg .rax == 4242
+  | _ => false
+
 end Tests.Syscalls
