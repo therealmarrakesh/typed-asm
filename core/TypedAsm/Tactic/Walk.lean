@@ -3196,9 +3196,22 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let linuxNW? : Option Expr ← (do
       try pure (some (← synthInstance (mkApp (mkConst ``LikeLinuxNW) sys)))
       catch _ => pure none)
+    -- Where what the program writes is being shown: the system underneath,
+    -- that it is like Linux, and the condition.
+    let offers? : Option (Expr × Expr × Expr) ← (do
+      let sysE := sys.consumeMData
+      unless sysE.isAppOfArity ``Syscall.writesOnly 2 do return none
+      let sys₀ := sysE.getAppArgs[0]!
+      try
+        let inst ← synthInstance (mkApp (mkConst ``LikeLinux) sys₀)
+        return some (sys₀, inst, sysE.getAppArgs[1]!)
+      catch _ => return none)
     -- addresses of code a register was made a pointer to, each with the
     -- variable that is the pointer's type
     let codesRef : IO.Ref (Array (BitVec 64 × Nat)) ← IO.mkRef #[]
+    -- where each `write` typed for what it offers is, in the order met
+    let offerAts : IO.Ref (Array Nat) ← IO.mkRef #[]
+    let offersSeen : IO.Ref Nat ← IO.mkRef 0
     let ((result, prog?), atoms) ← (do
       let some S₀ ← (match kept? with
         | some (Sc, _) => pure (some Sc)
@@ -3292,6 +3305,17 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
             if stops?.isNone then break
             moves := moves.push (.split at' i len')
             break
+          -- a `write` where what the program writes is being shown: typed
+          -- for what it offers
+          if offers?.isSome &&
+              (Sym.offerAt { P with offers := true } cur i).isSome then
+            moves := moves.push (.jump at' i len')
+            offerAts.modify (·.push at')
+            advanced := true
+            cur := cur.afterSyscall
+            arrived := cur
+            at' := next'
+            continue
           let some (S', cs) := Sym.stepSys cur linux?.isSome | do
             if (Sym.exitAt cur i).isSome then break
             trace[TypedAsm.fast] "system call not stepped: rax {toExpr (cur.regs.get .rax)}, rsi {
@@ -3559,6 +3583,13 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           mkApp2 (mkConst ``linux_endsWhen_only_writes) Q sysE.getAppArgs[1]!, some Q)
       else (mkConst ``ExitNever, mkApp (mkConst ``Syscall.endsWhen_never) sys, none)
     let endsKnown := !endsE.isConstOf ``ExitNever
+    let (wrE, hWrE) : Expr × Expr := match offers? with
+      | some (sys₀, inst, R) =>
+        (mkApp2 (mkConst ``Sym.Offered.ok) Ψ R, mkApp4 (mkConst ``Sym.offersOk) sys₀ inst R Ψ)
+      | none =>
+        let wr := mkLambda `fd .default (mkApp (mkConst ``BitVec) (mkNatLit 64))
+          (mkLambda `o .default (mkConst ``Sym.Offered) (mkConst ``False))
+        (wr, mkApp3 (mkConst ``Sym.offersNone) sys Ψ wr)
     -- A call that ends the program: the walk ends there. Where the status
     -- is to be as wanted and is not exactly known, it is left to the long
     -- way, which says so.
@@ -3718,6 +3749,7 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         (via?.toList.map fun e => (BitVec.ofNat 64 e.at', e.j, e.R, e.Δ))
       linux := linuxNW?.isSome
       plainWrite := linux?.isSome
+      offers := offers?.isSome
       codes := (← codesRef.get).toList
       callsAll := (callAll?.toList.map fun e => (BitVec.ofNat 64 e.at', e.j, e.Δ)) ++
         (viaAll?.toList.map fun e => (BitVec.ofNat 64 e.at', e.j, e.Δ)) }
@@ -3747,6 +3779,7 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       | .callVia .. => none
       | .callAll .. => none
       | .callViaAll .. => none
+      | .offer _ _ rest => final rest
       | .asCode _ _ rest => final rest
     let rec enters? : Sym.Walk → Bool
       | .enter _ _ _ => true
@@ -3757,6 +3790,7 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       | .callVia .. => true
       | .callAll .. => true
       | .callViaAll .. => true
+      | .offer _ _ rest => enters? rest
       | .asCode _ _ rest => enters? rest
       | .fresh _ l r => enters? l || enters? r
       | .conds _ rest => enters? rest
@@ -3783,6 +3817,7 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       | .byte _ l r => exits? l || exits? r
       | .fresh _ l r => exits? l || exits? r
       | .asCode _ _ rest => exits? rest
+      | .offer _ _ rest => exits? rest
       | .branch _ _ l r => exits? l || exits? r
       | _ => false
     let S'? := final W
@@ -4011,6 +4046,76 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           enterOff.set true
           throwError "the address is not shown to be that of the code"
         mkAppM ``And.intro #[← instantiateMVars m, ← down rest atoms vs names]
+      | .offer fd o rest =>
+        let some (_, _, R) := offers? | throwError "a `write` is typed for what it offers \
+          where what the program writes is not being shown"
+        let fdE ← Sym.denVal atoms fd
+        let oE ← match o with
+          | .said base off n =>
+            pure (mkApp3 (mkConst ``Sym.Offered.said) (toExpr base) (mkNatLit off) (mkNatLit n))
+          | .fields vs n => do
+            let vsE ← mkListLit bv (← vs.mapM fun v => (Sym.denVal atoms v : MetaM Expr))
+            pure (mkApp2 (mkConst ``Sym.Offered.fields) vsE (mkNatLit n))
+        let m ← mkFreshExprSyntheticOpaqueMVar (mkApp4 (mkConst ``Sym.Offered.ok) Ψ R fdE oE)
+        let closeR : TSyntax `tactic ← `(tactic| first
+          | decide | decide +kernel | rfl | (simp; done) | (simp [asm_fact, *]; done))
+        let left ← try
+            runOn m.mvarId! (do
+              match o with
+              | .said .. =>
+                evalTactic (← `(tactic|
+                  refine ⟨_, _, by first | exact rfl | decide, by first | exact rfl | decide,
+                    by decide, ?_⟩))
+              | .fields .. => evalTactic (← `(tactic| dsimp only [Sym.Offered.ok]))
+              evalTactic closeR)
+          catch e =>
+            trace[TypedAsm.fast] "write: what is offered is not shown to be as wanted: {e.toMessageData}"
+            pure [m.mvarId!]
+        let nth ← offersSeen.modifyGet fun j => (j, j + 1)
+        unless left.isEmpty do
+          -- what was offered, and what of it could not be shown
+          let where' := ((← offerAts.get)[nth]?).getD 0
+          let fdS ← (match fd with
+            | .lit v => pure (toString v.toNat)
+            | _ => ppClean fdE)
+          let (what, cond?) ← (do
+            match o with
+            | .said base off n =>
+              -- that part of what the block says, written out
+              let cond? ← (do
+                try
+                  let lay ← whnf (mkApp2 (mkConst ``MemTy.blocks) Ψ (toExpr base))
+                  unless lay.isAppOfArity ``Option.some 2 do return none
+                  let said ← whnf (← mkAppM ``Layout.said #[lay.appArg!])
+                  unless said.isAppOfArity ``Option.some 2 do return none
+                  -- the bytes one by one, each as it is written
+                  let mut l ← whnf said.appArg!
+                  let mut elems : Array Expr := #[]
+                  for _ in [0:65536] do
+                    unless l.isAppOfArity ``List.cons 3 do break
+                    elems := elems.push l.getAppArgs[1]!
+                    l ← whnf l.getAppArgs[2]!
+                  let part ← mkListLit (mkApp (mkConst ``BitVec) (mkNatLit 8))
+                    (elems.extract off (off + n)).toList
+                  return some (mkApp2 R fdE part).headBeta
+                catch _ => return none : TacticM (Option Expr))
+              pure (m!"{n} bytes from byte {off} of the block that says its bytes at address {base.toNat}",
+                cond?)
+            | .fields vs n =>
+              let lits := vs.filterMap fun | .lit v => some v | _ => none
+              if lits.length == vs.length then
+                let bytes := (lits.flatMap le64).take n
+                pure (m!"the {n} bytes {bytes.map (·.toNat)}, of values it stored",
+                  some (mkApp2 R fdE (toExpr bytes)).headBeta)
+              else pure (m!"the first {n} bytes of values it stored", none))
+          let condS ← match cond? with
+            | some c => pure m!"\n• what is wanted of them does not hold, or is not shown to: {← ppClean c}"
+            | none => pure m!""
+          refusal.set (some m!"at address {where'}: `write`: what the program offers is not shown \
+            to be what is wanted\n• it offers descriptor {fdS} {what}{condS}")
+          throwError "refused"
+        trace[TypedAsm.fast] "a `write` typed for what it offers, within the walk"
+        mkAppM ``And.intro #[← instantiateMVars m, ← down rest atoms vs names]
       | .callViaAll _ _ _ _ cs =>
         let some info := viaAll? | throwError "the block calls where no contexts were chosen"
         let temps := info.temps.map (·.2)
@@ -4143,7 +4248,7 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let walkE := mkAppN (mkConst ``Sym.walk) #[PE, codeE, fuelE, mkNatLit k₀, a, SE]
     let hwalk ← mkExpectedTypeHint (← mkEqRefl walkE) (← mkEq walkE WE)
     goal.assign (mkAppN (mkConst ``Sym.walk_sound')
-      #[Φ, fetch, sys, Ψ, ρ, PE, codeE, endsE, hP, hcode, hsys, hwr, hEnds, fuelE, mkNatLit k₀, a, SE,
+      #[Φ, fetch, sys, Ψ, ρ, PE, codeE, endsE, wrE, hP, hcode, hsys, hwr, hEnds, hWrE, fuelE, mkNatLit k₀, a, SE,
         WE, hwalk, hW])
     -- the values named are in the goals for the rest of the block
     let mut goals : List MVarId := []

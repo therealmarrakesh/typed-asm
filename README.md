@@ -41,8 +41,11 @@ What exists and is checked today:
   is the first so many bytes of something satisfying it, the kernel being
   free to take fewer bytes than it is offered. `examples/Hello` is proved to
   end with 0 and to write its message and nothing else, on standard output.
-  So far this covers what is written from such data; bytes a program
-  computes and then writes are not yet followed.
+  The bytes may also be ones the program made: a value it stored on its
+  stack or in a block it owns, exactly known, is its eight bytes, least
+  significant first, and a `write` from such fields offers those bytes. A
+  byte stored by itself, and what a program read and then writes back, are
+  not yet followed.
 - An assembler with labels for code and data. A program can have any number
   of segments, in any order. Each segment is executable, read-only or
   writable, and can be aligned.

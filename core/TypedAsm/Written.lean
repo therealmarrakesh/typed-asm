@@ -118,14 +118,16 @@ theorem linux_write_owned_only {sys : Syscall} [LikeLinux sys]
   exact ⟨Linux.write s, hgo.trans (LikeLinux.next (by simp [linux, hax])), (Linux.write_only s).rip,
     Ψ₁, .refl _, hΨ, (Linux.write_only s).ok h⟩
 
-/-- The same for what the program stored on the stack. -/
+/-- The same for what the program stored on the stack: each field is in a
+piece of the stack, which need not be the same piece for all of them, as
+after several pushes. -/
 theorem linux_write_stack_only {sys : Syscall} [LikeLinux sys]
-    {R : BitVec 64 → List (BitVec 8) → Prop} {fd v d cnt : BitVec 64} {k i : Nat}
-    {S : Shape} {vs : List (BitVec 64)}
+    {R : BitVec 64 → List (BitVec 8) → Prop} {fd v d cnt : BitVec 64}
+    {vs : List (BitVec 64)}
     (hΓ : Γ.regs .rax = .eq 1) (hfd : Γ.regs .rdi = .eq fd) (hsp : Γ.regs .rsp = .eq v)
     (hbuf : Γ.regs .rsi = .eq (v + d)) (hcnt : Γ.regs .rdx = .eq cnt)
-    (hat : StackAt Γ.stack k S d.toNat i)
-    (hvs : ∀ j, (h : j < vs.length) → (i + 8 * j, Ty.eq vs[j]) ∈ S.vals)
+    (hvs : ∀ j, (h : j < vs.length) → ∃ k S i,
+      StackAt Γ.stack k S (d.toNat + 8 * j) i ∧ (i, Ty.eq vs[j]) ∈ S.vals)
     (hin : cnt.toNat ≤ 8 * vs.length) (hR : R fd ((vs.flatMap le64).take cnt.toNat)) :
     SysReturns fetch (sys.writesOnly R) Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ he hΨ n s h
@@ -139,14 +141,14 @@ theorem linux_write_stack_only {sys : Syscall} [LikeLinux sys]
     exact this
   have hoff : s.offered = (vs.flatMap le64).take cnt.toNat := by
     refine offered_of_fields hsi hdx (fun j hj => ?_) hin
-    have hv := h.stack k S hat.entry _ (hvs j hj)
+    obtain ⟨k, S, i, hat, hm⟩ := hvs j hj
+    have hv := h.stack k S hat.entry _ hm
     rw [hasTy_eq] at hv
     rw [← hv, hrsp]
     congr 1
     rw [BitVec.add_assoc]
     congr 1
-    have e : stackOff Γ.stack k + (i + 8 * j) = d.toNat + 8 * j := by have := hat.off; omega
-    rw [e, BitVec.ofNat_add, BitVec.ofNat_toNat, BitVec.setWidth_eq]
+    rw [← hat.off, BitVec.ofNat_add, BitVec.ofNat_toNat, BitVec.setWidth_eq]
   have hgo : (sys.writesOnly R) s = sys s :=
     Syscall.writesOnly_eq (fun _ => by rw [hdi, hoff]; exact hR)
   exact ⟨Linux.write s, hgo.trans (LikeLinux.next (by simp [linux, hax])), (Linux.write_only s).rip,

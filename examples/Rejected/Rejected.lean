@@ -8,6 +8,7 @@ import Rejected.Part7
 import Rejected.Part8
 import Rejected.Part9
 import Rejected.Part10
+import Rejected.Part11
 
 /-!
 # Instructions the type system rejects

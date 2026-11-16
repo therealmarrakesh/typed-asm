@@ -45,6 +45,7 @@ deriving instance ToExpr for Sym.TyS, Sym.ShapeS, Sym.ValsS
 deriving instance ToExpr for Sym.FlagsS
 deriving instance ToExpr for Sym.CtxS
 deriving instance ToExpr for Sym.CondS
+deriving instance ToExpr for Sym.OfferS
 deriving instance ToExpr for Sym.Walk
 deriving instance ToExpr for Sym.Prog
 

@@ -412,6 +412,37 @@ example : codeCast jumping (reg base .rax (.eq (.lit 0x2000))) (.lea .w64 .rax (
 example : (codeCast jumping (reg base .rax (.eq (.lit 0x3000))) (.lea .w64 .rax (.rip 0))).isNone
     = true := by decide
 
+/-! ## What a `write` offers -/
+
+/-- A value pushed, and the registers set to write `n` bytes from where the
+stack pointer is. -/
+def pushed (n : BitVec 64) : CtxS :=
+  { reg (reg (reg (reg (reg base .rsp (.eq (v 0))) .rax (.eq (.lit 1))) .rdi (.eq (.lit 1)))
+      .rsi (.eq (v 0))) .rdx (.eq (.lit n)) with
+    stack := [.mk (.lit 8) (.cons 0 (.eq (.lit 0x0a216948)) .nil), .mk (.lit 8) (.cons 0 (.eq (v 5)) .nil)] }
+
+/-- What is offered, where a `write` is typed for it. -/
+def offered (Γ : CtxS) : Option (List Val × Nat) :=
+  match offerAt { offers := true } Γ .syscall with
+  | some (_, .fields vs n) => some (vs, n)
+  | _ => none
+
+-- four bytes of the value on top of the stack
+example : offered (pushed 4) = some ([.lit 0x0a216948], 4) := by decide
+-- twelve bytes reach into the next field: both values
+example : offered (pushed 12) = some ([.lit 0x0a216948, v 5], 12) := by decide
+-- more than is there is not offered as anything known
+example : offered (pushed 24) = none := by decide
+-- and nothing is said where what the program writes is not being shown
+example : (offerAt {} (pushed 4) .syscall).isNone = true := by decide
+-- a block the context owns: the fields from the byte the buffer is at
+example : offered { reg (pushed 8) .rsi (.eq (.add (v 7) (.lit 8))) with
+    owned := [(v 7, .mk (.lit 24) (.cons 8 (.eq (v 2)) (.cons 16 (.eq (v 3)) .nil)))] }
+    = some ([v 2], 8) := by decide
+-- a field that holds no exactly known value is not known bytes
+example : offered { reg (pushed 8) .rsi (.eq (v 7)) with
+    owned := [(v 7, .mk (.lit 24) (.cons 8 (.eq (v 2)) .nil))] } = none := by decide
+
 /-! ## Why an instruction is refused -/
 
 def isReason (Γ : CtxS) (i : Instr) (p : Reject → Bool) : Bool :=

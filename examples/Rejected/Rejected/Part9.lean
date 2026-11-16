@@ -25,16 +25,18 @@ example : BlocksOk Φ fetch (linux.writesOnly fun fd bytes => fd = 1 ∧ bytes =
   ty_program
 
 /-- error: the block at label `start` does not type by itself:
-• left to be shown: 1#64 = 2
+• at address 4194502: `write`: what the program offers is not shown to be what is wanted
+• it offers descriptor 1 14 bytes from byte 0 of the block that says its bytes at address 4198400
+• what is wanted of them does not hold, or is not shown to: 1#64 = 2
 What it needs is said in a block after `ty_program`, beginning `case start`. -/
 #guard_msgs in
 example : BlocksOk Φ fetch (linux.writesOnly fun fd _ => fd = 2) Ψ := by
   ty_program
 
 /-- error: the block at label `start` does not type by itself:
-• left to be shown: List.take (14#64).toNat
-    (List.drop 0 [72, 101, 108, 108, 111, 44, 32, 119, 111, 114, 108, 100, 33, 10]) =
-  List.take 5 message
+• at address 4194502: `write`: what the program offers is not shown to be what is wanted
+• it offers descriptor 1 14 bytes from byte 0 of the block that says its bytes at address 4198400
+• what is wanted of them does not hold, or is not shown to: [72, 101, 108, 108, 111, 44, 32, 119, 111, 114, 108, 100, 33, 10] = List.take 5 message
 What it needs is said in a block after `ty_program`, beginning `case start`. -/
 #guard_msgs in
 example : BlocksOk Φ fetch (linux.writesOnly fun _ bytes => bytes = message.take 5) Ψ := by

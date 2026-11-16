@@ -1,6 +1,7 @@
 import TypedAsm.Loc
 import TypedAsm.Linux
 import TypedAsm.Owned
+import TypedAsm.Written
 import TypedAsm.RegMap
 
 /-!
@@ -4407,6 +4408,30 @@ hold a number for, that value is given a name first. What comes of it is a
 tree: what each step leaves to be shown, under the names given before it,
 and at the end the block where the walk stopped. -/
 
+/-- What a `write` offers, as terms: so many bytes, from a byte on, of what
+one of the program's blocks says it holds; or the first so many bytes of
+exactly known values the program stored, least significant byte first. -/
+inductive OfferS
+  | said (base : BitVec 64) (off n : Nat)
+  | fields (vs : List Val) (n : Nat)
+
+/-- What a `write` offers. -/
+inductive Offered
+  | said (base : BitVec 64) (off n : Nat)
+  | fields (vs : List (BitVec 64)) (n : Nat)
+
+def OfferS.den (ρ : Env) : OfferS → Offered
+  | .said base off n => .said base off n
+  | .fields vs n => .fields (vs.map (·.den ρ)) n
+
+/-- That what a `write` offers to a descriptor is as `R` wants: the bytes
+are that part of what the block says, or the bytes of the values. -/
+def Offered.ok (Ψ : MemTy) (R : BitVec 64 → List (BitVec 8) → Prop) (fd : BitVec 64) :
+    Offered → Prop
+  | .said base off n =>
+    ∃ l bs, Ψ base = some l ∧ l.said = some bs ∧ off + n ≤ bs.length ∧ R fd ((bs.drop off).take n)
+  | .fields vs n => R fd ((vs.flatMap le64).take n)
+
 /-- What a walk comes to. -/
 inductive Walk
   /-- It stopped at an address, in a context. -/
@@ -4465,6 +4490,9 @@ inductive Walk
   a return address ready for a family of contexts, each allowed at `next`:
   a call through a pointer to a function that chooses a value. -/
   | callViaAll (τ : TyS) (next : BitVec 64) (j : Nat) (Δ : CtxS) (cs : List CondS)
+  /-- The block makes a `write` where what the program writes is being
+  shown: to this descriptor, offering these bytes; then the rest. -/
+  | offer (fd : Val) (o : OfferS) (rest : Walk)
   /-- A register was given the address `v` of code, and from here on has
   the type that is the variable `h`: a pointer to that code. -/
   | asCode (v : BitVec 64) (h : Nat) (rest : Walk)
@@ -4488,18 +4516,18 @@ theorem CodeAt.block {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} 
 /-- That a walk's conditions hold, that `P` holds of where it stopped, that
 `Q` allows each context it was handed over to, and that `E` holds of the
 status it ends the program with: for every value each name may stand for. -/
-def Walk.holds (Q : CodeTy) (P : BitVec 64 → Ctx → Prop) (E : Option (BitVec 64) → Prop) :
-    Walk → Env → Prop
+def Walk.holds (Q : CodeTy) (P : BitVec 64 → Ctx → Prop) (E : Option (BitVec 64) → Prop)
+    (Wr : BitVec 64 → Offered → Prop) : Walk → Env → Prop
   | .stop a Γ, ρ => P a (Γ.den ρ)
-  | .conds cs rest, ρ => CondS.all ρ cs ∧ rest.holds Q P E ρ
-  | .name k rest, ρ => ∀ x, rest.holds Q P E (ρ.setVal k x)
-  | .both l r, ρ => l.holds Q P E ρ ∧ r.holds Q P E ρ
-  | .err k l r, ρ => (∀ e, SysErr e → l.holds Q P E (ρ.setVal k e)) ∧ r.holds Q P E ρ
+  | .conds cs rest, ρ => CondS.all ρ cs ∧ rest.holds Q P E Wr ρ
+  | .name k rest, ρ => ∀ x, rest.holds Q P E Wr (ρ.setVal k x)
+  | .both l r, ρ => l.holds Q P E Wr ρ ∧ r.holds Q P E Wr ρ
+  | .err k l r, ρ => (∀ e, SysErr e → l.holds Q P E Wr (ρ.setVal k e)) ∧ r.holds Q P E Wr ρ
   | .byte k zero more, ρ =>
-    zero.holds Q P E ρ ∧ ∀ b : BitVec 64, b ≠ 0 → b < 256 → more.holds Q P E (ρ.setVal k b)
+    zero.holds Q P E Wr ρ ∧ ∀ b : BitVec 64, b ≠ 0 → b < 256 → more.holds Q P E Wr (ρ.setVal k b)
   | .branch fl c taken fall, ρ =>
-    (∀ f, fl.den ρ f → c.eval f = some true → taken.holds Q P E ρ) ∧
-      (∀ f, fl.den ρ f → c.eval f = some false → fall.holds Q P E ρ)
+    (∀ f, fl.den ρ f → c.eval f = some true → taken.holds Q P E Wr ρ) ∧
+      (∀ f, fl.den ρ f → c.eval f = some false → fall.holds Q P E Wr ρ)
   | .enter t Δ cs, ρ => Q t (Δ.den ρ) ∧ CondS.all ρ cs
   | .leave i Δ cs, ρ =>
     (∃ D, Sub ((TyS.atom i).den ρ) (.code D) ∧ CtxSub (Δ.den ρ) D) ∧ CondS.all ρ cs
@@ -4507,13 +4535,14 @@ def Walk.holds (Q : CodeTy) (P : BitVec 64 → Ctx → Prop) (E : Option (BitVec
     (TyS.atom j).den ρ = .code (R.den ρ) ∧ Q next (R.den ρ) ∧ Q t (Δ.den ρ) ∧ CondS.all ρ cs
   | .exit v, ρ => E (v.map (·.den ρ))
   | .fresh k l r, ρ =>
-    (∀ e, SysErr e → l.holds Q P E (ρ.setVal k e)) ∧
-      ∀ p : BitVec 64, p.toNat % 4096 = 0 → p < 0x800000000000 → r.holds Q P E (ρ.setVal k p)
+    (∀ e, SysErr e → l.holds Q P E Wr (ρ.setVal k e)) ∧
+      ∀ p : BitVec 64, p.toNat % 4096 = 0 → p < 0x800000000000 → r.holds Q P E Wr (ρ.setVal k p)
   | .jumpVia τ Δ cs, ρ => (τ.den ρ).Enters (Δ.den ρ) ∧ CondS.all ρ cs
   | .callVia τ next j R Δ cs, ρ =>
     (τ.den ρ).Enters (Δ.den ρ) ∧ (TyS.atom j).den ρ = .code (R.den ρ) ∧ Q next (R.den ρ) ∧
       CondS.all ρ cs
-  | .asCode v h rest, ρ => CodeAt Q v ((TyS.atom h).den ρ) ∧ rest.holds Q P E ρ
+  | .asCode v h rest, ρ => CodeAt Q v ((TyS.atom h).den ρ) ∧ rest.holds Q P E Wr ρ
+  | .offer fd o rest, ρ => Wr (fd.den ρ) (o.den ρ) ∧ rest.holds Q P E Wr ρ
   | .callViaAll τ next j Δ cs, ρ =>
     (τ.den ρ).Enters (Δ.den ρ) ∧
       (∃ pre : (Nat → BitVec 64) → Ctx, (TyS.atom j).den ρ = .codeAll pre ∧ ∀ x, Q next (pre x)) ∧
@@ -4576,6 +4605,9 @@ structure Prog where
   /-- Whether a `write` is a call like any other: it is not where what the
   program writes is being shown. -/
   plainWrite : Bool := false
+  /-- Whether what the program writes is being shown: a `write` is then
+  typed for what it offers. -/
+  offers : Bool := false
   /-- The blocks whose address, once taken, is kept as the number it is and
   not made a pointer: those whose bytes are to be written out, where what a
   program writes is being shown. A pointer's type does not say which block
@@ -4927,9 +4959,9 @@ def enterJump (P : Prog) (a len : BitVec 64) (Γ : CtxS) : Instr → Option Walk
 
 theorem enterJump_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
     {P : Prog} {a len : BitVec 64} {Γ : CtxS} {i : Instr} {W : Walk}
-    {E : Option (BitVec 64) → Prop}
+    {E : Option (BitVec 64) → Prop} {Wr : BitVec 64 → Offered → Prop}
     (hf : fetch a = some (i, len)) (h : enterJump P a len Γ i = some W)
-    (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) E ρ) : BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
+    (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) E Wr ρ) : BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
   unfold enterJump at h
   split at h
   · next d =>
@@ -5425,9 +5457,9 @@ def leaveAt (P : Prog) (a : BitVec 64) (Γ : CtxS) : Instr → Option Walk
 
 theorem leaveAt_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
     {P : Prog} {a len : BitVec 64} {Γ : CtxS} {i : Instr} {W : Walk}
-    {E : Option (BitVec 64) → Prop}
+    {E : Option (BitVec 64) → Prop} {Wr : BitVec 64 → Offered → Prop}
     (hf : fetch a = some (i, len)) (h : leaveAt P a Γ i = some W)
-    (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) E ρ) : BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
+    (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) E Wr ρ) : BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
   unfold leaveAt at h
   split at h
   · split at h
@@ -5501,9 +5533,9 @@ def callAt (P : Prog) (a len : BitVec 64) (Γ : CtxS) : Instr → Option Walk
 
 theorem callAt_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
     {P : Prog} {a len : BitVec 64} {Γ : CtxS} {i : Instr} {W : Walk}
-    {E : Option (BitVec 64) → Prop}
+    {E : Option (BitVec 64) → Prop} {Wr : BitVec 64 → Offered → Prop}
     (hf : fetch a = some (i, len)) (h : callAt P a len Γ i = some W)
-    (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) E ρ) : BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
+    (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) E Wr ρ) : BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
   unfold callAt at h
   split at h
   · next d =>
@@ -5647,9 +5679,9 @@ def viaAt (P : Prog) (a len : BitVec 64) (Γ : CtxS) : Instr → Option Walk
 
 theorem viaAt_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
     {P : Prog} {a len : BitVec 64} {Γ : CtxS} {i : Instr} {W : Walk}
-    {E : Option (BitVec 64) → Prop} (hP : P.Ok Ψ ρ)
+    {E : Option (BitVec 64) → Prop} {Wr : BitVec 64 → Offered → Prop} (hP : P.Ok Ψ ρ)
     (hf : fetch a = some (i, len)) (h : viaAt P a len Γ i = some W)
-    (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) E ρ) : BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
+    (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) E Wr ρ) : BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
   unfold viaAt at h
   split at h
   · next rm =>
@@ -5866,9 +5898,9 @@ def exitAt (Γ : CtxS) : Instr → Option Walk
   | _ => none
 
 theorem exitAt_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
-    {a len : BitVec 64} {Γ : CtxS} {i : Instr} {W : Walk} {E : Option (BitVec 64) → Prop}
+    {a len : BitVec 64} {Γ : CtxS} {i : Instr} {W : Walk} {E : Option (BitVec 64) → Prop} {Wr : BitVec 64 → Offered → Prop}
     (hE : sys.EndsWhen E) (hf : fetch a = some (i, len)) (h : exitAt Γ i = some W)
-    (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) E ρ) : BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
+    (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) E Wr ρ) : BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
   unfold exitAt at h
   split at h
   · split at h
@@ -5913,9 +5945,9 @@ def mmapAt (P : Prog) (k : Nat) (next : BitVec 64) (Γ : CtxS) : Instr → Optio
 
 theorem mmapAt_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
     {P : Prog} {k : Nat} {a len : BitVec 64} {Γ : CtxS} {i : Instr} {W : Walk}
-    {E : Option (BitVec 64) → Prop} (hsys : P.linux = true → LikeLinuxNW sys)
+    {E : Option (BitVec 64) → Prop} {Wr : BitVec 64 → Offered → Prop} (hsys : P.linux = true → LikeLinuxNW sys)
     (hf : fetch a = some (i, len)) (h : mmapAt P k (a + len) Γ i = some W)
-    (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) E ρ) : BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
+    (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) E Wr ρ) : BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
   unfold mmapAt at h
   split at h
   · split at h
@@ -5975,6 +6007,222 @@ theorem mmapAt_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} 
     · cases h
   · cases h
 
+/-- The exactly known values a shape holds in so many 8-byte fields from a
+byte on. -/
+def fieldsFrom (S : ShapeS) : Nat → Nat → Option (List Val)
+  | _, 0 => some []
+  | j, m + 1 =>
+    match S.look (.lit j) with
+    | some (some (.eq v)) => (fieldsFrom S (j + 8) m).map (v :: ·)
+    | _ => none
+
+theorem fieldsFrom_spec {ρ : Env} {S : ShapeS} : (j m : Nat) → {vs : List Val} →
+    fieldsFrom S j m = some vs → vs.length = m ∧
+      ∀ i, (h : i < (vs.map (·.den ρ)).length) →
+        (j + 8 * i, Ty.eq (vs.map (·.den ρ))[i]) ∈ (S.den ρ).vals
+  | _, 0, vs, h => by cases h; exact ⟨rfl, fun i hi => absurd hi (by simp)⟩
+  | j, m + 1, vs, h => by
+    unfold fieldsFrom at h
+    split at h
+    · next v hv =>
+      cases hr : fieldsFrom S (j + 8) m with
+      | none => rw [hr] at h; cases h
+      | some rest =>
+        rw [hr] at h; cases h
+        obtain ⟨hlen, hall⟩ := fieldsFrom_spec (ρ := ρ) (j + 8) m hr
+        refine ⟨by simp [hlen], fun i hi => ?_⟩
+        cases i with
+        | zero => exact ShapeOf.mem_of_valAt (ShapeS.look_typed hv)
+        | succ i =>
+          have := hall i (by simpa using hi)
+          have e : j + 8 * (i + 1) = j + 8 + 8 * i := by omega
+          rw [e]
+          simpa using this
+    · cases h
+
+/-- The exactly known values the stack holds in so many 8-byte fields from a
+byte above the stack pointer on: each in whichever piece it falls. -/
+def stackFields (σ : List ShapeS) : Nat → Nat → Option (List Val)
+  | _, 0 => some []
+  | d, m + 1 =>
+    match pieceAt σ 0 d with
+    | some (_, S, i, _) =>
+      match S.look (.lit i) with
+      | some (some (.eq v)) => (stackFields σ (d + 8) m).map (v :: ·)
+      | _ => none
+    | none => none
+
+theorem stackFields_spec {ρ : Env} {σ : List ShapeS} (rest : List Shape) : (d m : Nat) →
+    {vs : List Val} → stackFields σ d m = some vs → vs.length = m ∧
+      ∀ j, (h : j < (vs.map (·.den ρ)).length) → ∃ k S i,
+        StackAt (denShapes ρ σ rest) k S (d + 8 * j) i ∧
+          (i, Ty.eq (vs.map (·.den ρ))[j]) ∈ S.vals
+  | _, 0, vs, h => by cases h; exact ⟨rfl, fun j hj => absurd hj (by simp)⟩
+  | d, m + 1, vs, h => by
+    unfold stackFields at h
+    split at h
+    · next k S i sz hp =>
+      split at h
+      · next v hv =>
+        cases hr : stackFields σ (d + 8) m with
+        | none => rw [hr] at h; cases h
+        | some tail =>
+          rw [hr] at h; cases h
+          obtain ⟨hlen, hall⟩ := stackFields_spec (ρ := ρ) rest (d + 8) m hr
+          refine ⟨by simp [hlen], fun j hj => ?_⟩
+          cases j with
+          | zero =>
+            obtain ⟨jj, hk, hj', hoff, _, _⟩ := pieceAt_spec ρ rest _ _ _ hp
+            exact ⟨jj, S.den ρ, i, ⟨denShapes_getElem? ρ _ _ _ _ hj', by simpa using hoff⟩,
+              ShapeOf.mem_of_valAt (ShapeS.look_typed hv)⟩
+          | succ j =>
+            obtain ⟨k', S', i', hat, hm⟩ := hall j (by simpa using hj)
+            have e : d + 8 * (j + 1) = d + 8 + 8 * j := by omega
+            exact ⟨k', S', i', by rw [e]; exact hat, by simpa using hm⟩
+      · cases h
+    · cases h
+
+/-- What a `write` of `n` bytes at an address offers, where that is known:
+from a block of the program's, from a block the context owns, or from the
+stack. -/
+def offerOf (P : Prog) (Γ : CtxS) (p : Val) (n : Nat) : Option OfferS :=
+  match p.summands with
+  | ([], v) =>
+    match blockAt P.blocks v with
+    | some (base, _, _, off) => some (.said base off n)
+    | none => none
+  | _ =>
+    match findOwned p Γ.owned 0 with
+    | some (_, _, S, j) =>
+      match j.lit? with
+      | some jj => (fieldsFrom S jj ((n + 7) / 8)).map (.fields · n)
+      | none => none
+    | none =>
+      match Γ.regs.get .rsp with
+      | .eq v =>
+        match findOwned p [(v, .mk (.lit (2 ^ 64)) .nil)] 0 with
+        | some (_, _, _, j) =>
+          match j.lit? with
+          | some d =>
+            if d + 8 * ((n + 7) / 8) < 2 ^ 64 then
+              (stackFields Γ.stack d ((n + 7) / 8)).map (.fields · n)
+            else none
+          | none => none
+        | none => none
+      | _ => none
+
+theorem offerOf_sound {fetch : Fetch} {sys₀ : Syscall} [LikeLinux sys₀]
+    {R : BitVec 64 → List (BitVec 8) → Prop} {Ψ : MemTy} {ρ : Env} {P : Prog} (hP : P.Ok Ψ ρ)
+    {Γ : CtxS} {p : Val} {fd cnt : BitVec 64} {o : OfferS}
+    (hax : (Γ.den ρ).regs .rax = .eq 1) (hfd : (Γ.den ρ).regs .rdi = .eq fd)
+    (hbuf : (Γ.den ρ).regs .rsi = .eq (p.den ρ)) (hcnt : (Γ.den ρ).regs .rdx = .eq cnt)
+    (ho : offerOf P Γ p cnt.toNat = some o) (hok : (o.den ρ).ok Ψ R fd) :
+    SysReturns fetch (sys₀.writesOnly R) Ψ (Γ.den ρ) (Γ.den ρ).afterSyscall := by
+  unfold offerOf at ho
+  split at ho
+  · next v hsum =>
+    split at ho
+    · next base S w off hb =>
+      cases ho
+      obtain ⟨l, bs, hl, hs, hin, hR⟩ := hok
+      obtain ⟨_, hv⟩ := blockAt_spec _ hP.blocks hb
+      have hp : p.den ρ = base + BitVec.ofNat 64 off := by
+        rw [Val.den_summands, hsum]
+        have e : sumV ρ ([] : List Val) + v = v := by simp [sumV]
+        rw [e]; exact hv
+      exact linux_write_only hax hfd hbuf hcnt hl hs hp hin hR
+    · cases ho
+  · split at ho
+    · next k a S j hf =>
+      split at ho
+      · next jj hj =>
+        cases hfs : fieldsFrom S jj ((cnt.toNat + 7) / 8) with
+        | none => rw [hfs] at ho; cases ho
+        | some vs =>
+          rw [hfs] at ho; cases ho
+          obtain ⟨i, hk, hi, hp⟩ := findOwned_spec ρ p Γ.owned 0 hf
+          obtain ⟨hlen, hall⟩ := fieldsFrom_spec (ρ := ρ) jj _ hfs
+          rw [Num.lit?_den hj] at hp
+          exact linux_write_owned_only (k := i) (vs := vs.map (·.den ρ)) hax hfd hbuf hcnt
+            (by rw [CtxS.den_owned]; exact denOwned_getElem? ρ _ _ _ _ _ hi) hp hall
+            (by simp only [List.length_map, hlen]; omega)
+            (show R fd (((vs.map (·.den ρ)).flatMap le64).take cnt.toNat) from hok)
+      · cases ho
+    · split at ho
+      · next v hsp =>
+        split at ho
+        · next k₀ a₀ S₀ j hf =>
+          split at ho
+          · next d hd =>
+            split at ho
+            · next hlt =>
+              cases hfs : stackFields Γ.stack d ((cnt.toNat + 7) / 8) with
+              | none => rw [hfs] at ho; cases ho
+              | some vs =>
+                rw [hfs] at ho; cases ho
+                obtain ⟨n, _, hn, hpa⟩ :=
+                  findOwned_spec ρ p [(v, .mk (.lit (2 ^ 64)) .nil)] 0 hf
+                have ha : a₀ = v := by
+                  cases n with
+                  | zero => cases hn; rfl
+                  | succ m => cases hn
+                subst ha
+                obtain ⟨hlen, hall⟩ :=
+                  stackFields_spec (ρ := ρ) (stackTail ρ Γ.stackRest) d _ hfs
+                rw [Num.lit?_den hd] at hpa
+                have hdn : (BitVec.ofNat 64 d).toNat = d := by
+                  rw [BitVec.toNat_ofNat, Nat.mod_eq_of_lt (by omega)]
+                refine linux_write_stack_only (v := a₀.den ρ) (d := BitVec.ofNat 64 d)
+                  (vs := vs.map (·.den ρ)) hax hfd
+                  (by rw [CtxS.den_regs, hsp]; rfl) (by rw [hbuf, hpa]) hcnt
+                  (fun j hj => by rw [hdn, CtxS.den_stack]; exact hall j hj)
+                  (by simp only [List.length_map, hlen]; omega)
+                  (show R fd (((vs.map (·.den ρ)).flatMap le64).take cnt.toNat) from hok)
+            · cases ho
+          · cases ho
+        · cases ho
+      · cases ho
+
+/-- A `write` where what the program writes is being shown: the descriptor,
+and what is offered. -/
+def offerAt (P : Prog) (Γ : CtxS) : Instr → Option (Val × OfferS)
+  | .syscall =>
+    if P.offers then
+      match Γ.regs.get .rax, Γ.regs.get .rdi, Γ.regs.get .rsi, Γ.regs.get .rdx with
+      | .eq (.lit nr), .eq fd, .eq p, .eq (.lit cnt) =>
+        if nr = 1 then (offerOf P Γ p cnt.toNat).map (fd, ·) else none
+      | _, _, _, _ => none
+    else none
+  | _ => none
+
+theorem offerAt_sound {fetch : Fetch} {sys₀ : Syscall} [LikeLinux sys₀]
+    {R : BitVec 64 → List (BitVec 8) → Prop} {Ψ : MemTy} {ρ : Env} {P : Prog} (hP : P.Ok Ψ ρ)
+    {Γ : CtxS} {i : Instr} {fd : Val} {o : OfferS}
+    (h : offerAt P Γ i = some (fd, o)) (hok : (o.den ρ).ok Ψ R (fd.den ρ)) :
+    i = .syscall ∧
+      SysReturns fetch (sys₀.writesOnly R) Ψ (Γ.den ρ) (Γ.afterSyscall.den ρ) := by
+  unfold offerAt at h
+  split at h
+  · split at h
+    · split at h
+      · next nr fd' p cnt hax hdi hsi hdx =>
+        split at h
+        · next hn =>
+          subst hn
+          cases ho : offerOf P Γ p cnt.toNat with
+          | none => rw [ho] at h; cases h
+          | some o' =>
+            rw [ho] at h; cases h
+            refine ⟨rfl, ?_⟩
+            rw [CtxS.den_afterSyscall]
+            exact offerOf_sound hP (by rw [CtxS.den_regs, hax]; rfl)
+              (by rw [CtxS.den_regs, hdi]; rfl) (by rw [CtxS.den_regs, hsi]; rfl)
+              (by rw [CtxS.den_regs, hdx]; rfl) ho hok
+        · cases h
+      · cases h
+    · cases h
+  · cases h
+
 /-- Whether an instruction can pass control elsewhere than to the one after
 it, or end the program. The walk asks this once of each instruction: one
 that cannot is not looked at for any of the ways a block may end. -/
@@ -6006,9 +6254,9 @@ def endAt (P : Prog) (k : Nat) (a len : BitVec 64) (Γ : CtxS) (i : Instr) : Opt
 
 theorem endAt_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
     {P : Prog} {k : Nat} {a len : BitVec 64} {Γ : CtxS} {i : Instr} {W : Walk}
-    {E : Option (BitVec 64) → Prop} (hP : P.Ok Ψ ρ) (hsys : P.linux = true → LikeLinuxNW sys)
+    {E : Option (BitVec 64) → Prop} {Wr : BitVec 64 → Offered → Prop} (hP : P.Ok Ψ ρ) (hsys : P.linux = true → LikeLinuxNW sys)
     (hE : sys.EndsWhen E) (hf : fetch a = some (i, len)) (h : endAt P k a len Γ i = some W)
-    (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) E ρ) : BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
+    (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) E Wr ρ) : BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
   unfold endAt at h
   split at h
   · split at h
@@ -6091,6 +6339,9 @@ def walk (P : Prog) :
             .name k (walk P code fuel (k + 1) a (Γ.setReg r (.eq (.var k))))
           else .stop a Γ
         | none =>
+          match (if transfers i then offerAt P Γ i else none) with
+          | some (fd, o) => .offer fd o (walk P rest fuel k (a + len) Γ.afterSyscall)
+          | none =>
           match (if transfers i then sysStep P Γ i else none) with
           | some (Γ', cs) => .conds cs (walk P rest fuel k (a + len) Γ')
           | none =>
@@ -6109,11 +6360,14 @@ def walk (P : Prog) :
 /-- **A walk whose conditions hold types the block it started at**, if the
 block where it stopped is typed. -/
 theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P : Prog}
-    {E : Option (BitVec 64) → Prop} (hsys : P.linux = true → LikeLinuxNW sys)
-    (hw : P.plainWrite = true → LikeLinux sys) (hE : sys.EndsWhen E) :
+    {E : Option (BitVec 64) → Prop} {Wr : BitVec 64 → Offered → Prop} (hsys : P.linux = true → LikeLinuxNW sys)
+    (hw : P.plainWrite = true → LikeLinux sys) (hE : sys.EndsWhen E)
+    (hWr : P.offers = true → ∃ (sys₀ : Syscall) (_ : LikeLinux sys₀)
+      (R : BitVec 64 → List (BitVec 8) → Prop), sys = sys₀.writesOnly R ∧
+        ∀ fd o, Wr fd o → o.ok Ψ R fd) :
     (code : List (BitVec 64 × Instr × BitVec 64)) → Agrees fetch code →
     (fuel k : Nat) → (a : BitVec 64) → (Γ : CtxS) → (ρ : Env) → P.Ok Ψ ρ →
-    (walk P code fuel k a Γ).holds Φ (BlockOk Φ fetch sys Ψ) E ρ →
+    (walk P code fuel k a Γ).holds Φ (BlockOk Φ fetch sys Ψ) E Wr ρ →
     BlockOk Φ fetch sys Ψ a (Γ.den ρ)
   | _, _, 0, _, _, _, _, _, h => h
   | code, hcode, fuel + 1, k, a, Γ, ρ, hP, h => by
@@ -6127,14 +6381,14 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
       · next Γ' hc =>
         unfold castAt at hc
         split at hc
-        · exact castWanted_sound hP regList hc (walk_sound hsys hw hE code hcode fuel k a Γ' ρ hP h)
+        · exact castWanted_sound hP regList hc (walk_sound hsys hw hE hWr code hcode fuel k a Γ' ρ hP h)
         · cases hc
       next =>
       split at h
       · next Γ' hc =>
         unfold reorderAt at hc
         split at hc
-        · exact reorder_sound hc (walk_sound hsys hw hE code hcode fuel k a Γ' ρ hP h)
+        · exact reorder_sound hc (walk_sound hsys hw hE hWr code hcode fuel k a Γ' ρ hP h)
         · cases hc
       next =>
       split at h
@@ -6143,7 +6397,7 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
       split at h
       · next t hj =>
         obtain ⟨d, rfl, rfl⟩ := jumpTo_spec (guarded_some hj)
-        exact .jump hfetch (walk_sound hsys hw hE rest hrestOk fuel k _ Γ ρ hP h)
+        exact .jump hfetch (walk_sound hsys hw hE hWr rest hrestOk fuel k _ Γ ρ hP h)
       next =>
       split at h
       · next c t hb =>
@@ -6205,7 +6459,7 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
           split at h
           · exact h
           · next hr =>
-            have := walk_sound hsys hw hE code hcode fuel k a (Γ.setReg r (.ptr S w off)) ρ hP h
+            have := walk_sound hsys hw hE hWr code hcode fuel k a (Γ.setReg r (.ptr S w off)) ρ hP h
             rw [CtxS.den_setReg] at this
             exact .openRef hr (by rw [CtxS.den_regs, toOpen_spec ho]; rfl)
               (KindsOk.lookup _ hP.kinds hk) this
@@ -6216,7 +6470,7 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
           · next hu =>
             simp only [Bool.and_eq_true] at hu
             have key : ∀ x, BlockOk Φ fetch sys Ψ a ((Γ.den ρ).setReg r (.eq x)) := fun x => by
-              have := walk_sound hsys hw hE code hcode fuel (k + 1) a (Γ.setReg r (.eq (.var k)))
+              have := walk_sound hsys hw hE hWr code hcode fuel (k + 1) a (Γ.setReg r (.eq (.var k)))
                 (ρ.setVal k x) (hP.setVal hu.1.2 hu.2) (h x)
               rw [CtxS.den_setReg, CtxS.den_setVal hu.1.1] at this
               have e : (TyS.eq (.var k)).den (ρ.setVal k x) = .eq x := by
@@ -6229,6 +6483,20 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
             · exact .name hsp key
           · exact h
         · split at h
+          · next fd o ho =>
+            have ho := guarded_some ho
+            have hoff : P.offers = true := by
+              unfold offerAt at ho
+              split at ho
+              · split at ho
+                · assumption
+                · cases ho
+              · cases ho
+            obtain ⟨sys₀, inst, R, rfl, hall⟩ := hWr hoff
+            obtain ⟨rfl, hret⟩ := offerAt_sound (fetch := fetch) (sys₀ := sys₀) hP ho (hall _ _ h.1)
+            exact .sys hfetch hret (walk_sound hsys hw hE hWr rest hrestOk fuel k (a + len) _ ρ hP h.2)
+          next =>
+          split at h
           · next Γ' cs hs =>
             have hs := guarded_some hs
             unfold sysStep at hs
@@ -6237,7 +6505,7 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
               · next hlin =>
                 haveI := hsys hlin
                 exact .sys hfetch (stepSys_sound hw hs h.1)
-                  (walk_sound hsys hw hE rest hrestOk fuel k (a + len) Γ' ρ hP h.2)
+                  (walk_sound hsys hw hE hWr rest hrestOk fuel k (a + len) Γ' ρ hP h.2)
               · cases hs
             · cases hs
           next =>
@@ -6252,22 +6520,39 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
             · split at h
               · next d v hh hcc =>
                 obtain ⟨hd, hΓd⟩ := codeCast_spec hcc
-                have hrest := walk_sound hsys hw hE rest hrestOk fuel k (a + len) _ ρ hP h.2.2
+                have hrest := walk_sound hsys hw hE hWr rest hrestOk fuel k (a + len) _ ρ hP h.2.2
                 rw [CtxS.den_setReg] at hrest
                 exact .step hfetch (hst h.1)
                   (h.2.1.block hd (by rw [CtxS.den_regs, hΓd]; rfl) hrest)
               · exact .step hfetch (hst h.1)
-                  (castData_sound hP (walk_sound hsys hw hE rest hrestOk fuel k (a + len) _ ρ hP h.2))
+                  (castData_sound hP (walk_sound hsys hw hE hWr rest hrestOk fuel k (a + len) _ ρ hP h.2))
           · exact h
 
 /-- The same, from the walk written out. -/
 theorem walk_sound' {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
-    {P : Prog} {code : List (BitVec 64 × Instr × BitVec 64)} {E : Option (BitVec 64) → Prop}
+    {P : Prog} {code : List (BitVec 64 × Instr × BitVec 64)} {E : Option (BitVec 64) → Prop} {Wr : BitVec 64 → Offered → Prop}
     (hP : P.Ok Ψ ρ) (hcode : Agrees fetch code) (hsys : P.linux = true → LikeLinuxNW sys)
-    (hw : P.plainWrite = true → LikeLinux sys) (hE : sys.EndsWhen E) {fuel k : Nat} {a : BitVec 64} {Γ : CtxS}
-    {W : Walk} (h : walk P code fuel k a Γ = W) (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) E ρ) :
+    (hw : P.plainWrite = true → LikeLinux sys) (hE : sys.EndsWhen E)
+    (hWr : P.offers = true → ∃ (sys₀ : Syscall) (_ : LikeLinux sys₀)
+      (R : BitVec 64 → List (BitVec 8) → Prop), sys = sys₀.writesOnly R ∧
+        ∀ fd o, Wr fd o → o.ok Ψ R fd) {fuel k : Nat} {a : BitVec 64} {Γ : CtxS}
+    {W : Walk} (h : walk P code fuel k a Γ = W) (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) E Wr ρ) :
     BlockOk Φ fetch sys Ψ a (Γ.den ρ) :=
-  walk_sound hsys hw hE code hcode fuel k a Γ ρ hP (by rw [h]; exact hW)
+  walk_sound hsys hw hE hWr code hcode fuel k a Γ ρ hP (by rw [h]; exact hW)
+
+/-- Where what a program writes is being shown: the system lets a `write`
+through where what it offers is as wanted. -/
+theorem offersOk {sys₀ : Syscall} [i : LikeLinux sys₀]
+    {R : BitVec 64 → List (BitVec 8) → Prop} {Ψ : MemTy} :
+    true = true → ∃ (s : Syscall) (_ : LikeLinux s) (R' : BitVec 64 → List (BitVec 8) → Prop),
+      sys₀.writesOnly R = s.writesOnly R' ∧ ∀ fd o, Offered.ok Ψ R fd o → o.ok Ψ R' fd :=
+  fun _ => ⟨sys₀, i, R, rfl, fun _ _ h => h⟩
+
+/-- A walk that types no `write` for what it offers asks nothing more. -/
+theorem offersNone {sys : Syscall} {Ψ : MemTy} {Wr : BitVec 64 → Offered → Prop} :
+    false = true → ∃ (s : Syscall) (_ : LikeLinux s) (R' : BitVec 64 → List (BitVec 8) → Prop),
+      sys = s.writesOnly R' ∧ ∀ fd o, Wr fd o → o.ok Ψ R' fd :=
+  fun h => nomatch h
 
 /-- An operating system like Linux, for a walk that steps over system calls. -/
 theorem likeLinux {sys : Syscall} [i : LikeLinux sys] : true = true → LikeLinux sys := fun _ => i
