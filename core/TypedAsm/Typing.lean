@@ -506,6 +506,15 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
     s ≠ .rsp → Ψ base = some l → l.writable = true →
     next + disp.signExtend 64 = base + BitVec.ofNat 64 k → l.shape.valAt k = some τ →
     l.shape.sole k = true → Sub (Γ.regs s) τ → Straight Ψ next Γ (.mov .w64 (.rm_r (.mem (.rip disp)) s)) Γ
+  /-- Store over a typed value of one of the program's writable blocks, at
+  an address that is exactly known: an operand with no base register, or one
+  whose registers hold exactly known values. The stored value must have that
+  value's type. -/
+  | storePlaced {Γ : Ctx} {s : Reg} {m : Mem} {p base : BitVec 64} {l : Layout} {k : Nat}
+      {τ : Ty} :
+    s ≠ .rsp → EaIs Γ m p → Ψ base = some l → l.writable = true →
+    p = base + BitVec.ofNat 64 k → l.shape.valAt k = some τ → l.shape.sole k = true →
+    Sub (Γ.regs s) τ → Straight Ψ next Γ (.mov .w64 (.rm_r (.mem m) s)) Γ
   /-- Load a typed value from the stack. -/
   | loadStack {Γ : Ctx} {r : Reg} {d k i : Nat} {S : Shape} {disp : BitVec 32} {τ : Ty} :
     r ≠ .rsp → byteDisp d disp → StackAt Γ.stack k S d i → S.valAt i = some τ →
@@ -938,6 +947,8 @@ theorem Straight.ext {Ψ Ψ' : MemTy} {next : BitVec 64} {Γ Γ' : Ctx} {i : Ins
   | loadGlobal hd hl haddr hi => exact .loadGlobal hd (he.blocks _ _ hl) haddr hi
   | storeGlobal hs hl hwr haddr hi hso hsub =>
     exact .storeGlobal hs (he.blocks _ _ hl) hwr haddr hi hso hsub
+  | storePlaced hs hm hl hwr haddr hi hso hsub =>
+    exact .storePlaced hs hm (he.blocks _ _ hl) hwr haddr hi hso hsub
   | _ => ext_rule
 
 /-! ## System calls

@@ -162,6 +162,24 @@ theorem storeOwnedKeep {k : Nat} {a : BitVec 64} {s : Reg} {τ : Ty}
     have e := toNat_ofNat_lt hj
     exact .storeOwnedKeep hs he ⟨ho, hp⟩ (by rw [e]; exact hv) (by rw [e]; exact hso) hsub
 
+/-- A 64-bit store over a typed value of one of the program's writable
+blocks: a value of the type that is there. -/
+theorem storeBlock {s : Reg} {τ : Ty} (h : Loc Ψ next Γ m κ S o) (hκ : κ = .block true)
+    (hs : s ≠ .rsp) (hv : S.valAt o = some τ) (hso : S.sole o = true)
+    (hsub : Sub (Γ.regs s) τ) : Straight Ψ next Γ (.mov .w64 (.rm_r (.mem m) s)) Γ := by
+  cases h with
+  | field => cases hκ
+  | indexed => cases hκ
+  | owned => cases hκ
+  | slot => cases hκ
+  | slotIndexed => cases hκ
+  | @global base l d disp hl ha =>
+    have hwr : l.writable = true := by injection hκ
+    exact .storeGlobal hs hl hwr ha hv hso hsub
+  | @placed m p base l d he hl hp =>
+    have hwr : l.writable = true := by injection hκ
+    exact .storePlaced hs he hl hwr hp hv hso hsub
+
 end Loc
 
 end TypedAsm

@@ -2491,6 +2491,14 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
       State.store64_rip _ _ _, h.storeHeap hΨ hl hi hso ((h.regs src hs).sub hsub)⟩
     simp [exec, State.writeRM, Operands.src, Operands.dst, hea,
       State.readReg_w64, State.write_w64 _ (h.canWrite_bytes hl hwr hfit)]
+  | @storePlaced src m p base l k τ hs hm hl hwr haddr hi hso hsub =>
+    have hmem := ShapeOf.mem_of_valAt hi
+    have hfit := hΨ.fits _ l hl _ hmem
+    have hea : s.ea m = base + BitVec.ofNat 64 k := by rw [hm.sound h, haddr]
+    refine ⟨s.store64 (base + BitVec.ofNat 64 k) (s.getReg src), ?_,
+      State.store64_rip _ _ _, h.storeHeap hΨ hl hi hso ((h.regs src hs).sub hsub)⟩
+    simp [exec, State.writeRM, Operands.src, Operands.dst, hea,
+      State.readReg_w64, State.write_w64 _ (h.canWrite_bytes hl hwr hfit)]
   | @loadStack r d k i S disp τ hd hdisp hat hi =>
     obtain ⟨hk, rfl⟩ := hat
     have hm := ShapeOf.mem_of_valAt hi

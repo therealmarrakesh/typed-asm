@@ -1446,6 +1446,7 @@ def Instr.rules : Instr → List Name
   | .mov .w64 (.rm_r (.mem (.sib (some _) (some _) _)) _) =>
     [``Straight.storeIndexed, ``Straight.storeOwnedKeep, ``Straight.storeOwnedTyped,
       ``Straight.storeInt]
+  | .mov .w64 (.rm_r (.mem (.sib none _ _)) _) => [``Straight.storePlaced, ``Straight.storeInt]
   | .mov _ (.rm_r (.mem _) _) => [``Straight.storeInt]
   | .mov _ (.rm_i (.mem _) _) => [``Straight.storeImm]
   | .store8 _ _ => [``Straight.store8RM]

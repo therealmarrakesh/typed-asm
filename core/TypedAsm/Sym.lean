@@ -2140,6 +2140,12 @@ def store (next : BitVec 64) (Γ : CtxS) (s : Reg) (m : Mem) : Option (CtxS × L
           else storeOwnedNew next Γ s m pl cs k a
         | _ => storeOwnedNew next Γ s m pl cs k a
       | .piece _ => writes next Γ 8 m
+      | .block true =>
+        match pl.shape.look pl.off with
+        | some (some τ) =>
+          if pl.shape.sole pl.off then some (Γ, cs ++ subConds (Γ.regs.get s) τ) else none
+        | some none => writes next Γ 8 m
+        | none => none
       | _ => none
     | none => none
 
@@ -2207,6 +2213,19 @@ theorem store_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
         · exact storeOwnedNew_sound hB hs hl hk h hc
       · exact storeOwnedNew_sound hB hs hl hk h hc
     · exact .storeInt (writes_sound hB h hc).1
+    · next hk =>
+      split at h
+      · next τ hτ =>
+        split at h
+        · next hso =>
+          cases h
+          obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hc
+          have hloc := locate_spec hB (Ψ := Ψ) (next := next) hl h₁
+          exact hloc.storeBlock (by rw [hk]; rfl) hs (ShapeS.look_typed hτ) (ShapeS.den_sole hso)
+            (by rw [CtxS.den_regs]; exact subConds_spec h₂)
+        · cases h
+      · exact .storeInt (writes_sound hB h hc).1
+      · cases h
     · cases h
   · cases h
 
