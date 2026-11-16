@@ -71,6 +71,16 @@ inductive ReadEvent
   | bytes (data : List (BitVec 8))
   | error (errno : BitVec 64)
 
+/-- What the kernel does with one call, where the choice is its own and not
+settled by what the program asked. -/
+inductive Fate
+  /-- Everything that was asked for. -/
+  | full
+  /-- At most this many bytes, where the call is one that may stop early. -/
+  | short (n : Nat)
+  /-- Nothing, because the call would have to wait and was asked not to. -/
+  | again
+
 /-- A file: its name, and its bytes. The bytes are what it held to begin
 with, overlaid by what has been written to it since, so that writing costs
 the same however large the file. -/
@@ -150,6 +160,10 @@ structure World where
   have been handed out. -/
   random : Nat → BitVec 8 := fun _ => 0
   drawn : Nat := 0
+  /-- What the kernel does with each coming `getrandom`, one entry per call.
+  A choice the call does not allow counts as `full`, and so does having none
+  left. -/
+  fates : List Fate := []
   /-- The time, in seconds and nanoseconds, at each successive asking, and
   how many times it has been asked. -/
   time : Nat → BitVec 64 × BitVec 64 := fun _ => (0, 0)

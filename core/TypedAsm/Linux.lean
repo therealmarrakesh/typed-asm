@@ -251,15 +251,87 @@ def clockGettime (s : State) : State :=
       { s.world with asks := s.world.asks + 1 }
   else ret s (-14)
 
-/-- `getrandom(buf, length, flags)`: store random bytes at `buf`. The result
-is how many, which is all that were asked for up to the kernel's limit. -/
-def getrandom (s : State) : State :=
+/-- Counting up from `i`, the first of the next `fuel` bytes at `a` that is
+not writable, or `i + fuel` if all are. -/
+def runFrom (s : State) (a : BitVec 64) : Nat → Nat → Nat
+  | i, 0 => i
+  | i, fuel + 1 =>
+    if (s.perm (a + BitVec.ofNat 64 i)).writable then runFrom s a (i + 1) fuel else i
+
+/-- How many of the `n` bytes at `a` can be written before one that cannot:
+as far as the kernel gets when it copies into a buffer. -/
+def writableRun (s : State) (a : BitVec 64) (n : Nat) : Nat :=
+  runFrom s a 0 n
+
+theorem runFrom_spec (s : State) (a : BitVec 64) : ∀ fuel i,
+    i ≤ runFrom s a i fuel ∧ runFrom s a i fuel ≤ i + fuel ∧
+    (∀ j, i ≤ j → j < runFrom s a i fuel → (s.perm (a + BitVec.ofNat 64 j)).writable = true) ∧
+    (runFrom s a i fuel < i + fuel →
+      (s.perm (a + BitVec.ofNat 64 (runFrom s a i fuel))).writable = false)
+  | 0, i => ⟨Nat.le_refl _, Nat.le_refl _, fun j h1 h2 => absurd h2 (by simp only [runFrom]; omega),
+      fun h => absurd h (by simp only [runFrom]; omega)⟩
+  | fuel + 1, i => by
+    by_cases hw : (s.perm (a + BitVec.ofNat 64 i)).writable = true
+    · obtain ⟨h1, h2, h3, h4⟩ := runFrom_spec s a fuel (i + 1)
+      simp only [runFrom, hw, ↓reduceIte]
+      refine ⟨by omega, by omega, fun j hj hlt => ?_, fun h => h4 (by omega)⟩
+      by_cases hji : j = i
+      · rw [hji]; exact hw
+      · exact h3 j (by omega) hlt
+    · simp only [runFrom, hw, Bool.false_eq_true, ↓reduceIte]
+      exact ⟨Nat.le_refl _, by omega, fun j h1 h2 => absurd h2 (by omega),
+        fun _ => trivial⟩
+
+theorem writableRun_le (s : State) (a : BitVec 64) (n : Nat) : writableRun s a n ≤ n := by
+  have := (runFrom_spec s a n 0).2.1
+  simpa [writableRun] using this
+
+/-- Whether the call number `318` was handed flags the kernel refuses: a bit
+it does not know, or both `GRND_RANDOM` (2) and `GRND_INSECURE` (4). -/
+def grndBad (s : State) : Bool :=
+  let f := ((s.getReg .rdx).setWidth 32).toNat
+  decide (8 ≤ f) || (f / 2 % 2 == 1 && f / 4 % 2 == 1)
+
+/-- Whether a `getrandom` may answer that it would have to wait: it was
+handed `GRND_NONBLOCK` (1), and not `GRND_INSECURE` (4), which never waits. -/
+def grndMayRefuse (s : State) : Bool :=
+  let f := ((s.getReg .rdx).setWidth 32).toNat
+  f % 2 == 1 && !(f / 4 % 2 == 1)
+
+/-- Whether a `getrandom` may stop before it has delivered everything: it
+was asked for more than 256 bytes, or handed `GRND_RANDOM` (2). -/
+def grndMayStop (s : State) : Bool :=
+  decide (256 < (s.getReg .rsi).toNat) || ((s.getReg .rdx).setWidth 32).toNat / 2 % 2 == 1
+
+/-- The most one `getrandom` delivers: what was asked for, up to the
+kernel's limit on one call. -/
+def grndMost (s : State) : Nat :=
+  min (s.getReg .rsi).toNat 0x7ffff000
+
+/-- A `getrandom` that sets out to deliver `want` bytes, in world `w`: it
+stores as many as it can write, and fails only if it can write none. -/
+def grndDeliver (s : State) (w : World) (want : Nat) : State :=
   let buf := s.getReg .rdi
-  let n := min (s.getReg .rsi).toNat 33554431
-  if s.canWrite buf n then
-    give s buf (((List.range n).map fun i => s.world.random (s.world.drawn + i)).take n)
-      (BitVec.ofNat 64 n) { s.world with drawn := s.world.drawn + n }
-  else ret s (-14)
+  let n := writableRun s buf want
+  if n = 0 ∧ 0 < want then ret { s with world := w } (-14)
+  else
+    give s buf ((List.range n).map fun i => s.world.random (s.world.drawn + i))
+      (BitVec.ofNat 64 n) { w with drawn := s.world.drawn + n }
+
+/-- `getrandom(buf, length, flags)`: store random bytes at `buf`. The result
+is how many. Which bytes is the world's choice, and so is what the kernel
+does where it has a choice (`World.fates`): deliver everything, stop early,
+or say it would have to wait. `Getrandom` says what it may do. -/
+def getrandom (s : State) : State :=
+  if grndBad s then ret s (-22)
+  else
+    let w := { s.world with fates := s.world.fates.tail }
+    match s.world.fates.head? with
+    | some .again =>
+      if grndMayRefuse s then ret { s with world := w } (-11) else grndDeliver s w (grndMost s)
+    | some (.short k) =>
+      grndDeliver s w (if grndMayStop s && decide (0 < k) then min k (grndMost s) else grndMost s)
+    | _ => grndDeliver s w (grndMost s)
 
 /-- `mmap(addr, length, prot, flags, fd, offset)`, for fresh memory only:
 `prot` must be 3 (read and write) and `flags` 0x22 (private, not backed by a
@@ -878,15 +950,314 @@ theorem clockGettime_fills (s : State) : Fills s (s.getReg .rsi) 16 (clockGettim
   simp only [clockGettime]
   fills
 
-theorem getrandom_fills (s : State) :
-    Fills s (s.getReg .rdi) (s.getReg .rsi).toNat (getrandom s) := by
+/-! ## What `getrandom` may answer
+
+The contract of `getrandom(buf, len, flags)` with Linux, for a process
+without signal handlers, which is every process of the model: it has no way
+to install one. A signal whose action is to end or stop the process does so
+from outside, and is not an answer to the call.
+
+* Flags the kernel does not know, or `GRND_RANDOM` with `GRND_INSECURE`:
+  `EINVAL`, and nothing else happens.
+* With `GRND_NONBLOCK` and without `GRND_INSECURE`: it may answer `EAGAIN`,
+  having stored nothing.
+* Otherwise it stores some number of bytes at the start of the buffer and
+  answers with that number, leaving every other byte of memory as it was.
+  The number is everything asked for, up to the kernel's limit on one call,
+  with two exceptions. A call for more than 256 bytes, or with
+  `GRND_RANDOM`, may stop early after at least one byte. And a call whose
+  buffer is not all writable stops at the first byte it cannot write.
+* If it cannot write even the first byte, `EFAULT`.
+
+`EINTR` is not among the answers: without a handler, the kernel starts an
+interrupted call again by itself. -/
+
+/-- The worlds that differ from `w` only in how much randomness has been
+drawn and in what the kernel is still to decide. -/
+def SameBut (w w' : World) : Prop :=
+  ∃ fates drawn, w' = { w with fates := fates, drawn := drawn }
+
+/-- `Getrandom s t`: `t` is a state Linux may return to from a `getrandom`
+called in `s`. -/
+inductive Getrandom (s : State) : State → Prop
+  | invalid : grndBad s = true → Getrandom s (ret s (-22))
+  | again (w : World) : grndBad s = false → SameBut s.world w → grndMayRefuse s = true →
+    Getrandom s (ret { s with world := w } (-11))
+  | fault (w : World) : grndBad s = false → SameBut s.world w → 0 < grndMost s →
+    (s.perm (s.getReg .rdi)).writable = false → Getrandom s (ret { s with world := w } (-14))
+  | filled (data : List (BitVec 8)) (w : World) : grndBad s = false → SameBut s.world w →
+    data.length ≤ grndMost s → s.canWrite (s.getReg .rdi) data.length = true →
+    (data.length = grndMost s ∨ (grndMayStop s = true ∧ 0 < data.length) ∨
+      (0 < data.length ∧ data.length < grndMost s ∧
+        (s.perm (s.getReg .rdi + BitVec.ofNat 64 data.length)).writable = false)) →
+    Getrandom s (give s (s.getReg .rdi) data (BitVec.ofNat 64 data.length) w)
+
+theorem canWrite_writableRun (s : State) (a : BitVec 64) (n : Nat) :
+    s.canWrite a (writableRun s a n) = true := by
+  rw [State.canWrite_iff]
+  exact fun i hi => (runFrom_spec s a n 0).2.2.1 i (Nat.zero_le _) hi
+
+/-- A delivery of an amount the call may deliver is an answer the contract allows. -/
+theorem grndDeliver_allowed (s : State) (w : World) (want : Nat) (hbad : grndBad s = false)
+    (hw : SameBut s.world w) (hle : want ≤ grndMost s)
+    (hwant : want = grndMost s ∨ (grndMayStop s = true ∧ 0 < want)) :
+    Getrandom s (grndDeliver s w want) := by
+  have hrun := runFrom_spec s (s.getReg .rdi) want 0
+  have hn : writableRun s (s.getReg .rdi) want ≤ want := writableRun_le _ _ _
+  simp only [grndDeliver]
+  split
+  · next h0 =>
+    refine .fault w hbad hw (by omega) ?_
+    have := hrun.2.2.2 (by show writableRun s _ want < 0 + want; omega)
+    rw [show runFrom s (s.getReg .rdi) 0 want = 0 from h0.1] at this
+    simpa using this
+  · next h0 =>
+    obtain ⟨fates, drawn, rfl⟩ := hw
+    have hlen : ((List.range (writableRun s (s.getReg .rdi) want)).map
+        fun i => s.world.random (s.world.drawn + i)).length
+          = writableRun s (s.getReg .rdi) want := by simp
+    have key := Getrandom.filled (s := s)
+      ((List.range (writableRun s (s.getReg .rdi) want)).map
+        fun i => s.world.random (s.world.drawn + i))
+      { s.world with fates := fates, drawn := s.world.drawn + writableRun s (s.getReg .rdi) want }
+      hbad ⟨fates, _, rfl⟩ (by rw [hlen]; omega) (by rw [hlen]; exact canWrite_writableRun _ _ _)
+      (by
+        rw [hlen]
+        by_cases hfull : writableRun s (s.getReg .rdi) want = want
+        · rcases hwant with h | h
+          · exact .inl (by omega)
+          · exact .inr (.inl ⟨h.1, by omega⟩)
+        · refine .inr (.inr ⟨by omega, by omega, ?_⟩)
+          exact hrun.2.2.2 (by show writableRun s _ want < 0 + want; omega))
+    rw [hlen] at key
+    exact key
+
+/-- **The model's `getrandom` does only what the contract allows**, whatever
+the world. -/
+theorem getrandom_allowed (s : State) : Getrandom s (getrandom s) := by
   simp only [getrandom]
   split
-  · next hw =>
-    refine .inr ⟨_, _, _, ?_, ?_, rfl⟩
-    · exact Nat.le_trans (List.length_take_le _ _) (Nat.min_le_left _ _)
-    · exact canWrite_le hw (List.length_take_le _ _)
-  · exact Fills.same _ _ _ _
+  · next hbad => exact .invalid hbad
+  · next hbad =>
+    have hbad' : grndBad s = false := (Bool.not_eq_true _).mp hbad
+    have hw : SameBut s.world { s.world with fates := s.world.fates.tail } :=
+      ⟨_, s.world.drawn, rfl⟩
+    split
+    · split
+      · next hr => exact .again _ hbad' hw hr
+      · exact grndDeliver_allowed s _ _ hbad' hw (Nat.le_refl _) (.inl rfl)
+    · next k _ =>
+      split
+      · next hk =>
+        simp only [Bool.and_eq_true, decide_eq_true_eq] at hk
+        by_cases hmin : min k (grndMost s) = grndMost s
+        · exact grndDeliver_allowed s _ _ hbad' hw (Nat.min_le_right _ _) (.inl hmin)
+        · exact grndDeliver_allowed s _ _ hbad' hw (Nat.min_le_right _ _)
+            (.inr ⟨hk.1, by omega⟩)
+      · exact grndDeliver_allowed s _ _ hbad' hw (Nat.le_refl _) (.inl rfl)
+    · exact grndDeliver_allowed s _ _ hbad' hw (Nat.le_refl _) (.inl rfl)
+
+/-- **Every answer the contract allows stores only in the buffer**, in bytes
+that were writable, and no more than was asked for: so every one of them
+keeps the typing and changes nothing the program cannot write. -/
+theorem Getrandom.fills {s t : State} (h : Getrandom s t) :
+    Fills s (s.getReg .rdi) (s.getReg .rsi).toNat t := by
+  cases h with
+  | invalid => exact Fills.same _ _ _ _
+  | again w => exact Fills.only _ _ _ _ _
+  | fault w => exact Fills.only _ _ _ _ _
+  | filled data w _ _ hle hcan =>
+    exact .inr ⟨data, _, w, Nat.le_trans hle (Nat.min_le_left _ _), hcan, rfl⟩
+
+/-- **What a program may conclude from the result.** Either the call failed,
+with one of three error numbers, and memory is as it was. Or it answered a
+count `k`, no more than was asked for: then the first `k` bytes of the
+buffer are the ones the kernel supplied, and every other byte of memory is
+as it was. Nothing says that `k` is all that was asked for. -/
+theorem Getrandom.effect {s t : State} (h : Getrandom s t) :
+    (t.mem = s.mem ∧
+      (t.getReg .rax = -22 ∨ t.getReg .rax = -11 ∨ t.getReg .rax = -14)) ∨
+    ∃ data : List (BitVec 8), data.length ≤ (s.getReg .rsi).toNat ∧
+      t.getReg .rax = BitVec.ofNat 64 data.length ∧
+      (∀ i (hi : i < data.length), t.mem (s.getReg .rdi + BitVec.ofNat 64 i) = data[i]) ∧
+      ∀ x : BitVec 64, data.length ≤ (x - s.getReg .rdi).toNat → t.mem x = s.mem x := by
+  cases h with
+  | invalid => exact .inl ⟨rfl, .inl (ret_rax _ _)⟩
+  | again w => exact .inl ⟨rfl, .inr (.inl (ret_rax _ _))⟩
+  | fault w => exact .inl ⟨rfl, .inr (.inr (ret_rax _ _))⟩
+  | filled data w _ _ hle hcan =>
+    have hlen : data.length ≤ (s.getReg .rsi).toNat := Nat.le_trans hle (Nat.min_le_left _ _)
+    have hlt := (s.getReg .rsi).isLt
+    refine .inr ⟨data, hlen, ret_rax _ _, fun i hi => ?_, fun x hx => ?_⟩
+    · show (s.storeBytes (s.getReg .rdi) data).mem _ = _
+      rw [State.mem_storeBytes _ _ _ _ (by omega)]
+      have e : (s.getReg .rdi + BitVec.ofNat 64 i - s.getReg .rdi).toNat = i := by bv_omega
+      rw [e, List.getElem?_eq_getElem hi]
+      rfl
+    · show (s.storeBytes (s.getReg .rdi) data).mem x = _
+      rw [State.mem_storeBytes _ _ _ _ (by omega), List.getElem?_eq_none hx]
+      rfl
+
+theorem getrandom_fills (s : State) :
+    Fills s (s.getReg .rdi) (s.getReg .rsi).toNat (getrandom s) :=
+  (getrandom_allowed s).fills
+
+/-- The kernel gets exactly as far as the bytes that can be written. -/
+theorem writableRun_eq {s : State} {a : BitVec 64} {k n : Nat} (hcan : s.canWrite a k = true)
+    (hstop : k = n ∨ (k < n ∧ (s.perm (a + BitVec.ofNat 64 k)).writable = false)) :
+    writableRun s a n = k := by
+  obtain ⟨-, h2, h3, h4⟩ := runFrom_spec s a n 0
+  rw [State.canWrite_iff] at hcan
+  show runFrom s a 0 n = k
+  apply Nat.le_antisymm
+  · apply Nat.le_of_not_lt
+    intro hgt
+    rcases hstop with h | h
+    · omega
+    · have := h3 k (Nat.zero_le _) hgt
+      rw [h.2] at this
+      cases this
+  · apply Nat.le_of_not_lt
+    intro hlt
+    have := h4 (by omega)
+    rw [hcan _ hlt] at this
+    cases this
+
+/-- The state with the kernel's coming decisions and the bytes it supplies
+chosen afresh. -/
+def withChoices (s : State) (fates : List Fate) (random : Nat → BitVec 8) : State :=
+  { s with world := { s.world with fates := fates, random := random, drawn := 0 } }
+
+theorem getrandom_of_bad {s : State} (h : grndBad s = true) : getrandom s = ret s (-22) := by
+  simp [getrandom, h]
+
+theorem getrandom_of_again {s : State} (h : grndBad s = false) (hf : s.world.fates = [.again])
+    (hr : grndMayRefuse s = true) : ∃ w, getrandom s = ret { s with world := w } (-11) := by
+  simp only [getrandom, h, hf, hr, Bool.false_eq_true, ↓reduceIte, List.head?_cons]
+  exact ⟨_, rfl⟩
+
+theorem getrandom_of_none {s : State} (h : grndBad s = false) (hf : s.world.fates = []) :
+    ∃ w, getrandom s = grndDeliver s w (grndMost s) := by
+  simp only [getrandom, h, hf, Bool.false_eq_true, ↓reduceIte, List.head?_nil]
+  exact ⟨_, rfl⟩
+
+theorem getrandom_of_short {s : State} {k : Nat} (h : grndBad s = false)
+    (hf : s.world.fates = [.short k]) (hs : grndMayStop s = true) (hk : 0 < k) :
+    ∃ w, getrandom s = grndDeliver s w (min k (grndMost s)) := by
+  simp only [getrandom, h, hf, hs, hk, Bool.false_eq_true, ↓reduceIte, List.head?_cons,
+    Bool.true_and, decide_true]
+  exact ⟨_, rfl⟩
+
+/-- **Every answer the contract allows is one the model gives in some
+world.** The world differs from the state's own only in the bytes the kernel
+supplies and in what it decides. So a statement proved of the model for
+every world is proved for every answer Linux may give, as far as a program
+can observe it: the result, and all of memory. -/
+theorem Getrandom.realized {s t : State} (h : Getrandom s t) :
+    ∃ (fates : List Fate) (random : Nat → BitVec 8),
+      (getrandom (withChoices s fates random)).getReg .rax = t.getReg .rax ∧
+      (getrandom (withChoices s fates random)).mem = t.mem := by
+  cases h with
+  | invalid hbad =>
+    refine ⟨[], fun _ => 0, ?_⟩
+    rw [getrandom_of_bad (s := withChoices s [] fun _ => 0) hbad]
+    exact ⟨by rw [ret_rax, ret_rax], rfl⟩
+  | again w hbad _ hr =>
+    refine ⟨[.again], fun _ => 0, ?_⟩
+    obtain ⟨w', e⟩ := getrandom_of_again (s := withChoices s [.again] fun _ => 0) hbad rfl hr
+    rw [e]
+    exact ⟨by rw [ret_rax, ret_rax], rfl⟩
+  | fault w hbad _ hpos hperm =>
+    refine ⟨[], fun _ => 0, ?_⟩
+    obtain ⟨w', e⟩ := getrandom_of_none (s := withChoices s [] fun _ => 0) hbad rfl
+    have hp : (withChoices s [] fun _ => 0).perm = s.perm := rfl
+    have hrun : writableRun (withChoices s [] fun _ => 0)
+        ((withChoices s [] fun _ => 0).getReg .rdi) (grndMost (withChoices s [] fun _ => 0)) = 0 :=
+      writableRun_eq (State.canWrite_iff.mpr fun i hi => absurd hi (by omega))
+        (.inr ⟨hpos, by
+          rw [hp]
+          show (s.perm (s.getReg .rdi + BitVec.ofNat 64 0)).writable = false
+          simpa using hperm⟩)
+    have hpos' : 0 < grndMost (withChoices s [] fun _ => 0) := hpos
+    rw [e]
+    simp only [grndDeliver, hrun, hpos', and_self, ↓reduceIte]
+    exact ⟨by rw [ret_rax, ret_rax], rfl⟩
+  | filled data w hbad _ hle hcan hwhy =>
+    -- the kernel's decision: stop early where that is why the count is short
+    let fates : List Fate :=
+      if data.length = grndMost s then []
+      else if grndMayStop s = true ∧ 0 < data.length then [.short data.length] else []
+    refine ⟨fates, fun i => data.getD i 0, ?_⟩
+    generalize hs' : withChoices s fates (fun i => data.getD i 0) = s'
+    have hfates : s'.world.fates = fates := by rw [← hs']; rfl
+    have hreg : ∀ r, s'.getReg r = s.getReg r := fun r => by rw [← hs']; rfl
+    have hperm : s'.perm = s.perm := by rw [← hs']; rfl
+    have hbad' : grndBad s' = false := by rw [← hs']; exact hbad
+    have hmost : grndMost s' = grndMost s := by rw [← hs']; rfl
+    have hstop : grndMayStop s' = grndMayStop s := by rw [← hs']; rfl
+    have hcan' : s'.canWrite (s'.getReg .rdi) data.length = true := by
+      rw [State.canWrite_iff] at hcan ⊢
+      rw [hperm, hreg]; exact hcan
+    have hdata : (List.range data.length).map (fun i => s'.world.random (s'.world.drawn + i))
+        = data := by
+      rw [← hs']
+      apply List.ext_getElem
+      · simp
+      · intro i h1 h2
+        simp only [List.getElem_map, List.getElem_range]
+        show data.getD (0 + i) 0 = data[i]
+        rw [Nat.zero_add]
+        simp [List.getD, List.getElem?_eq_getElem h2]
+    -- what the model sets out to deliver, and that it gets exactly that far
+    have hdeliver : ∀ (w' : World) (want : Nat), want ≤ grndMost s →
+        writableRun s' (s'.getReg .rdi) want = data.length →
+        (grndDeliver s' w' want).getReg .rax = BitVec.ofNat 64 data.length ∧
+        (grndDeliver s' w' want).mem = (s.storeBytes (s.getReg .rdi) data).mem := by
+      intro w' want hwle hrun
+      simp only [grndDeliver, hrun, hdata]
+      split
+      · next h0 =>
+        -- nothing delivered though something was wanted: no answer of this kind allows it
+        rcases hwhy with h | h | h <;> omega
+      · exact ⟨ret_rax _ _, by rw [← hs']; rfl⟩
+    have goal : (getrandom s').getReg .rax = BitVec.ofNat 64 data.length ∧
+        (getrandom s').mem = (s.storeBytes (s.getReg .rdi) data).mem := by
+      by_cases h1 : data.length = grndMost s
+      · have hf : fates = [] := by simp [fates, h1]
+        obtain ⟨w', e⟩ := getrandom_of_none hbad' (hfates.trans hf)
+        rw [e, hmost]
+        exact hdeliver _ _ (Nat.le_refl _) (writableRun_eq hcan' (.inl h1))
+      · by_cases h2 : grndMayStop s = true ∧ 0 < data.length
+        · have hf : fates = [.short data.length] := by simp [fates, h1, h2]
+          obtain ⟨w', e⟩ := getrandom_of_short hbad' (hfates.trans hf) (hstop.trans h2.1) h2.2
+          rw [e, hmost]
+          exact hdeliver _ _ (Nat.min_le_right _ _) (writableRun_eq hcan' (.inl (by omega)))
+        · have hf : fates = [] := by simp [fates, h1, h2]
+          obtain ⟨w', e⟩ := getrandom_of_none hbad' (hfates.trans hf)
+          rw [e, hmost]
+          rcases hwhy with h | h | h
+          · exact absurd h h1
+          · exact absurd h h2
+          · refine hdeliver _ _ (Nat.le_refl _) (writableRun_eq hcan' (.inr ⟨h.2.1, ?_⟩))
+            rw [hperm, hreg]; exact h.2.2
+    exact ⟨goal.1.trans (show (ret _ _).getReg .rax = _ from ret_rax _ _).symm, goal.2⟩
+
+/-- **A full buffer is not promised.** There is a state in which `getrandom`,
+asked for 512 bytes with every one of them writable, may answer that it
+stored one. A program that goes on to use all 512 uses 511 that the call
+left as they were. -/
+theorem Getrandom.may_stop_early :
+    ∃ s t : State, Getrandom s t ∧ (s.getReg .rsi).toNat = 512 ∧
+      s.canWrite (s.getReg .rdi) 512 = true ∧ t.getReg .rax = 1 ∧
+      ∀ x : BitVec 64, 1 ≤ (x - s.getReg .rdi).toNat → t.mem x = s.mem x := by
+  let s : State := ((State.init.setPerm 0x10000 512 .rw).setReg .rdi 0x10000).setReg .rsi 512
+  have h : Getrandom s (give s (s.getReg .rdi) [0] (BitVec.ofNat 64 1) s.world) :=
+    .filled (s := s) [0] s.world (by decide) ⟨_, _, rfl⟩ (by decide) (by decide)
+      (.inr (.inl ⟨by decide, by decide⟩))
+  refine ⟨s, _, h, by decide, by decide +kernel, ret_rax _ _, fun x hx => ?_⟩
+  show (s.storeBytes (s.getReg .rdi) [0]).mem x = s.mem x
+  rw [State.mem_storeBytes _ _ _ _ (by decide), List.getElem?_eq_none (by simpa using hx)]
+  rfl
 
 /-- Only bytes that were not accessible change. -/
 theorem mmap_frame (s : State) : Frame s (mmap s) := by
