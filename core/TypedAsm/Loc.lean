@@ -1,4 +1,4 @@
-import TypedAsm.Check
+import TypedAsm.Addr
 
 /-!
 # Where an operand's bytes are
@@ -60,7 +60,7 @@ namespace Loc
 
 variable {Ψ : MemTy} {next : BitVec 64} {Γ : Ctx} {m : Mem} {κ : Kind} {S : Shape} {o n : Nat}
 
-open Check (toNat_ofNat_lt)
+open Addr (toNat_ofNat_lt)
 
 /-- Bytes inside the block may be read. -/
 theorem read (h : Loc Ψ next Γ m κ S o) (hin : o + n ≤ S.size) : ReadOk Ψ next Γ n (.mem m) := by

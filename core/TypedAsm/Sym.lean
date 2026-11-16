@@ -1080,7 +1080,7 @@ theorem reach_some {ρ : Env} {Γ : CtxS} {x : IndexReg} {sc : Scale} {disp : Bi
       cases h
       refine ⟨c.den ρ, by rw [CtxS.den_regs, exactly_den hc], ?_⟩
       rw [Num.den_plus]
-      exact Check.index_bytes (c.den ρ) sc disp hlt
+      exact Addr.index_bytes (c.den ρ) sc disp hlt
     · cases h
   · cases h
 
@@ -1380,7 +1380,7 @@ theorem locateSp_spec {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
         have hkj : k = j := by omega
         subst hkj
         refine .slotIndexed (d := (c.den ρ).toNat * 2 ^ sc.shift + disp.toNat)
-          (by rw [CtxS.den_regs, exactly_den hc]) (Check.index_bytes _ sc disp hlt)
+          (by rw [CtxS.den_regs, exactly_den hc]) (Addr.index_bytes _ sc disp hlt)
           ⟨by rw [CtxS.den_stack]; exact denShapes_getElem? ρ _ _ _ _ hj, ?_⟩
         rw [CtxS.den_stack, Num.den_plus]
         show _ = _ + ((c.den ρ).toNat * 2 ^ sc.shift + R)
@@ -1478,7 +1478,7 @@ theorem locateBlock_spec {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} 
       obtain ⟨⟨l, hl, hs, hw⟩, ha⟩ := blockAt_spec _ hB hb
       have := Loc.placed (Ψ := Ψ) (next := next) (Γ := Γ.den ρ)
         (.absIndexed (sc := sc) (disp := disp) (by rw [CtxS.den_regs, exactly_den hc])) hl
-        (Check.block_idx (c.den ρ) sc disp base d ha)
+        (Addr.block_idx (c.den ρ) sc disp base d ha)
       rw [hs, hw] at this
       show Loc Ψ next _ _ (.block w) (S.den ρ) ((Num.plus _ (.lit d)).den ρ)
       rw [Num.den_plus]

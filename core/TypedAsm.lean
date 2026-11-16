@@ -30,7 +30,7 @@ import TypedAsm.EndToEnd
 import TypedAsm.Lookup
 import TypedAsm.FnEx
 import TypedAsm.Declare
-import TypedAsm.Check
+import TypedAsm.Addr
 
 /-!
 # TypedAsm

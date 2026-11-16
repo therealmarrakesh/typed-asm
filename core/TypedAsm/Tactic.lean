@@ -1,5 +1,5 @@
 import Lean
-import TypedAsm.Check
+import TypedAsm.Addr
 import TypedAsm.Reify
 import TypedAsm.Program
 import TypedAsm.Fn
@@ -2447,24 +2447,6 @@ def typeStraight : TacticM Unit := deep <| withMainContext do
   unless ty.isAppOfArity ``Straight 5 do
     throwError "ty_straight: the goal is not of the form `Straight Ψ next Γ i Γ'`"
   let instrExpr := ty.getAppArgs[3]!
-  -- First by computation: the checker works the step out, where it covers
-  -- the instruction and the context says what it needs to know.
-  let before ← saveState
-  try
-    Tactic.withoutRecover do
-      -- with the program's blocks at hand where the memory typing is a list
-      -- of them, and without where it is not
-      evalTactic (← `(tactic|
-        first
-        | (refine Check.check_sound (st := ?_) ?hc ?hn
-           case hc => exact rfl
-           case hn => first | trivial | ty_side)
-        | (refine Check.straight_sound (st := ?_) ?hc ?hn
-           case hc => exact rfl
-           case hn => first | trivial | ty_side)))
-      unless (← getGoals).isEmpty do throwError "left over"
-    return
-  catch _ => before.restore
   let instr? ← knownInstr instrExpr
   let rules := match instr? with
     | some i => i.rules
@@ -2766,7 +2748,7 @@ private partial def closeNeeds (env : Environment) (lctx : LocalContext)
   let known (e : Expr) : Bool :=
     e.isForall || (match e.getAppFn with
       | .const n _ => [``And, ``True, ``Eq, ``LE.le, ``LT.lt, ``Ne, ``Not, ``Sub, ``Or,
-          ``Check.carryNeeds, ``Check.decides].contains n
+          ``Exists].contains n
       | _ => false)
   let P ← if known P then pure P else kwhnf P
   if P.isAppOfArity ``And 2 then
@@ -2782,12 +2764,6 @@ private partial def closeNeeds (env : Environment) (lctx : LocalContext)
       return ← mkExpectedTypeHint (← mkEqRefl lhs) P
   let leaf ← tidy P
   if leaf.isConstOf ``True then return mkConst ``True.intro
-  if leaf.isAppOfArity ``Check.carryNeeds 2 then
-    let op := leaf.appArg!
-    let reads ← kwhnf (mkApp (mkConst ``AluOp.readsCarry) op)
-    if reads.isConstOf ``Bool.false then
-      return mkApp3 (mkConst ``Check.carryNeeds_of_false) leaf.appFn!.appArg! op
-        (← mkEqRefl (mkConst ``Bool.false))
   let natLit (e : Expr) : MetaM (Option Nat) := do
     if e.hasFVar || e.hasExprMVar then return none
     match ← kwhnf e with
@@ -2823,7 +2799,12 @@ private partial def closeNeeds (env : Environment) (lctx : LocalContext)
   let g ← mkFreshExprSyntheticOpaqueMVar goalTy
   let left ← runOn g.mvarId! do
     if arith then evalTactic (← `(tactic| first | omega | bv_omega | ty_side))
-    else evalTactic (← `(tactic| first | trivial | ty_side))
+    else evalTactic (← `(tactic| first
+      | trivial
+      -- flags known to be defined have the carry flag defined
+      | exact fun _ hf => Flags.cf_isSome_of_known hf
+      | ty_decided
+      | ty_side))
   unless left.isEmpty do throwError "left over"
   return g
 
