@@ -4494,22 +4494,62 @@ theorem toOpen_spec {Γ : CtxS} {i : Instr} {r : Reg} {tag : Nat} {w : Bool} {of
     · cases h
   · cases h
 
+/-- A register holding exactly the address of a byte of one of the program's
+blocks, made a pointer into that block, or to a block of its kind. -/
+def castReg (P : Prog) (Γ : CtxS) (d : Reg) : Option CtxS :=
+  if d = .rsp then none
+  else match Γ.regs.get d with
+    | .eq (.lit v) =>
+      match blockAt P.blocks v with
+      | some (base, S, w, off) =>
+        match lookupTag P.tags base with
+        | some tag => some (Γ.setReg d (.ref tag w (.lit off)))
+        | none => some (Γ.setReg d (.ptr S w (.lit off)))
+      | none => none
+    | _ => none
+
+theorem castReg_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
+    {P : Prog} (hP : P.Ok Ψ ρ) {a : BitVec 64} {Γ Γ' : CtxS} {d : Reg}
+    (hc : castReg P Γ d = some Γ') (h : BlockOk Φ fetch sys Ψ a (Γ'.den ρ)) :
+    BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
+  unfold castReg at hc
+  split at hc
+  · cases hc
+  · next hd =>
+    split at hc
+    · next v hΓ =>
+      split at hc
+      · next base S w off hb =>
+        obtain ⟨⟨l, hl, hs, hw⟩, hv⟩ := blockAt_spec _ hP.blocks hb
+        have hΓ' : (Γ.den ρ).regs d = .eq v := by rw [CtxS.den_regs, hΓ]; rfl
+        split at hc
+        · next tag ht =>
+          cases hc
+          obtain ⟨l', hl', htag⟩ := TagsOk.lookup _ hP.tags ht
+          rw [hl] at hl'; cases hl'
+          rw [CtxS.den_setReg] at h
+          exact .castRef hd hΓ' hl htag hv (fun _ => by rw [hw]; assumption) h
+        · cases hc
+          rw [CtxS.den_setReg] at h
+          have h' : BlockOk Φ fetch sys Ψ a ((Γ.den ρ).setReg d (.ptr l.shape w off)) := by
+            rw [hs]; exact h
+          exact .castPtr hd hΓ' hl hv (fun e => by rw [hw]; exact e) h'
+      · cases hc
+    · cases hc
+
 /-- A register just loaded with the address of a byte of one of the
-program's blocks is a pointer into that block, or to a block of its kind. -/
+program's blocks is a pointer into that block, or to a block of its kind:
+unless the block is one whose address is kept as the number it is. -/
 def castData (P : Prog) (Γ : CtxS) (i : Instr) : CtxS :=
   match i with
   | .lea .w64 d (.rip _) =>
-    if d = .rsp then Γ
-    else match Γ.regs.get d with
-      | .eq (.lit v) =>
-        match blockAt P.blocks v with
-        | some (base, S, w, off) =>
-          if P.keep.contains base then Γ
-          else match lookupTag P.tags base with
-            | some tag => Γ.setReg d (.ref tag w (.lit off))
-            | none => Γ.setReg d (.ptr S w (.lit off))
-        | none => Γ
-      | _ => Γ
+    match Γ.regs.get d with
+    | .eq (.lit v) =>
+      match blockAt P.blocks v with
+      | some (base, _, _, _) =>
+        if P.keep.contains base then Γ else (castReg P Γ d).getD Γ
+      | none => Γ
+    | _ => Γ
   | _ => Γ
 
 theorem castData_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
@@ -4518,31 +4558,66 @@ theorem castData_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy
     BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
   unfold castData at h
   split at h
-  · next d disp =>
-    split at h
-    · exact h
-    · next hd =>
-      split at h
-      · next v hΓ =>
-        split at h
-        · next base S w off hb =>
-          obtain ⟨⟨l, hl, hs, hw⟩, hv⟩ := blockAt_spec _ hP.blocks hb
-          have hΓ' : (Γ.den ρ).regs d = .eq v := by rw [CtxS.den_regs, hΓ]; rfl
-          split at h
-          · exact h
-          split at h
-          · next tag ht =>
-            obtain ⟨l', hl', htag⟩ := TagsOk.lookup _ hP.tags ht
-            rw [hl] at hl'; cases hl'
-            rw [CtxS.den_setReg] at h
-            exact .castRef hd hΓ' hl htag hv (fun _ => by rw [hw]; assumption) h
-          · rw [CtxS.den_setReg] at h
-            have h' : BlockOk Φ fetch sys Ψ a ((Γ.den ρ).setReg d (.ptr l.shape w off)) := by
-              rw [hs]; exact h
-            exact .castPtr hd hΓ' hl hv (fun e => by rw [hw]; exact e) h'
+  · split at h
+    · split at h
+      · split at h
         · exact h
+        · cases hc : castReg P Γ _ with
+          | none => rw [hc] at h; exact h
+          | some Γ' => rw [hc] at h; exact castReg_sound hP hc h
       · exact h
+    · exact h
   · exact h
+
+/-- The register an instruction reaches memory through that holds exactly
+the address of a byte of one of the program's blocks: it is made a pointer
+first. An address is kept as a number for as long as nothing needs it to be
+a pointer. -/
+def toCast (P : Prog) (Γ : CtxS) (i : Instr) : Option CtxS :=
+  match i.memOperand? with
+  | some (.sib (some r) _ _) => castReg P Γ r
+  | _ => none
+
+theorem toCast_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
+    {P : Prog} (hP : P.Ok Ψ ρ) {a : BitVec 64} {Γ Γ' : CtxS} {i : Instr}
+    (hc : toCast P Γ i = some Γ') (h : BlockOk Φ fetch sys Ψ a (Γ'.den ρ)) :
+    BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
+  unfold toCast at hc
+  split at hc
+  · exact castReg_sound hP hc h
+  · cases hc
+
+/-- Each register that holds exactly a block's address where a context to be
+compared with wants a pointer, made one. Nothing if none is. -/
+def castWanted (P : Prog) (Δ : CtxS) : List Reg → CtxS → Bool → Option CtxS
+  | [], Γ, changed => if changed then some Γ else none
+  | r :: rs, Γ, changed =>
+    match Δ.regs.get r with
+    | .ptr _ _ _ | .ref _ _ _ =>
+      match castReg P Γ r with
+      | some Γ' => castWanted P Δ rs Γ' true
+      | none => castWanted P Δ rs Γ changed
+    | _ => castWanted P Δ rs Γ changed
+
+theorem castWanted_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
+    {P : Prog} (hP : P.Ok Ψ ρ) {a : BitVec 64} {Δ : CtxS} : (rs : List Reg) → {Γ Γ' : CtxS} →
+    {c : Bool} → castWanted P Δ rs Γ c = some Γ' → BlockOk Φ fetch sys Ψ a (Γ'.den ρ) →
+    BlockOk Φ fetch sys Ψ a (Γ.den ρ)
+  | [], Γ, Γ', c, hc, h => by
+    unfold castWanted at hc
+    split at hc
+    · cases hc; exact h
+    · cases hc
+  | r :: rs, Γ, Γ', c, hc, h => by
+    unfold castWanted at hc
+    split at hc
+    · split at hc
+      · next Γ₁ h₁ => exact castReg_sound hP h₁ (castWanted_sound hP rs hc h)
+      · exact castWanted_sound hP rs hc h
+    · split at hc
+      · next Γ₁ h₁ => exact castReg_sound hP h₁ (castWanted_sound hP rs hc h)
+      · exact castWanted_sound hP rs hc h
+    · exact castWanted_sound hP rs hc h
 
 /-- The register a `test` of itself is about to look at that holds a value
 which may be null, or what a system call handed back: the type the value has
@@ -5213,6 +5288,27 @@ theorem callAt_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} 
     · cases h
   · cases h
 
+/-- The context the block is to be compared with at an instruction, where it
+is handed over, returns or calls there. -/
+def hintAt (P : Prog) (a : BitVec 64) : Option CtxS :=
+  match P.enters.find? (·.1 == a) with
+  | some e => some e.2.2
+  | none =>
+    match P.leaves.find? (·.1 == a) with
+    | some e => some e.2
+    | none =>
+      match P.calls.find? (·.1 == a) with
+      | some e => some e.2.2.2
+      | none => none
+
+/-- The registers that hold exactly a block's address where the context the
+block is to be compared with at this instruction wants a pointer, made
+pointers. -/
+def castAt (P : Prog) (a : BitVec 64) (Γ : CtxS) : Option CtxS :=
+  match hintAt P a with
+  | some Δ => castWanted P Δ regList Γ false
+  | none => none
+
 /-- The checker walked from an address for at most so many moves, `k` being
 a variable no term yet mentions. Before an instruction, a pointer to a block
 of a kind that it reaches through is opened, and a value it needs to speak
@@ -5224,6 +5320,9 @@ def walk (P : Prog) (code : List (BitVec 64 × Instr × BitVec 64)) :
     match lookup code a with
     | none => .stop a Γ
     | some (i, len) =>
+      match castAt P a Γ with
+      | some Γ' => walk P code fuel k a Γ'
+      | none =>
       match leaveAt P a Γ i with
       | some W => W
       | none =>
@@ -5254,6 +5353,9 @@ def walk (P : Prog) (code : List (BitVec 64 × Instr × BitVec 64)) :
           .byte k (.stop (a + len) (Γ.setReg d (.eq (.lit 0))))
             (.stop (a + len) ((Γ.setReg d (.eq (.var k))).setReg r (.str true)))
         else .stop a Γ
+      | none =>
+      match toCast P Γ i with
+      | some Γ' => walk P code fuel k a Γ'
       | none =>
       match toOpen Γ i with
       | some (r, tag, w, off) =>
@@ -5294,6 +5396,13 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
     split at h
     · exact h
     · next i len hl =>
+      split at h
+      · next Γ' hc =>
+        unfold castAt at hc
+        split at hc
+        · exact castWanted_sound hP regList hc (walk_sound hcode hsys fuel k a Γ' ρ hP h)
+        · cases hc
+      next =>
       split at h
       · next W hj => exact leaveAt_sound (Agrees.lookup code hcode hl) hj h
       next =>
@@ -5360,6 +5469,9 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
           rw [e'] at h₁
           exact h₁
         · exact h
+      next =>
+      split at h
+      · next Γ' hc => exact toCast_sound hP hc (walk_sound hcode hsys fuel k a Γ' ρ hP h)
       next =>
       split at h
       · next r tag w off ho =>

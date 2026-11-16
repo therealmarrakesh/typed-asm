@@ -1424,6 +1424,16 @@ def labelInfo (Φ : Expr) : MetaM (Option (Expr × Expr × Expr × Array (Nat ×
   labelCache.modify (·.push (Φ, prog, base, T, out))
   return some (prog, base, T, out)
 
+/-- How a context reached is made ready to be compared with one wanted,
+where the comparison is being looked for on the walk's behalf: registers
+holding exactly a block's address are made pointers where the context
+wanted has pointers. Set by the walk's driver around each search, so that
+the search compares what the checker will. -/
+initialize castRef : IO.Ref (Option (Sym.CtxS → Sym.CtxS → Option Sym.CtxS)) ← IO.mkRef none
+
+/-- The context the last search compared, where it was so made ready. -/
+initialize castCtx : IO.Ref (Option Sym.CtxS) ← IO.mkRef none
+
 /-- A hand-over found: at which instruction, to which label's context and
 which of them, with the parameters it is taken at. The parameters may speak
 of the values the walk names, by the variables in `temps` that stood for
@@ -1669,6 +1679,10 @@ def findEnter (Φ : Expr) (atoms : Sym.Atoms) (named : Array (Nat × Reg))
           let Δ := { Δ with
             stackRest := ← sameAtom atoms''.stack cur.stackRest Δ.stackRest
             ownedRest := ← sameAtom atoms''.owned cur.ownedRest Δ.ownedRest }
+          let cur ← (do
+            match (← castRef.get).bind (· cur Δ) with
+            | some c => castCtx.set (some c); pure c
+            | none => pure cur)
           let some cs := Sym.subCtx cur Δ
             | do trace[TypedAsm.fast] "{kName}: the contexts do not compare"; return none
           let g ← mkFreshExprSyntheticOpaqueMVar (← sideType Φ atoms'' t Δ cs branch?)
@@ -1822,6 +1836,12 @@ def findLeave (atoms : Sym.Atoms) (named : Array (Nat × Reg)) (cur : Sym.CtxS)
       let Δ := { Δ with
         stackRest := ← sameAtom atoms''.stack after.stackRest Δ.stackRest
         ownedRest := ← sameAtom atoms''.owned after.ownedRest Δ.ownedRest }
+      let after ← (do
+        match (← castRef.get).bind (· cur Δ) with
+        | some c =>
+          castCtx.set (some c)
+          pure (((Sym.afterRet c).map (·.2)).getD after)
+        | none => pure after)
       let some cs := Sym.subCtx after Δ
         | do trace[TypedAsm.fast] "return: the contexts do not compare"; return none
       let g ← mkFreshExprSyntheticOpaqueMVar (← leaveType atoms'' i Δ cs)
@@ -2038,6 +2058,12 @@ def findCall (Φ : Expr) (atoms : Sym.Atoms) (named : Array (Nat × Reg))
             let Δ := { Δ with
               stackRest := ← sameAtom atoms₂.stack pushed.stackRest Δ.stackRest
               ownedRest := ← sameAtom atoms₂.owned pushed.ownedRest Δ.ownedRest }
+            let (pushed, rc) ← (do
+              match (← castRef.get).bind (· cur Δ) with
+              | some c =>
+                castCtx.set (some c)
+                pure ((Sym.afterCall c j).getD (pushed, rc))
+              | none => pure (pushed, rc))
             let some cs := Sym.subCtx pushed Δ
               | do trace[TypedAsm.fast] "call: the contexts do not compare"; return none
             let info : CallInfo := ⟨at', t, next, j, R, Δ, R0, lRet, kRet, paramsR, lFn, kFn,
@@ -2366,6 +2392,12 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           moves := moves.push (.split at' i len')
           break
         -- a pointer to a block of a kind that is reached through is opened
+        -- a register holding exactly a block's address that memory is
+        -- reached through is made a pointer
+        if let some Γc := Sym.toCast P cur i then
+          moves := moves.push .opened
+          cur := Γc
+          continue
         if let some (r, tag, w, off) := Sym.toOpen cur i then
           let some Sk := Sym.lookupNat P.kinds tag | break
           if r == .rsp then break
@@ -2435,7 +2467,9 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       let named := moves.filterMap fun
         | .name k r => some (k, r)
         | _ => none
-      let some (info, atoms') ← findEnter Φ atoms named cur at' t | return none
+      castRef.set (some fun Γc Δc => Sym.castWanted ((prog?.map (·.1)).getD {}) Δc Sym.regList Γc false)
+      let found ← try findEnter Φ atoms named cur at' t finally castRef.set none
+      let some (info, atoms') := found | return none
       return some (info, atoms', .jump at' i len')
     -- A conditional jump to a label with contexts of its own: the side that
     -- jumps is handed over there, and the other is handed over at the next
@@ -2451,8 +2485,13 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       let named := moves.filterMap fun
         | .name k r => some (k, r)
         | _ => none
-      let some (taken, atoms₁) ← findEnter Φ atoms named cur at' t (some (cur.flags, c, true))
-        | return none
+      castRef.set (some fun Γc Δc => Sym.castWanted ((prog?.map (·.1)).getD {}) Δc Sym.regList Γc false)
+      castCtx.set none
+      let found ← try findEnter Φ atoms named cur at' t (some (cur.flags, c, true))
+        finally castRef.set none
+      let some (taken, atoms₁) := found | return none
+      -- the other side is compared with the context as it was made ready
+      let cur := (← castCtx.get).getD cur
       let next' := at' + len'.toNat
       if stops.contains next' && next' != t then
         if let some (fall, atoms₂) ← findEnter Φ atoms₁ named cur at' next'
@@ -2469,7 +2508,9 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       let named := moves.filterMap fun
         | .name k r => some (k, r)
         | _ => none
-      let some (info, atoms') ← findLeave atoms named cur at' | return none
+      castRef.set (some fun Γc Δc => Sym.castWanted ((prog?.map (·.1)).getD {}) Δc Sym.regList Γc false)
+      let found ← try findLeave atoms named cur at' finally castRef.set none
+      let some (info, atoms') := found | return none
       return some (info, atoms', .jump at' i len')
     -- A call to a labelled function, returning to a label.
     let callEnter (atoms : Sym.Atoms) (moves : Array WalkMove) (at' : Nat) (cur : Sym.CtxS) :
@@ -2484,7 +2525,9 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       let named := moves.filterMap fun
         | .name k r => some (k, r)
         | _ => none
-      let some (info, atoms') ← findCall Φ atoms named cur at' t next' | return none
+      castRef.set (some fun Γc Δc => Sym.castWanted ((prog?.map (·.1)).getD {}) Δc Sym.regList Γc false)
+      let found ← try findCall Φ atoms named cur at' t next' finally castRef.set none
+      let some (info, atoms') := found | return none
       return some (info, atoms', .jump at' i len')
     -- the first variable a name may take: the table may grow past it later
     let k₀ := atoms.val.size
@@ -2589,7 +2632,7 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         | .split at' i len' => some (BitVec.ofNat 64 at', i, len')
         | .jump at' i len' => some (BitVec.ofNat 64 at', i, len')
         | _ => none
-    let W := Sym.walk P code moves.size k₀ (BitVec.ofNat 64 n) S
+    let W := Sym.walk P code (moves.size + 2) k₀ (BitVec.ofNat 64 n) S
     let rec final : Sym.Walk → Option Sym.CtxS
       | .stop _ Γ => some Γ
       | .conds _ rest => final rest
@@ -2835,7 +2878,9 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let hW ← down W atoms #[] #[]
     let rests ← restRef.get
     if rests.isEmpty && enters.isEmpty && leave?.isNone && call?.isNone then return none
-    let fuelE := mkNatLit moves.size
+    -- two more moves than the driver counted: a context made ready to be
+    -- compared is a move of the checker's
+    let fuelE := mkNatLit (moves.size + 2)
     let PE := toExpr P
     let WE := toExpr W
     let hP := mkAppN (mkConst ``Sym.Prog.Ok.mk) #[Ψ, ρ, PE, hB, hT, hK]

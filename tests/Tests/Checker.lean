@@ -282,6 +282,28 @@ example : sysLeft (reg (reg (reg base .rax (.eq (.lit 0))) .rsi
 example : sysLeft (reg (reg (reg base .rax (.eq (.lit 0))) .rsi (.ptr rec2 true (.lit 0))) .rdx
     (.eq (v 2))) = none := by decide
 
+/-! ## An address kept as a number until a pointer is needed -/
+
+/-- A program with one block, whose address is kept. -/
+def kept : Prog := { blocks := [(0x2000, rec2, true)], keep := [0x2000] }
+
+/-- `rbx` holds exactly the block's address. -/
+def holding : CtxS := reg base .rbx (.eq (.lit 0x2000))
+
+-- taking the address leaves the number it is
+example : (castData kept (reg base .rsi (.eq (.lit 0x2000))) (.lea .w64 .rsi (.rip 0))).regs.get .rsi
+    = .eq (.lit 0x2000) := by decide
+-- where memory is reached through it, it is made a pointer first
+example : ((toCast kept holding (.mov .w64 (.r_m .rax (mem .rbx 8)))).map (·.regs.get .rbx))
+    = some (.ptr rec2 true (.lit 0)) := by decide
+-- and not where nothing reaches through it
+example : (toCast kept holding (.mov .w64 (.rm_r (.reg .rax) .rbx))).isNone = true := by decide
+-- where a context to be compared with wants a pointer, it is made one
+example : ((castWanted kept (reg base .rbx (.ptr rec2 true (.lit 0))) regList holding false).map
+    (·.regs.get .rbx)) = some (.ptr rec2 true (.lit 0)) := by decide
+-- and left alone where that context wants the number
+example : (castWanted kept holding regList holding false).isNone = true := by decide
+
 /-! ## Why an instruction is refused -/
 
 def isReason (Γ : CtxS) (i : Instr) (p : Reject → Bool) : Bool :=
