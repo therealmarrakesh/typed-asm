@@ -1,5 +1,6 @@
 import Lean
 import TypedAsm.Check
+import TypedAsm.Reify
 import TypedAsm.Program
 import TypedAsm.Fn
 import TypedAsm.Print
@@ -1611,23 +1612,6 @@ private opaque evalNat (e : Expr) : MetaM Nat
 @[implemented_by evalAddrUnsafe]
 private opaque evalAddr (e : Expr) : MetaM Nat
 
-deriving instance ToExpr for Reg
-deriving instance ToExpr for Width
-deriving instance ToExpr for NarrowW
-deriving instance ToExpr for Cond
-deriving instance ToExpr for Scale
-deriving instance ToExpr for IndexReg
-deriving instance ToExpr for Mem
-deriving instance ToExpr for RM
-deriving instance ToExpr for Operands
-deriving instance ToExpr for RI
-deriving instance ToExpr for AluOp
-deriving instance ToExpr for UnOp
-deriving instance ToExpr for ShiftOp
-deriving instance ToExpr for MulDivOp
-deriving instance ToExpr for Count
-deriving instance ToExpr for Target
-deriving instance ToExpr for Instr
 
 private unsafe def evalFetchUnsafe (e : Expr) : MetaM (Option (Instr × BitVec 64)) := do
   evalExpr (Option (Instr × BitVec 64)) (← inferType e) e
@@ -3216,6 +3200,39 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
   let env ← getEnv
   let lctx ← getLCtx
   let kwhnf (e : Expr) : MetaM Expr := ofExceptKernelException (Kernel.whnf env lctx e)
+  -- First the checker that works on the context as data. It is run here, on
+  -- the term read from the context, and what it gives is what the kernel is
+  -- asked to confirm: that the term means this context, and that the checker
+  -- comes to that answer.
+  let symStep : TacticM (Option MVarId) := do
+    let (S?, atoms) ← (Sym.reifyCtx Γ).run {}
+    if let some S := S? then
+      if let some (S', conds) := Sym.step (BitVec.ofNat 64 (n + len.toNat)) S instr then
+        let ρ := atoms.env
+        let SE := toExpr S
+        unless Kernel.isDefEqGuarded env lctx Γ (mkApp2 (mkConst ``Sym.CtxS.den) ρ SE) do
+          trace[TypedAsm.fast] "the term read from the context does not mean it"
+          return none
+        let xE := toExpr (S', conds)
+        let stepE := mkApp3 (mkConst ``Sym.step) next SE iE
+        let hstep ← mkExpectedTypeHint (← mkEqRefl stepE) (← mkEq stepE (← mkAppM ``Option.some #[xE]))
+        -- what is left to be shown, each part as the proposition it is
+        let mut hn := mkConst ``True.intro
+        let mut allE := mkConst ``True
+        for c in conds.reverse do
+          let leaf ← Sym.denCond atoms c
+          let h ← closeNeeds env lctx kwhnf pure #[] leaf
+          hn := mkApp4 (mkConst ``And.intro) leaf allE h hn
+          allE := mkApp2 (mkConst ``And) leaf allE
+        let Γ' ← Sym.denCtx atoms S'
+        let hf ← fetchProof (mkApp fetch a) (toExpr (some (instr, len)))
+        let hs := mkAppN (mkConst ``Sym.step_sound) #[Ψ, next, ρ, SE, iE, xE, hstep, hn]
+        let rest ← mkFreshExprSyntheticOpaqueMVar
+          (mkAppN ty.getAppFn #[Φ, fetch, sys, Ψ, nextLit, Γ']) (← goal.getTag)
+        goal.assign (mkAppN (mkConst ``BlockOk.step)
+          #[Φ, fetch, sys, Ψ, a, Γ, Γ', iE, lenE, hf, hs, rest])
+        return some rest.mvarId!
+    return none
   let run (plan? : Option HintPlan) : TacticM (Option MVarId) := do
     let chk := match plan? with
       | some p => mkApp4 (mkConst ``Check.hinted) Ψ'.appFn!.appArg! Γ p.hint iE
@@ -3285,7 +3302,10 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let bsE := Ψ'.appFn!.appArg!
     let locE := mkApp2 (mkConst ``MemTy.locate) bsE (toExpr v)
     let some (baseV, i) ← (try evalLocate locE catch _ => pure none) | return none
-    let some g ← run none | return none
+    let some g ← (do
+      match ← symStep with
+      | some g => pure (some g)
+      | none => run none) | return none
     -- The register holds exactly the address of byte `i` of the block at
     -- `baseV`: it is a pointer into that block, or to a block of its kind.
     return ← g.withContext do
@@ -3342,6 +3362,7 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       | none =>
         g.assign (mkAppN (mkConst ``BlockOk.castPtr_of) (common ++ #[hr, hΓ, hloc, hl, hv, eta]))
       return some rest.mvarId!
+  if let some g ← symStep then return some g
   let plan? ← plan true
   if (plan?.map (·.keep)).getD false then
     -- keeping the type that is there, if what is stored has it; else giving
