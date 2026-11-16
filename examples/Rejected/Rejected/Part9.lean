@@ -61,3 +61,39 @@ example : BlocksOk Φ fetch (linux.writesOnly fun fd _ => fd = 1) Ψ := by
   ty_program
 
 end Rejected.Unsaid
+
+/-! A program may look at the bytes it is about to write. The register keeps
+the address as the number it is: the load through it is found in the block
+by that number, and the `write` after it is still known for what it offers. -/
+
+namespace Rejected.Peek
+
+inductive Label
+  | start | msg
+  deriving DecidableEq
+
+def code : List (Asm Label) := [
+  .label .start,
+  .ins (.mov .w32 (.rm_i (.reg .rdi) 1)),
+  .ref (.lea .w64 .rsi (.rip 0)) .msg,
+  .ins (.movzx .w32 .rcx .w8 (.mem (.sib (some .rsi) none 1))),
+  .ins (.mov .w32 (.rm_i (.reg .rdx) 2)),
+  .ins (.mov .w32 (.rm_i (.reg .rax) 1)),
+  .ins .syscall,
+  .ins (.mov .w32 (.rm_i (.reg .rax) 60)),
+  .ins (.alu .xor .w32 (.rm_r (.reg .rdi) .rdi)),
+  .ins .syscall,
+  .segment .ro,
+  .label .msg, .bytes [72, 105]]
+
+asm_program code start .start
+
+inductive At : Label → Ctx → Prop
+  | start : At .start (entryCtx 0)
+
+asm_typing At data
+
+example : BlocksOk Φ fetch (linux.writesOnly fun fd bytes => fd = 1 ∧ bytes = [72, 105]) Ψ := by
+  ty_program
+
+end Rejected.Peek

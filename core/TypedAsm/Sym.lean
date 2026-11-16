@@ -1602,7 +1602,14 @@ def locate (next : BitVec 64) (Γ : CtxS) (m : Mem) : Option (PlaceS × List Con
         | some p =>
           match findOwned p Γ.owned 0 with
           | some (k, a, S, j) => (fits64 j).map fun cs => (⟨.owned k a, S, j⟩, cs)
-          | none => none
+          | none =>
+            -- or a number written out: in one of the program's blocks
+            match p.summands with
+            | ([], n) =>
+              match blockAt Γ.blocks n with
+              | some (_, S, w, d) => some (⟨.block w, S, .lit d⟩, [])
+              | none => none
+            | _ => none
         | none => none
       | _, _ => none
   | m => locateBlock next Γ m
@@ -1646,7 +1653,22 @@ theorem locate_spec {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
             exact .owned (ea_spec hea)
               (by rw [CtxS.den_owned]; exact denOwned_getElem? ρ _ _ _ _ _ hi) hp
               (fits64_spec hfit hc)
-        · cases h
+        · split at h
+          · next n hsum =>
+            split at h
+            · next base S w d hb =>
+              cases h
+              obtain ⟨⟨l, hl, hs, hw⟩, ha⟩ := blockAt_spec _ hB hb
+              have hp : p.den ρ = base + BitVec.ofNat 64 d := by
+                rw [Val.den_summands, hsum]
+                have e : sumV ρ ([] : List Val) + n = n := by simp [sumV]
+                rw [e]
+                exact ha
+              have := Loc.placed (Ψ := Ψ) (next := next) (ea_spec hea) hl hp
+              rw [hs, hw] at this
+              exact this
+            · cases h
+          · cases h
       · cases h
     · cases h
   · exact locateBlock_spec hB h
@@ -2188,7 +2210,11 @@ theorem locate_listed {next : BitVec 64} {Γ : CtxS} {m : Mem} {pl : PlaceS} {cs
               cases e
               have : k = i := by omega
               subst this; exact hi
-          · cases h
+          · split at h
+            · split at h
+              · cases h; exact ⟨fun _ _ e => (by cases e), fun _ e => (by cases e)⟩
+              · cases h
+            · cases h
         · cases h
       · cases h
   · exact locateBlock_listed h
@@ -4569,24 +4595,6 @@ theorem castData_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy
     · exact h
   · exact h
 
-/-- The register an instruction reaches memory through that holds exactly
-the address of a byte of one of the program's blocks: it is made a pointer
-first. An address is kept as a number for as long as nothing needs it to be
-a pointer. -/
-def toCast (P : Prog) (Γ : CtxS) (i : Instr) : Option CtxS :=
-  match i.memOperand? with
-  | some (.sib (some r) _ _) => castReg P Γ r
-  | _ => none
-
-theorem toCast_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
-    {P : Prog} (hP : P.Ok Ψ ρ) {a : BitVec 64} {Γ Γ' : CtxS} {i : Instr}
-    (hc : toCast P Γ i = some Γ') (h : BlockOk Φ fetch sys Ψ a (Γ'.den ρ)) :
-    BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
-  unfold toCast at hc
-  split at hc
-  · exact castReg_sound hP hc h
-  · cases hc
-
 /-- Each register that holds exactly a block's address where a context to be
 compared with wants a pointer, made one. Nothing if none is. -/
 def castWanted (P : Prog) (Δ : CtxS) : List Reg → CtxS → Bool → Option CtxS
@@ -5354,9 +5362,6 @@ def walk (P : Prog) (code : List (BitVec 64 × Instr × BitVec 64)) :
             (.stop (a + len) ((Γ.setReg d (.eq (.var k))).setReg r (.str true)))
         else .stop a Γ
       | none =>
-      match toCast P Γ i with
-      | some Γ' => walk P code fuel k a Γ'
-      | none =>
       match toOpen Γ i with
       | some (r, tag, w, off) =>
         match lookupNat P.kinds tag with
@@ -5469,9 +5474,6 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
           rw [e'] at h₁
           exact h₁
         · exact h
-      next =>
-      split at h
-      · next Γ' hc => exact toCast_sound hP hc (walk_sound hcode hsys fuel k a Γ' ρ hP h)
       next =>
       split at h
       · next r tag w off ho =>

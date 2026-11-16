@@ -293,11 +293,15 @@ def holding : CtxS := reg base .rbx (.eq (.lit 0x2000))
 -- taking the address leaves the number it is
 example : (castData kept (reg base .rsi (.eq (.lit 0x2000))) (.lea .w64 .rsi (.rip 0))).regs.get .rsi
     = .eq (.lit 0x2000) := by decide
--- where memory is reached through it, it is made a pointer first
-example : ((toCast kept holding (.mov .w64 (.r_m .rax (mem .rbx 8)))).map (·.regs.get .rbx))
-    = some (.ptr rec2 true (.lit 0)) := by decide
--- and not where nothing reaches through it
-example : (toCast kept holding (.mov .w64 (.rm_r (.reg .rax) .rbx))).isNone = true := by decide
+-- memory is reached through it as it is: the typed value there is loaded,
+-- and the register still holds the number
+example : after { holding with blocks := kept.blocks } (.mov .w64 (.r_m .rax (mem .rbx 8))) .rax
+    = some (.eq (v 9)) := by decide
+example : after { holding with blocks := kept.blocks } (.mov .w64 (.r_m .rax (mem .rbx 8))) .rbx
+    = some (.eq (.lit 0x2000)) := by decide
+-- and not past the block
+example : refused { holding with blocks := kept.blocks } (.mov .w64 (.r_m .rax (mem .rbx 16)))
+    = true := by decide
 -- where a context to be compared with wants a pointer, it is made one
 example : ((castWanted kept (reg base .rbx (.ptr rec2 true (.lit 0))) regList holding false).map
     (·.regs.get .rbx)) = some (.ptr rec2 true (.lit 0)) := by decide

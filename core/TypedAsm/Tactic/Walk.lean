@@ -2293,7 +2293,13 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           if i.endsBlock then return false
           at' := at' + len'.toNat
         return false
-      let held := allRegs.any fun r => (match S₀.regs.get r with | .ref .. => true | _ => false)
+      -- a pointer to a block of a kind, or what may be a block's address
+      -- kept as a number, which is made a pointer where it is reached through
+      let held := allRegs.any fun r =>
+        (match S₀.regs.get r with
+          | .ref .. => true
+          | .eq (.lit v) => decide (0x1000 ≤ v.toNat)
+          | _ => false)
       let prog? ← if listed && (ahead || held) then
           Sym.reifyProg Ψ'.appFn!.appArg! Ψ'.appArg!
         else pure none
@@ -2392,12 +2398,6 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           moves := moves.push (.split at' i len')
           break
         -- a pointer to a block of a kind that is reached through is opened
-        -- a register holding exactly a block's address that memory is
-        -- reached through is made a pointer
-        if let some Γc := Sym.toCast P cur i then
-          moves := moves.push .opened
-          cur := Γc
-          continue
         if let some (r, tag, w, off) := Sym.toOpen cur i then
           let some Sk := Sym.lookupNat P.kinds tag | break
           if r == .rsp then break
