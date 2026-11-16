@@ -996,8 +996,8 @@ dsimproc_decl regIte (ite (@Eq Reg _ _) _ _) := fun e => do
 rule wraps the previous context in a record update that mentions it once per
 field, so without this the context would multiply in size with every
 instruction. -/
-macro "ty_dsimp_ctx" : tactic =>
-  `(tactic| try dsimp only [↓regIte, RegMap.get, entryCtx, entryCtxArgs,
+macro "ty_dsimp_core" : tactic =>
+  `(tactic| dsimp only [↓regIte, RegMap.get, entryCtx, entryCtxArgs,
       CtxOf.setReg, CtxOf.moveSp, Ty.shift, CtxOf.afterAlu, CtxOf.afterSyscall,
       CtxOf.afterMulDiv,
       ShiftOp.apply, Scale.shift,
@@ -1012,6 +1012,9 @@ macro "ty_dsimp_ctx" : tactic =>
       Nat.reduceMod, Nat.reduceAdd, Nat.reduceMul, Nat.reduceSub,
       BitVec.reduceSetWidth, BitVec.reduceSignExtend, BitVec.reduceAdd, BitVec.reduceSub,
       BitVec.reduceNeg, BitVec.reduceOfNat])
+
+@[inherit_doc tacticTy_dsimp_core]
+macro "ty_dsimp_ctx" : tactic => `(tactic| try ty_dsimp_core)
 
 /-- Brings a block goal to the form it is kept in between instructions: the
 address as a number, the register types as a table, and everything in the
@@ -1428,26 +1431,48 @@ private partial def lookupTree (xs : Array (Nat × Instr × BitVec 64)) (lo hi :
 their addresses, as the program gives them, and its search tree written out. -/
 initialize layoutCache : IO.Ref (Std.HashMap Expr (Expr × Expr)) ← IO.mkRef {}
 
+/-- For each program met so far, the lemma that its instruction table is the
+search of its tree. A lemma is used again only where it is in scope. -/
+initialize lemmaCache : IO.Ref (Std.HashMap Expr (Expr × Name)) ← IO.mkRef {}
+
+/-- For each program met so far, what is at each address. -/
+initialize instrCache : IO.Ref (Std.HashMap Expr (Std.HashMap Nat (Instr × BitVec 64))) ←
+  IO.mkRef {}
+
+/-- What a program's instruction table is remembered under, and the table.
+The key is the program's lines and load address themselves, not their
+names: a name may come to stand for other lines while an editor is open. -/
+private def programKey (fetch : Expr) : MetaM (Option (Expr × Expr)) := do
+  -- unfold to `Asm.fetch base prog`, a walk along `Asm.table base prog`
+  let mut f := fetch
+  for _ in [0:8] do
+    if f.isAppOf ``Asm.fetch then break
+    let some f' ← unfoldDefinition? f | return none
+    f := f'.headBeta
+  unless f.isAppOfArity ``Asm.fetch 4 do return none
+  let value (e : Expr) : MetaM Expr := do
+    let .const n _ := e | return e
+    match (← getEnv).find? n with
+    | some (.defnInfo d) => return d.value
+    | _ => return e
+  let table ← mkAppM ``Asm.table #[f.appFn!.appArg!, f.appArg!]
+  return some (mkApp2 fetch (← value f.appFn!.appArg!) (← value f.appArg!), table)
+
 /-- A program's instruction table as a function that searches a tree written
 out in full, with a proof that the table is that function. The proof is
 `Lookup.sound`, whose premises the kernel settles by computing once for the
 program; it is kept as a lemma of its own, and every lookup afterwards is a
 few comparisons of numbers. -/
 private def layoutOf (fetch : Expr) : MetaM (Option (Expr × Expr)) := do
+  let some (key, table) ← programKey fetch | return none
+  if let some (found, name) := (← lemmaCache.get)[key]? then
+    if (← getEnv).contains name then return some (found, mkConst name)
   let (table, tree) ← do
-    if let some r := (← layoutCache.get)[fetch]? then pure r
+    if let some r := (← layoutCache.get)[key]? then pure r
     else
-      -- unfold to `Asm.fetch base prog`, a walk along `Asm.table base prog`
-      let mut f := fetch
-      for _ in [0:8] do
-        if f.isAppOf ``Asm.fetch then break
-        let some f' ← unfoldDefinition? f | return none
-        f := f'.headBeta
-      unless f.isAppOfArity ``Asm.fetch 4 do return none
-      let table ← mkAppM ``Asm.table #[f.appFn!.appArg!, f.appArg!]
       let listed ← try pure (← evalTable table).toArray catch _ => return none
       let r := (table, toExpr (lookupTree listed 0 listed.size))
-      layoutCache.modify (·.insert fetch r)
+      layoutCache.modify (·.insert key r)
       pure r
   let a := mkApp (mkConst ``BitVec) (mkNatLit 64)
   let found ← withLocalDeclD `a a fun x => do
@@ -1457,7 +1482,32 @@ private def layoutOf (fetch : Expr) : MetaM (Option (Expr × Expr)) := do
   let value := mkAppN (mkConst ``Lookup.sound)
     #[table, tree, rflTrue, ← mkEqRefl (mkApp (mkConst ``Lookup.toList) tree)]
   let name ← mkAuxLemma [] type (← mkExpectedTypeHint value type)
+  lemmaCache.modify (·.insert key (found, name))
   return some (found, mkConst name)
+
+/-- What is at each address of a program, by its instruction table. -/
+private def instrsOf (fetch : Expr) : MetaM (Option (Std.HashMap Nat (Instr × BitVec 64))) := do
+  let some (key, table) ← programKey fetch | return none
+  if let some m := (← instrCache.get)[key]? then return some m
+  let listed ← try evalTable table catch _ => return none
+  let m : Std.HashMap Nat (Instr × BitVec 64) :=
+    listed.foldl (fun m (a, i, len) => m.insertIfNew a (i, len)) {}
+  instrCache.modify (·.insert key m)
+  return some m
+
+/-- A proof that the lookup `lhs` of an instruction comes to `found`, which
+it must: the kernel checks it by `rfl`, on the program's search tree where
+there is one. -/
+private def fetchProof (lhs found : Expr) : MetaM Expr := do
+  let direct ← mkExpectedTypeHint (← mkEqRefl lhs) (← mkEq lhs found)
+  if lhs.isApp then
+    match ← layoutOf lhs.appFn! with
+    | some (table, h) =>
+      let walked := mkApp table lhs.appArg!
+      mkEqTrans (← mkCongrFun h lhs.appArg!)
+        (← mkExpectedTypeHint (← mkEqRefl walked) (← mkEq walked found))
+    | none => pure direct
+  else pure direct
 
 /-- `ty_fetch` proves `fetch a = some (i, len)` for a known program and
 address by running the lookup, and fills in whatever of `i` and `len` is
@@ -1480,17 +1530,7 @@ elab "ty_fetch" : tactic => withMainContext do
   let found := toExpr (some (i, len))
   unless ← isDefEq rhs found do
     throwError "the instruction at this address is{indentExpr (toExpr i)}"
-  let direct ← mkExpectedTypeHint (← mkEqRefl lhs) (← mkEq lhs found)
-  let proof ←
-    if lhs.isApp then
-      match ← layoutOf lhs.appFn! with
-      | some (table, h) =>
-        let walked := mkApp table lhs.appArg!
-        mkEqTrans (← mkCongrFun h lhs.appArg!)
-          (← mkExpectedTypeHint (← mkEqRefl walked) (← mkEq walked found))
-      | none => pure direct
-    else pure direct
-  g.assign proof
+  g.assign (← fetchProof lhs found)
   replaceMainGoal []
 
 /-- Whether a term is an address written as a number. -/
@@ -2330,6 +2370,132 @@ private def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
   evalTactic (← `(tactic| ty_normalize))
   setGoals ((← getGoals) ++ left)
 
+private def regIdx : Reg → Nat
+  | .rax => 0 | .rcx => 1 | .rdx => 2 | .rbx => 3 | .rsp => 4 | .rbp => 5 | .rsi => 6 | .rdi => 7
+  | .r8 => 8 | .r9 => 9 | .r10 => 10 | .r11 => 11 | .r12 => 12 | .r13 => 13 | .r14 => 14
+  | .r15 => 15
+
+private def allRegs : Array Reg :=
+  #[.rax, .rcx, .rdx, .rbx, .rsp, .rbp, .rsi, .rdi, .r8, .r9, .r10, .r11, .r12, .r13, .r14, .r15]
+
+/-- The rules a context is tidied by, read once from `ty_dsimp_core`. -/
+initialize ctxSimpCache : IO.Ref (Option (Simp.Context × Simp.SimprocsArray)) ← IO.mkRef none
+
+private def ctxSimp : TacticM (Simp.Context × Simp.SimprocsArray) := do
+  if let some r := ← ctxSimpCache.get then return r
+  let stx ← `(tactic| ty_dsimp_core)
+  let some stx ← liftMacroM (expandMacro? stx) | throwError "ty_dsimp_core does not expand"
+  let r ← mkSimpContext stx (eraseLocal := false) (kind := .dsimp)
+  ctxSimpCache.set (some (r.ctx, r.simprocs))
+  return (r.ctx, r.simprocs)
+
+/-- One instruction that goes on to the next, typed without the tactic
+framework where the checker covers it: the instruction is read from the
+program's table, the checker is run by the kernel's evaluator, and of the
+context it gives only what changed is tidied. The proof is put together
+directly and checked by the kernel with the rest. Returns the goal for the
+rest of the block, or nothing where this does not apply, and then the step is
+taken the long way. -/
+private def fastStep (goal : MVarId) (ty : Expr) (named : Bool) : TacticM (Option MVarId) :=
+    goal.withContext do
+  unless ty.isAppOfArity ``BlockOk 6 do return none
+  if ty.hasExprMVar then return none
+  let args := ty.getAppArgs
+  let Φ := args[0]!
+  let fetch := args[1]!
+  let sys := args[2]!
+  let Ψ := args[3]!
+  let a := args[4]!
+  let Γ := args[5]!
+  unless isAddrLit a do return none
+  let some n := a.appArg!.nat? | return none
+  unless Γ.isAppOfArity ``CtxOf.mk 7 do return none
+  let cargs := Γ.getAppArgs
+  let regs := cargs[1]!
+  unless regs.isAppOfArity ``RegMap.get 2 && regs.appArg!.isAppOfArity ``RegMap.mk 17 do
+    return none
+  let tbl := regs.appArg!.getAppArgs
+  let some instrs ← instrsOf fetch | return none
+  let some (instr, len) := instrs[n]? | return none
+  if instr.endsBlock then return none
+  -- the address of data makes a pointer, which the long way sees to
+  if let .lea .w64 _ (.rip _) := instr then return none
+  let typeOf (r : Reg) : MetaM Expr := whnf tbl[1 + regIdx r]!
+  -- where a register is looked into or named first, that is done the long way
+  unless named do
+    match instr with
+    | .test _ (.reg r) (.reg r') =>
+      if r == r' then
+        let τ ← typeOf r
+        if τ.isAppOf ``Ty.nullable || τ.isAppOf ``Ty.orErr then return none
+    | i =>
+      if let some (.sib (some b) _ _) := i.memOperand? then
+        if (← typeOf b).isAppOf ``Ty.ref then return none
+    for r in instr.wantsNamed do
+      if (← typeOf r).isConstOf ``Ty.int then return none
+  let iE := toExpr instr
+  let lenE := toExpr len
+  let next ← mkAppM ``HAdd.hAdd #[a, lenE]
+  let nextLit := toExpr (BitVec.ofNat 64 (n + len.toNat))
+  -- with the program's blocks at hand where the memory typing is a list of them
+  let mut Ψ' := Ψ
+  for _ in [0:4] do
+    if Ψ'.isAppOfArity ``MemTy.ofList 2 then break
+    let some u ← unfoldDefinition? Ψ' | break
+    Ψ' := u.headBeta
+  let listed := Ψ'.isAppOfArity ``MemTy.ofList 2
+  let chk := if listed then mkApp4 (mkConst ``Check.check) Ψ'.appFn!.appArg! next Γ iE
+    else mkApp3 (mkConst ``Check.straight) next Γ iE
+  let env ← getEnv
+  let lctx ← getLCtx
+  let kwhnf (e : Expr) : MetaM Expr := ofExceptKernelException (Kernel.whnf env lctx e)
+  let r ← kwhnf chk
+  unless r.isAppOfArity ``Option.some 2 do return none
+  let st := r.appArg!
+  let stW ← kwhnf st
+  unless stW.isAppOfArity ``Check.Step.mk 2 do return none
+  let ctxW ← kwhnf stW.appFn!.appArg!
+  unless ctxW.isAppOfArity ``CtxOf.mk 7 do return none
+  let nargs := ctxW.getAppArgs
+  let (sctx, sprocs) ← ctxSimp
+  let tidy (e : Expr) : MetaM Expr := do return (← Meta.dsimp e sctx sprocs).1
+  -- each register's type: what it was, or what the instruction made it
+  let mut out := tbl
+  for r in allRegs do
+    let j := 1 + regIdx r
+    let e ← kwhnf (mkApp nargs[1]! (toExpr r))
+    unless e == tbl[j]! do out := out.set! j (← tidy e)
+  let field (j : Nat) : MetaM Expr := do
+    let new := nargs[j]!
+    if new == cargs[j]! then return cargs[j]!
+    if Kernel.isDefEqGuarded env lctx new cargs[j]! then return cargs[j]!
+    tidy new
+  let mut ctxN := mkAppN Γ.getAppFn #[cargs[0]!,
+    mkApp regs.appFn! (mkAppN regs.appArg!.getAppFn out),
+    ← field 2, ← field 3, ← field 4, ← field 5, ← field 6]
+  if let some c ← workOutCtx ctxN then ctxN ← tidy c
+  -- anything of the checker's left standing means the tidying fell short
+  if (ctxN.find? fun e => e.isConst && (`TypedAsm.Check).isPrefixOf e.constName!).isSome then
+    return none
+  let needsN ← tidy stW.appArg!
+  let hf ← fetchProof (mkApp fetch a) (toExpr (some (instr, len)))
+  let hc ← mkExpectedTypeHint (← mkEqRefl r) (← mkEq chk r)
+  let hn ← if needsN.isConstOf ``True then pure (mkConst ``True.intro) else do
+    let g ← mkFreshExprSyntheticOpaqueMVar needsN
+    let left ← runOn g.mvarId! do evalTactic (← `(tactic| first | trivial | ty_side))
+    unless left.isEmpty do throwError "left over"
+    pure g
+  let rest ← mkFreshExprSyntheticOpaqueMVar
+    (mkAppN ty.getAppFn #[Φ, fetch, sys, Ψ, nextLit, ctxN]) (← goal.getTag)
+  let stCtx := mkApp (mkConst ``Check.Step.ctx) st
+  let hs := if listed then
+      mkAppN (mkConst ``Check.check_sound)
+        #[next, Γ, Ψ'.appFn!.appArg!, Ψ'.appArg!, iE, st, hc, hn]
+    else mkAppN (mkConst ``Check.straight_sound) #[Ψ, next, Γ, iE, st, hc, hn]
+  let eta := mkAppN (mkConst ``BlockOk.regsEta) #[Φ, fetch, sys, Ψ, next, stCtx, rest]
+  goal.assign (mkAppN (mkConst ``BlockOk.step) #[Φ, fetch, sys, Ψ, a, Γ, stCtx, iE, lenE, hf, hs, eta])
+  return some rest.mvarId!
+
 /-- Types the first instruction of a block goal if it is a straight-line
 instruction, leaving the rest of the block as the main goal. -/
 private partial def typeStep (named : Bool := false) : TacticM StepResult :=
@@ -2355,6 +2521,28 @@ private partial def typeStep (named : Bool := false) : TacticM StepResult :=
   -- what is saved, to go back to, is the block with its address written out
   setGoals (goal :: others)
   let saved ← saveState
+  let fast? ← try fastStep goal ty named catch _ => do saved.restore; pure none
+  if let some rest := fast? then
+    setGoals (rest :: others)
+    return .stepped
+  -- An instruction that ends the block is known for one from the program's
+  -- table, without a step being tried on it first.
+  let ended? : Option Instr ← (do
+    let a := ty.getAppArgs[4]!
+    unless isAddrLit a do return none
+    let some n := a.appArg!.nat? | return none
+    let some m ← instrsOf ty.getAppArgs[1]! | return none
+    let some (i, _) := m[n]? | return none
+    return if i.endsBlock then some i else none) <|> pure none
+  if let some instr := ended? then
+    if let .syscall := instr then
+      if let some nr ← syscallNumber ty.getAppArgs[5]! then
+        if isStepCall nr then
+          setGoals [goal]
+          typeSyscallStep goal nr
+          setGoals ((← getGoals) ++ others)
+          return .stepped
+    return .endOfBlock instr
   setGoals [goal]
   try
     evalTactic (← `(tactic| refine BlockOk.step (Γ' := ?_) (by ty_fetch) ?_ ?_))
@@ -2539,6 +2727,31 @@ private def noContextDeclared : String := "no context is declared at label"
 private def isNoContext (e : Exception) : TacticM Bool := do
   return (← e.toMessageData.toString).startsWith noContextDeclared
 
+/-- For each address term worked out so far, the number it comes to. -/
+initialize addrCache : IO.Ref (Std.HashMap Expr Nat) ← IO.mkRef {}
+
+/-- The number a closed address term comes to, by the kernel's evaluator.
+What is remembered is remembered under the term with the definitions it
+names written out, since a name may come to stand for something else while
+an editor is open. -/
+private def addrNat (e : Expr) : MetaM (Option Nat) := do
+  if e.hasFVar || e.hasExprMVar then return none
+  if isAddrLit e then return e.appArg!.nat?
+  let mut key := e
+  for a in e.getAppArgs do
+    if let .const n _ := a then
+      if let some (.defnInfo d) := (← getEnv).find? n then key := mkApp key d.value
+  if let some n := (← addrCache.get)[key]? then return some n
+  let n? ← try
+      let v ← ofExceptKernelException
+        (Kernel.whnf (← getEnv) {} (mkApp2 (mkConst ``BitVec.toNat) (mkNatLit 64) e))
+      match v with
+      | .lit (.natVal n) => pure (some n)
+      | _ => pure (some (← evalAddr e))
+    catch _ => pure none
+  if let some n := n? then addrCache.modify (·.insert key n)
+  return n?
+
 /-- Proves `Φ a Δ` for a labelled program: finds the label whose address is
 `a` and a context allowed there. `check` runs once the context is chosen and
 should fail if it is the wrong one; another is then tried. Returns the goals
@@ -2565,8 +2778,24 @@ private def proveAtLabel (g : MVarId) (check : TacticM (List MVarId)) :
     let atLabel ← saveState
     let found ← try
         label.assign (mkConst c)
-        discard <| runOn addr (do evalTactic (← `(tactic| rfl)))
-        pure true
+        -- the two addresses are worked out as numbers and compared; the
+        -- kernel checks the equation with the rest of the proof
+        let t ← instantiateMVars (← addr.getType)
+        let quick? ← (do
+          let some (_, lhs, rhs) := t.eq? | return none
+          let some x ← addrNat lhs | return none
+          let some y ← addrNat rhs | return none
+          return some (x == y, lhs) : MetaM (Option (Bool × Expr)))
+        match quick? with
+        | some (true, lhs) =>
+          addr.assign (← mkExpectedTypeHint (← mkEqRefl lhs) t)
+          pure true
+        | some (false, _) =>
+          atLabel.restore
+          pure false
+        | none =>
+          discard <| runOn addr (do evalTactic (← `(tactic| rfl)))
+          pure true
       catch _ =>
         atLabel.restore
         pure false
