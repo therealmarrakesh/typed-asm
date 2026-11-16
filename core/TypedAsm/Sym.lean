@@ -3695,6 +3695,170 @@ theorem run_sound' {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {�
     BlockOk Φ fetch sys Ψ a (Γ.den ρ) :=
   run_sound hB hcode fuel a Γ (by rw [h]; exact hc) (by rw [h]; exact hrest)
 
+/-! ## Values given a name
+
+A register of which only that it holds a number is known may have that
+number given a name: the rest of the block is then typed for every value it
+may be. On terms the name is a variable the context does not yet mention,
+and "for every value" is every way of saying what that variable stands for. -/
+
+/-- A list with a value put at a place, the list made long enough with a
+filler if it is too short. -/
+def padSet {α : Type} (fill : α) : List α → Nat → α → List α
+  | [], 0, x => [x]
+  | [], k + 1, x => fill :: padSet fill [] k x
+  | _ :: l, 0, x => x :: l
+  | y :: l, k + 1, x => y :: padSet fill l k x
+
+theorem getD_padSet {α : Type} (fill : α) : (l : List α) → (k : Nat) → (x : α) → (i : Nat) →
+    (padSet fill l k x).getD i fill = if i = k then x else l.getD i fill
+  | [], 0, x, i => by cases i <;> simp [padSet]
+  | [], k + 1, x, i => by
+    cases i with
+    | zero => simp [padSet]
+    | succ i => simpa [padSet] using getD_padSet fill [] k x i
+  | y :: l, 0, x, i => by cases i <;> simp [padSet]
+  | y :: l, k + 1, x, i => by
+    cases i with
+    | zero => simp [padSet]
+    | succ i => simpa [padSet] using getD_padSet fill l k x i
+
+/-- The environment with a value variable standing for something else. -/
+def Env.setVal (ρ : Env) (k : Nat) (x : BitVec 64) : Env := { ρ with val := padSet 0 ρ.val k x }
+
+/-- Whether a value term mentions no variable from `k` on. -/
+def Val.under (k : Nat) : Val → Bool
+  | .lit _ => true
+  | .var i => decide (i < k)
+  | .add a b => a.under k && b.under k
+  | .shl a _ => a.under k
+  | .app1 _ a => a.under k
+  | .app2 _ a b => a.under k && b.under k
+
+theorem Val.den_setVal {ρ : Env} {k : Nat} {x : BitVec 64} : (t : Val) → t.under k = true →
+    t.den (ρ.setVal k x) = t.den ρ
+  | .lit _, _ => rfl
+  | .var i, h => by
+    have hi : i < k := of_decide_eq_true h
+    show (padSet 0 ρ.val k x).getD i 0 = ρ.val.getD i 0
+    rw [getD_padSet]
+    simp only [show i ≠ k by omega, ↓reduceIte]
+  | .add a b, h => by
+    simp only [Val.under, Bool.and_eq_true] at h
+    show a.den _ + b.den _ = _
+    rw [Val.den_setVal a h.1, Val.den_setVal b h.2]; rfl
+  | .shl a s, h => by
+    show a.den _ <<< s = _
+    rw [Val.den_setVal a h]; rfl
+  | .app1 f a, h => by
+    show f.den (a.den _) = _
+    rw [Val.den_setVal a h]; rfl
+  | .app2 f a b, h => by
+    simp only [Val.under, Bool.and_eq_true] at h
+    show f.den (a.den _) (b.den _) = _
+    rw [Val.den_setVal a h.1, Val.den_setVal b h.2]; rfl
+
+/-- Whether a number term mentions no value variable from `k` on. -/
+def Num.under (k : Nat) : Num → Bool
+  | .lit _ => true
+  | .var _ => true
+  | .add a b => a.under k && b.under k
+  | .mul a b => a.under k && b.under k
+  | .sub a b => a.under k && b.under k
+  | .toNat v => v.under k
+  | .size _ => true
+
+theorem Num.den_setVal {ρ : Env} {k : Nat} {x : BitVec 64} : (t : Num) → t.under k = true →
+    t.den (ρ.setVal k x) = t.den ρ
+  | .lit _, _ => rfl
+  | .var _, _ => rfl
+  | .add a b, h => by
+    simp only [Num.under, Bool.and_eq_true] at h
+    show a.den _ + b.den _ = _
+    rw [Num.den_setVal a h.1, Num.den_setVal b h.2]; rfl
+  | .mul a b, h => by
+    simp only [Num.under, Bool.and_eq_true] at h
+    show a.den _ * b.den _ = _
+    rw [Num.den_setVal a h.1, Num.den_setVal b h.2]; rfl
+  | .sub a b, h => by
+    simp only [Num.under, Bool.and_eq_true] at h
+    show a.den _ - b.den _ = _
+    rw [Num.den_setVal a h.1, Num.den_setVal b h.2]; rfl
+  | .toNat v, h => by
+    show (v.den _).toNat = _
+    rw [Val.den_setVal v h]; rfl
+  | .size _, _ => rfl
+
+mutual
+
+/-- Whether a type term mentions no value variable from `k` on. -/
+def TyS.under (k : Nat) : TyS → Bool
+  | .int => true
+  | .eq v => v.under k
+  | .ptr S _ off => S.under k && off.under k
+  | .ref _ _ off => off.under k
+  | .nullable τ => τ.under k
+  | .orErr τ => τ.under k
+  | .str _ => true
+  | .atom _ => true
+
+def ShapeS.under (k : Nat) : ShapeS → Bool
+  | .mk size vals => size.under k && vals.under k
+  | .rep n E => n.under k && E.under k
+  | .atom _ => true
+
+def ValsS.under (k : Nat) : ValsS → Bool
+  | .nil => true
+  | .cons _ τ rest => τ.under k && rest.under k
+
+end
+
+mutual
+
+theorem TyS.den_setVal {ρ : Env} {k : Nat} {x : BitVec 64} : (t : TyS) → t.under k = true →
+    t.den (ρ.setVal k x) = t.den ρ
+  | .int, _ => rfl
+  | .eq v, h => by
+    show Ty.eq (v.den _) = _
+    rw [Val.den_setVal v h]; rfl
+  | .ptr S w off, h => by
+    simp only [TyS.under, Bool.and_eq_true] at h
+    show Ty.ptr (S.den _) w (off.den _) = _
+    rw [ShapeS.den_setVal S h.1, Num.den_setVal off h.2]; rfl
+  | .ref tag w off, h => by
+    show Ty.ref tag w (off.den _) = _
+    rw [Num.den_setVal off h]; rfl
+  | .nullable τ, h => by
+    show Ty.nullable (τ.den _) = _
+    rw [TyS.den_setVal τ h]; rfl
+  | .orErr τ, h => by
+    show Ty.orErr (τ.den _) = _
+    rw [TyS.den_setVal τ h]; rfl
+  | .str _, _ => rfl
+  | .atom _, _ => rfl
+
+theorem ShapeS.den_setVal {ρ : Env} {k : Nat} {x : BitVec 64} : (t : ShapeS) →
+    t.under k = true → t.den (ρ.setVal k x) = t.den ρ
+  | .mk size vals, h => by
+    simp only [ShapeS.under, Bool.and_eq_true] at h
+    show (⟨size.den _, vals.den _⟩ : Shape) = _
+    rw [Num.den_setVal size h.1, ValsS.den_setVal vals h.2]; rfl
+  | .rep n E, h => by
+    simp only [ShapeS.under, Bool.and_eq_true] at h
+    show (E.den _).rep (n.den _) = _
+    rw [Num.den_setVal n h.1, ShapeS.den_setVal E h.2]; rfl
+  | .atom _, _ => rfl
+
+theorem ValsS.den_setVal {ρ : Env} {k : Nat} {x : BitVec 64} : (t : ValsS) →
+    t.under k = true → t.den (ρ.setVal k x) = t.den ρ
+  | .nil, _ => rfl
+  | .cons o τ rest, h => by
+    simp only [ValsS.under, Bool.and_eq_true] at h
+    show (o, τ.den _) :: rest.den _ = _
+    rw [TyS.den_setVal τ h.1, ValsS.den_setVal rest h.2]; rfl
+
+end
+
 end Sym
 
 end TypedAsm
