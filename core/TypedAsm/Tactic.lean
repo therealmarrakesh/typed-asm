@@ -3205,11 +3205,31 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
   -- asked to confirm: that the term means this context, and that the checker
   -- comes to that answer.
   let symStep : TacticM (Option MVarId) := do
-    let (S?, atoms) ← (Sym.reifyCtx Γ).run {}
+    -- the program's blocks are read too where the operand is not reached
+    -- through a register, so that it can be found in one of them
+    let inBlock := listed && (match instr.memOperand? with
+      | some (.rip _) | some (.sib none _ _) => true
+      | _ => false)
+    let ((S?, blocks?), atoms) ← (do
+      let blocks? ← if inBlock then Sym.reifyBlocks Ψ'.appFn!.appArg! else pure none
+      let S? ← Sym.reifyCtx Γ
+      return (S?, blocks?) : Sym.ReifyM _).run {}
+    let S? := S?.map fun S => { S with blocks := (blocks?.map (·.1)).getD [] }
     if let some S := S? then
       if let some (S', conds) := Sym.step (BitVec.ofNat 64 (n + len.toNat)) S instr then
         let ρ := atoms.env
         let SE := toExpr S
+        -- that the blocks read are the memory typing's: each by looking
+        let mut hB := mkApp2 (mkConst ``Sym.BlocksOk.nil) Ψ ρ
+        let mut restL : List (BitVec 64 × Sym.ShapeS × Bool) := []
+        if let some (bl, lays) := blocks? then
+          for ((base, Sb, w), lay) in (bl.zip lays.toList).reverse do
+            let h₁ ← mkEqRefl (← mkAppM ``Option.some #[lay])
+            let h₂ ← mkEqRefl (← mkAppM ``Layout.shape #[lay])
+            let h₃ ← mkEqRefl (toExpr w)
+            hB := mkAppN (mkConst ``Sym.BlocksOk.cons)
+              #[Ψ, ρ, toExpr base, toExpr Sb, toExpr w, toExpr restL, lay, h₁, h₂, h₃, hB]
+            restL := (base, Sb, w) :: restL
         unless Kernel.isDefEqGuarded env lctx Γ (mkApp2 (mkConst ``Sym.CtxS.den) ρ SE) do
           trace[TypedAsm.fast] "the term read from the context does not mean it"
           return none
@@ -3226,7 +3246,7 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           allE := mkApp2 (mkConst ``And) leaf allE
         let Γ' ← Sym.denCtx atoms S'
         let hf ← fetchProof (mkApp fetch a) (toExpr (some (instr, len)))
-        let hs := mkAppN (mkConst ``Sym.step_sound) #[Ψ, next, ρ, SE, iE, xE, hstep, hn]
+        let hs := mkAppN (mkConst ``Sym.step_sound) #[Ψ, next, ρ, SE, hB, iE, xE, hstep, hn]
         let rest ← mkFreshExprSyntheticOpaqueMVar
           (mkAppN ty.getAppFn #[Φ, fetch, sys, Ψ, nextLit, Γ']) (← goal.getTag)
         goal.assign (mkAppN (mkConst ``BlockOk.step)

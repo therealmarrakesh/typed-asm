@@ -308,6 +308,33 @@ def reifyCtx (Γ : Expr) : ReifyM (Option CtxS) := do
   return some { regs, stack, stackRest, room := ← reifyNum c[3]!, flags := ← reifyFlags c[4]!,
                 owned, ownedRest, above := ← reifyNum c[6]! }
 
+/-- The program's blocks as terms, read from the list the memory typing is
+made of: where each is, its shape and whether it may be written, with the
+layout each was read from. Nothing is given for a list that is not written
+out or a block whose address is not a number. -/
+def reifyBlocks (bs : Expr) : ReifyM (Option (List (BitVec 64 × ShapeS × Bool) × Array Expr)) := do
+  let env ← getEnv
+  let lctx ← getLCtx
+  let kwhnf (e : Expr) : MetaM Expr := ofExceptKernelException (Kernel.whnf env lctx e)
+  let mut out : Array (BitVec 64 × ShapeS × Bool) := #[]
+  let mut layouts : Array Expr := #[]
+  let mut l ← whnf bs
+  for _ in [0:256] do
+    unless l.isAppOfArity ``List.cons 3 do break
+    let cell ← whnf l.getAppArgs[1]!
+    unless cell.isAppOfArity ``Prod.mk 4 do return none
+    let .lit (.natVal a) ← kwhnf (mkApp2 (mkConst ``BitVec.toNat) (mkNatLit 64) cell.getAppArgs[2]!)
+      | return none
+    let lay ← whnf cell.getAppArgs[3]!
+    unless lay.isAppOfArity ``Layout.mk 4 do return none
+    let some w := boolLit? (← whnf lay.getAppArgs[1]!) | return none
+    let S ← reifyShape lay.getAppArgs[0]!
+    out := out.push (BitVec.ofNat 64 a, S, w)
+    layouts := layouts.push cell.getAppArgs[3]!
+    l ← whnf l.appArg!
+  unless l.isAppOfArity ``List.nil 1 do return none
+  return some (out.toList, layouts)
+
 /-! ## Back to a context as written -/
 
 private def listE (ty : Expr) (xs : Array Expr) (tail : Option Expr := none) : Expr :=
