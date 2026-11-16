@@ -1,5 +1,6 @@
 import Lean
 import TypedAsm.Addr
+import TypedAsm.Facts
 import TypedAsm.Reify
 import TypedAsm.Program
 import TypedAsm.Fn
@@ -23,10 +24,14 @@ needs an argument, typically a fact about values at a branch.
 
 * `ty_block` types a whole block of a labelled program, finding jump targets
   by label. `ty_call sig` types a call. These are the usual entry points.
+* A theorem marked `@[asm_fact]` is a fact about what the program computes
+  that the checker may use where a block leaves a value to be shown the one
+  a context asks for; a block that needs nothing else is then typed without
+  being written out.
 * `ty_steps` types the straight-line instructions at the start of a block.
 * `ty_step` types one. `ty_step_with r` types one with a rule you name.
 * `ty_branch` types a conditional jump and leaves the side that carries on.
-* `ty_straight` types a single instruction; the two above are built on it.
+* `ty_straight` types a single instruction, by the checker.
 * `ty_name r as v` gives the value in a register a name; `ty_name_slot i as v`
   does the same for a stack slot.
 * `ty_stack_detach at d` makes the pieces of the stack from byte `d` up
@@ -341,7 +346,7 @@ theorem cmp_not_less {a b : BitVec 64} (h : Cond.eval (AluOp.apply .cmp a b).2 .
 
 /-- The low half of a signed multiply is the product: what `imul` leaves in
 its destination. -/
-theorem imulTrunc_fst (a b : BitVec 64) : (imulTrunc a b).1 = a * b := by
+@[asm_fact] theorem imulTrunc_fst (a b : BitVec 64) : (imulTrunc a b).1 = a * b := by
   have lo : ∀ x : BitVec 64, BitVec.setWidth 64 (BitVec.signExtend 128 x) = x := by
     intro x
     ext i hi
@@ -4342,10 +4347,34 @@ private def pointerSig (goal : MVarId) (rm : RM) : TacticM (Option Expr) := goal
   if τ.isAppOfArity ``Ty.fn 6 then return some (mkAppN (mkConst ``FnSig.mk) τ.getAppArgs)
   return none
 
+/-- Whether the user has marked any fact of their own for the checker: the
+library's own are not counted. -/
+private def hasUserFacts : MetaM Bool := do
+  let some ext ← Meta.getSimpExtension? `asm_fact | return false
+  let thms ← ext.getTheorems
+  return thms.lemmaNames.toList.any fun
+    | .decl n .. => n != ``imulTrunc_fst
+    | _ => true
+
 /-- What a block or a call left to be shown, tried as arithmetic: a
-comparison, or two exactly known values that are to be the same. Returns
-what is still left. -/
+comparison, or two exactly known values that are to be the same; and then,
+where the user has marked facts with `@[asm_fact]`, by those facts with what
+is known there. Returns what is still left. -/
 private def closeArith (left : List MVarId) : TacticM (List MVarId) := do
+  let facts ← hasUserFacts
+  -- by the user's facts, where arithmetic did not settle it
+  let byFacts (gs : List MVarId) : TacticM (List MVarId) := do
+    unless facts do return gs
+    let mut out : List MVarId := []
+    for g in gs do
+      let s ← saveState
+      try
+        let l ← runOn g (do evalTactic (← `(tactic| (simp [asm_fact, *]; done))))
+        out := out ++ l
+      catch _ =>
+        s.restore
+        out := out ++ [g]
+    return out
   let mut kept : List MVarId := []
   for g in left do
     if ← g.isAssigned then continue
@@ -4356,9 +4385,21 @@ private def closeArith (left : List MVarId) : TacticM (List MVarId) := do
           -- not `Sub.of_eq (by …)`: a tactic block inside a term reports its
           -- own failure and gives the goal up, where this one is to fail
           let [eq] ← runOn g (do evalTactic (← `(tactic| refine Sub.of_eq ?_))) | pure [g]
-          runOn eq (do evalTactic (← `(tactic| ty_arith)))
+          let s ← saveState
+          try runOn eq (do evalTactic (← `(tactic| ty_arith)))
+          catch e =>
+            s.restore
+            let l ← byFacts [eq]
+            unless l.isEmpty do throw e
+            pure []
         else if isComparison t && !t.hasExprMVar then
-          runOn g (do evalTactic (← `(tactic| ty_arith)))
+          let s ← saveState
+          try runOn g (do evalTactic (← `(tactic| ty_arith)))
+          catch e =>
+            s.restore
+            let l ← byFacts [g]
+            unless l.isEmpty do throw e
+            pure []
         else pure [g]
       catch _ => pure [g]
     kept := kept ++ after

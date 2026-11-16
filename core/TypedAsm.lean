@@ -31,6 +31,7 @@ import TypedAsm.Lookup
 import TypedAsm.FnEx
 import TypedAsm.Declare
 import TypedAsm.Addr
+import TypedAsm.Facts
 
 /-!
 # TypedAsm

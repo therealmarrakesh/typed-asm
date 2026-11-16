@@ -64,25 +64,21 @@ asm_typing At
 
 /-- What the multiply at the end of a call computes: the argument times the
 factorial of one less is the factorial of the argument. -/
-theorem fac_step {n : Nat} (hn : 0 < n) : num (fac (n - 1)) * num n = num (fac n) := by
+@[asm_fact] theorem fac_step {n : Nat} (hn : 0 < n) : num (fac (n - 1)) * num n = num (fac n) := by
   obtain ⟨k, rfl⟩ : ∃ k, n = k + 1 := ⟨n - 1, by omega⟩
   simp [fac, num, BitVec.ofNat_mul, BitVec.mul_comm]
 
-/-- The program is well typed where it may end only with status 120. Two
-facts of arithmetic are all that is said by hand: what the function returns
-for zero, and what its multiply computes. -/
+/-- What the function returns for zero: the test found the argument's value
+zero, the argument is below `2 ^ 64`, and the factorial of zero is 1. -/
+@[asm_fact] theorem fac_zero {n : Nat} (h64 : n < 2 ^ 64) (hz : num n = 0) : num (fac n) = 1 := by
+  obtain rfl : n = 0 := by simp only [num] at hz; bv_omega
+  rfl
+
+/-- The program is well typed where it may end only with status 120. The
+two facts of arithmetic above are what the checker is given; the one block
+typed by hand is the one that calls the function with one less. -/
 theorem blocksOk : BlocksOk Φ fetch (linux.exitsOnly (· = 120)) Ψ := by
   ty_program
-  case fact n saved ret rest room hK h64 =>
-    ty_block
-    -- returning 1: the test found the argument zero, and the factorial of
-    -- zero is 1
-    obtain rfl : n = 0 := by simp only [num] at hz; bv_omega
-    exact Sub.refl _
-  case afterAgain n saved ret rest m hK hn =>
-    ty_block
-    -- returning the product: the argument times the factorial of one less
-    exact Sub.of_eq (by simpa [imulTrunc_fst] using fac_step hn)
   case again n saved ret rest room hK hn h64 =>
     -- the argument is not zero, so the caller left at least sixteen bytes
     have hroom : 16 * n ≤ room := hK.room

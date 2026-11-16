@@ -66,8 +66,10 @@ Each instruction is typed without being told how. Seventeen of the twenty-three
 examples need nothing more than this. In the others, a label's block says
 what cannot be read off the program: where an owned block is split, joined
 or made part of the shared memory, which piece of the stack is lent to a
-function, what a register holding a label's address is a pointer to, or a
-fact about what the program computes.
+function, or what a register holding a label's address is a pointer to. A
+fact about what the program computes is a theorem marked `@[asm_fact]`:
+`examples/Fact` gives two, what the function returns for zero and what its
+multiply computes, and the checker uses them where they are needed.
 
 A program that is not typed is told why in terms of the program: which
 instruction, what it would need, what could go wrong on the machine if it
