@@ -45,12 +45,16 @@ inductive Op1
   /-- A narrow value extended with zeros, or with its sign, at a width. -/
   | zx (w : Width) (sw : NarrowW)
   | sx (w : Width) (sw : NarrowW)
+  /-- Shifted or rotated by a number of bits, at a width. -/
+  | shift (op : ShiftOp) (w : Width) (c : Nat)
   deriving DecidableEq, Repr
 
 /-- An operation of two values, likewise. -/
 inductive Op2
   /-- The result of an arithmetic or logic operation at a width. -/
   | alu (op : AluOp) (w : Width)
+  /-- The low half of a signed product at a width. -/
+  | imul (w : Width)
   deriving DecidableEq, Repr
 
 def Op1.den : Op1 → BitVec 64 → BitVec 64
@@ -64,10 +68,12 @@ def Op1.den : Op1 → BitVec 64 → BitVec 64
   | .sext32, a => (a.setWidth 32).signExtend 64
   | .zx w sw, a => ((a.setWidth sw.bits).setWidth w.bits).setWidth 64
   | .sx w sw, a => ((a.setWidth sw.bits).signExtend w.bits).setWidth 64
+  | .shift op w c, a => (op.apply (a.setWidth w.bits) c).setWidth 64
 
 def Op2.den : Op2 → BitVec 64 → BitVec 64 → BitVec 64
   | .alu op .w64, a, b => (op.apply a b).1
   | .alu op .w32, a, b => (op.apply (a.setWidth 32) (b.setWidth 32)).1.setWidth 64
+  | .imul w, a, b => (imulTrunc (a.setWidth w.bits) (b.setWidth w.bits)).1.setWidth 64
 
 /-- A 64-bit value as a term. -/
 inductive Val
@@ -140,6 +146,8 @@ inductive FlagsS
   /-- They are exactly what negating a value, or counting its bits, left. -/
   | neg (w : Width) (a : Val)
   | popcnt (w : Width) (a : Val)
+  /-- They are exactly what a signed multiply left. -/
+  | imul (w : Width) (a b : Val)
   /-- They are exactly these. -/
   | lit (f : Flags)
   | atom (i : Nat)
@@ -288,6 +296,8 @@ def den (ρ : Env) : FlagsS → Flags → Prop
   | .neg w a => (· = (subBorrow 0 ((a.den ρ).setWidth w.bits) false).2)
   | .popcnt w a =>
     (· = ⟨some false, some ((a.den ρ).setWidth w.bits == 0), some false, some false⟩)
+  | .imul w a b =>
+    (· = (imulTrunc ((a.den ρ).setWidth w.bits) ((b.den ρ).setWidth w.bits)).2)
   | .lit f => (· = f)
   | .atom i => ρ.flags.getD i Flags.Any
 
@@ -384,6 +394,13 @@ theorem den_setReg_mk1 (ρ : Env) (Γ : CtxS) (r : Reg) (f : Op1) (a : Val) :
   show CtxOf.setReg _ _ (.eq ((Val.mk1 f a).den ρ)) = _
   rw [Val.den_mk1]
 
+theorem den_setReg_mk2_flags (ρ : Env) (Γ : CtxS) (r : Reg) (f : Op2) (a b : Val) (fl : FlagsS) :
+    CtxS.den ρ { Γ.setReg r (.eq (.mk2 f a b)) with flags := fl }
+      = { (Γ.den ρ).setReg r (.eq (f.den (a.den ρ) (b.den ρ))) with flags := fl.den ρ } := by
+  rw [den_setReg_flags]
+  show ({ CtxOf.setReg _ _ (.eq ((Val.mk2 f a b).den ρ)) with flags := _ } : Ctx) = _
+  rw [Val.den_mk2]
+
 theorem den_setReg_mk1_flags (ρ : Env) (Γ : CtxS) (r : Reg) (f : Op1) (a : Val) (fl : FlagsS) :
     CtxS.den ρ { Γ.setReg r (.eq (.mk1 f a)) with flags := fl }
       = { (Γ.den ρ).setReg r (.eq (f.den (a.den ρ))) with flags := fl.den ρ } := by
@@ -444,6 +461,15 @@ def immVal (w : Width) (imm : BitVec 32) : Val :=
   match w with
   | .w64 => .lit (imm.signExtend 64)
   | .w32 => .lit ((imm.signExtend 32).setWidth 64)
+
+/-- A constant operand as a value, extended with its sign to a width and
+then with zeros. -/
+def immW (w : Width) (imm : BitVec 32) : Val := .lit ((imm.signExtend w.bits).setWidth 64)
+
+theorem low_high (w : Width) (x : BitVec w.bits) : (x.setWidth 64).setWidth w.bits = x := by
+  cases w
+  · exact BitVec.setWidth_setWidth_of_le x (by decide)
+  · simp [Width.bits]
 
 theorem cast_ctx {Ψ : MemTy} {next : BitVec 64} {Γ Δ Δ' : Ctx} {i : Instr}
     (h : Straight Ψ next Γ i Δ) (e : Δ' = Δ) : Straight Ψ next Γ i Δ' := e ▸ h
@@ -1058,6 +1084,7 @@ theorem Val.den_summands (ρ : Env) : (v : Val) → v.den ρ = sumV ρ v.summand
       cases op <;> cases w <;> try (simp [Val.summands, sumV])
       simp only [Val.den, Op2.den, sumV_append, AluOp.apply, addCarry_fst]
       rw [iha, ihb]; ac_rfl
+    | imul w => simp [Val.summands, sumV]
 
 /-- A list of terms with one occurrence of a term taken out. -/
 def removeV (a : Val) : List Val → Option (List Val)
@@ -1774,6 +1801,147 @@ theorem reads_map {Γ : CtxS} {n : Nat} {m : Mem} {f : List CondS → CtxS × Li
   | none => rw [hr] at h; cases h
   | some cs => rw [hr] at h; cases h; exact ⟨cs, rfl, rfl⟩
 
+/-- What is known of the flags after a shift or rotate by a number of bits. -/
+def flagsAfterS (op : ShiftOp) (c : Nat) (fl : FlagsS) : FlagsS :=
+  if c = 0 then fl
+  else match op with
+    | .shl | .shr | .sar => .defined true true true (c == 1)
+    | .rol | .ror => .defined true false false (c == 1)
+
+theorem den_flagsAfterS (ρ : Env) (op : ShiftOp) (c : Nat) (fl : FlagsS) :
+    (flagsAfterS op c fl).den ρ = op.flagsAfter c (fl.den ρ) := by
+  unfold flagsAfterS ShiftOp.flagsAfter
+  split
+  · rfl
+  · cases op <;> rfl
+
+/-- The checker for shifts and rotates. -/
+def stepShift (Γ : CtxS) (op : ShiftOp) (w : Width) (dst : RM) (c : Count) :
+    Option (CtxS × List CondS) :=
+  match dst, c with
+  | .reg d, .imm n =>
+    if d = .rsp then none
+    else match exactly (Γ.regs.get d) with
+      | some a =>
+        some ({ Γ.setReg d (.eq (.mk1 (.shift op w (n.toNat % w.bits)) a)) with
+          flags := flagsAfterS op (n.toNat % w.bits) Γ.flags }, [])
+      | none =>
+        some ({ Γ.setReg d .int with flags := flagsAfterS op (n.toNat % w.bits) Γ.flags }, [])
+  | .reg d, .cl =>
+    if d = .rsp then none else some ({ Γ.setReg d .int with flags := .any }, [])
+  | .mem m, .imm n =>
+    (writes Γ w.bytes.toNat m).map fun x =>
+      ({ x.1 with flags := flagsAfterS op (n.toNat % w.bits) Γ.flags }, x.2)
+  | .mem m, .cl => (writes Γ w.bytes.toNat m).map fun x => ({ x.1 with flags := .any }, x.2)
+
+theorem writes_map {Γ : CtxS} {n : Nat} {m : Mem} {f : CtxS × List CondS → CtxS × List CondS}
+    {x : CtxS × List CondS} (h : (writes Γ n m).map f = some x) :
+    ∃ y, writes Γ n m = some y ∧ x = f y := by
+  cases hw : writes Γ n m with
+  | none => rw [hw] at h; cases h
+  | some y => rw [hw] at h; cases h; exact ⟨y, rfl, rfl⟩
+
+theorem stepShift_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {op : ShiftOp}
+    {w : Width} {dst : RM} {c : Count} {x : CtxS × List CondS}
+    (h : stepShift Γ op w dst c = some x) (hn : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) (.shift op w dst c) (x.1.den ρ) := by
+  unfold stepShift at h
+  split at h
+  · next d n =>
+    split at h
+    · cases h
+    · next hd =>
+      split at h
+      · next a ha =>
+        cases h
+        refine cast_ctx (.shiftExact hd (by rw [CtxS.den_regs, exactly_den ha])) ?_
+        rw [CtxS.den_setReg_mk1_flags, den_flagsAfterS]; rfl
+      · cases h
+        refine cast_ctx (.shiftImm (.reg _) (.reg hd)) ?_
+        rw [CtxS.den_setReg_flags, den_flagsAfterS]; rfl
+  · next d =>
+    split at h
+    · cases h
+    · next hd =>
+      cases h
+      exact cast_ctx (.shiftCl (.reg _) (.reg hd)) (by rw [CtxS.den_setReg_flags]; rfl)
+  · next m n =>
+    obtain ⟨y, hw, rfl⟩ := writes_map h
+    obtain ⟨hwr, hrd⟩ := writes_sound (Ψ := Ψ) (next := next) hw hn
+    refine cast_ctx (.shiftImm hrd hwr) ?_
+    show ({ y.1.den ρ with flags := (flagsAfterS op _ Γ.flags).den ρ } : Ctx) = _
+    rw [den_flagsAfterS]; rfl
+  · next m =>
+    obtain ⟨y, hw, rfl⟩ := writes_map h
+    obtain ⟨hwr, hrd⟩ := writes_sound (Ψ := Ψ) (next := next) hw hn
+    exact cast_ctx (.shiftCl hrd hwr) rfl
+
+/-- The context after a multiply whose result is only known to be a number. -/
+def afterMulS (Γ : CtxS) : CtxS :=
+  { (Γ.setReg .rax .int).setReg .rdx .int with flags := .defined true false false true }
+
+theorem den_afterMulS (ρ : Env) (Γ : CtxS) :
+    (afterMulS Γ).den ρ = (Γ.den ρ).afterMulDiv Flags.AfterMul := by
+  unfold afterMulS
+  rw [CtxS.den_setReg_flags, CtxS.den_setReg]; rfl
+
+/-- The checker for the widening multiplies and the divides. Values that are
+numbers are multiplied or divided at once; a multiply of anything else gives
+numbers; a divide of anything else has no answer here. -/
+def stepMulDiv (Γ : CtxS) (op : MulDivOp) (w : Width) (src : RM) : Option (CtxS × List CondS) :=
+  match src with
+  | .reg r =>
+    match Γ.regs.get .rax, Γ.regs.get .rdx, Γ.regs.get r with
+    | .eq (.lit a), .eq (.lit d), .eq (.lit b) =>
+      if r = .rsp then none
+      else match op.eval (d.setWidth w.bits) (a.setWidth w.bits) (b.setWidth w.bits) with
+        | .next (lo, hi, fl) =>
+          some ({ (Γ.setReg .rax (.eq (.lit (lo.setWidth 64)))).setReg .rdx
+            (.eq (.lit (hi.setWidth 64))) with flags := .lit fl }, [])
+        | _ => none
+    | _, _, _ =>
+      match op with
+      | .mul => some (afterMulS Γ, [])
+      | .imul => some (afterMulS Γ, [])
+      | _ => none
+  | .mem m =>
+    match op with
+    | .mul => (reads Γ w.bytes.toNat m).map fun cs => (afterMulS Γ, cs)
+    | .imul => (reads Γ w.bytes.toNat m).map fun cs => (afterMulS Γ, cs)
+    | _ => none
+
+theorem stepMulDiv_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {op : MulDivOp}
+    {w : Width} {src : RM} {x : CtxS × List CondS}
+    (h : stepMulDiv Γ op w src = some x) (hn : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) (.mulDiv op w src) (x.1.den ρ) := by
+  unfold stepMulDiv at h
+  split at h
+  · next r =>
+    split at h
+    · next a d b ha hd hb =>
+      split at h
+      · cases h
+      · next hr =>
+        split at h
+        · next lo hi fl hev =>
+          cases h
+          refine cast_ctx (.mulDivExact hr (a := a) (d := d) (b := b)
+            (by rw [CtxS.den_regs, ha]; rfl) (by rw [CtxS.den_regs, hd]; rfl)
+            (by rw [CtxS.den_regs, hb]; rfl) hev) ?_
+          rw [CtxS.den_setReg_flags, CtxS.den_setReg]; rfl
+        · cases h
+    · split at h
+      · cases h; rw [den_afterMulS]; exact .mulRM (.reg _)
+      · cases h; rw [den_afterMulS]; exact .imulRM (.reg _)
+      · cases h
+  · next m =>
+    split at h
+    · obtain ⟨cs, hr, rfl⟩ := reads_map h
+      rw [den_afterMulS]; exact .mulRM (reads_sound hr hn)
+    · obtain ⟨cs, hr, rfl⟩ := reads_map h
+      rw [den_afterMulS]; exact .imulRM (reads_sound hr hn)
+    · cases h
+
 /-- The checker for `mov`. -/
 def stepMov (next : BitVec 64) (Γ : CtxS) (w : Width) (ops : Operands) :
     Option (CtxS × List CondS) :=
@@ -2133,7 +2301,13 @@ def stepImul2 (next : BitVec 64) (Γ : CtxS) (w : Width) (d : Reg) (src : RM) :
     if d = .rsp then none
     else (reads Γ w.bytes.toNat m).map fun cs =>
       ({ Γ.setReg d .int with flags := .defined true false false true }, cs)
-  | _, _, _ => none
+  | w, d, .reg r =>
+    if d = .rsp then none
+    else match exactly (Γ.regs.get d), exactly (Γ.regs.get r) with
+      | some a, some b =>
+        if r = .rsp then some ({ Γ.setReg d .int with flags := .defined true false false true }, [])
+        else some ({ Γ.setReg d (.eq (.mk2 (.imul w) a b)) with flags := .imul w a b }, [])
+      | _, _ => some ({ Γ.setReg d .int with flags := .defined true false false true }, [])
 
 theorem stepImul2_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
     
@@ -2147,7 +2321,20 @@ theorem stepImul2_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
     · next hd =>
       obtain ⟨cs, hr, rfl⟩ := reads_map h
       exact cast_ctx (.imul2RM hd (reads_sound hr hn)) (by rw [CtxS.den_setReg_flags]; rfl)
-  · cases h
+  · next r =>
+    split at h
+    · cases h
+    · next hd =>
+      split at h
+      · next a b ha hb =>
+        split at h
+        · cases h; exact cast_ctx (.imul2RM hd (.reg _)) (by rw [CtxS.den_setReg_flags]; rfl)
+        · next hr =>
+          cases h
+          exact cast_ctx (.imul2Exact hd hr (by rw [CtxS.den_regs, exactly_den ha])
+            (by rw [CtxS.den_regs, exactly_den hb]))
+            (CtxS.den_setReg_mk2_flags ρ Γ d (.imul w) a b (.imul w a b))
+      · cases h; exact cast_ctx (.imul2RM hd (.reg _)) (by rw [CtxS.den_setReg_flags]; rfl)
 
 /-- The checker for `imul3`. -/
 def stepImul3 (next : BitVec 64) (Γ : CtxS) (w : Width) (d : Reg) (src : RM) (imm : BitVec 32) :
@@ -2157,7 +2344,15 @@ def stepImul3 (next : BitVec 64) (Γ : CtxS) (w : Width) (d : Reg) (src : RM) (i
     if d = .rsp then none
     else (reads Γ w.bytes.toNat m).map fun cs =>
       ({ Γ.setReg d .int with flags := .defined true false false true }, cs)
-  | _, _, _, _ => none
+  | w, d, .reg r, imm =>
+    if d = .rsp then none
+    else match exactly (Γ.regs.get r) with
+      | some b =>
+        if r = .rsp then some ({ Γ.setReg d .int with flags := .defined true false false true }, [])
+        else
+          some ({ Γ.setReg d (.eq (.mk2 (.imul w) b (immW w imm))) with
+            flags := .imul w b (immW w imm) }, [])
+      | none => some ({ Γ.setReg d .int with flags := .defined true false false true }, [])
 
 theorem stepImul3_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
     
@@ -2171,7 +2366,20 @@ theorem stepImul3_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
     · next hd =>
       obtain ⟨cs, hr, rfl⟩ := reads_map h
       exact cast_ctx (.imul3RM hd (reads_sound hr hn)) (by rw [CtxS.den_setReg_flags]; rfl)
-  · cases h
+  · next r =>
+    split at h
+    · cases h
+    · next hd =>
+      split at h
+      · next b hb =>
+        split at h
+        · cases h; exact cast_ctx (.imul3RM hd (.reg _)) (by rw [CtxS.den_setReg_flags]; rfl)
+        · next hr =>
+          cases h
+          refine cast_ctx (.imul3Exact (imm := imm) hd hr (by rw [CtxS.den_regs, exactly_den hb])) ?_
+          rw [CtxS.den_setReg_mk2_flags]
+          simp only [Op2.den, FlagsS.den, immW, Val.den, low_high]
+      · cases h; exact cast_ctx (.imul3RM hd (.reg _)) (by rw [CtxS.den_setReg_flags]; rfl)
 
 /-- The checker for `popcnt`. -/
 def stepPopcnt (next : BitVec 64) (Γ : CtxS) (w : Width) (d : Reg) (src : RM) :
@@ -2355,6 +2563,8 @@ def step (next : BitVec 64) (Γ : CtxS) : Instr → Option (CtxS × List CondS)
   | .movzx w d sw src => stepMovzx next Γ w d sw src
   | .movsx w d sw src => stepMovsx next Γ w d sw src
   | .unary op w dst => stepUnary next Γ op w dst
+  | .shift op w dst c => stepShift Γ op w dst c
+  | .mulDiv op w src => stepMulDiv Γ op w src
   | .bswap w r =>
     if r = .rsp then none
     else match exactly (Γ.regs.get r) with
@@ -2395,6 +2605,8 @@ theorem step_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {i : I
   · exact stepMovzx_sound h hn
   · exact stepMovsx_sound h hn
   · exact stepUnary_sound h hn
+  · exact stepShift_sound h hn
+  · exact stepMulDiv_sound h hn
   · next w r =>
     split at h
     · cases h

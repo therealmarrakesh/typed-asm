@@ -368,6 +368,13 @@ partial def denVal (as : Atoms) : Val → MetaM Expr
   | .app1 (.sx w sw) a => do
     return setWidthE w.bits 64 (mkApp3 (mkConst ``BitVec.signExtend) (mkNatLit sw.bits)
       (mkNatLit w.bits) (setWidthE 64 sw.bits (← denVal as a)))
+  | .app1 (.shift op w c) a => do
+    return setWidthE w.bits 64
+      (← mkAppM ``ShiftOp.apply #[toExpr op, setWidthE 64 w.bits (← denVal as a), mkNatLit c])
+  | .app2 (.imul w) a b => do
+    let r ← mkAppM ``imulTrunc #[setWidthE 64 w.bits (← denVal as a),
+      setWidthE 64 w.bits (← denVal as b)]
+    return setWidthE w.bits 64 (← mkAppM ``Prod.fst #[r])
   | .app2 (.alu op .w64) a b => do
     mkAppM ``Prod.fst #[← mkAppOptM ``AluOp.apply #[mkNatLit 64, toExpr op, ← denVal as a, ← denVal as b]]
   | .app2 (.alu op .w32) a b => do
@@ -442,6 +449,11 @@ def denFlags (as : Atoms) : FlagsS → MetaM Expr
     let z ← mkAppM ``BEq.beq #[setWidthE 64 w.bits (← denVal as a), toExpr (0 : BitVec w.bits)]
     let f := mkConst ``Bool.false
     let v ← mkAppM ``Flags.mk #[← some' f, ← some' z, ← some' f, ← some' f]
+    withLocalDeclD `f (mkConst ``Flags) fun x => do mkLambdaFVars #[x] (← mkEq x v)
+  | .imul w a b => do
+    let r ← mkAppM ``imulTrunc #[setWidthE 64 w.bits (← denVal as a),
+      setWidthE 64 w.bits (← denVal as b)]
+    let v ← mkAppM ``Prod.snd #[r]
     withLocalDeclD `f (mkConst ``Flags) fun x => do mkLambdaFVars #[x] (← mkEq x v)
   | .test a b => do
     let v ← mkAppM ``Flags.ofResult #[← mkAppM ``HAnd.hAnd #[← denVal as a, ← denVal as b],
