@@ -178,4 +178,28 @@ info: 'TypedAsm.EntryTexts.safeMem' depends on axioms: [propext, Classical.choic
 #guard_msgs in
 #print axioms EntryTexts.safeMem
 
+/-! ## Safe, and writing only as wanted
+
+A program typed against the system that refuses a `write` unless what is
+offered satisfies `R` is safe under `linux`, and offers only such writes:
+wherever it reaches one. -/
+
+/-- What it is for the program started in `s` to offer the kernel, at every
+`write` it reaches, a descriptor and bytes satisfying `R`. -/
+def WritesOnly (fetch : Fetch) (R : BitVec 64 → List (BitVec 8) → Prop) (s : State) : Prop :=
+  ∀ s', Steps fetch linux s s' → ∀ len, fetch s'.rip = some (.syscall, len) →
+    s'.getReg .rax = 1 → R (s'.getReg .rdi) s'.offered
+
+theorem Entry.safeMem_writes {R : BitVec 64 → List (BitVec 8) → Prop}
+    (h : Entry (Asm.addr code base start) (Asm.parts base code) blocks room 0 s)
+    (hty : BlocksOk (.ofLabels code base At) (Asm.fetch base code) (linux.writesOnly R)
+      (.ofList blocks kinds))
+    (hwf : (MemTy.ofList blocks kinds).WF) (hstart : At start (entryCtx room))
+    (hfields : ∀ n, ∀ x ∈ blocks, ∀ p ∈ x.2.shape.vals,
+      HasTy (Asm.fetch base code) (linux.writesOnly R) (.ofList blocks kinds) n p.2
+        (s.load64 (x.1 + BitVec.ofNat 64 p.1))) :
+    SafeMem linux s ∧ WritesOnly (Asm.fetch base code) R s :=
+  have hs := Safe.of_writesOnly (h.safe hty hwf hstart hfields)
+  ⟨.of_safe linux_frame (Asm.loaded h.loaded) hs.1, hs.2⟩
+
 end TypedAsm
