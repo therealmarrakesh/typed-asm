@@ -34,11 +34,6 @@ def blocks : List (BitVec 64 × Layout) := [(dataBase, tableLayout), (recordAddr
 
 asm_typing At blocks blocks room 0
 
-/-! ## The program is well typed -/
-
-theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  ty_program
-
 /-! ## The memory typing and the entry contract -/
 
 /-- The data has the types the blocks claim. The table's entry is a pointer
@@ -62,6 +57,11 @@ theorem Entry.valuesOk {s : State} (h : Entry s) (n : Nat) :
     simp [recordLayout] at hp
 
 /-! ## Safety -/
+
+/-! ## The program is well typed -/
+
+theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
+  ty_program
 
 /-- **From any state meeting the entry contract, the program is safe on the
 machine that fetches instructions by decoding memory.** It never gets stuck

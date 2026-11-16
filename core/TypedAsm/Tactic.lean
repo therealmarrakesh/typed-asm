@@ -4193,8 +4193,12 @@ macro_rules
         abbrev $Entry : State → Prop := TypedAsm.Entry $entry $parts $bs $n 0)]
 
 /-- `asm_safety At.start`: for a program declared with `asm_program` and
-`asm_typing` and proved well typed by `blocksOk`, whose entry label has the
-context `At.start`, proves in the current namespace
+`asm_typing`, whose entry label has the context `At.start`, proves in the
+current namespace
+
+* `blocksOk`, that the program is well typed, by `ty_program`, unless it has
+  been proved already: a program some of whose labels need something said is
+  proved well typed first, by hand, under that name;
 
 * `safeMem_of_entry`: **from any state meeting the entry contract, the
   program is safe** on the machine that fetches instructions by decoding
@@ -4218,6 +4222,15 @@ elab_rules : command
     let fields ← match v? with
       | some v => `($v)
       | none => `(Entry.plain (plain_of_check (by decide)))
+    -- Where the program has not been proved well typed, it is proved here,
+    -- which it can be if no label's block needs anything said.
+    let ns ← getCurrNamespace
+    unless (← getEnv).contains (ns ++ `blocksOk) do
+      elabCommand (← `(
+        /-- The program is well typed: the block at each label types, with nothing
+        said. -/
+        theorem $(id `blocksOk) : BlocksOk $(id `Φ) $(id `fetch) linux $(id `Ψ) := by
+          ty_program))
     elabCommand (← `(
       /-- **From any state meeting the entry contract, the program is safe on the
       machine that fetches instructions by decoding memory.** It never gets stuck and
@@ -4238,7 +4251,6 @@ elab_rules : command
           SafeMem linux { $(id `start) with world := w } :=
         $(id `safeMem_of_entry) (($(id `start_entry)).withWorld w)))
     -- the proofs rest on Lean's three standard axioms and nothing else
-    let ns ← getCurrNamespace
     for thm in [`safeMem_of_entry, `safeMem_world] do
       let axs ← Lean.collectAxioms (ns ++ thm)
       for a in axs do

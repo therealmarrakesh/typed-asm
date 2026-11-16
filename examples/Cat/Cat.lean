@@ -43,11 +43,6 @@ def blocks : List (BitVec 64 × Layout) := [(dataBase, bufferLayout)]
 
 def Ψ : MemTy := .ofList blocks []
 
-/-! ## The program is well typed -/
-
-theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  ty_program
-
 /-! ## The memory typing and the entry contract -/
 
 theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
@@ -60,6 +55,11 @@ files there are. -/
 abbrev Entry : State → Prop := TypedAsm.EntryArgs entry parts blocks 0
 
 /-! ## Safety -/
+
+/-! ## The program is well typed -/
+
+theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
+  ty_program
 
 /-- **From any state meeting the entry contract, however many arguments it
 was given and whatever they are, whatever files there are and whatever they

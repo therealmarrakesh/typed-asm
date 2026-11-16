@@ -42,11 +42,6 @@ def blocks : List (BitVec 64 × Layout) := []
 
 asm_typing At blocks blocks room 3
 
-/-! ## The program is well typed -/
-
-theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  ty_program
-
 /-! ## Safety -/
 
 asm_safety At.start
