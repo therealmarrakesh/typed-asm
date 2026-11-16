@@ -180,6 +180,21 @@ theorem storeBlock {s : Reg} {τ : Ty} (h : Loc Ψ next Γ m κ S o) (hκ : κ =
     have hwr : l.writable = true := by injection hκ
     exact .storePlaced hs he hl hwr hp hv hso hsub
 
+/-- A typed value at a place is held there, in the sense the rules for an
+operand that holds a value speak of. The rules have no such form for a block
+the context owns or for the stack reached through an index. -/
+theorem holds {τ : Ty} (h : Loc Ψ next Γ m κ S o) (hκ : ∀ k a, κ ≠ .owned k a)
+    (hm : ∀ x d, m ≠ .sib (some .rsp) (some x) d) (hv : S.valAt o = some τ) :
+    Holds Ψ next Γ (.mem m) τ := by
+  cases h with
+  | field hb hΓ hd => exact .field hb hΓ hd hv
+  | indexed hb hΓ hx he => exact .indexed hb hΓ hx he hv
+  | owned => exact absurd rfl (hκ _ _)
+  | slot hd hat => exact .slot hd hat hv
+  | slotIndexed => exact absurd rfl (hm _ _)
+  | global hl ha => exact .global hl ha hv
+  | placed he hl hp => exact .placed he hl hp hv
+
 end Loc
 
 end TypedAsm

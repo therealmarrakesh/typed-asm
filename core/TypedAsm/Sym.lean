@@ -2704,37 +2704,33 @@ theorem nonzeroConds_spec {ρ : Env} {w : Width} {v : Val} {cs : List CondS}
     · next hz => exact hz
   · cases h; exact hc.1
 
-/-- A divide of exactly known values that are not all numbers: it is typed
-where it is shown not to fault, and its results are exactly known. -/
-def divide (Γ : CtxS) (op : MulDivOp) (w : Width) (r : Reg) (a d b : Val) :
+/-- A divide of exactly known values that are not all numbers: its results,
+exactly known, and what is left to be shown for it not to fault. -/
+def divideVals (Γ : CtxS) (op : MulDivOp) (w : Width) (a d b : Val) :
     Option (CtxS × List CondS) :=
-  if r = .rsp then none
-  else match op with
-    | .div =>
-      match zeroConds w d, nonzeroConds w b with
-      | some c₁, some c₂ =>
-        some ({ (Γ.setReg .rax (.eq (.mk2 (.udiv w) a b))).setReg .rdx
-          (.eq (.mk2 (.urem w) a b)) with flags := .lit Flags.unknown }, c₁ ++ c₂)
-      | _, _ => none
-    | .idiv =>
-      match nonzeroConds w b with
-      | some c₂ =>
-        some ({ (Γ.setReg .rax (.eq (.mk2 (.sdiv w) a b))).setReg .rdx
-          (.eq (.mk2 (.srem w) a b)) with flags := .lit Flags.unknown },
-          .sfill w d a :: .noOvf w a b :: c₂)
-      | none => none
-    | _ => none
+  match op with
+  | .div =>
+    match zeroConds w d, nonzeroConds w b with
+    | some c₁, some c₂ =>
+      some ({ (Γ.setReg .rax (.eq (.mk2 (.udiv w) a b))).setReg .rdx
+        (.eq (.mk2 (.urem w) a b)) with flags := .lit Flags.unknown }, c₁ ++ c₂)
+    | _, _ => none
+  | .idiv =>
+    match nonzeroConds w b with
+    | some c₂ =>
+      some ({ (Γ.setReg .rax (.eq (.mk2 (.sdiv w) a b))).setReg .rdx
+        (.eq (.mk2 (.srem w) a b)) with flags := .lit Flags.unknown },
+        .sfill w d a :: .noOvf w a b :: c₂)
+    | none => none
+  | _ => none
 
-theorem divide_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {op : MulDivOp}
-    {w : Width} {r : Reg} {a d b : Val} {x : CtxS × List CondS}
-    (ha : (Γ.den ρ).regs .rax = .eq (a.den ρ)) (hd : (Γ.den ρ).regs .rdx = .eq (d.den ρ))
-    (hb : (Γ.den ρ).regs r = .eq (b.den ρ))
-    (h : divide Γ op w r a d b = some x) (hn : CondS.all ρ x.2) :
-    Straight Ψ next (Γ.den ρ) (.mulDiv op w (.reg r)) (x.1.den ρ) := by
-  unfold divide at h
-  split at h
-  · cases h
-  next hr =>
+theorem divideVals_spec {ρ : Env} {Γ : CtxS} {op : MulDivOp} {w : Width} {a d b : Val}
+    {x : CtxS × List CondS} (h : divideVals Γ op w a d b = some x) (hn : CondS.all ρ x.2) :
+    ∃ lo hi fl, op.eval ((d.den ρ).setWidth w.bits) ((a.den ρ).setWidth w.bits)
+        ((b.den ρ).setWidth w.bits) = .next (lo, hi, fl) ∧
+      x.1.den ρ = { ((Γ.den ρ).setReg .rax (.eq (lo.setWidth 64))).setReg .rdx
+        (.eq (hi.setWidth 64)) with flags := (· = fl) } := by
+  unfold divideVals at h
   have ctx : ∀ (f g : Op2),
       CtxS.den ρ { (Γ.setReg .rax (.eq (.mk2 f a b))).setReg .rdx (.eq (.mk2 g a b)) with
         flags := .lit Flags.unknown }
@@ -2752,18 +2748,93 @@ theorem divide_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {op 
       obtain ⟨hc₁, hc₂⟩ := CondS.all_append _ _ hn
       have hz := zeroConds_spec h₁ hc₁
       have hnz := nonzeroConds_spec h₂ hc₂
-      refine cast_ctx (.mulDivExact hr ha hd hb
-        (by rw [hz]; exact MulDivOp.eval_div _ _ hnz)) ?_
-      exact ctx (.udiv w) (.urem w)
+      exact ⟨_, _, _, by rw [hz]; exact MulDivOp.eval_div _ _ hnz, ctx (.udiv w) (.urem w)⟩
     · cases h
   · split at h
     · next c₂ h₂ =>
       cases h
       have hnz := nonzeroConds_spec h₂ hn.2.2
-      refine cast_ctx (.mulDivExact hr ha hd hb
-        (by rw [show (d.den ρ).setWidth w.bits = _ from hn.1]
-            exact MulDivOp.eval_idiv _ _ hnz hn.2.1)) ?_
-      exact ctx (.sdiv w) (.srem w)
+      exact ⟨_, _, _, by
+        rw [show (d.den ρ).setWidth w.bits = _ from hn.1]
+        exact MulDivOp.eval_idiv _ _ hnz hn.2.1, ctx (.sdiv w) (.srem w)⟩
+    · cases h
+  · cases h
+
+/-- A divide by a register, of exactly known values. -/
+def divide (Γ : CtxS) (op : MulDivOp) (w : Width) (r : Reg) (a d b : Val) :
+    Option (CtxS × List CondS) :=
+  if r = .rsp then none else divideVals Γ op w a d b
+
+theorem divide_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS} {op : MulDivOp}
+    {w : Width} {r : Reg} {a d b : Val} {x : CtxS × List CondS}
+    (ha : (Γ.den ρ).regs .rax = .eq (a.den ρ)) (hd : (Γ.den ρ).regs .rdx = .eq (d.den ρ))
+    (hb : (Γ.den ρ).regs r = .eq (b.den ρ))
+    (h : divide Γ op w r a d b = some x) (hn : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) (.mulDiv op w (.reg r)) (x.1.den ρ) := by
+  unfold divide at h
+  split at h
+  · cases h
+  · next hr =>
+    obtain ⟨lo, hi, fl, hev, e⟩ := divideVals_spec h hn
+    rw [e]; exact .mulDivExact hr ha hd hb hev
+
+/-- Whether the rules have a form for a typed value held at a place of this
+kind, reached by this operand. -/
+def holdable (κ : KindS) (m : Mem) : Bool :=
+  match κ, m with
+  | .owned _ _, _ => false
+  | _, .sib (some .rsp) (some _) _ => false
+  | _, _ => true
+
+theorem holdable_spec {ρ : Env} {κ : KindS} {m : Mem} (h : holdable κ m = true) :
+    (∀ k a, κ.den ρ ≠ .owned k a) ∧ (∀ x d, m ≠ .sib (some .rsp) (some x) d) := by
+  unfold holdable at h
+  split at h
+  · cases h
+  · cases h
+  · next h₁ h₂ =>
+    refine ⟨fun k a e => ?_, fun x d e => h₂ x d e⟩
+    cases κ with
+    | owned k' a' => exact h₁ k' a' rfl
+    | ptr _ => cases e
+    | piece _ => cases e
+    | block _ => cases e
+
+/-- A divide by an exactly known value held in memory. -/
+def divideMem (next : BitVec 64) (Γ : CtxS) (op : MulDivOp) (w : Width) (m : Mem) :
+    Option (CtxS × List CondS) :=
+  match locate next Γ m, exactly (Γ.regs.get .rax), exactly (Γ.regs.get .rdx) with
+  | some (pl, cs), some a, some d =>
+    if holdable pl.kind m then
+      match pl.shape.look pl.off with
+      | some (some (.eq b)) => (divideVals Γ op w a d b).map fun x => (x.1, cs ++ x.2)
+      | _ => none
+    else none
+  | _, _, _ => none
+
+theorem divideMem_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
+    (hB : BlocksOk Ψ ρ Γ.blocks) {op : MulDivOp} {w : Width} {m : Mem} {x : CtxS × List CondS}
+    (h : divideMem next Γ op w m = some x) (hn : CondS.all ρ x.2) :
+    Straight Ψ next (Γ.den ρ) (.mulDiv op w (.mem m)) (x.1.den ρ) := by
+  unfold divideMem at h
+  split at h
+  · next pl cs a d hl ha hd =>
+    split at h
+    · next hh =>
+      split at h
+      · next b hτ =>
+        cases hv : divideVals Γ op w a d b with
+        | none => rw [hv] at h; cases h
+        | some y =>
+          rw [hv] at h; cases h
+          obtain ⟨h₁, h₂⟩ := CondS.all_append _ _ hn
+          obtain ⟨lo, hi, fl, hev, e⟩ := divideVals_spec hv h₂
+          obtain ⟨hκ, hm⟩ := holdable_spec (ρ := ρ) hh
+          have hloc := locate_spec hB (Ψ := Ψ) (next := next) hl h₁
+          rw [e]
+          exact .mulDivHeld (hloc.holds hκ hm (ShapeS.look_typed hτ))
+            (by rw [CtxS.den_regs, exactly_den ha]) (by rw [CtxS.den_regs, exactly_den hd]) hev
+      · cases h
     · cases h
   · cases h
 
@@ -2794,7 +2865,7 @@ def stepMulDiv (next : BitVec 64) (Γ : CtxS) (op : MulDivOp) (w : Width) (src :
     match op with
     | .mul => (reads next Γ w.bytes.toNat m).map fun cs => (afterMulS Γ, cs)
     | .imul => (reads next Γ w.bytes.toNat m).map fun cs => (afterMulS Γ, cs)
-    | _ => none
+    | op => divideMem next Γ op w m
 
 theorem stepMulDiv_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
     (hB : BlocksOk Ψ ρ Γ.blocks) {op : MulDivOp}
@@ -2831,7 +2902,7 @@ theorem stepMulDiv_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
       rw [den_afterMulS]; exact .mulRM (reads_sound hB hr hn)
     · obtain ⟨cs, hr, rfl⟩ := reads_map h
       rw [den_afterMulS]; exact .imulRM (reads_sound hB hr hn)
-    · cases h
+    · exact divideMem_sound hB h hn
 
 /-- The checker for `mov`. -/
 def stepMov (next : BitVec 64) (Γ : CtxS) (w : Width) (ops : Operands) :
