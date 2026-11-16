@@ -2734,6 +2734,10 @@ private def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
 
 initialize registerTraceClass `TypedAsm.fast
 
+/-- The context the checker's last step left, as it is written and as a
+term, with what the term's variables stand for. -/
+initialize symKept : IO.Ref (Option (Expr × Sym.CtxS × Sym.Atoms)) ← IO.mkRef none
+
 /-- What the checker is to be told of an instruction, with proofs of what
 that leaves to be shown: each is used where it proves what is asked. -/
 private structure HintPlan where
@@ -3210,10 +3214,23 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let inBlock := listed && (match instr.memOperand? with
       | some (.rip _) | some (.sib none _ _) => true
       | _ => false)
+    -- The context the last step left is the one this step starts from, as a
+    -- rule: its term is kept, with what its variables stand for, and is not
+    -- read again. It is used only if all it mentions is still in scope.
+    let kept? : Option (Sym.CtxS × Sym.Atoms) ← (do
+      let some (Γc, Sc, ac) ← symKept.get | return none
+      unless Γc == Γ do return none
+      let inScope (e : Expr) : Bool :=
+        !e.hasFVar || (e.find? fun x => x.isFVar && !lctx.contains x.fvarId!).isNone
+      unless (ac.val ++ ac.num ++ ac.ty ++ ac.shape ++ ac.flags ++ ac.stack ++ ac.owned).all inScope
+        && ac.tyNames.all (inScope ·.2) && ac.shapeNames.all (inScope ·.2) do return none
+      return some (Sc, ac))
     let ((S?, blocks?), atoms) ← (do
       let blocks? ← if inBlock then Sym.reifyBlocks Ψ'.appFn!.appArg! else pure none
-      let S? ← Sym.reifyCtx Γ
-      return (S?, blocks?) : Sym.ReifyM _).run {}
+      let S? ← match kept? with
+        | some (Sc, _) => pure (some Sc)
+        | none => Sym.reifyCtx Γ
+      return (S?, blocks?) : Sym.ReifyM _).run ((kept?.map (·.2)).getD {})
     let S? := S?.map fun S => { S with blocks := (blocks?.map (·.1)).getD [] }
     if let some S := S? then
       if let some (S', conds) := Sym.step (BitVec.ofNat 64 (n + len.toNat)) S instr then
@@ -3230,9 +3247,10 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
             hB := mkAppN (mkConst ``Sym.BlocksOk.cons)
               #[Ψ, ρ, toExpr base, toExpr Sb, toExpr w, toExpr restL, lay, h₁, h₂, h₃, hB]
             restL := (base, Sb, w) :: restL
-        unless Kernel.isDefEqGuarded env lctx Γ (mkApp2 (mkConst ``Sym.CtxS.den) ρ SE) do
-          trace[TypedAsm.fast] "the term read from the context does not mean it"
-          return none
+        if kept?.isNone then
+          unless Kernel.isDefEqGuarded env lctx Γ (mkApp2 (mkConst ``Sym.CtxS.den) ρ SE) do
+            trace[TypedAsm.fast] "the term read from the context does not mean it"
+            return none
         let xE := toExpr (S', conds)
         let stepE := mkApp3 (mkConst ``Sym.step) next SE iE
         let hstep ← mkExpectedTypeHint (← mkEqRefl stepE) (← mkEq stepE (← mkAppM ``Option.some #[xE]))
@@ -3251,6 +3269,7 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           (mkAppN ty.getAppFn #[Φ, fetch, sys, Ψ, nextLit, Γ']) (← goal.getTag)
         goal.assign (mkAppN (mkConst ``BlockOk.step)
           #[Φ, fetch, sys, Ψ, a, Γ, Γ', iE, lenE, hf, hs, rest])
+        symKept.set (some (Γ', { S' with blocks := [] }, atoms))
         return some rest.mvarId!
     return none
   let run (plan? : Option HintPlan) : TacticM (Option MVarId) := do
