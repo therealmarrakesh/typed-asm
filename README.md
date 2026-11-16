@@ -15,6 +15,13 @@ What exists and is checked today:
 - A type system for that model, with its soundness proof. A typed program
   never gets stuck and never faults, on the machine that decodes its
   instructions from memory.
+- A checker for the type system: a function, proved sound against the
+  typing rules, that works out the context after each instruction. It works
+  on contexts written as data, and finds for itself where an operand is: the
+  block a pointer points into, the owned block an address is in, the element
+  of an array, the piece of the stack, a block of the program. What it
+  cannot settle by looking, a bound on an index say, it returns to be
+  shown. A run of instructions is checked in one evaluation.
 - Memory and the stack are typed to the byte. Stack space can be lent to a
   called function, and arrays can be indexed by any value within bounds,
   through a pointer or at a fixed address.
@@ -36,6 +43,7 @@ What exists and is checked today:
   fault each bad access raises, and 45 whole-program runs compared with the
   same programs run as Linux executables. The memory each program starts
   with in the model is checked to be its executable file, byte for byte.
+  What the checker answers is tested case by case, accepted and refused.
 
 The example programs are written as Lean constructor terms. What an author
 writes beyond the program is the context that holds at each label that is
