@@ -2702,6 +2702,7 @@ private inductive WalkMove
   | name (k : Nat) (r : Reg)
   | opened
   | split (at' : Nat) (i : Instr) (len : BitVec 64)
+  | jump (at' : Nat) (i : Instr) (len : BitVec 64)
   | step (at' : Nat) (i : Instr) (len : BitVec 64) (arrived : Sym.CtxS) (cs : List Sym.CondS)
 
 /-- Arithmetic left to be shown by the steps of a run, not yet settled. -/
@@ -2880,7 +2881,8 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
   let tbl := regs.appArg!.getAppArgs
   let some instrs ← instrsOf fetch | return none
   let some (instr, len) := instrs[n]? | return none
-  if instr.endsBlock then return none
+  -- a jump may be one the walk follows; nothing else that ends a block is
+  if instr.endsBlock && !(instr matches .jmp (.rel _)) then return none
   let typeOf (r : Reg) : MetaM Expr := whnf tbl[1 + regIdx r]!
   let iE := toExpr instr
   let lenE := toExpr len
@@ -2955,13 +2957,26 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       -- the context each instruction of the walk was come to with
       let mut arrived := S₀
       let mut steps := 0
+      -- whether the walk has gone past the instruction it started at
+      let mut advanced := false
       let mut k := (← get).val.size
       let limit := if stops?.isSome then 4096 else 1
       for _ in [0:8192] do
         if steps ≥ limit then break
         let some (i, len') := instrs[at']? | break
         let next' := at' + len'.toNat
-        if steps > 0 && waits cur i at' next' then break
+        -- a forward jump to an address with no context of its own is
+        -- followed: what it jumps to is typed in the context it is made in
+        if let .jmp (.rel d) := i then
+          let t := (BitVec.ofNat 64 at' + len' + d.signExtend 64).toNat
+          let some stops := stops? | break
+          if advanced && stops.contains at' then break
+          unless at' < t && !stops.contains t do break
+          moves := moves.push (.jump at' i len')
+          at' := t
+          advanced := true
+          continue
+        if advanced && waits cur i at' next' then break
         -- a value that may be null, or what a system call handed back, is
         -- about to be tested: the block goes on once for each thing it may be
         if let some (_, _, isErr) := Sym.toSplit cur i then
@@ -2998,6 +3013,7 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           Sym.step (BitVec.ofNat 64 at' + len') { cur with blocks := P.blocks } i | break
         moves := moves.push (.step at' i len' arrived cs)
         steps := steps + 1
+        advanced := true
         cur := Sym.castData P S' i
         arrived := cur
         at' := next'
@@ -3006,12 +3022,14 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         match moves.back? with
         | some (.step ..) => break
         | some (.split ..) => break
+        | some (.jump ..) => break
         | some _ => moves := moves.pop
         | none => break
       if moves.isEmpty then return (none, prog?)
       return (some (S₀, moves, at', arrived), prog?) : Sym.ReifyM _).run ((kept?.map (·.2)).getD {})
     let some (S₀, moves, atEnd, arrived) := result | return none
-    let P : Sym.Prog := (prog?.map (·.1)).getD {}
+    let P : Sym.Prog := { (prog?.map (·.1)).getD {} with
+      labels := ((stops?.getD #[]).map (BitVec.ofNat 64)).toList }
     let S := { S₀ with blocks := [] }
     -- the context at the end: the walk again, as the checker makes it
     let k₀ := atoms.val.size
@@ -3019,6 +3037,7 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       moves.toList.filterMap fun
         | .step at' i len' _ _ => some (BitVec.ofNat 64 at', i, len')
         | .split at' i len' => some (BitVec.ofNat 64 at', i, len')
+        | .jump at' i len' => some (BitVec.ofNat 64 at', i, len')
         | _ => none
     let W := Sym.walk P code moves.size k₀ (BitVec.ofNat 64 n) S
     let rec final : Sym.Walk → Option Sym.CtxS

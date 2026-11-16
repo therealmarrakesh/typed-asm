@@ -4046,6 +4046,9 @@ structure Prog where
   blocks : List (BitVec 64 × ShapeS × Bool) := []
   tags : List (BitVec 64 × Nat) := []
   kinds : List (Nat × ShapeS) := []
+  /-- The addresses that have contexts of their own: a jump to one of them
+  is not followed by the walk. -/
+  labels : List (BitVec 64) := []
 
 /-- That the blocks said to be of a kind are. -/
 def TagsOk (Ψ : MemTy) : List (BitVec 64 × Nat) → Prop
@@ -4243,6 +4246,27 @@ theorem toByte_spec {Γ : CtxS} {i : Instr} {d r : Reg} (h : toByte Γ i = some 
     · cases h
   · cases h
 
+/-- Where a jump goes that the walk follows: forward, to an address with no
+context of its own. What is jumped to is then typed in the context the jump
+is made in. -/
+def jumpTo (P : Prog) (a len : BitVec 64) : Instr → Option (BitVec 64)
+  | .jmp (.rel d) =>
+    if a.toNat < (a + len + d.signExtend 64).toNat ∧
+        P.labels.contains (a + len + d.signExtend 64) = false then
+      some (a + len + d.signExtend 64)
+    else none
+  | _ => none
+
+theorem jumpTo_spec {P : Prog} {a len t : BitVec 64} {i : Instr} (h : jumpTo P a len i = some t) :
+    ∃ d, i = .jmp (.rel d) ∧ t = a + len + d.signExtend 64 := by
+  unfold jumpTo at h
+  split at h
+  · next d =>
+    split at h
+    · cases h; exact ⟨d, rfl, rfl⟩
+    · cases h
+  · cases h
+
 /-- The checker walked from an address for at most so many moves, `k` being
 a variable no term yet mentions. Before an instruction, a pointer to a block
 of a kind that it reaches through is opened, and a value it needs to speak
@@ -4254,6 +4278,9 @@ def walk (P : Prog) (code : List (BitVec 64 × Instr × BitVec 64)) :
     match lookup code a with
     | none => .stop a Γ
     | some (i, len) =>
+      match jumpTo P a len i with
+      | some t => walk P code fuel k t Γ
+      | none =>
       match toSplit Γ i with
       | some (r, τ, false) =>
         .both (.stop a (Γ.setReg r (.eq (.lit 0)))) (.stop a (Γ.setReg r τ))
@@ -4300,6 +4327,11 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
     split at h
     · exact h
     · next i len hl =>
+      split at h
+      · next t hj =>
+        obtain ⟨d, rfl, rfl⟩ := jumpTo_spec hj
+        exact .jump (Agrees.lookup code hcode hl) (walk_sound hcode fuel k _ Γ ρ hP h)
+      next =>
       split at h
       · next r τ hsp =>
         obtain ⟨hr, hΓ⟩ := toSplit_spec hsp
