@@ -17,7 +17,8 @@ whoever called it, it has no answer and the rules are used directly.
 
 It covers the forms that work on registers alone, and those that work on
 the stack: `push` and `pop`, making and giving back room, and loading and
-storing a typed value at a place on it. For an instruction with
+storing at a place on it; and loads and stores through a pointer into a
+block, of a typed value or of plain bytes. For an instruction with
 several rules it takes the one that keeps most, in the order the rules are
 tried by hand: an exactly known result where the operands are exactly
 known, and otherwise a number.
@@ -162,7 +163,7 @@ def loadStack (Γ : Ctx) (r : Reg) (disp : BitVec 32) : Option Step :=
       | some (_, S, i) =>
         match S.valAt i with
         | some τ => some ⟨Γ.setReg r τ, True⟩
-        | none => none
+        | none => if i + 8 ≤ S.size then some ⟨Γ.setReg r .int, True⟩ else none
 
 /-- Storing a register's eight bytes at a place on the stack: they take its type. -/
 def storeStack (Γ : Ctx) (s : Reg) (disp : BitVec 32) : Option Step :=
@@ -197,6 +198,83 @@ def freeFrame (Γ : Ctx) (imm : BitVec 32) : Option Step :=
       some ⟨{ Γ.moveSp (BitVec.ofNat 64 k) with
         stack := rest, room := Γ.room + k, flags := Flags.Known }, True⟩
 
+/-- Whether `n` bytes may be read from an operand: a register, a place on
+the stack inside one piece, or a place in the block a pointer points into. -/
+def readOk (Γ : Ctx) (n : Nat) : RM → Bool
+  | .reg _ => true
+  | .mem (.sib (some b) none disp) =>
+    match dispOf disp with
+    | none => false
+    | some d =>
+      if b = .rsp then
+        match pieceAt Γ.stack 0 d with
+        | some (_, S, i) => decide (i + n ≤ S.size)
+        | none => false
+      else
+        match Γ.regs b with
+        | .ptr S _ off => decide (off + d + n ≤ S.size)
+        | _ => false
+  | _ => false
+
+/-- The context after `n` plain bytes are stored to an operand, if they may
+be: a register becomes a number, a piece of the stack forgets what typed
+value reached into those bytes, and a block must have plain bytes there. -/
+def writeInt (Γ : Ctx) (n : Nat) : RM → Option Ctx
+  | .reg d => if d = .rsp then none else some (Γ.setReg d .int)
+  | .mem (.sib (some b) none disp) =>
+    match dispOf disp with
+    | none => none
+    | some d =>
+      if b = .rsp then
+        match pieceAt Γ.stack 0 d with
+        | some (k, S, i) =>
+          if i + n ≤ S.size then some { Γ with stack := Γ.stack.set k (S.clear i n) } else none
+        | none => none
+      else
+        match Γ.regs b with
+        | .ptr S true off =>
+          if off + d + n ≤ S.size ∧ S.free (off + d) n = true then some Γ else none
+        | _ => none
+  | _ => none
+
+/-- Loading eight bytes through a pointer: the typed value there, or a
+number where the bytes are plain. -/
+def loadField (Γ : Ctx) (d b : Reg) (disp : BitVec 32) : Option Step :=
+  if d = .rsp ∨ b = .rsp then none
+  else match Γ.regs b with
+    | .ptr S _ off =>
+      match dispOf disp with
+      | none => none
+      | some k =>
+        match S.valAt (off + k) with
+        | some τ => some ⟨Γ.setReg d τ, True⟩
+        | none => if off + k + 8 ≤ S.size then some ⟨Γ.setReg d .int, True⟩ else none
+    | _ => none
+
+/-- Storing eight bytes through a writable pointer: over a typed value, a
+value of its type, which is left to be shown; over plain bytes, anything. -/
+def storeField (Γ : Ctx) (b s : Reg) (disp : BitVec 32) : Option Step :=
+  if b = .rsp ∨ s = .rsp then none
+  else match Γ.regs b with
+    | .ptr S true off =>
+      match dispOf disp with
+      | none => none
+      | some k =>
+        match S.valAt (off + k) with
+        | some τ => if S.sole (off + k) = true then some ⟨Γ, Sub (Γ.regs s) τ⟩ else none
+        | none =>
+          if off + k + 8 ≤ S.size ∧ S.free (off + k) 8 = true then some ⟨Γ, True⟩ else none
+    | _ => none
+
+/-- A load of a number from memory. -/
+def loadInt (Γ : Ctx) (w : Width) (d : Reg) (m : Mem) : Option Step :=
+  if d = .rsp then none
+  else if readOk Γ w.bytes.toNat (.mem m) then some ⟨Γ.setReg d .int, True⟩ else none
+
+/-- A store of plain bytes. -/
+def storeInt (Γ : Ctx) (n : Nat) (dst : RM) : Option Step :=
+  (writeInt Γ n dst).map fun Γ' => ⟨Γ', True⟩
+
 /-- **The checker for one instruction that goes on to the next.** `next` is
 the address of the instruction after it. -/
 def straight (next : BitVec 64) (Γ : Ctx) : Instr → Option Step
@@ -222,6 +300,13 @@ def straight (next : BitVec 64) (Γ : Ctx) : Instr → Option Step
   | .alu op w (.rm_i (.reg d) imm) => aluRI Γ op w d imm
   | .mov .w64 (.r_m r (.sib (some .rsp) none disp)) => loadStack Γ r disp
   | .mov .w64 (.rm_r (.mem (.sib (some .rsp) none disp)) s) => storeStack Γ s disp
+  | .mov .w64 (.r_m d (.sib (some b) none disp)) => loadField Γ d b disp
+  | .mov .w64 (.rm_r (.mem (.sib (some b) none disp)) s) => storeField Γ b s disp
+  | .mov .w32 (.r_m d m) => loadInt Γ .w32 d m
+  | .mov .w32 (.rm_r (.mem m) _) => storeInt Γ 4 (.mem m)
+  | .mov w (.rm_i (.mem m) _) => storeInt Γ w.bytes.toNat (.mem m)
+  | .store8 m _ => storeInt Γ 1 (.mem m)
+  | .store16 m _ => storeInt Γ 2 (.mem m)
   | .push r => push Γ r
   | .pop r => pop Γ r
   | .test .w64 (.reg r) (.reg r') => testRR Γ r r'
@@ -338,7 +423,9 @@ theorem loadStack_sound {r : Reg} {disp : BitVec 32} {st : Step}
         obtain ⟨j, hk, hj, hoff, _⟩ := pieceAt_spec _ _ _ hp
         split at h
         · next τ hv => cases h; exact .loadStack hr (dispOf_spec hd) ⟨hj, hoff⟩ hv
-        · cases h
+        · split at h
+          · next hsz => cases h; exact .loadInt hr (.slot (dispOf_spec hd) ⟨hj, hoff⟩ hsz)
+          · cases h
 
 theorem storeStack_sound {s : Reg} {disp : BitVec 32} {st : Step}
     (h : storeStack Γ s disp = some st) :
@@ -385,6 +472,127 @@ theorem freeFrame_sound {imm : BitVec 32} {st : Step} (h : freeFrame Γ imm = so
       obtain ⟨top, hst, hlen⟩ := stackDrop_eq hd
       exact .freeFrame (dispOf_spec hk) hst hlen
 
+theorem readOk_sound {n : Nat} {rm : RM} (h : readOk Γ n rm = true) :
+    ReadOk Ψ next Γ n rm := by
+  unfold readOk at h
+  split at h
+  · exact .reg _
+  · next b disp =>
+    split at h
+    · cases h
+    · next d hd =>
+      split at h
+      · next hb =>
+        subst hb
+        split at h
+        · next k S i hp =>
+          obtain ⟨j, _, hj, hoff, _⟩ := pieceAt_spec _ _ _ hp
+          exact .slot (dispOf_spec hd) ⟨hj, hoff⟩ (of_decide_eq_true h)
+        · cases h
+      · next hb =>
+        split at h
+        · next S w off hΓ => exact .field hb hΓ (dispOf_spec hd) (of_decide_eq_true h)
+        · cases h
+  · cases h
+
+theorem writeInt_sound {n : Nat} {rm : RM} {Γ' : Ctx} (h : writeInt Γ n rm = some Γ') :
+    WriteIntOk Ψ next Γ n rm Γ' := by
+  unfold writeInt at h
+  split at h
+  · split at h
+    · cases h
+    · next hd => cases h; exact .reg hd
+  · next b disp =>
+    split at h
+    · cases h
+    · next d hd =>
+      split at h
+      · next hb =>
+        subst hb
+        split at h
+        · next k S i hp =>
+          obtain ⟨j, hk, hj, hoff, _⟩ := pieceAt_spec _ _ _ hp
+          have hkj : k = j := by omega
+          subst hkj
+          split at h
+          · next hsz => cases h; exact .slot (dispOf_spec hd) ⟨hj, hoff⟩ hsz
+          · cases h
+        · cases h
+      · next hb =>
+        split at h
+        · next S off hΓ =>
+          split at h
+          · next hc => cases h; exact .field hb hΓ (dispOf_spec hd) hc.1 hc.2
+          · cases h
+        · cases h
+  · cases h
+
+theorem loadField_sound {d b : Reg} {disp : BitVec 32} {st : Step}
+    (h : loadField Γ d b disp = some st) :
+    Straight Ψ next Γ (.mov .w64 (.r_m d (.sib (some b) none disp))) st.ctx := by
+  unfold loadField at h
+  split at h
+  · cases h
+  · next hc =>
+    have hd : d ≠ .rsp := fun e => hc (.inl e)
+    have hb : b ≠ .rsp := fun e => hc (.inr e)
+    split at h
+    · next S w off hΓ =>
+      split at h
+      · cases h
+      · next k hk =>
+        split at h
+        · next τ hv => cases h; exact .loadField hd hb hΓ (dispOf_spec hk) hv
+        · split at h
+          · next hsz =>
+            cases h
+            exact .loadInt hd (.field hb hΓ (dispOf_spec hk) hsz)
+          · cases h
+    · cases h
+
+theorem storeField_sound {b s : Reg} {disp : BitVec 32} {st : Step}
+    (h : storeField Γ b s disp = some st) (hn : st.needs) :
+    Straight Ψ next Γ (.mov .w64 (.rm_r (.mem (.sib (some b) none disp)) s)) st.ctx := by
+  unfold storeField at h
+  split at h
+  · cases h
+  · next hc =>
+    have hb : b ≠ .rsp := fun e => hc (.inl e)
+    have hs : s ≠ .rsp := fun e => hc (.inr e)
+    split at h
+    · next S off hΓ =>
+      split at h
+      · cases h
+      · next k hk =>
+        split at h
+        · next τ hv =>
+          split at h
+          · next hso => cases h; exact .storeField hb hs hΓ (dispOf_spec hk) hv hso hn
+          · cases h
+        · split at h
+          · next hc' =>
+            cases h
+            exact .storeInt (.field hb hΓ (dispOf_spec hk) hc'.1 hc'.2)
+          · cases h
+    · cases h
+
+theorem loadInt_sound {w : Width} {d : Reg} {m : Mem} {st : Step}
+    (h : loadInt Γ w d m = some st) : Straight Ψ next Γ (.mov w (.r_m d m)) st.ctx := by
+  unfold loadInt at h
+  split at h
+  · cases h
+  · next hd =>
+    split at h
+    · next hr => cases h; exact .loadInt hd (readOk_sound hr)
+    · cases h
+
+theorem storeInt_spec {n : Nat} {dst : RM} {st : Step} (h : storeInt Γ n dst = some st) :
+    WriteIntOk Ψ next Γ n dst st.ctx := by
+  unfold storeInt at h
+  cases hw : writeInt Γ n dst with
+  | none => rw [hw] at h; cases h
+  | some Γ' => rw [hw] at h; cases h; exact writeInt_sound hw
+
 /-- **What the checker works out is a typing step.** -/
 theorem straight_sound {i : Instr} {st : Step} (h : straight next Γ i = some st)
     (hn : st.needs) : Straight Ψ next Γ i st.ctx := by
@@ -417,6 +625,13 @@ theorem straight_sound {i : Instr} {st : Step} (h : straight next Γ i = some st
   · exact aluRI_sound h hn
   · exact loadStack_sound h
   · exact storeStack_sound h
+  · exact loadField_sound h
+  · exact storeField_sound h hn
+  · exact loadInt_sound h
+  · exact .storeInt (storeInt_spec h)
+  · exact .storeImm (storeInt_spec h)
+  · exact .store8RM (storeInt_spec h)
+  · exact .store16RM (storeInt_spec h)
   · exact push_sound h hn
   · exact pop_sound h
   · exact testRR_sound h
