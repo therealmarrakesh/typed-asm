@@ -44,15 +44,12 @@ inductive At : Label → Ctx → Prop
         else if r = .rdi then arr n else if r = .rdx then .eq v else .int,
       .slot (.code ret) :: rest, room, Flags.Any, ret.owned, ret.above⟩
 
-/-- The code typing: those contexts, at the addresses of their labels. -/
-def Φ : CodeTy := .ofLabels code base At
-
 def arrayLayout : Layout := ⟨.raw 40, false, none, 0⟩
 
 /-- One memory block: the array. -/
 def blocks : List (BitVec 64 × Layout) := [(dataBase, arrayLayout)]
 
-def Ψ : MemTy := .ofList blocks []
+asm_typing At blocks blocks room 1
 
 /-! ## The program is well typed -/
 
@@ -76,39 +73,9 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_block
   | inbounds n v saved ret rest room hK hv => ty_block
 
-/-! ## The memory typing and the entry contract -/
-
-theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
-
-/-- What the program needs of the state it starts in: its bytes in
-executable memory, the array readable, and one writable stack slot below `rsp` that
-does not overlap it. This is the contract with whatever loads the program;
-for the ELF file, with the Linux kernel. -/
-abbrev Entry : State → Prop := TypedAsm.Entry entry parts blocks 1 0
-
 /-! ## Safety -/
 
-/-- **From any state meeting the entry contract, the program is safe on the
-machine that fetches instructions by decoding memory.** It never gets stuck,
-never faults: no page fault, no invalid opcode and no divide error. In particular the
-indexed load never reads outside the array, whatever index `get` is given. -/
-theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  h.safeMem blocksOk memOk At.start (Entry.plain (by simp [blocks, arrayLayout]))
-
-/-- The starting state used by the simulator meets the entry contract. -/
-theorem start_entry : Entry start := by ty_loaded
-
-/-- The simulator's run is safe, with instructions decoded from memory. -/
-theorem safeMem : SafeMem linux start :=
-  safeMem_of_entry start_entry
-
-/-- It is also safe on the table machine, which is what the type system reasons about. -/
-theorem safe : Safe fetch linux start :=
-  start_entry.safe blocksOk memOk At.start (Entry.plain (by simp [blocks, arrayLayout]))
+asm_safety At.start
 
 end Index
 
--- The proof rests on Lean's three standard axioms and nothing else.
-/-- info: 'Index.safeMem' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms Index.safeMem

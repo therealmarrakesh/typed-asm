@@ -54,13 +54,10 @@ inductive At : Label → Ctx → Prop
   | fill (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     (fillSig p).CallerOk saved ret rest room → At .fill ((fillSig p).entry saved ret rest room)
 
-/-- The code typing: those contexts, at the addresses of their labels. -/
-def Φ : CodeTy := .ofLabels code base At
-
 /-- No memory blocks. -/
 def blocks : List (BitVec 64 × Layout) := []
 
-def Ψ : MemTy := .ofList blocks []
+asm_typing At blocks blocks room 4
 
 /-! ## The program is well typed -/
 
@@ -87,32 +84,9 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_block
   | fill p saved ret rest room hK => ty_block
 
-/-! ## The memory typing and the entry contract -/
-
-theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
-
-/-- What the program needs of the state it starts in: its bytes in
-executable memory and four writable stack slots below `rsp`. -/
-abbrev Entry : State → Prop := TypedAsm.Entry entry parts blocks 4 0
-
 /-! ## Safety -/
 
-/-- **From any state meeting the entry contract, the program is safe on the
-machine that fetches instructions by decoding memory.** It never gets stuck
-and never faults. -/
-theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  h.safeMem blocksOk memOk At.start (Entry.plain (by simp [blocks]))
-
-/-- The starting state used by the simulator meets the entry contract. -/
-theorem start_entry : Entry start := by ty_loaded
-
-/-- The simulator's run is safe. -/
-theorem safeMem : SafeMem linux start :=
-  safeMem_of_entry start_entry
+asm_safety At.start
 
 end Lend
 
--- The proof rests on Lean's three standard axioms and nothing else.
-/-- info: 'Lend.safeMem' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms Lend.safeMem

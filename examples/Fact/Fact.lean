@@ -45,13 +45,10 @@ inductive At : Label → Ctx → Prop
     At .afterAgain ⟨fun r => if calleeSaved r then saved r else .int,
       .slot (.eq (num n)) :: .slot (.code ret) :: rest, m + 8, Flags.Any, ret.owned, ret.above⟩
 
-/-- The code typing: those contexts, at the addresses of their labels. -/
-def Φ : CodeTy := .ofLabels code base At
-
 /-- No memory blocks. -/
 def blocks : List (BitVec 64 × Layout) := []
 
-def Ψ : MemTy := .ofList blocks []
+asm_typing At blocks blocks room 11
 
 /-! ## Arithmetic facts the recursion relies on -/
 
@@ -88,33 +85,9 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     exact Sub.of_eq (decr hn)
   | afterAgain n saved ret rest m hK => ty_block
 
-/-! ## The memory typing and the entry contract -/
-
-theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
-
-/-- What the program needs of the state it starts in: its bytes in
-executable memory and eleven writable stack slots below `rsp`. -/
-abbrev Entry : State → Prop := TypedAsm.Entry entry parts blocks 11 0
-
 /-! ## Safety -/
 
-/-- **From any state meeting the entry contract, the program is safe on the
-machine that fetches instructions by decoding memory.** It never gets stuck
-and never faults: in particular the recursion never runs past the stack it
-was given. -/
-theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  h.safeMem blocksOk memOk At.start (Entry.plain (by simp [blocks]))
-
-/-- The starting state used by the simulator meets the entry contract. -/
-theorem start_entry : Entry start := by ty_loaded
-
-/-- The simulator's run is safe, with instructions decoded from memory. -/
-theorem safeMem : SafeMem linux start :=
-  safeMem_of_entry start_entry
+asm_safety At.start
 
 end Fact
 
--- The proof rests on Lean's three standard axioms and nothing else.
-/-- info: 'Fact.safeMem' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms Fact.safeMem

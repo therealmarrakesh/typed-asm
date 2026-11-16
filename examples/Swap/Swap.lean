@@ -37,15 +37,12 @@ inductive At : Label → Ctx → Prop
   | swap (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     swapSig.CallerOk saved ret rest room → At .swap (swapSig.entry saved ret rest room)
 
-/-- The code typing: those contexts, at the addresses of their labels. -/
-def Φ : CodeTy := .ofLabels code base At
-
 def recordLayout : Layout := ⟨.raw 16, true, none, 0⟩
 
 /-- One memory block: the record. -/
 def blocks : List (BitVec 64 × Layout) := [(dataBase, recordLayout)]
 
-def Ψ : MemTy := .ofList blocks []
+asm_typing At blocks blocks room 2
 
 /-! ## The program is well typed -/
 
@@ -65,38 +62,9 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   | afterSecond => ty_block
   | swap saved ret rest room hK => ty_block
 
-/-! ## The memory typing and the entry contract -/
-
-theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
-
-/-- What the program needs of the state it starts in: its bytes in
-executable memory, the record readable and writable, and two writable stack slots below `rsp` that
-do not overlap it. This is the contract with whatever loads the program;
-for the ELF file, with the Linux kernel. -/
-abbrev Entry : State → Prop := TypedAsm.Entry entry parts blocks 2 0
-
 /-! ## Safety -/
 
-/-- **From any state meeting the entry contract, the program is safe on the
-machine that fetches instructions by decoding memory.** It never gets stuck,
-never faults: no page fault, no invalid opcode and no divide error. -/
-theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  h.safeMem blocksOk memOk At.start (Entry.plain (by simp [blocks, recordLayout]))
-
-/-- The starting state used by the simulator meets the entry contract. -/
-theorem start_entry : Entry start := by ty_loaded
-
-/-- The simulator's run is safe, with instructions decoded from memory. -/
-theorem safeMem : SafeMem linux start :=
-  safeMem_of_entry start_entry
-
-/-- It is also safe on the table machine, which is what the type system reasons about. -/
-theorem safe : Safe fetch linux start :=
-  start_entry.safe blocksOk memOk At.start (Entry.plain (by simp [blocks, recordLayout]))
+asm_safety At.start
 
 end Swap
 
--- The proof rests on Lean's three standard axioms and nothing else.
-/-- info: 'Swap.safeMem' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms Swap.safeMem

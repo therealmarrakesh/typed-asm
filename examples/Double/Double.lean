@@ -52,13 +52,10 @@ inductive At : Label → Ctx → Prop
   | done (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     (doubleSig p).CallerOk saved ret rest room → At .done (inside p saved ret rest room)
 
-/-- The code typing: those contexts, at the addresses of their labels. -/
-def Φ : CodeTy := .ofLabels code base At
-
 /-- No memory blocks: the page is the program's own. -/
 def blocks : List (BitVec 64 × Layout) := []
 
-def Ψ : MemTy := .ofList blocks []
+asm_typing At blocks blocks room 1
 
 /-! ## The program is well typed -/
 
@@ -90,37 +87,9 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_block
   | done p saved ret rest room hK => ty_block
 
-/-! ## The memory typing and the entry contract -/
-
-theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
-
-/-- What the program needs of the state it starts in: its bytes in
-executable memory and one writable stack slot below `rsp`. Nothing is asked
-of the input, or of how the request for memory is answered. -/
-abbrev Entry : State → Prop := TypedAsm.Entry entry parts blocks 1 0
-
 /-! ## Safety -/
 
-/-- **From any state meeting the entry contract, whatever it is given to
-read and wherever the kernel puts the page, the program is safe on the
-machine that fetches instructions by decoding memory.** It never gets stuck
-and never faults: in particular the function never reaches past the page it
-was handed. -/
-theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  h.safeMem blocksOk memOk At.start (Entry.plain (by simp [blocks]))
-
-/-- The starting state used by the simulator meets the entry contract. -/
-theorem start_entry : Entry start := by ty_loaded
-
-/-- The simulator's run is safe whatever input it is given and however its
-request for memory is answered. -/
-theorem safeMem (input : List Byte) (place : Nat → Option (BitVec 64)) :
-    SafeMem linux (startWith input place) :=
-  safeMem_of_entry (start_entry.withWorld _)
+asm_safety At.start
 
 end Double
 
--- The proof rests on Lean's three standard axioms and nothing else.
-/-- info: 'Double.safeMem' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms Double.safeMem

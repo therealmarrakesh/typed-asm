@@ -99,23 +99,12 @@ def code : List (Asm Label) := [
   .segment .ro,
   .label .newline, .bytes dataBytes]
 
-/-- Where the code is loaded. -/
-def base : BitVec 64 := Asm.base code
+-- Where the program is loaded, what it puts in memory, where it starts,
+-- all from the lines above.
+asm_program code start .start
 
 /-- Where the data is loaded: the byte that ends a line. -/
 def dataBase : BitVec 64 := Asm.addr code base .newline
-
-def fetch : Fetch := Asm.fetch base code
-
-/-- What the program puts in memory, line by line. -/
-def parts : List (Nat × Perm × List Byte) := Asm.parts base code
-
-/-- The address execution starts at. -/
-def entry : BitVec 64 := Asm.addr code base .start
-
--- Every instruction stands in an executable segment, and every jump, call and
--- reference to data reaches the label it names.
-#guard Asm.wellFormed code && Asm.offsetsFit base code
 
 /-- A starting state but for the stack and `rip`: the program in memory, and
 with it the data. -/

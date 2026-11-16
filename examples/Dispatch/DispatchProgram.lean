@@ -94,43 +94,20 @@ def code : List (Asm Label) := [
   .ins (.imul2 .w64 .rax (.reg .rdi)),
   .ins .ret]
 
-/-- Where the code is loaded. -/
-def base : BitVec 64 := Asm.base code
+-- Where the program is loaded, what it puts in memory, where it starts and the
+-- state it starts in, all from the lines above.
+-- The starting state but for `rip`: the program in memory, and with it the
+-- table, and one free stack slot below `rsp`.
+asm_program code start .start stack 1 named "dispatch"
 
 /-- Where the table is loaded. -/
 def dataBase : BitVec 64 := Asm.addr code base .table
 
-def fetch : Fetch := Asm.fetch base code
-
-/-- What the program puts in memory, line by line. -/
-def parts : List (Nat × Perm × List Byte) := Asm.parts base code
-
-/-- The address execution starts at. -/
-def entry : BitVec 64 := Asm.addr code base .start
-
--- Every instruction stands in an executable segment, and every jump, call and
--- reference to data reaches the label it names.
-#guard Asm.wellFormed code && Asm.offsetsFit base code
-
 /-- The table's bytes: the addresses of the two functions. -/
 def tableBytes : List Byte := Asm.dataAt base code .table 16
-
-/-- The starting state but for `rip`: the program in memory, and with it the
-table, and one free stack slot below `rsp`. -/
-def prepared : State :=
-  ((Asm.load State.init base code .start).setPerm 0x7ffffff8 8 .rw).setReg .rsp 0x80000000
-
-/-- A starting state: `prepared`, with `rip` at the entry. -/
-def start : State :=
-  { prepared with rip := entry }
 
 -- 5 squared, doubled, and doubled again.
 #guard exitsWith 100 (runMem linux 100 start)
 
 end Dispatch
 
-/-- The program, with what running it takes. -/
-def Dispatch.program : Runnable where
-  name := "dispatch"
-  elf := Asm.elf Dispatch.base Dispatch.code .start
-  start := Dispatch.start

@@ -140,35 +140,17 @@ def code : List (Asm Label) := [
   .segment .rw,
   .label .buffer, .space 144]
 
-/-- Where the code is loaded. -/
-def base : BitVec 64 := Asm.base code
+-- Where the program is loaded, what it puts in memory, where it starts and the
+-- state it starts in, all from the lines above.
+-- The starting state but for `rip`: the program in memory, and with it its two
+-- data segments in memory, the name readable and the buffer writable. The
+-- program uses no stack.
+asm_program code start .start stack 0 named "stat"
 
 /-- Where the buffer is. -/
 def bufferAt : BitVec 64 := Asm.addr code base .buffer
 
-def fetch : Fetch := Asm.fetch base code
-
-/-- What the program puts in memory, line by line. -/
-def parts : List (Nat × Perm × List Byte) := Asm.parts base code
-
-/-- The address execution starts at. -/
-def entry : BitVec 64 := Asm.addr code base .start
-
--- Every instruction stands in an executable segment, and every jump, call and
--- reference to data reaches the label it names.
-#guard Asm.wellFormed code && Asm.offsetsFit base code
-
 #guard name == bytesOf "input.txt"
-
-/-- The starting state but for `rip`: the program in memory, and with it its
-two data segments in memory, the name readable and the buffer writable. The
-program uses no stack. -/
-def prepared : State :=
-  (Asm.load State.init base code .start).setReg .rsp 0x80000000
-
-/-- A starting state: `prepared`, with `rip` at the entry. There are no files. -/
-def start : State :=
-  { prepared with rip := entry }
 
 /-- The starting state with the given files there. -/
 def startWith (files : List File) : State :=
@@ -193,8 +175,3 @@ def startWith (files : List File) : State :=
 
 end Stat
 
-/-- The program, with what running it takes. -/
-def Stat.program : Runnable where
-  name := "stat"
-  elf := Asm.elf Stat.base Stat.code .start
-  start := Stat.start

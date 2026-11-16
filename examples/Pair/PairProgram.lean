@@ -128,31 +128,12 @@ def code : List (Asm Label) := [
   .ins (.mov .w32 (.rm_i (.reg .rax) 231)),
   .ins .syscall]
 
-/-- Where the code is loaded. -/
-def base : BitVec 64 := Asm.base code
-
-def fetch : Fetch := Asm.fetch base code
-
-/-- What the program puts in memory, line by line. -/
-def parts : List (Nat × Perm × List Byte) := Asm.parts base code
-
-/-- The address execution starts at. -/
-def entry : BitVec 64 := Asm.addr code base .start
-
--- Every jump reaches the label it names, and so does the instruction that
--- takes the function's address.
-#guard Asm.offsetsFit base code
-
-/-- The starting state but for `rip`: the program in memory, and with it two
-free stack slots, for a return address and the page the function keeps while
-it asks for another. -/
-def prepared : State :=
-  ((Asm.load State.init base code .start).setPerm 0x7ffffff0 16 .rw).setReg .rsp 0x80000000
-
-/-- A starting state: `prepared`, with `rip` at the entry. Every request for
-memory is refused. -/
-def start : State :=
-  { prepared with rip := entry }
+-- Where the program is loaded, what it puts in memory, where it starts and the
+-- state it starts in, all from the lines above.
+-- The starting state but for `rip`: the program in memory, and with it two
+-- free stack slots, for a return address and the page the function keeps while
+-- it asks for another.
+asm_program code start .start stack 2 named "pair"
 
 /-- A page for each request for memory, one after another. -/
 def pages : Nat → Option (BitVec 64) :=
@@ -178,8 +159,3 @@ def startWith (place : Nat → Option (BitVec 64)) : State :=
 
 end Pair
 
-/-- The program, with what running it takes. -/
-def Pair.program : Runnable where
-  name := "pair"
-  elf := Asm.elf Pair.base Pair.code .start
-  start := Pair.start

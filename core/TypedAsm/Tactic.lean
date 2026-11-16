@@ -3655,4 +3655,115 @@ macro_rules
                case' st => ty_straight
                case' acc => ty_accept $h))
 
+/-! ## What every typing declares
+
+The contexts at the labels and the layouts of the data are a program's
+typing. The code typing, the memory typing, its well-formedness, the entry
+contract and the safety theorems follow from those, and are the same few
+declarations for every program. These commands make them. -/
+
+/-- Whether none of the blocks holds a typed value. -/
+def plainBlocks (bs : List (BitVec 64 × Layout)) : Bool :=
+  bs.all fun x => x.2.shape.vals.isEmpty
+
+theorem plain_of_check {bs : List (BitVec 64 × Layout)} (h : plainBlocks bs = true) :
+    ∀ x ∈ bs, x.2.shape.vals = [] := fun x hx =>
+  List.isEmpty_iff.mp (List.all_eq_true.mp h x hx)
+
+/-- `asm_typing At blocks bs room n`: for the program declared with
+`asm_program`, whose labels have the contexts `At`, whose memory blocks are
+`bs` and which needs `n` slots of stack, defines in the current namespace
+
+* `Φ`, the code typing: those contexts at the addresses of their labels;
+* `Ψ`, the memory typing: those blocks (with `kinds ks` after the blocks,
+  those declared kinds);
+* `memOk`, that the memory typing is well formed;
+* `Entry`, what the program needs of the state it starts in: its bytes in
+  memory, executable where they are to be executed, each block readable or
+  writable as its layout says, and `n` writable slots of stack.
+
+The proof that the program is well typed, `blocksOk : BlocksOk Φ fetch linux
+Ψ`, comes after this, and `asm_safety` after that. -/
+syntax "asm_typing " ident &" blocks " term:max (&" kinds " term:max)? &" room " term:max : command
+
+macro_rules
+  | `(asm_typing $ctxs blocks $bs $[kinds $ks?]? room $n) => do
+    let code := mkIdent `code
+    let base := mkIdent `base
+    let entry := mkIdent `entry
+    let parts := mkIdent `parts
+    let Φ := mkIdent `Φ
+    let Ψ := mkIdent `Ψ
+    let memOk := mkIdent `memOk
+    let Entry := mkIdent `Entry
+    let ks ← match ks? with
+      | some ks => pure ks
+      | none => `([])
+    return mkNullNode #[
+      ← `(/-- The code typing: the contexts allowed at each label, at the addresses of
+        the labels. -/
+        def $Φ : CodeTy := .ofLabels $code $base $ctxs),
+      ← `(/-- The memory typing: the program's blocks. -/
+        def $Ψ : MemTy := .ofList $bs $ks),
+      ← `(theorem $memOk : MemTy.WF $Ψ := MemTy.wf_of_check (by decide)),
+      ← `(/-- What the program needs of the state it starts in: its bytes in memory,
+        executable where they are to be executed, each block with its permissions, and
+        its stack. This is the contract with whatever loads the program; for the ELF file,
+        with the Linux kernel. -/
+        abbrev $Entry : State → Prop := TypedAsm.Entry $entry $parts $bs $n 0)]
+
+/-- `asm_safety At.start`: for a program declared with `asm_program` and
+`asm_typing` and proved well typed by `blocksOk`, whose entry label has the
+context `At.start`, proves in the current namespace
+
+* `safeMem_of_entry`: **from any state meeting the entry contract, the
+  program is safe** on the machine that fetches instructions by decoding
+  memory. It never gets stuck and never faults;
+* `start_entry`: the simulator's starting state meets the entry contract;
+* `safeMem`: the simulator's run is safe;
+* `safeMem_world`: and is whatever the outside world does: whatever there is
+  to read, whatever the kernel answers and wherever it puts memory;
+
+and checks that they rest on Lean's three standard axioms and nothing else.
+
+The blocks must hold no typed values to begin with. For blocks that do, say
+what shows their values are of their types with `values h` after the label,
+where `h` is a proof for every state meeting the contract. -/
+syntax "asm_safety " term:max (&" values " term:max)? : command
+
+open Lean Elab Command in
+elab_rules : command
+  | `(asm_safety $start $[values $v?]?) => do
+    let id (n : Name) := mkIdent n
+    let fields ← match v? with
+      | some v => `($v)
+      | none => `(Entry.plain (plain_of_check (by decide)))
+    elabCommand (← `(
+      /-- **From any state meeting the entry contract, the program is safe on the
+      machine that fetches instructions by decoding memory.** It never gets stuck and
+      never faults. -/
+      theorem $(id `safeMem_of_entry) {s : State} (h : $(id `Entry) s) : SafeMem linux s :=
+        h.safeMem $(id `blocksOk) $(id `memOk) $start $fields))
+    elabCommand (← `(
+      /-- The starting state used by the simulator meets the entry contract. -/
+      theorem $(id `start_entry) : $(id `Entry) $(id `start) := by ty_loaded))
+    elabCommand (← `(
+      /-- The simulator's run is safe, with instructions decoded from memory. -/
+      theorem $(id `safeMem) : SafeMem linux $(id `start) :=
+        $(id `safeMem_of_entry) $(id `start_entry)))
+    elabCommand (← `(
+      /-- It is safe whatever the outside world does: whatever there is to read,
+      whatever the kernel answers, and wherever it puts memory. -/
+      theorem $(id `safeMem_world) (w : World) :
+          SafeMem linux { $(id `start) with world := w } :=
+        $(id `safeMem_of_entry) (($(id `start_entry)).withWorld w)))
+    -- the proofs rest on Lean's three standard axioms and nothing else
+    let ns ← getCurrNamespace
+    for thm in [`safeMem_of_entry, `safeMem_world] do
+      let axs ← Lean.collectAxioms (ns ++ thm)
+      for a in axs do
+        unless [``propext, ``Classical.choice, ``Quot.sound].contains a do
+          throwError "`{ns ++ thm}` depends on the axiom `{a}`, which is not one of Lean's \
+            three standard axioms"
+
 end TypedAsm

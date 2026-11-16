@@ -77,29 +77,12 @@ def code : List (Asm Label) := [
   .label .pause,
   .ins .ret]
 
-/-- Where the code is loaded. -/
-def base : BitVec 64 := Asm.base code
-
-def fetch : Fetch := Asm.fetch base code
-
-/-- What the program puts in memory, line by line. -/
-def parts : List (Nat × Perm × List Byte) := Asm.parts base code
-
-/-- The address execution starts at. -/
-def entry : BitVec 64 := Asm.addr code base .start
-
--- Every jump and call reaches the label it names.
-#guard Asm.offsetsFit base code
-
-/-- The starting state but for `rip`: the program in memory, and with it three
-free stack slots below `rsp`, two for the buffer and one for the return
-address. -/
-def prepared : State :=
-  ((Asm.load State.init base code .start).setPerm 0x7fffffe8 24 .rw).setReg .rsp 0x80000000
-
-/-- A starting state: `prepared`, with `rip` at the entry. -/
-def start : State :=
-  { prepared with rip := entry }
+-- Where the program is loaded, what it puts in memory, where it starts and the
+-- state it starts in, all from the lines above.
+-- The starting state but for `rip`: the program in memory, and with it three
+-- free stack slots below `rsp`, two for the buffer and one for the return
+-- address.
+asm_program code start .start stack 3
 
 /-- The starting state with the given input waiting. -/
 def startWith (input : List ReadEvent) : State :=

@@ -146,33 +146,14 @@ def code : List (Asm Label) := [
   .segment .ro,
   .label .record, .bytes recordBytes]
 
-/-- Where the code is loaded. -/
-def base : BitVec 64 := Asm.base code
+-- Where the program is loaded, what it puts in memory, where it starts and the
+-- state it starts in, all from the lines above.
+-- The starting state but for `rip`: the program in memory, and with it the
+-- record, in read-only memory. The program uses no stack.
+asm_program code start .start stack 0 named "own"
 
 /-- Where the record is loaded. -/
 def dataBase : BitVec 64 := Asm.addr code base .record
-
-def fetch : Fetch := Asm.fetch base code
-
-/-- What the program puts in memory, line by line. -/
-def parts : List (Nat × Perm × List Byte) := Asm.parts base code
-
-/-- The address execution starts at. -/
-def entry : BitVec 64 := Asm.addr code base .start
-
--- Every instruction stands in an executable segment, and every jump, call and
--- reference to data reaches the label it names.
-#guard Asm.wellFormed code && Asm.offsetsFit base code
-
-/-- The starting state but for `rip`: the program in memory, and with it the
-record, in read-only memory. The program uses no stack. -/
-def prepared : State :=
-  (Asm.load State.init base code .start).setReg .rsp 0x80000000
-
-/-- A starting state: `prepared`, with `rip` at the entry. Every request for
-memory is refused. -/
-def start : State :=
-  { prepared with rip := entry }
 
 /-- A page for each request for memory, one after another. -/
 def pages : Nat → Option (BitVec 64) :=
@@ -208,8 +189,3 @@ def startWith (place : Nat → Option (BitVec 64)) : State :=
 
 end Own
 
-/-- The program, with what running it takes. -/
-def Own.program : Runnable where
-  name := "own"
-  elf := Asm.elf Own.base Own.code .start
-  start := Own.start

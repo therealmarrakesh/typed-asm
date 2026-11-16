@@ -44,15 +44,12 @@ inductive At : Label → Ctx → Prop
   | square (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
     unary.CallerOk saved ret rest room → At .square (unary.entry saved ret rest room)
 
-/-- The code typing: those contexts, at the addresses of their labels. -/
-def Φ : CodeTy := .ofLabels code base At
-
 def tableLayout : Layout := ⟨⟨16, [(0, unary.ty), (8, unary.ty)]⟩, false, none, 0⟩
 
 /-- One memory block: the table. -/
 def blocks : List (BitVec 64 × Layout) := [(dataBase, tableLayout)]
 
-def Ψ : MemTy := .ofList blocks []
+asm_typing At blocks blocks room 1
 
 /-! ## The program is well typed -/
 
@@ -83,12 +80,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   | square saved ret rest room hK => ty_block
 
 /-! ## The memory typing and the entry contract -/
-
-theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
-
-/-- What the program needs of the state it starts in: its bytes in
-executable memory, the table in readable memory, and one writable stack slot. -/
-abbrev Entry : State → Prop := TypedAsm.Entry entry parts blocks 1 0
 
 /-- The data has the types the blocks claim. The table's entries are
 function pointers because the data holds the addresses of two functions,

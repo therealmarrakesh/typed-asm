@@ -19,9 +19,6 @@ inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 0)
   | fail : At .fail (entryCtx 0)
 
-/-- The code typing: those contexts, at the addresses of their labels. -/
-def Φ : CodeTy := .ofLabels code base At
-
 /-- The buffer: 144 plain bytes, writable. That is the
 size of what `fstat` stores, the largest of the three things stored here. -/
 def bufferLayout : Layout := ⟨.raw 144, true, none, 0⟩
@@ -29,7 +26,7 @@ def bufferLayout : Layout := ⟨.raw 144, true, none, 0⟩
 /-- One memory block, the buffer. The file's name before it needs no type. -/
 def blocks : List (BitVec 64 × Layout) := [(bufferAt, bufferLayout)]
 
-def Ψ : MemTy := .ofList blocks []
+asm_typing At blocks blocks room 0
 
 /-! ## The program is well typed -/
 
@@ -51,34 +48,9 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_block
   | fail => ty_block
 
-/-! ## The memory typing and the entry contract -/
-
-theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
-
-/-- What the program needs of the state it starts in: its bytes in
-executable memory, and its buffer readable and writable. Nothing is asked of
-what its data holds, of the files there are, of the time, or of what the
-random bytes are. -/
-abbrev Entry : State → Prop := TypedAsm.Entry entry parts blocks 0 0
-
 /-! ## Safety -/
 
-/-- **From any state meeting the entry contract, whatever the outside world
-is like, the program is safe on the machine that fetches instructions by
-decoding memory.** It never gets stuck and never faults. -/
-theorem safeMem_of_entry {s : State} (h : Entry s) : SafeMem linux s :=
-  h.safeMem blocksOk memOk At.start (Entry.plain (by simp [blocks, bufferLayout]))
-
-/-- The starting state used by the simulator meets the entry contract. -/
-theorem start_entry : Entry start := by ty_loaded
-
-/-- The simulator's run is safe whatever files it is given. -/
-theorem safeMem (files : List File) : SafeMem linux (startWith files) :=
-  safeMem_of_entry (start_entry.withWorld _)
+asm_safety At.start
 
 end Stat
 
--- The proof rests on Lean's three standard axioms and nothing else.
-/-- info: 'Stat.safeMem' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms Stat.safeMem

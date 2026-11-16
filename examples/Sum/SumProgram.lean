@@ -76,32 +76,14 @@ def code : List (Asm Label) := [
   .align 8,
   .label .array, .bytes arrayBytes]
 
-/-- Where the code is loaded. -/
-def base : BitVec 64 := Asm.base code
+-- Where the program is loaded, what it puts in memory, where it starts and the
+-- state it starts in, all from the lines above.
+-- The starting state but for `rip`: the program in memory, and with it the
+-- array in read-only memory, and one free stack slot below `rsp`.
+asm_program code start .start stack 1 named "sum"
 
 /-- Where the array is loaded. -/
 def dataBase : BitVec 64 := Asm.addr code base .array
-
-def fetch : Fetch := Asm.fetch base code
-
-/-- What the program puts in memory, line by line. -/
-def parts : List (Nat × Perm × List Byte) := Asm.parts base code
-
-/-- The address execution starts at. -/
-def entry : BitVec 64 := Asm.addr code base .start
-
--- Every instruction stands in an executable segment, and every jump, call and
--- reference to data reaches the label it names.
-#guard Asm.wellFormed code && Asm.offsetsFit base code
-
-/-- The starting state but for `rip`: the program in memory, and with it the
-array in read-only memory, and one free stack slot below `rsp`. -/
-def prepared : State :=
-  ((Asm.load State.init base code .start).setPerm 0x7ffffff8 8 .rw).setReg .rsp 0x80000000
-
-/-- A starting state: `prepared`, with `rip` at the entry. -/
-def start : State :=
-  { prepared with rip := entry }
 
 -- The program exits with status 14 = 3 + 1 + 4 + 1 + 5, whether instructions
 -- come from the table or are decoded from memory.
@@ -110,8 +92,3 @@ def start : State :=
 
 end Sum
 
-/-- The program, with what running it takes. -/
-def Sum.program : Runnable where
-  name := "sum"
-  elf := Asm.elf Sum.base Sum.code .start
-  start := Sum.start

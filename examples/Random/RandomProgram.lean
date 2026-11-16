@@ -85,33 +85,14 @@ def code : List (Asm Label) := codeWith (.mov .w64 (.rm_r (.reg .rdx) .rax))
 /-- The same, but it writes 512 bytes whatever `getrandom` said. -/
 def careless : List (Asm Label) := codeWith (.mov .w32 (.rm_i (.reg .rdx) 512))
 
-/-- Where the code is loaded. -/
-def base : BitVec 64 := Asm.base code
+-- Where the program is loaded, what it puts in memory, where it starts and the
+-- state it starts in, all from the lines above.
+-- The starting state but for `rip`: the program in memory, and with it the
+-- buffer in writable memory. The program uses no stack.
+asm_program code start .start stack 0 named "random"
 
 /-- Where the buffer is loaded. -/
 def dataBase : BitVec 64 := Asm.addr code base .buffer
-
-def fetch : Fetch := Asm.fetch base code
-
-/-- What the program puts in memory, line by line. -/
-def parts : List (Nat × Perm × List Byte) := Asm.parts base code
-
-/-- The address execution starts at. -/
-def entry : BitVec 64 := Asm.addr code base .start
-
--- Every instruction stands in an executable segment, and every jump, call and
--- reference to data reaches the label it names.
-#guard Asm.wellFormed code && Asm.offsetsFit base code
-
-/-- The starting state but for `rip`: the program in memory, and with it the
-buffer in writable memory. The program uses no stack. -/
-def prepared : State :=
-  (Asm.load State.init base code .start).setReg .rsp 0x80000000
-
-/-- A starting state: `prepared`, with `rip` at the entry. The kernel
-delivers everything asked of it, and the bytes it supplies are zero. -/
-def start : State :=
-  { prepared with rip := entry }
 
 /-- The starting state with the kernel set to do `fates` with the calls for
 randomness, and to supply the bytes `random`. -/
@@ -148,8 +129,3 @@ def repeated (c : Char) (n : Nat) : String := String.ofList (List.replicate n c)
 
 end Random
 
-/-- The program, with what running it takes. -/
-def Random.program : Runnable where
-  name := "random"
-  elf := Asm.elf Random.base Random.code .start
-  start := Random.start

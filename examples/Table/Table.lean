@@ -20,9 +20,6 @@ def pair : Ty := .ptr (.raw 16) true 0
 inductive At : Label → Ctx → Prop
   | start : At .start (entryCtx 0)
 
-/-- The code typing: those contexts, at the addresses of their labels. -/
-def Φ : CodeTy := .ofLabels code base At
-
 /-- The table: eight bytes, holding a pointer to the record. -/
 def tableLayout : Layout := ⟨⟨8, [(0, pair)]⟩, false, none, 0⟩
 
@@ -30,7 +27,7 @@ def recordLayout : Layout := ⟨.raw 16, true, none, 0⟩
 
 def blocks : List (BitVec 64 × Layout) := [(dataBase, tableLayout), (recordAddr, recordLayout)]
 
-def Ψ : MemTy := .ofList blocks []
+asm_typing At blocks blocks room 0
 
 /-! ## The program is well typed -/
 
@@ -41,12 +38,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   | start => ty_block
 
 /-! ## The memory typing and the entry contract -/
-
-theorem memOk : Ψ.WF := MemTy.wf_of_check (by decide)
-
-/-- What the program needs of the state it starts in: its bytes in
-executable memory, its data in memory, readable, and the record writable. -/
-abbrev Entry : State → Prop := TypedAsm.Entry entry parts blocks 0 0
 
 /-- The data has the types the blocks claim. The table's entry is a pointer
 to the record because the data says so. -/
