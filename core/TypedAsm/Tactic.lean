@@ -1914,10 +1914,16 @@ def typeStraight : TacticM Unit := deep <| withMainContext do
   let before ← saveState
   try
     Tactic.withoutRecover do
+      -- with the program's blocks at hand where the memory typing is a list
+      -- of them, and without where it is not
       evalTactic (← `(tactic|
-        (refine Check.straight_sound (st := ?_) ?hc ?hn
-         case hc => exact rfl
-         case hn => first | trivial | ty_side)))
+        first
+        | (refine Check.check_sound (st := ?_) ?hc ?hn
+           case hc => exact rfl
+           case hn => first | trivial | ty_side)
+        | (refine Check.straight_sound (st := ?_) ?hc ?hn
+           case hc => exact rfl
+           case hn => first | trivial | ty_side)))
       unless (← getGoals).isEmpty do throwError "left over"
     return
   catch _ => before.restore

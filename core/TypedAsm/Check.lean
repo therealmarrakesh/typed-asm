@@ -1,4 +1,5 @@
 import TypedAsm.Program
+import TypedAsm.Blocks
 
 /-!
 # Checking by computation
@@ -637,6 +638,696 @@ theorem straight_sound {i : Instr} {st : Step} (h : straight next Γ i = some st
   · exact testRR_sound h
   · cases h; exact .testRM (.reg _)
   · cases h
+
+/-! ## The rest of the instructions
+
+The forms above need nothing but the context. Those below also reach data by
+its label, so they are told what blocks the program has. For an instruction
+with a rule for exactly known operands and another for any, the first is
+taken where the operands are exactly known, as above. -/
+
+/-- The block an address is in, the block's layout, and how far in. -/
+def blockAt (bs : List (BitVec 64 × Layout)) (a : BitVec 64) :
+    Option (BitVec 64 × Layout × Nat) :=
+  match bs.findSome? (fun x => if (a - x.1).toNat < x.2.shape.size then some x.1 else none) with
+  | none => none
+  | some base =>
+    match bs.find? (·.1 = base) with
+    | none => none
+    | some y => some (base, y.2, (a - base).toNat)
+
+theorem blockAt_spec {bs : List (BitVec 64 × Layout)} {kinds : List (Nat × Shape)}
+    {a base : BitVec 64} {l : Layout} {d : Nat} (h : blockAt bs a = some (base, l, d)) :
+    MemTy.ofList bs kinds base = some l ∧ a = base + BitVec.ofNat 64 d := by
+  unfold blockAt at h
+  split at h
+  · cases h
+  · next b _ =>
+    split at h
+    · cases h
+    · next y hy =>
+      cases h
+      refine ⟨?_, ?_⟩
+      · show (bs.find? _).map (·.2) = some y.2
+        rw [hy]; rfl
+      · rw [BitVec.ofNat_toNat, BitVec.setWidth_eq]
+        bv_omega
+
+/-- Whether `n` bytes may be read from an operand, data reached by its label
+included. -/
+def readOkG (bs : List (BitVec 64 × Layout)) (next : BitVec 64) (Γ : Ctx) (n : Nat) (rm : RM) :
+    Bool :=
+  match rm with
+  | .mem (.rip disp) =>
+    match blockAt bs (next + disp.signExtend 64) with
+    | some (_, l, d) => decide (d + n ≤ l.shape.size)
+    | none => false
+  | rm => readOk Γ n rm
+
+/-- The context after `n` plain bytes are stored to an operand, data reached
+by its label included: the block must be writable and have plain bytes
+there. -/
+def writeIntG (bs : List (BitVec 64 × Layout)) (next : BitVec 64) (Γ : Ctx) (n : Nat) (rm : RM) :
+    Option Ctx :=
+  match rm with
+  | .mem (.rip disp) =>
+    match blockAt bs (next + disp.signExtend 64) with
+    | some (_, l, d) =>
+      if l.writable = true ∧ d + n ≤ l.shape.size ∧ l.shape.free d n = true then some Γ else none
+    | none => none
+  | rm => writeInt Γ n rm
+
+variable {bs : List (BitVec 64 × Layout)} {kinds : List (Nat × Shape)}
+
+theorem readOkG_sound {n : Nat} {rm : RM} (h : readOkG bs next Γ n rm = true) :
+    ReadOk (MemTy.ofList bs kinds) next Γ n rm := by
+  unfold readOkG at h
+  split at h
+  · next disp =>
+    split at h
+    · next base l d hb =>
+      obtain ⟨hl, ha⟩ := blockAt_spec (kinds := kinds) hb
+      exact .global hl ha (of_decide_eq_true h)
+    · cases h
+  · exact readOk_sound h
+
+theorem writeIntG_sound {n : Nat} {rm : RM} {Γ' : Ctx} (h : writeIntG bs next Γ n rm = some Γ') :
+    WriteIntOk (MemTy.ofList bs kinds) next Γ n rm Γ' := by
+  unfold writeIntG at h
+  split at h
+  · next disp =>
+    split at h
+    · next base l d hb =>
+      obtain ⟨hl, ha⟩ := blockAt_spec (kinds := kinds) hb
+      split at h
+      · next hc => cases h; exact .global hl hc.1 ha hc.2.1 hc.2.2
+      · cases h
+    · cases h
+  · exact writeInt_sound h
+
+/-- A register operand that is not the stack pointer and holds an exactly
+known value: the register and the value. -/
+def exactReg (Γ : Ctx) : RM → Option (Reg × BitVec 64)
+  | .reg d => if d = .rsp then none else (exactly (Γ.regs d)).map fun a => (d, a)
+  | _ => none
+
+theorem exactReg_spec {rm : RM} {d : Reg} {a : BitVec 64} (h : exactReg Γ rm = some (d, a)) :
+    rm = .reg d ∧ d ≠ .rsp ∧ Γ.regs d = .eq a := by
+  unfold exactReg at h
+  split at h
+  · next r =>
+    split at h
+    · cases h
+    · next hr =>
+      cases he : exactly (Γ.regs r) with
+      | none => rw [he] at h; cases h
+      | some b =>
+        rw [he] at h
+        cases h
+        exact ⟨rfl, hr, exactly_eq he⟩
+  · cases h
+
+/-- That the flags decide a condition. -/
+def decides (Γ : Ctx) (c : Cond) : Prop :=
+  ∀ f, Γ.flags f → ∃ b, c.eval f = some b
+
+/-- An operand read and written in place, where it is not an exactly known
+register: what is written is a number. `flags` is what the instruction
+leaves of the flags. -/
+def inPlace (bs : List (BitVec 64 × Layout)) (next : BitVec 64) (Γ : Ctx) (n : Nat) (dst : RM)
+    (flags : Option (Flags → Prop)) : Option Step :=
+  if readOkG bs next Γ n dst then
+    (writeIntG bs next Γ n dst).map fun Γ' =>
+      match flags with
+      | some P => ⟨{ Γ' with flags := P }, True⟩
+      | none => ⟨Γ', True⟩
+  else none
+
+theorem inPlace_spec {n : Nat} {dst : RM} {flags : Option (Flags → Prop)} {st : Step}
+    (h : inPlace bs next Γ n dst flags = some st) :
+    ∃ Γ', ReadOk (MemTy.ofList bs kinds) next Γ n dst ∧
+      WriteIntOk (MemTy.ofList bs kinds) next Γ n dst Γ' ∧
+      st.ctx = (match flags with
+        | some P => { Γ' with flags := P }
+        | none => Γ') := by
+  unfold inPlace at h
+  split at h
+  · next hr =>
+    cases hw : writeIntG bs next Γ n dst with
+    | none => rw [hw] at h; cases h
+    | some Γ' =>
+      rw [hw] at h
+      refine ⟨Γ', readOkG_sound hr, writeIntG_sound hw, ?_⟩
+      cases flags <;> (cases h; rfl)
+  · cases h
+
+/-- `neg` and `not`. -/
+def unary (bs : List (BitVec 64 × Layout)) (next : BitVec 64) (Γ : Ctx) (op : UnOp) (w : Width)
+    (dst : RM) : Option Step :=
+  match exactReg Γ dst with
+  | some (d, a) =>
+    match op with
+    | .neg =>
+      some ⟨{ Γ.setReg d (.eq ((subBorrow 0 (a.setWidth w.bits) false).1.setWidth 64)) with
+        flags := (· = (subBorrow 0 (a.setWidth w.bits) false).2) }, True⟩
+    | .not => some ⟨Γ.setReg d (.eq ((~~~(a.setWidth w.bits)).setWidth 64)), True⟩
+  | none =>
+    match op with
+    | .neg => inPlace bs next Γ w.bytes.toNat dst (some Flags.Known)
+    | .not => inPlace bs next Γ w.bytes.toNat dst none
+
+theorem unary_sound {op : UnOp} {w : Width} {dst : RM} {st : Step}
+    (h : unary bs next Γ op w dst = some st) :
+    Straight (MemTy.ofList bs kinds) next Γ (.unary op w dst) st.ctx := by
+  unfold unary at h
+  split at h
+  · next d a he =>
+    obtain ⟨rfl, hd, hΓ⟩ := exactReg_spec he
+    split at h
+    · cases h; exact .negExact hd hΓ
+    · cases h; exact .notExact hd hΓ
+  · split at h
+    · obtain ⟨Γ', hr, hw, e⟩ := inPlace_spec (kinds := kinds) h
+      rw [e]; exact .negRM hr hw
+    · obtain ⟨Γ', hr, hw, e⟩ := inPlace_spec (kinds := kinds) h
+      rw [e]; exact .notRM hr hw
+
+/-- Shifts and rotates. -/
+def shift (bs : List (BitVec 64 × Layout)) (next : BitVec 64) (Γ : Ctx) (op : ShiftOp)
+    (w : Width) (dst : RM) : Count → Option Step
+  | .imm n =>
+    match exactReg Γ dst with
+    | some (d, a) =>
+      some ⟨{ Γ.setReg d (.eq ((op.apply (a.setWidth w.bits) (n.toNat % w.bits)).setWidth 64)) with
+        flags := op.flagsAfter (n.toNat % w.bits) Γ.flags }, True⟩
+    | none =>
+      inPlace bs next Γ w.bytes.toNat dst (some (op.flagsAfter (n.toNat % w.bits) Γ.flags))
+  | .cl => inPlace bs next Γ w.bytes.toNat dst (some Flags.Any)
+
+theorem shift_sound {op : ShiftOp} {w : Width} {dst : RM} {c : Count} {st : Step}
+    (h : shift bs next Γ op w dst c = some st) :
+    Straight (MemTy.ofList bs kinds) next Γ (.shift op w dst c) st.ctx := by
+  unfold shift at h
+  split at h
+  · split at h
+    · next d a he =>
+      obtain ⟨rfl, hd, hΓ⟩ := exactReg_spec he
+      cases h; exact .shiftExact hd hΓ
+    · obtain ⟨Γ', hr, hw, e⟩ := inPlace_spec (kinds := kinds) h
+      rw [e]; exact .shiftImm hr hw
+  · obtain ⟨Γ', hr, hw, e⟩ := inPlace_spec (kinds := kinds) h
+    rw [e]; exact .shiftCl hr hw
+
+/-- The widening multiplies and the divides. A divide has an answer only
+where the values are exactly known and it is seen not to fault. -/
+def mulDiv (bs : List (BitVec 64 × Layout)) (next : BitVec 64) (Γ : Ctx) (op : MulDivOp)
+    (w : Width) (src : RM) : Option Step :=
+  match exactReg Γ src, exactly (Γ.regs .rax), exactly (Γ.regs .rdx) with
+  | some (_, b), some a, some d =>
+    match op.eval (d.setWidth w.bits) (a.setWidth w.bits) (b.setWidth w.bits) with
+    | .next (lo, hi, fl) =>
+      some ⟨{ (Γ.setReg .rax (.eq (lo.setWidth 64))).setReg .rdx (.eq (hi.setWidth 64)) with
+        flags := (· = fl) }, True⟩
+    | _ => none
+  | _, _, _ =>
+    match op with
+    | .mul | .imul =>
+      if readOkG bs next Γ w.bytes.toNat src then some ⟨Γ.afterMulDiv Flags.AfterMul, True⟩
+      else none
+    | _ => none
+
+theorem mulDiv_sound {op : MulDivOp} {w : Width} {src : RM} {st : Step}
+    (h : mulDiv bs next Γ op w src = some st) :
+    Straight (MemTy.ofList bs kinds) next Γ (.mulDiv op w src) st.ctx := by
+  unfold mulDiv at h
+  split at h
+  · next r b a d he ha hd =>
+    obtain ⟨rfl, hr, hΓ⟩ := exactReg_spec he
+    split at h
+    · next lo hi fl hev =>
+      cases h
+      exact .mulDivExact hr (exactly_eq ha) (exactly_eq hd) hΓ hev
+    · cases h
+  · split at h
+    · split at h
+      · next hr => cases h; exact .mulRM (readOkG_sound hr)
+      · cases h
+    · split at h
+      · next hr => cases h; exact .imulRM (readOkG_sound hr)
+      · cases h
+    · cases h
+
+/-- The two- and three-operand multiplies. -/
+def imul2 (bs : List (BitVec 64 × Layout)) (next : BitVec 64) (Γ : Ctx) (w : Width) (d : Reg)
+    (src : RM) : Option Step :=
+  if d = .rsp then none
+  else match exactReg Γ src, exactly (Γ.regs d) with
+    | some (_, b), some a =>
+      some ⟨{ Γ.setReg d (.eq ((imulTrunc (a.setWidth w.bits) (b.setWidth w.bits)).1.setWidth 64))
+        with flags := (· = (imulTrunc (a.setWidth w.bits) (b.setWidth w.bits)).2) }, True⟩
+    | _, _ =>
+      if readOkG bs next Γ w.bytes.toNat src then
+        some ⟨{ Γ.setReg d .int with flags := Flags.AfterMul }, True⟩
+      else none
+
+theorem imul2_sound {w : Width} {d : Reg} {src : RM} {st : Step}
+    (h : imul2 bs next Γ w d src = some st) :
+    Straight (MemTy.ofList bs kinds) next Γ (.imul2 w d src) st.ctx := by
+  unfold imul2 at h
+  split at h
+  · cases h
+  · next hd =>
+    split at h
+    · next r b a he ha =>
+      obtain ⟨rfl, hr, hΓ⟩ := exactReg_spec he
+      cases h; exact .imul2Exact hd hr (exactly_eq ha) hΓ
+    · split at h
+      · next hr => cases h; exact .imul2RM hd (readOkG_sound hr)
+      · cases h
+
+def imul3 (bs : List (BitVec 64 × Layout)) (next : BitVec 64) (Γ : Ctx) (w : Width) (d : Reg)
+    (src : RM) (imm : BitVec 32) : Option Step :=
+  if d = .rsp then none
+  else match exactReg Γ src with
+    | some (_, b) =>
+      some ⟨{ Γ.setReg d
+          (.eq ((imulTrunc (b.setWidth w.bits) (imm.signExtend w.bits)).1.setWidth 64)) with
+        flags := (· = (imulTrunc (b.setWidth w.bits) (imm.signExtend w.bits)).2) }, True⟩
+    | none =>
+      if readOkG bs next Γ w.bytes.toNat src then
+        some ⟨{ Γ.setReg d .int with flags := Flags.AfterMul }, True⟩
+      else none
+
+theorem imul3_sound {w : Width} {d : Reg} {src : RM} {imm : BitVec 32} {st : Step}
+    (h : imul3 bs next Γ w d src imm = some st) :
+    Straight (MemTy.ofList bs kinds) next Γ (.imul3 w d src imm) st.ctx := by
+  unfold imul3 at h
+  split at h
+  · cases h
+  · next hd =>
+    split at h
+    · next r b he =>
+      obtain ⟨rfl, hr, hΓ⟩ := exactReg_spec he
+      cases h; exact .imul3Exact hd hr hΓ
+    · split at h
+      · next hr => cases h; exact .imul3RM hd (readOkG_sound hr)
+      · cases h
+
+/-- Counting the bits set. -/
+def popcnt (bs : List (BitVec 64 × Layout)) (next : BitVec 64) (Γ : Ctx) (w : Width) (d : Reg)
+    (src : RM) : Option Step :=
+  if d = .rsp then none
+  else match exactReg Γ src with
+    | some (_, a) =>
+      some ⟨{ Γ.setReg d (.eq ((popcount (a.setWidth w.bits)).setWidth 64)) with
+        flags := (· = ⟨some false, some (a.setWidth w.bits == 0), some false, some false⟩) },
+        True⟩
+    | none =>
+      if readOkG bs next Γ w.bytes.toNat src then
+        some ⟨{ Γ.setReg d .int with flags := Flags.Known }, True⟩
+      else none
+
+theorem popcnt_sound {w : Width} {d : Reg} {src : RM} {st : Step}
+    (h : popcnt bs next Γ w d src = some st) :
+    Straight (MemTy.ofList bs kinds) next Γ (.popcnt w d src) st.ctx := by
+  unfold popcnt at h
+  split at h
+  · cases h
+  · next hd =>
+    split at h
+    · next r a he =>
+      obtain ⟨rfl, hr, hΓ⟩ := exactReg_spec he
+      cases h; exact .popcntExact hd hr hΓ
+    · split at h
+      · next hr => cases h; exact .popcntRM hd (readOkG_sound hr)
+      · cases h
+
+/-- Reversing the bytes of a register. -/
+def bswapR (Γ : Ctx) (w : Width) (r : Reg) : Option Step :=
+  if r = .rsp then none
+  else match exactly (Γ.regs r) with
+    | some a =>
+      some ⟨Γ.setReg r (.eq ((TypedAsm.bswap w (a.setWidth w.bits)).setWidth 64)), True⟩
+    | none => some ⟨Γ.setReg r .int, True⟩
+
+theorem bswapR_sound {w : Width} {r : Reg} {st : Step} (h : bswapR Γ w r = some st) :
+    Straight Ψ next Γ (.bswap w r) st.ctx := by
+  unfold bswapR at h
+  split at h
+  · cases h
+  · next hr =>
+    split at h
+    · next a ha => cases h; exact .bswapExact hr (exactly_eq ha)
+    · cases h; exact .bswap hr
+
+/-- Extending a narrower value into a register. `n` is how many bytes are
+read; `exact` is the result where the source is an exactly known register. -/
+def extend (bs : List (BitVec 64 × Layout)) (next : BitVec 64) (Γ : Ctx) (d : Reg) (n : Nat)
+    (src : RM) (exact : BitVec 64 → BitVec 64) : Option Step :=
+  if d = .rsp then none
+  else match exactReg Γ src with
+    | some (_, a) => some ⟨Γ.setReg d (.eq (exact a)), True⟩
+    | none => if readOkG bs next Γ n src then some ⟨Γ.setReg d .int, True⟩ else none
+
+theorem extend_spec {d : Reg} {n : Nat} {src : RM} {exact : BitVec 64 → BitVec 64} {st : Step}
+    (h : extend bs next Γ d n src exact = some st) :
+    d ≠ .rsp ∧
+      ((∃ r a, src = .reg r ∧ r ≠ .rsp ∧ Γ.regs r = .eq a ∧ st.ctx = Γ.setReg d (.eq (exact a))) ∨
+        (ReadOk (MemTy.ofList bs kinds) next Γ n src ∧ st.ctx = Γ.setReg d .int)) := by
+  unfold extend at h
+  split at h
+  · cases h
+  · next hd =>
+    refine ⟨hd, ?_⟩
+    split at h
+    · next r a he =>
+      obtain ⟨hs, hr, hΓ⟩ := exactReg_spec he
+      cases h; exact .inl ⟨r, a, hs, hr, hΓ, rfl⟩
+    · split at h
+      · next hr => cases h; exact .inr ⟨readOkG_sound hr, rfl⟩
+      · cases h
+
+/-- A conditional move. Where both registers are exactly known the flags may
+say which way it goes, and that is left to the rules. -/
+def cmov (bs : List (BitVec 64 × Layout)) (next : BitVec 64) (Γ : Ctx) (c : Cond) (w : Width)
+    (d : Reg) (src : RM) : Option Step :=
+  if d = .rsp then none
+  else if (exactReg Γ src).isSome ∧ (exactly (Γ.regs d)).isSome then none
+  else if readOkG bs next Γ w.bytes.toNat src then some ⟨Γ.setReg d .int, decides Γ c⟩
+  else none
+
+theorem cmov_sound {c : Cond} {w : Width} {d : Reg} {src : RM} {st : Step}
+    (h : cmov bs next Γ c w d src = some st) (hn : st.needs) :
+    Straight (MemTy.ofList bs kinds) next Γ (.cmov c w d src) st.ctx := by
+  unfold cmov at h
+  split at h
+  · cases h
+  · next hd =>
+    split at h
+    · cases h
+    · split at h
+      · next hr => cases h; exact .cmovRM hd (readOkG_sound hr) hn
+      · cases h
+
+/-- Setting a byte from a condition. For an exactly known register the
+flags may say what is set, and that is left to the rules. -/
+def setcc (bs : List (BitVec 64 × Layout)) (next : BitVec 64) (Γ : Ctx) (c : Cond) (dst : RM) :
+    Option Step :=
+  if (exactReg Γ dst).isSome then none
+  else (writeIntG bs next Γ 1 dst).map fun Γ' => ⟨Γ', decides Γ c⟩
+
+theorem setcc_sound {c : Cond} {dst : RM} {st : Step} (h : setcc bs next Γ c dst = some st)
+    (hn : st.needs) : Straight (MemTy.ofList bs kinds) next Γ (.setcc c dst) st.ctx := by
+  unfold setcc at h
+  split at h
+  · cases h
+  · cases hw : writeIntG bs next Γ 1 dst with
+    | none => rw [hw] at h; cases h
+    | some Γ' => rw [hw] at h; cases h; exact .setccRM (writeIntG_sound hw) hn
+
+/-- Computing an address. It is exactly known where what it is computed from
+is; otherwise it is a number. -/
+def lea (Γ : Ctx) (w : Width) (d : Reg) (m : Mem) : Option Step :=
+  if d = .rsp then none
+  else match w, m with
+    | .w64, .sib (some b) none disp =>
+      match exactly (Γ.regs b) with
+      | some a => some ⟨Γ.setReg d (.eq (a + disp.signExtend 64)), True⟩
+      | none => some ⟨Γ.setReg d .int, True⟩
+    | .w64, .sib (some b) (some (x, sc)) disp =>
+      match exactly (Γ.regs b), exactly (Γ.regs x.toReg) with
+      | some a, some c =>
+        if b = .rsp then some ⟨Γ.setReg d .int, True⟩
+        else some ⟨Γ.setReg d (.eq (a + (c <<< sc.shift) + disp.signExtend 64)), True⟩
+      | _, _ => some ⟨Γ.setReg d .int, True⟩
+    | _, _ => some ⟨Γ.setReg d .int, True⟩
+
+theorem lea_sound {w : Width} {d : Reg} {m : Mem} {st : Step} (h : lea Γ w d m = some st) :
+    Straight Ψ next Γ (.lea w d m) st.ctx := by
+  unfold lea at h
+  split at h
+  · cases h
+  · next hd =>
+    split at h
+    · next b disp =>
+      split at h
+      · next a ha =>
+        cases h
+        by_cases hb : b = .rsp
+        · subst hb; exact .leaSp hd (exactly_eq ha)
+        · exact .leaExactB hd hb (exactly_eq ha)
+      · cases h; exact .lea hd
+    · next b x sc disp =>
+      split at h
+      · next a c ha hc =>
+        split at h
+        · cases h; exact .lea hd
+        · next hb => cases h; exact .leaExactBI hd hb (exactly_eq ha) (exactly_eq hc)
+      · cases h; exact .lea hd
+    · cases h; exact .lea hd
+
+/-- Arithmetic with an operand in memory. -/
+def aluMem (bs : List (BitVec 64 × Layout)) (next : BitVec 64) (Γ : Ctx) (op : AluOp) (w : Width) :
+    Operands → Option Step
+  | .rm_r (.mem m) _ | .rm_i (.mem m) _ =>
+    if op.writesDst then
+      if readOkG bs next Γ w.bytes.toNat (.mem m) then
+        (writeIntG bs next Γ w.bytes.toNat (.mem m)).map fun Γ' =>
+          ⟨{ Γ' with flags := Flags.Known }, carryNeeds Γ op⟩
+      else none
+    else if readOkG bs next Γ w.bytes.toNat (.mem m) then
+      some ⟨{ Γ with flags := Flags.Known }, True⟩
+    else none
+  | .r_m d m =>
+    if d = .rsp then none
+    else if readOkG bs next Γ w.bytes.toNat (.mem m) then
+      some ⟨Γ.afterAlu op d, carryNeeds Γ op⟩
+    else none
+  | _ => none
+
+theorem aluMem_sound {op : AluOp} {w : Width} {ops : Operands} {st : Step}
+    (h : aluMem bs next Γ op w ops = some st) (hn : st.needs) :
+    Straight (MemTy.ofList bs kinds) next Γ (.alu op w ops) st.ctx := by
+  unfold aluMem at h
+  split at h
+  · next m s =>
+    split at h
+    · next hwd =>
+      split at h
+      · next hr =>
+        cases hw : writeIntG bs next Γ w.bytes.toNat (.mem m) with
+        | none => rw [hw] at h; cases h
+        | some Γ' =>
+          rw [hw] at h; cases h
+          exact .aluStoreR hwd (readOkG_sound hr) (writeIntG_sound hw) hn
+      · cases h
+    · next hwd =>
+      split at h
+      · next hr => cases h; exact .cmpR ((Bool.not_eq_true _).mp hwd) (readOkG_sound hr)
+      · cases h
+  · next m imm =>
+    split at h
+    · next hwd =>
+      split at h
+      · next hr =>
+        cases hw : writeIntG bs next Γ w.bytes.toNat (.mem m) with
+        | none => rw [hw] at h; cases h
+        | some Γ' =>
+          rw [hw] at h; cases h
+          exact .aluStoreI hwd (readOkG_sound hr) (writeIntG_sound hw) hn
+      · cases h
+    · next hwd =>
+      split at h
+      · next hr => cases h; exact .cmpI ((Bool.not_eq_true _).mp hwd) (readOkG_sound hr)
+      · cases h
+  · next d m =>
+    split at h
+    · cases h
+    · next hd =>
+      split at h
+      · next hr => cases h; exact .aluLoad hd (readOkG_sound hr) hn
+      · cases h
+  · cases h
+
+/-- A 64-bit load of data reached by its label: the typed value there, or a
+number where the bytes are plain. -/
+def loadGlobal (bs : List (BitVec 64 × Layout)) (next : BitVec 64) (Γ : Ctx) (d : Reg)
+    (disp : BitVec 32) : Option Step :=
+  if d = .rsp then none
+  else match blockAt bs (next + disp.signExtend 64) with
+    | none => none
+    | some (_, l, k) =>
+      match l.shape.valAt k with
+      | some τ => some ⟨Γ.setReg d τ, True⟩
+      | none => if k + 8 ≤ l.shape.size then some ⟨Γ.setReg d .int, True⟩ else none
+
+theorem loadGlobal_sound {d : Reg} {disp : BitVec 32} {st : Step}
+    (h : loadGlobal bs next Γ d disp = some st) :
+    Straight (MemTy.ofList bs kinds) next Γ (.mov .w64 (.r_m d (.rip disp))) st.ctx := by
+  unfold loadGlobal at h
+  split at h
+  · cases h
+  · next hd =>
+    split at h
+    · cases h
+    · next base l k hb =>
+      obtain ⟨hl, ha⟩ := blockAt_spec (kinds := kinds) hb
+      split at h
+      · next τ hv => cases h; exact .loadGlobal hd hl ha hv
+      · split at h
+        · next hsz => cases h; exact .loadInt hd (.global hl ha hsz)
+        · cases h
+
+/-- A 64-bit store to data reached by its label. -/
+def storeGlobal (bs : List (BitVec 64 × Layout)) (next : BitVec 64) (Γ : Ctx) (s : Reg)
+    (disp : BitVec 32) : Option Step :=
+  if s = .rsp then none
+  else match blockAt bs (next + disp.signExtend 64) with
+    | none => none
+    | some (_, l, k) =>
+      if l.writable = true then
+        match l.shape.valAt k with
+        | some τ => if l.shape.sole k = true then some ⟨Γ, Sub (Γ.regs s) τ⟩ else none
+        | none =>
+          if k + 8 ≤ l.shape.size ∧ l.shape.free k 8 = true then some ⟨Γ, True⟩ else none
+      else none
+
+theorem storeGlobal_sound {s : Reg} {disp : BitVec 32} {st : Step}
+    (h : storeGlobal bs next Γ s disp = some st) (hn : st.needs) :
+    Straight (MemTy.ofList bs kinds) next Γ (.mov .w64 (.rm_r (.mem (.rip disp)) s)) st.ctx := by
+  unfold storeGlobal at h
+  split at h
+  · cases h
+  · next hs =>
+    split at h
+    · cases h
+    · next base l k hb =>
+      obtain ⟨hl, ha⟩ := blockAt_spec (kinds := kinds) hb
+      split at h
+      · next hwr =>
+        split at h
+        · next τ hv =>
+          split at h
+          · next hso => cases h; exact .storeGlobal hs hl hwr ha hv hso hn
+          · cases h
+        · split at h
+          · next hc => cases h; exact .storeInt (.global hl hwr ha hc.1 hc.2)
+          · cases h
+      · cases h
+
+/-- **The checker for the rest of the instructions that go on to the next.** -/
+def more (bs : List (BitVec 64 × Layout)) (next : BitVec 64) (Γ : Ctx) : Instr → Option Step
+  | .unary op w dst => unary bs next Γ op w dst
+  | .shift op w dst c => shift bs next Γ op w dst c
+  | .mulDiv op w src => mulDiv bs next Γ op w src
+  | .imul2 w d src => imul2 bs next Γ w d src
+  | .imul3 w d src imm => imul3 bs next Γ w d src imm
+  | .popcnt w d src => popcnt bs next Γ w d src
+  | .bswap w r => bswapR Γ w r
+  | .cdq =>
+    match exactly (Γ.regs .rax) with
+    | some a => some ⟨Γ.setReg .rdx (.eq ((signFill (a.setWidth 32)).setWidth 64)), True⟩
+    | none => some ⟨Γ.setReg .rdx .int, True⟩
+  | .cqo =>
+    match exactly (Γ.regs .rax) with
+    | some a => some ⟨Γ.setReg .rdx (.eq (signFill a)), True⟩
+    | none => some ⟨Γ.setReg .rdx .int, True⟩
+  | .movsxd d src => extend bs next Γ d 4 src fun a => (a.setWidth 32).signExtend 64
+  | .movzx w d sw src =>
+    extend bs next Γ d sw.bytes src fun a => ((a.setWidth sw.bits).setWidth w.bits).setWidth 64
+  | .movsx w d sw src =>
+    extend bs next Γ d sw.bytes src fun a => ((a.setWidth sw.bits).signExtend w.bits).setWidth 64
+  | .cmov c w d src => cmov bs next Γ c w d src
+  | .setcc c dst => setcc bs next Γ c dst
+  | .lea w d m => lea Γ w d m
+  | .alu op w ops => aluMem bs next Γ op w ops
+  | .test w (.mem m) _ =>
+    if readOkG bs next Γ w.bytes.toNat (.mem m) then some ⟨{ Γ with flags := Flags.Known }, True⟩
+    else none
+  | .mov .w64 (.r_m d (.rip disp)) => loadGlobal bs next Γ d disp
+  | .mov .w64 (.rm_r (.mem (.rip disp)) s) => storeGlobal bs next Γ s disp
+  | .mov .w32 (.r_m d (.rip disp)) =>
+    if d = .rsp then none
+    else if readOkG bs next Γ 4 (.mem (.rip disp)) then some ⟨Γ.setReg d .int, True⟩ else none
+  | .mov w (.rm_r (.mem (.rip disp)) _) =>
+    (writeIntG bs next Γ w.bytes.toNat (.mem (.rip disp))).map fun Γ' => ⟨Γ', True⟩
+  | .mov w (.rm_i (.mem (.rip disp)) _) =>
+    (writeIntG bs next Γ w.bytes.toNat (.mem (.rip disp))).map fun Γ' => ⟨Γ', True⟩
+  | .store8 (.rip disp) _ =>
+    (writeIntG bs next Γ 1 (.mem (.rip disp))).map fun Γ' => ⟨Γ', True⟩
+  | .store16 (.rip disp) _ =>
+    (writeIntG bs next Γ 2 (.mem (.rip disp))).map fun Γ' => ⟨Γ', True⟩
+  | _ => none
+
+theorem writeIntG_step {n : Nat} {rm : RM} {st : Step}
+    (h : (writeIntG bs next Γ n rm).map (fun Γ' => (⟨Γ', True⟩ : Step)) = some st) :
+    WriteIntOk (MemTy.ofList bs kinds) next Γ n rm st.ctx := by
+  cases hw : writeIntG bs next Γ n rm with
+  | none => rw [hw] at h; cases h
+  | some Γ' => rw [hw] at h; cases h; exact writeIntG_sound hw
+
+theorem more_sound {i : Instr} {st : Step} (h : more bs next Γ i = some st) (hn : st.needs) :
+    Straight (MemTy.ofList bs kinds) next Γ i st.ctx := by
+  unfold more at h
+  split at h
+  · exact unary_sound h
+  · exact shift_sound h
+  · exact mulDiv_sound h
+  · exact imul2_sound h
+  · exact imul3_sound h
+  · exact popcnt_sound h
+  · exact bswapR_sound h
+  · split at h
+    · next a ha => cases h; exact .cdqExact (exactly_eq ha)
+    · cases h; exact .cdq
+  · split at h
+    · next a ha => cases h; exact .cqoExact (exactly_eq ha)
+    · cases h; exact .cqo
+  · obtain ⟨hd, ⟨r, a, rfl, hr, hΓ, e⟩ | ⟨hr, e⟩⟩ := extend_spec (kinds := kinds) h
+    · rw [e]; exact .movsxdExact hd hr hΓ
+    · rw [e]; exact .movsxdRM hd hr
+  · obtain ⟨hd, ⟨r, a, rfl, hr, hΓ, e⟩ | ⟨hr, e⟩⟩ := extend_spec (kinds := kinds) h
+    · rw [e]; exact .movzxExact hd hr hΓ
+    · rw [e]; exact .movzxRM hd hr
+  · obtain ⟨hd, ⟨r, a, rfl, hr, hΓ, e⟩ | ⟨hr, e⟩⟩ := extend_spec (kinds := kinds) h
+    · rw [e]; exact .movsxExact hd hr hΓ
+    · rw [e]; exact .movsxRM hd hr
+  · exact cmov_sound h hn
+  · exact setcc_sound h hn
+  · exact lea_sound h
+  · exact aluMem_sound h hn
+  · split at h
+    · next hr => cases h; exact .testRM (readOkG_sound hr)
+    · cases h
+  · exact loadGlobal_sound h
+  · exact storeGlobal_sound h hn
+  · split at h
+    · cases h
+    · next hd =>
+      split at h
+      · next hr => cases h; exact .loadInt hd (readOkG_sound hr)
+      · cases h
+  · exact .storeInt (writeIntG_step h)
+  · exact .storeImm (writeIntG_step h)
+  · exact .store8RM (writeIntG_step h)
+  · exact .store16RM (writeIntG_step h)
+  · cases h
+
+/-- **The checker**: the forms that need only the context, then the rest. -/
+def check (bs : List (BitVec 64 × Layout)) (next : BitVec 64) (Γ : Ctx) (i : Instr) :
+    Option Step :=
+  match straight next Γ i with
+  | some st => some st
+  | none => more bs next Γ i
+
+/-- **What the checker works out is a typing step**, in a program whose
+memory typing is its list of blocks. -/
+theorem check_sound {i : Instr} {st : Step} (h : check bs next Γ i = some st) (hn : st.needs) :
+    Straight (MemTy.ofList bs kinds) next Γ i st.ctx := by
+  unfold check at h
+  split at h
+  · next st' hs => cases h; exact straight_sound hs hn
+  · exact more_sound h hn
 
 end Check
 
