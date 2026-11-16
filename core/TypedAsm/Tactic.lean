@@ -1525,16 +1525,6 @@ def Instr.noRuleReason : Instr → Option String
       memory are not tracked: load the divisor into a register first"
   | _ => none
 
-/-- The memory operand of an instruction, if it has one. -/
-def Instr.memOperand? : Instr → Option Mem
-  | .alu _ _ (.rm_r (.mem m) _) | .alu _ _ (.r_m _ m) | .alu _ _ (.rm_i (.mem m) _)
-  | .mov _ (.rm_r (.mem m) _) | .mov _ (.r_m _ m) | .mov _ (.rm_i (.mem m) _)
-  | .test _ (.mem m) _ | .unary _ _ (.mem m) | .shift _ _ (.mem m) _ | .setcc _ (.mem m)
-  | .mulDiv _ _ (.mem m) | .imul2 _ _ (.mem m) | .imul3 _ _ (.mem m) _ | .popcnt _ _ (.mem m)
-  | .movzx _ _ _ (.mem m) | .movsx _ _ _ (.mem m) | .movsxd _ (.mem m) | .cmov _ _ _ (.mem m)
-  | .store8 m _ | .store16 m _ | .jmp (.ind (.mem m)) | .call (.ind (.mem m)) => some m
-  | _ => none
-
 /-- Whether an instruction's memory operand is addressed through the stack,
 which decides the fault a bad address raises. -/
 def Instr.onStack (i : Instr) : Bool :=
@@ -1564,25 +1554,6 @@ def hazardBounds : String :=
 def hazardConfusion : String :=
   ". The memory would no longer hold what its type says, and a later use of the value there \
     could fault"
-
-/-- The registers whose values an instruction's rules need to speak of. If
-one of them is typed as an integer, the tactic gives its value a name first,
-so that the rules for exactly known values apply. -/
-def Instr.wantsNamed : Instr → List Reg
-  | .mulDiv .div _ (.reg r) | .mulDiv .idiv _ (.reg r) => [.rax, .rdx, r]
-  | .cqo | .cdq => [.rax]
-  -- what is compared: so that the way a jump after it went says something
-  -- of those values
-  | .alu .cmp _ (.rm_r (.reg d) s) => [d, s]
-  | .alu .cmp _ (.rm_i (.reg d) _) => [d]
-  | .test _ (.reg r) (.reg r') => [r, r']
-  -- the address of something on the stack is known when the stack pointer is
-  | .lea .w64 _ (.sib (some .rsp) _ _) => [.rsp]
-  | i =>
-    -- an index into memory must be exactly known for the access to be placed
-    match i.memOperand? with
-    | some (.sib _ (some (x, _)) _) => [x.toReg]
-    | _ => []
 
 /-- Whether the instruction can send control somewhere other than the next
 instruction, which is where a block ends. -/

@@ -26,6 +26,35 @@ is decided by looking at the terms, with no one telling it.
 
 namespace TypedAsm
 
+/-- The memory operand of an instruction, if it has one. -/
+def Instr.memOperand? : Instr → Option Mem
+  | .alu _ _ (.rm_r (.mem m) _) | .alu _ _ (.r_m _ m) | .alu _ _ (.rm_i (.mem m) _)
+  | .mov _ (.rm_r (.mem m) _) | .mov _ (.r_m _ m) | .mov _ (.rm_i (.mem m) _)
+  | .test _ (.mem m) _ | .unary _ _ (.mem m) | .shift _ _ (.mem m) _ | .setcc _ (.mem m)
+  | .mulDiv _ _ (.mem m) | .imul2 _ _ (.mem m) | .imul3 _ _ (.mem m) _ | .popcnt _ _ (.mem m)
+  | .movzx _ _ _ (.mem m) | .movsx _ _ _ (.mem m) | .movsxd _ (.mem m) | .cmov _ _ _ (.mem m)
+  | .store8 m _ | .store16 m _ | .jmp (.ind (.mem m)) | .call (.ind (.mem m)) => some m
+  | _ => none
+
+/-- The registers whose values an instruction's rules need to speak of. If
+one of them is typed as an integer, the tactic gives its value a name first,
+so that the rules for exactly known values apply. -/
+def Instr.wantsNamed : Instr → List Reg
+  | .mulDiv .div _ (.reg r) | .mulDiv .idiv _ (.reg r) => [.rax, .rdx, r]
+  | .cqo | .cdq => [.rax]
+  -- what is compared: so that the way a jump after it went says something
+  -- of those values
+  | .alu .cmp _ (.rm_r (.reg d) s) => [d, s]
+  | .alu .cmp _ (.rm_i (.reg d) _) => [d]
+  | .test _ (.reg r) (.reg r') => [r, r']
+  -- the address of something on the stack is known when the stack pointer is
+  | .lea .w64 _ (.sib (some .rsp) _ _) => [.rsp]
+  | i =>
+    -- an index into memory must be exactly known for the access to be placed
+    match i.memOperand? with
+    | some (.sib _ (some (x, _)) _) => [x.toReg]
+    | _ => []
+
 namespace Sym
 
 /-- An operation of one value that the machine does, where the result is
@@ -3858,6 +3887,211 @@ theorem ValsS.den_setVal {ρ : Env} {k : Nat} {x : BitVec 64} : (t : ValsS) →
     rw [TyS.den_setVal τ h.1, ValsS.den_setVal rest h.2]; rfl
 
 end
+
+/-- Whether what a term says of the flags mentions no value variable from `k` on. -/
+def FlagsS.under (k : Nat) : FlagsS → Bool
+  | .alu _ _ a b => a.under k && b.under k
+  | .test a b => a.under k && b.under k
+  | .neg _ a => a.under k
+  | .popcnt _ a => a.under k
+  | .imul _ a b => a.under k && b.under k
+  | _ => true
+
+theorem FlagsS.den_setVal {ρ : Env} {k : Nat} {x : BitVec 64} : (t : FlagsS) →
+    t.under k = true → t.den (ρ.setVal k x) = t.den ρ
+  | .any, _ => rfl
+  | .known, _ => rfl
+  | .defined _ _ _ _, _ => rfl
+  | .lit _, _ => rfl
+  | .atom _, _ => rfl
+  | .alu op w a b, h => by
+    simp only [FlagsS.under, Bool.and_eq_true] at h
+    cases w <;> simp only [FlagsS.den, Val.den_setVal a h.1, Val.den_setVal b h.2]
+  | .test a b, h => by
+    simp only [FlagsS.under, Bool.and_eq_true] at h
+    simp only [FlagsS.den, Val.den_setVal a h.1, Val.den_setVal b h.2]
+  | .neg w a, h => by simp only [FlagsS.den, Val.den_setVal a h]
+  | .popcnt w a, h => by simp only [FlagsS.den, Val.den_setVal a h]
+  | .imul w a b, h => by
+    simp only [FlagsS.under, Bool.and_eq_true] at h
+    simp only [FlagsS.den, Val.den_setVal a h.1, Val.den_setVal b h.2]
+
+end Sym
+
+/-- Whether something holds of every value of a table. -/
+def RegMap.all {α : Type} (p : α → Bool) (m : RegMap α) : Bool :=
+  p m.rax && p m.rcx && p m.rdx && p m.rbx && p m.rsp && p m.rbp && p m.rsi && p m.rdi &&
+    p m.r8 && p m.r9 && p m.r10 && p m.r11 && p m.r12 && p m.r13 && p m.r14 && p m.r15
+
+theorem RegMap.all_get {α : Type} {p : α → Bool} {m : RegMap α} (h : m.all p = true) (r : Reg) :
+    p (m.get r) = true := by
+  simp only [RegMap.all, Bool.and_eq_true] at h
+  obtain ⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨h0, h1⟩, h2⟩, h3⟩, h4⟩, h5⟩, h6⟩, h7⟩, h8⟩, h9⟩, h10⟩, h11⟩, h12⟩, h13⟩, h14⟩,
+    h15⟩ := h
+  cases r <;> assumption
+
+namespace Sym
+
+def shapesUnder (k : Nat) : List ShapeS → Bool
+  | [] => true
+  | S :: σ => S.under k && shapesUnder k σ
+
+theorem denShapes_setVal {ρ : Env} {k : Nat} {x : BitVec 64} (rest : List Shape) :
+    (σ : List ShapeS) → shapesUnder k σ = true →
+    denShapes (ρ.setVal k x) σ rest = denShapes ρ σ rest
+  | [], _ => rfl
+  | S :: σ, h => by
+    simp only [shapesUnder, Bool.and_eq_true] at h
+    show S.den _ :: denShapes _ σ rest = _
+    rw [ShapeS.den_setVal S h.1, denShapes_setVal rest σ h.2]; rfl
+
+def ownedUnder (k : Nat) : List (Val × ShapeS) → Bool
+  | [] => true
+  | (a, S) :: l => a.under k && S.under k && ownedUnder k l
+
+theorem denOwned_setVal {ρ : Env} {k : Nat} {x : BitVec 64} (rest : List (BitVec 64 × Shape)) :
+    (l : List (Val × ShapeS)) → ownedUnder k l = true →
+    denOwned (ρ.setVal k x) l rest = denOwned ρ l rest
+  | [], _ => rfl
+  | (a, S) :: l, h => by
+    simp only [ownedUnder, Bool.and_eq_true] at h
+    show (a.den _, S.den _) :: denOwned _ l rest = _
+    rw [Val.den_setVal a h.1.1, ShapeS.den_setVal S h.1.2, denOwned_setVal rest l h.2]; rfl
+
+/-- Whether a context term mentions no value variable from `k` on. -/
+def CtxS.under (k : Nat) (Γ : CtxS) : Bool :=
+  Γ.regs.all (TyS.under k) && shapesUnder k Γ.stack && Γ.room.under k && Γ.flags.under k &&
+    ownedUnder k Γ.owned && Γ.above.under k
+
+theorem CtxS.den_setVal {ρ : Env} {k : Nat} {x : BitVec 64} {Γ : CtxS} (h : Γ.under k = true) :
+    Γ.den (ρ.setVal k x) = Γ.den ρ := by
+  simp only [CtxS.under, Bool.and_eq_true] at h
+  obtain ⟨⟨⟨⟨⟨hr, hs⟩, hroom⟩, hfl⟩, ho⟩, ha⟩ := h
+  have e₁ : (Γ.den (ρ.setVal k x)).regs = (Γ.den ρ).regs := by
+    funext r
+    exact (CtxS.den_regs _ Γ r).trans
+      ((TyS.den_setVal _ (RegMap.all_get hr r)).trans (CtxS.den_regs ρ Γ r).symm)
+  have e₂ : (Γ.den (ρ.setVal k x)).stack = (Γ.den ρ).stack := denShapes_setVal _ _ hs
+  have e₃ : (Γ.den (ρ.setVal k x)).room = (Γ.den ρ).room := Num.den_setVal _ hroom
+  have e₄ : (Γ.den (ρ.setVal k x)).flags = (Γ.den ρ).flags := FlagsS.den_setVal _ hfl
+  have e₅ : (Γ.den (ρ.setVal k x)).owned = (Γ.den ρ).owned := denOwned_setVal _ _ ho
+  have e₆ : (Γ.den (ρ.setVal k x)).above = (Γ.den ρ).above := Num.den_setVal _ ha
+  cases hd : Γ.den (ρ.setVal k x)
+  cases hd' : Γ.den ρ
+  rw [hd, hd'] at e₁ e₂ e₃ e₄ e₅ e₆
+  simp only at e₁ e₂ e₃ e₄ e₅ e₆
+  rw [e₁, e₂, e₃, e₄, e₅, e₆]
+
+/-! ## A walk through a block
+
+The checker taken through one instruction after another as in a run, and
+where an instruction needs to speak of a value a register is only known to
+hold a number for, that value is given a name first. What comes of it is a
+tree: what each step leaves to be shown, under the names given before it,
+and at the end the block where the walk stopped. -/
+
+/-- What a walk comes to. -/
+inductive Walk
+  /-- It stopped at an address, in a context. -/
+  | stop (a : BitVec 64) (Γ : CtxS)
+  /-- Steps left these to be shown; then the rest. -/
+  | conds (cs : List CondS) (rest : Walk)
+  /-- A value was given the name `k`; then the rest, for every value. -/
+  | name (k : Nat) (rest : Walk)
+
+/-- That a walk's conditions hold, and that `P` holds of where it stopped:
+for every value each name may stand for. -/
+def Walk.holds (P : BitVec 64 → Ctx → Prop) : Walk → Env → Prop
+  | .stop a Γ, ρ => P a (Γ.den ρ)
+  | .conds cs rest, ρ => CondS.all ρ cs ∧ rest.holds P ρ
+  | .name k rest, ρ => ∀ x, rest.holds P (ρ.setVal k x)
+
+/-- The first register an instruction needs the value of that the context
+only knows to hold a number. -/
+def toName (Γ : CtxS) (i : Instr) : Option Reg :=
+  i.wantsNamed.find? fun r =>
+    match Γ.regs.get r with
+    | .int => true
+    | _ => false
+
+def blocksUnder (k : Nat) : List (BitVec 64 × ShapeS × Bool) → Bool
+  | [] => true
+  | (_, S, _) :: rest => S.under k && blocksUnder k rest
+
+theorem BlocksOk.setVal {Ψ : MemTy} {ρ : Env} {k : Nat} {x : BitVec 64} :
+    (B : List (BitVec 64 × ShapeS × Bool)) → blocksUnder k B = true → BlocksOk Ψ ρ B →
+    BlocksOk Ψ (ρ.setVal k x) B
+  | [], _, _ => trivial
+  | (base, S, w) :: rest, hu, hB => by
+    simp only [blocksUnder, Bool.and_eq_true] at hu
+    obtain ⟨⟨l, hl, hs, hw⟩, hrest⟩ := hB
+    exact ⟨⟨l, hl, by rw [ShapeS.den_setVal S hu.1]; exact hs, hw⟩,
+      BlocksOk.setVal rest hu.2 hrest⟩
+
+/-- The checker walked from an address for at most so many moves, `k` being
+a variable no term yet mentions. -/
+def walk (B : List (BitVec 64 × ShapeS × Bool)) (code : List (BitVec 64 × Instr × BitVec 64)) :
+    Nat → Nat → BitVec 64 → CtxS → Walk
+  | 0, _, a, Γ => .stop a Γ
+  | fuel + 1, k, a, Γ =>
+    match lookup code a with
+    | none => .stop a Γ
+    | some (i, len) =>
+      match toName Γ i with
+      | some r =>
+        if Γ.under k && blocksUnder k B then
+          .name k (walk B code fuel (k + 1) a (Γ.setReg r (.eq (.var k))))
+        else .stop a Γ
+      | none =>
+        match step (a + len) { Γ with blocks := B } i with
+        | some (Γ', cs) => .conds cs (walk B code fuel k (a + len) Γ')
+        | none => .stop a Γ
+
+/-- **A walk whose conditions hold types the block it started at**, if the
+block where it stopped is typed. -/
+theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
+    {B : List (BitVec 64 × ShapeS × Bool)} {code : List (BitVec 64 × Instr × BitVec 64)}
+    (hcode : Agrees fetch code) : (fuel k : Nat) → (a : BitVec 64) → (Γ : CtxS) → (ρ : Env) →
+    BlocksOk Ψ ρ B → (walk B code fuel k a Γ).holds (BlockOk Φ fetch sys Ψ) ρ →
+    BlockOk Φ fetch sys Ψ a (Γ.den ρ)
+  | 0, _, _, _, _, _, h => h
+  | fuel + 1, k, a, Γ, ρ, hB, h => by
+    unfold walk at h
+    split at h
+    · exact h
+    · next i len hl =>
+      split at h
+      · next r hr =>
+        split at h
+        · next hu =>
+          simp only [Bool.and_eq_true] at hu
+          have key : ∀ x, BlockOk Φ fetch sys Ψ a ((Γ.den ρ).setReg r (.eq x)) := fun x => by
+            have := walk_sound hcode fuel (k + 1) a (Γ.setReg r (.eq (.var k))) (ρ.setVal k x)
+              (BlocksOk.setVal B hu.2 hB) (h x)
+            rw [CtxS.den_setReg, CtxS.den_setVal hu.1] at this
+            have e : (TyS.eq (.var k)).den (ρ.setVal k x) = .eq x := by
+              show Ty.eq ((padSet 0 ρ.val k x).getD k 0) = _
+              rw [getD_padSet]; simp
+            rw [e] at this
+            exact this
+          by_cases hsp : r = .rsp
+          · subst hsp; exact .nameSp key
+          · exact .name hsp key
+        · exact h
+      · split at h
+        · next Γ' cs hs =>
+          exact .step (Agrees.lookup code hcode hl)
+            (step_sound (Γ := { Γ with blocks := B }) hB hs h.1)
+            (walk_sound hcode fuel k (a + len) Γ' ρ hB h.2)
+        · exact h
+
+/-- The same, from the walk written out. -/
+theorem walk_sound' {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
+    {B : List (BitVec 64 × ShapeS × Bool)} {code : List (BitVec 64 × Instr × BitVec 64)}
+    (hB : BlocksOk Ψ ρ B) (hcode : Agrees fetch code) {fuel k : Nat} {a : BitVec 64} {Γ : CtxS}
+    {W : Walk} (h : walk B code fuel k a Γ = W) (hW : W.holds (BlockOk Φ fetch sys Ψ) ρ) :
+    BlockOk Φ fetch sys Ψ a (Γ.den ρ) :=
+  walk_sound hcode fuel k a Γ ρ hB (by rw [h]; exact hW)
 
 end Sym
 
