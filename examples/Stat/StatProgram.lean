@@ -147,9 +147,6 @@ def code : List (Asm Label) := [
 -- program uses no stack.
 asm_program code start .start stack 0 named "stat"
 
-/-- Where the buffer is. -/
-def bufferAt : BitVec 64 := Asm.addr code base .buffer
-
 #guard name == bytesOf "input.txt"
 
 /-- The starting state with the given files there. -/

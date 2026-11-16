@@ -100,9 +100,6 @@ def code : List (Asm Label) := [
 -- table, and one free stack slot below `rsp`.
 asm_program code start .start stack 1 named "dispatch"
 
-/-- Where the table is loaded. -/
-def dataBase : BitVec 64 := Asm.addr code base .table
-
 /-- The table's bytes: the addresses of the two functions. -/
 def tableBytes : List Byte := Asm.dataAt base code .table 16
 

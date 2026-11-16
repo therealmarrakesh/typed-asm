@@ -12,6 +12,9 @@ open TypedAsm
 
 namespace Own
 
+-- Where the record is loaded.
+asm_label dataBase .record
+
 /-! ## The typing -/
 
 /-- The contexts allowed at each label: nothing is known about any register,

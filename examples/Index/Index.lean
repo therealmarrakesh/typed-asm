@@ -12,6 +12,9 @@ open TypedAsm
 
 namespace Index
 
+-- Where the array is loaded.
+asm_label dataBase .array
+
 /-! ## The typing -/
 
 /-- A pointer to a read-only array of `n` integers. -/
@@ -58,7 +61,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   | afterCall => ty_block
   | get n saved ret rest room hK hn =>
     -- the index is any integer; call it `v`
-    ty_name .rdx as v
     -- entering `inbounds`, the comparison has found `v` below the length
     ty_block
 

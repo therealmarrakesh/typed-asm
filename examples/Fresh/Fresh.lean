@@ -68,7 +68,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_into At.loop x
   | loop p =>
     -- the index, whatever it is, is called `i`; past the test it is less than 4096
-    ty_name .rcx as i
     ty_block
   | done p =>
     ty_steps

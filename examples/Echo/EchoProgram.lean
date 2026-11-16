@@ -78,9 +78,6 @@ def code : List (Asm Label) := [
 -- buffer in writable memory. The program uses no stack.
 asm_program code start .start stack 0
 
-/-- Where the buffer is loaded. -/
-def dataBase : BitVec 64 := Asm.addr code base .buffer
-
 /-- The starting state with the given input waiting, one event per `read`. -/
 def startWith (input : List ReadEvent) : State :=
   { start with world := { input := input } }

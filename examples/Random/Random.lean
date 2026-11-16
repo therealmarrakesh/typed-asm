@@ -13,6 +13,9 @@ open TypedAsm
 
 namespace Random
 
+-- Where the buffer is loaded.
+asm_label dataBase .buffer
+
 /-! ## The typing -/
 
 /-- The contexts allowed at each label: nothing is known about any register,

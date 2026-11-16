@@ -12,6 +12,9 @@ open TypedAsm
 
 namespace Stat
 
+-- Where the buffer is.
+asm_label bufferAt .buffer
+
 /-! ## The typing -/
 
 /-- The contexts allowed at each label: nothing is known about any register. -/

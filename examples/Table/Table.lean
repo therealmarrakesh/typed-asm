@@ -12,6 +12,11 @@ open TypedAsm
 
 namespace Table
 
+-- Where the data is loaded: the table first, then the record.
+asm_label dataBase .table
+-- Where the record is.
+asm_label recordAddr .record
+
 /-! ## The typing -/
 
 /-- A pointer to a writable record of sixteen plain bytes: two numbers. -/

@@ -164,9 +164,6 @@ def code : List (Asm Label) := [
 -- record in writable memory, and four free stack slots below `rsp`.
 asm_program code start .start stack 4 named "ops"
 
-/-- Where the record is loaded. -/
-def dataBase : BitVec 64 := Asm.addr code base .record
-
 /-! ## Running it -/
 
 -- The arithmetic in the listing comes to 120, whether instructions come

@@ -12,6 +12,9 @@ open TypedAsm
 
 namespace Dispatch
 
+-- Where the table is loaded.
+asm_label dataBase .table
+
 /-! ## The typing -/
 
 /-- Both functions take an integer in `rdi`, return one in `rax`, use no

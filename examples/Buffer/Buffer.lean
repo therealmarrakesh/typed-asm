@@ -37,12 +37,10 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     -- sub rsp, 16
     ty_step
     -- from here on as in the loop
-    ty_name .rsp as sp
     ty_block
   | loop =>
     -- the stack pointer's value is called `sp`, so `lea rsi, [rsp]` yields
     -- a known address and the `read` is checked against the two slots there
-    ty_name .rsp as sp
     ty_block
 
 /-! ## Safety -/

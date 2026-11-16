@@ -103,9 +103,6 @@ def code : List (Asm Label) := [
 -- all from the lines above.
 asm_program code start .start
 
-/-- Where the data is loaded: the byte that ends a line. -/
-def dataBase : BitVec 64 := Asm.addr code base .newline
-
 /-- A starting state but for the stack and `rip`: the program in memory, and
 with it the data. -/
 def prepared : State :=

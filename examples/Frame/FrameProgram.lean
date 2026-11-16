@@ -98,9 +98,6 @@ def code : List (Asm Label) := [
 -- record in writable memory, and three free stack slots below `rsp`.
 asm_program code start .start stack 3 named "frame"
 
-/-- Where the record is loaded. -/
-def dataBase : BitVec 64 := Asm.addr code base .record
-
 /-! ## Running it -/
 
 -- The second field is not zero, so the result is the low byte of the first: 0x34.

@@ -12,6 +12,9 @@ open TypedAsm
 
 namespace Args
 
+-- Where the data is loaded: the byte that ends a line.
+asm_label dataBase .newline
+
 /-! ## The typing -/
 
 /-- The stack as the program finds it when given `c` arguments: the count,

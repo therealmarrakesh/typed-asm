@@ -1189,7 +1189,18 @@ so that the rules for exactly known values apply. -/
 def Instr.wantsNamed : Instr → List Reg
   | .mulDiv .div _ (.reg r) | .mulDiv .idiv _ (.reg r) => [.rax, .rdx, r]
   | .cqo | .cdq => [.rax]
-  | _ => []
+  -- what is compared: so that the way a jump after it went says something
+  -- of those values
+  | .alu .cmp _ (.rm_r (.reg d) s) => [d, s]
+  | .alu .cmp _ (.rm_i (.reg d) _) => [d]
+  | .test _ (.reg r) (.reg r') => [r, r']
+  -- the address of something on the stack is known when the stack pointer is
+  | .lea .w64 _ (.sib (some .rsp) _ _) => [.rsp]
+  | i =>
+    -- an index into memory must be exactly known for the access to be placed
+    match i.memOperand? with
+    | some (.sib _ (some (x, _)) _) => [x.toReg]
+    | _ => []
 
 /-- Whether the instruction can send control somewhere other than the next
 instruction, which is where a block ends. -/
@@ -2174,8 +2185,24 @@ private partial def typeStep (named : Bool := false) : TacticM StepResult :=
   let goal ← getMainGoal
   let ty := (← instantiateMVars (← goal.getType)).consumeMData
   unless ty.isAppOf ``BlockOk do return .notABlock
-  let saved ← saveState
   let others := (← getGoals).drop 1
+  -- The address of the block is written out as a number. Left as the walk
+  -- through the program that finds a label, it would be walked again by
+  -- every step that so much as compares it with something.
+  let addr0 := ty.getAppArgs[4]!
+  let (goal, ty) ← do
+    if addr0.isAppOfArity ``BitVec.ofNat 2 || addr0.hasFVar || addr0.hasExprMVar then
+      pure (goal, ty)
+    else
+      try
+        let n ← evalAddr addr0
+        let lit := mkApp2 (mkConst ``BitVec.ofNat) (mkNatLit 64) (mkNatLit n)
+        let ty' := mkAppN ty.getAppFn (ty.getAppArgs.set! 4 lit)
+        pure (← goal.replaceTargetDefEq ty', ty')
+      catch _ => pure (goal, ty)
+  -- what is saved, to go back to, is the block with its address written out
+  setGoals (goal :: others)
+  let saved ← saveState
   setGoals [goal]
   try
     evalTactic (← `(tactic| refine BlockOk.step (Γ' := ?_) (by ty_fetch) ?_ ?_))
@@ -3818,6 +3845,31 @@ def plainBlocks (bs : List (BitVec 64 × Layout)) : Bool :=
 theorem plain_of_check {bs : List (BitVec 64 × Layout)} (h : plainBlocks bs = true) :
     ∀ x ∈ bs, x.2.shape.vals = [] := fun x hx =>
   List.isEmpty_iff.mp (List.all_eq_true.mp h x hx)
+
+/-- `asm_label name l`: defines `name` as the address of label `l` of the
+program declared with `asm_program`, written out as a number, and proves in
+`name_eq` that it is that label's address.
+
+The address is where the layout of the program puts the label. Written out,
+it costs nothing to use; left as the walk through the program that finds it,
+every step of a proof that looked at it would make the walk again. -/
+syntax "asm_label " ident term:max : command
+
+open Lean Elab Command in
+elab_rules : command
+  | `(asm_label $name $l) => do
+    let code := mkIdent `code
+    let base := mkIdent `base
+    let n ← liftTermElabM do
+      let ty := mkApp (mkConst ``BitVec) (mkNatLit 64)
+      let e ← Term.elabTermEnsuringType (← `(Asm.addr $code $base $l)) ty
+      Term.synthesizeSyntheticMVarsNoPostponing
+      evalAddr (← instantiateMVars e)
+    let lit := Syntax.mkNumLit (toString n)
+    let eqName := mkIdent (name.getId.appendAfter "_eq")
+    elabCommand (← `(/-- Where the label is loaded. -/
+      def $name : BitVec 64 := $lit))
+    elabCommand (← `(theorem $eqName : $name = Asm.addr $code $base $l := by decide +kernel))
 
 /-- `asm_typing At blocks bs room n`: for the program declared with
 `asm_program`, whose labels have the contexts `At`, whose memory blocks are

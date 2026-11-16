@@ -71,9 +71,6 @@ def code : List (Asm Label) := [
 -- list. The program uses no stack.
 asm_program code start .start stack 0 named "list"
 
-/-- Where the list is loaded. Each node is sixteen bytes. -/
-def dataBase : BitVec 64 := Asm.addr code base .first
-
 /-- The data's bytes: three nodes, each a value and the address of the next. -/
 def listBytes : List Byte := Asm.dataAt base code .first 48
 

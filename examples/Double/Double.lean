@@ -79,7 +79,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   | double p saved ret rest room hK => ty_into At.loop p saved ret rest room hK
   | loop p saved ret rest room hK =>
     -- the index, whatever it is, is called `i`; past the test it is less than 512
-    ty_name .rcx as i
     ty_block
 
 /-! ## Safety -/

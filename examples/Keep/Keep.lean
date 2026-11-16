@@ -52,7 +52,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     -- sub rsp, 16
     ty_step
     -- the stack pointer's value is called `sp`; `lea rbx, [rsp]` is then known
-    ty_name .rsp as sp
     ty_step
     ty_call pauseSig
   | back sp =>

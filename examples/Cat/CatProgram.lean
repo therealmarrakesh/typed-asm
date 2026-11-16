@@ -131,9 +131,6 @@ def code : List (Asm Label) := [
 -- all from the lines above.
 asm_program code start .start
 
-/-- Where the buffer is loaded. -/
-def dataBase : BitVec 64 := Asm.addr code base .buffer
-
 /-- A starting state but for the stack and `rip`: the program in memory, and
 with it the buffer in writable memory. -/
 def prepared : State :=

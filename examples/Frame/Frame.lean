@@ -12,6 +12,9 @@ open TypedAsm
 
 namespace Frame
 
+-- Where the record is loaded.
+asm_label dataBase .record
+
 /-! ## The typing -/
 
 /-- A pointer to a writable record of sixteen plain bytes: two numbers. -/

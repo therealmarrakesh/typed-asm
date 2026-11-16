@@ -78,9 +78,6 @@ def code : List (Asm Label) := [
 -- array in read-only memory, and one free stack slot below `rsp`.
 asm_program code start .start stack 1 named "index"
 
-/-- Where the array is loaded. -/
-def dataBase : BitVec 64 := Asm.addr code base .array
-
 -- Element 3 is 40.
 #guard exitsWith 40 (run fetch linux 100 start)
 #guard exitsWith 40 (runMem linux 100 start)

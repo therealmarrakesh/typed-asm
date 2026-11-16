@@ -152,9 +152,6 @@ def code : List (Asm Label) := [
 -- record, in read-only memory. The program uses no stack.
 asm_program code start .start stack 0 named "own"
 
-/-- Where the record is loaded. -/
-def dataBase : BitVec 64 := Asm.addr code base .record
-
 /-- A page for each request for memory, one after another. -/
 def pages : Nat → Option (BitVec 64) :=
   fun i => some (BitVec.ofNat 64 (0x10000000 + 4096 * i))

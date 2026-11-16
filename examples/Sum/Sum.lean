@@ -12,6 +12,9 @@ open TypedAsm
 
 namespace Sum
 
+-- Where the array is loaded.
+asm_label dataBase .array
+
 /-! ## The typing -/
 
 /-- A pointer to element `i` of a read-only array of `n` integers. -/

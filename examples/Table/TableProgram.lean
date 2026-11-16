@@ -63,12 +63,6 @@ def code : List (Asm Label) := [
 -- data.
 asm_program code start .start stack 0 named "table"
 
-/-- Where the data is loaded: the table first, then the record. -/
-def dataBase : BitVec 64 := Asm.addr code base .table
-
-/-- Where the record is. -/
-def recordAddr : BitVec 64 := Asm.addr code base .record
-
 /-- The data's bytes: the address of the record, then its two fields. -/
 def dataBytes : List Byte := Asm.dataAt base code .table 24
 

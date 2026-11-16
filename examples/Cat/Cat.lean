@@ -12,6 +12,9 @@ open TypedAsm
 
 namespace Cat
 
+-- Where the buffer is loaded.
+asm_label dataBase .buffer
+
 /-! ## The typing -/
 
 /-- The context inside the loop, for a program given `c` arguments that is

@@ -85,13 +85,11 @@ def code : List (Asm Label) := [
 -- record in writable memory, and two free stack slots below `rsp`.
 asm_program code start .start stack 2 named "swap"
 
-/-- Where the record is loaded. -/
-def dataBase : BitVec 64 := Asm.addr code base .record
-
 /-! ## Running it -/
 
 def recordIs (x y : BitVec 64) : Outcome → Bool
-  | .next s => s.load64 dataBase == x && s.load64 (dataBase + 8) == y
+  | .next s =>
+    s.load64 (Asm.addr code base .record) == x && s.load64 (Asm.addr code base .record + 8) == y
   | _ => false
 
 -- After the first call returns (eight steps) the fields are exchanged, and

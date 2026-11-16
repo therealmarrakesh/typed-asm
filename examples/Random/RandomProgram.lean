@@ -91,9 +91,6 @@ def careless : List (Asm Label) := codeWith (.mov .w32 (.rm_i (.reg .rdx) 512))
 -- buffer in writable memory. The program uses no stack.
 asm_program code start .start stack 0 named "random"
 
-/-- Where the buffer is loaded. -/
-def dataBase : BitVec 64 := Asm.addr code base .buffer
-
 /-- The starting state with the kernel set to do `fates` with the calls for
 randomness, and to supply the bytes `random`. -/
 def startWith (fates : List Fate) (random : Nat → Byte) : State :=

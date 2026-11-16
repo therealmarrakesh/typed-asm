@@ -12,6 +12,9 @@ open TypedAsm
 
 namespace List3
 
+-- Where the list is loaded. Each node is sixteen bytes.
+asm_label dataBase .first
+
 /-! ## The typing -/
 
 /-- What a node's link holds: zero, or the address of a node. Nodes are the
