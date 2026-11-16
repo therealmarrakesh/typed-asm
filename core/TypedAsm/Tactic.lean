@@ -2560,6 +2560,116 @@ private def closeArithLeft : TacticM Unit := do
       gs[i]!.assign (mkApp3 (mkConst ``And.left) tys[i]! rest h)
       h := mkApp3 (mkConst ``And.right) tys[i]! rest h
 
+/-- Introduces the flags hypotheses of one side of a conditional jump. When
+the flags are known exactly they are substituted. The fact about which way
+the condition went is named `hcond`. -/
+private def introBranch : TacticM Unit := do
+  let hcond := mkIdent `hcond
+  -- `rfl` must be written without macro hygiene, or `rintro` takes it for a name.
+  let subst := mkIdent `rfl
+  evalTactic (← `(tactic| first
+    | rintro f $subst:ident $hcond:ident
+    | (intro f hflags $hcond:ident; try dsimp only at hflags)))
+  -- What an unsigned comparison's outcome says about the two numbers is put
+  -- among the hypotheses as `hlt` or `hge`, for bounds on an index.
+  let hlt := mkIdent `hlt
+  let hge := mkIdent `hge
+  -- only where the flags are those of a comparison: matching the lemmas
+  -- against flags of another kind would set about computing them
+  -- only where the flags are those of a comparison and the condition is one
+  -- of "below" and "not below": the lemma is picked from the condition and
+  -- the way it went. Matching a lemma against flags or a condition of
+  -- another kind would set about computing them.
+  let lemma? : Option (Name × Bool) ← withMainContext do
+    let some d := (← getLCtx).findFromUserName? `hcond | pure none
+    let t ← instantiateMVars d.type
+    unless (t.find? (·.isConstOf ``AluOp.cmp)).isSome do return none
+    let some (_, lhs, rhs) := t.eq? | pure none
+    unless lhs.isAppOfArity ``Cond.eval 2 do return none
+    let c := lhs.appArg!
+    let went := rhs.isAppOfArity ``Option.some 2 && rhs.appArg!.isConstOf ``Bool.true
+    let wentNot := rhs.isAppOfArity ``Option.some 2 && rhs.appArg!.isConstOf ``Bool.false
+    if c.isConstOf ``Cond.b && went then pure (some (``cmp_below, true))
+    else if c.isConstOf ``Cond.b && wentNot then pure (some (``cmp_not_below, false))
+    else if c.isConstOf ``Cond.ae && went then pure (some (``cmp_ae, false))
+    else if c.isConstOf ``Cond.ae && wentNot then pure (some (``cmp_not_ae, true))
+    else pure none
+  if let some (lem, below) := lemma? then try
+    let name := if below then hlt else hge
+    Tactic.withoutRecover do evalTactic (← `(tactic|
+      (have $name := $(mkIdent lem) $hcond
+       try simp only [BitVec.toNat_ofNat, Nat.reduceMod, Nat.reducePow] at $name:ident)))
+  catch _ => pure ()
+  -- What a test of the zero flag says of the result the flag was set from
+  -- is put among the hypotheses as `hz`, that it is zero, or `hnz`, that it
+  -- is not: for a comparison the result is the difference.
+  let zero? : Option (Name × Bool) ← withMainContext do
+    let some d := (← getLCtx).findFromUserName? `hcond | pure none
+    let t ← instantiateMVars d.type
+    let some (_, lhs, rhs) := t.eq? | pure none
+    unless lhs.isAppOfArity ``Cond.eval 2 do return none
+    let c := lhs.appArg!
+    let F := lhs.appFn!.appArg!
+    let went := rhs.isAppOfArity ``Option.some 2 && rhs.appArg!.isConstOf ``Bool.true
+    let wentNot := rhs.isAppOfArity ``Option.some 2 && rhs.appArg!.isConstOf ``Bool.false
+    let direct := F.isAppOf ``Flags.ofResult
+    let ofOp := F.isAppOfArity ``Prod.snd 3 && F.appArg!.isAppOf ``AluOp.apply
+    unless direct || ofOp do return none
+    if c.isConstOf ``Cond.e && went then
+      pure (some (if direct then ``zero_of_e' else ``zero_of_e, true))
+    else if c.isConstOf ``Cond.e && wentNot then
+      pure (some (if direct then ``ne_zero_of_not_e' else ``ne_zero_of_not_e, false))
+    else if c.isConstOf ``Cond.ne && went then
+      pure (some (if direct then ``ne_zero_of_ne' else ``ne_zero_of_ne, false))
+    else if c.isConstOf ``Cond.ne && wentNot then
+      pure (some (if direct then ``zero_of_not_ne' else ``zero_of_not_ne, true))
+    else pure none
+  if let some (lem, isZero) := zero? then try
+    let name := mkIdent (if isZero then `hz else `hnz)
+    Tactic.withoutRecover do evalTactic (← `(tactic|
+      (have $name := $(mkIdent lem) $hcond
+       try simp only [AluOp.apply, subBorrow_fst, addCarry_fst, BitVec.and_self, BitVec.or_self]
+         at $name:ident)))
+  catch _ => pure ()
+
+/-- Closes a goal reached under an assumption about a condition that the
+exactly known flags contradict. Returns whether it did. -/
+private def closeIfImpossible (g : MVarId) : TacticM Bool := do
+  let saved ← saveState
+  try
+    setGoals [g]
+    Tactic.withoutRecover do
+      evalTactic (← `(tactic| (refine absurd $(mkIdent `hcond) ?_; decide)))
+    return (← getUnsolvedGoals).isEmpty
+  catch _ =>
+    saved.restore
+    -- The flags may come from a value known only by a fact about it: an
+    -- error number, or a byte that is not zero.
+    let isErr ← g.withContext do
+      (← getLCtx).anyM fun d => do
+        let t ← instantiateMVars d.type
+        return t.isAppOf ``SysErr || t.isAppOf ``Ne || t.isAppOf ``LT.lt
+    unless isErr do return false
+    try
+      setGoals [g]
+      Tactic.withoutRecover do
+        evalTactic (← `(tactic| (
+          refine absurd $(mkIdent `hcond) ?_
+          try simp only [SysErr] at *
+          simp only [Cond.eval, Flags.ofResult, AluOp.apply, subBorrow, bind, Option.bind, pure,
+            Option.map, Option.some.injEq]
+          try simp only [BitVec.and_self, BitVec.or_self]
+          first
+            | bv_omega
+            | (simp only [BitVec.msb_eq_decide, beq_iff_eq, decide_eq_true_eq,
+                 decide_eq_false_iff_not, Bool.not_eq_true, Bool.not_eq_false, Nat.not_le,
+                 Nat.not_lt]
+               bv_omega))))
+      return (← getUnsolvedGoals).isEmpty
+    catch _ =>
+      saved.restore
+      return false
+
 /-! ## Handing a block over at a label
 
 Where a block comes to a label with contexts of its own, by a jump or by
@@ -2692,6 +2802,17 @@ private def leafType (Φ : Expr) (atoms : Sym.Atoms) (t : Nat) (Δ : Sym.CtxS)
   return mkApp2 (mkConst ``And)
     (mkAppN Φ #[toExpr (BitVec.ofNat 64 t), ← Sym.denCtx atoms Δ]) allE
 
+/-- The same under what a conditional jump's going one way says of the
+flags, where the block is handed over on that side of one. -/
+private def sideType (Φ : Expr) (atoms : Sym.Atoms) (t : Nat) (Δ : Sym.CtxS)
+    (cs : List Sym.CondS) (branch? : Option (Sym.FlagsS × Cond × Bool)) : MetaM Expr := do
+  let leaf ← leafType Φ atoms t Δ cs
+  let some (fl, c, b) := branch? | return leaf
+  let P ← Sym.denFlags atoms fl
+  withLocalDeclD `f (mkConst ``Flags) fun f => do
+    let ev ← mkEq (← mkAppM ``Cond.eval #[f, toExpr c]) (← mkAppM ``Option.some #[toExpr b])
+    mkForallFVars #[f] (← mkArrow (mkApp P f).headBeta (← mkArrow ev leaf))
+
 /-- Shows what `leafType` states: the label's context at the parameters
 found is allowed there, with what it demands shown from what is known; and
 each thing the comparison left is shown. Fails if anything is left over. -/
@@ -2763,12 +2884,28 @@ private def solveLeaf (g : MVarId) (Φ : Expr) (lName kName : Name) (params : Ar
   g.assign (mkApp4 (mkConst ``And.intro) (mkApp P ΔE) allE pf2 (← instantiateMVars hn))
   setGoals goals
 
+/-- Shows what `sideType` states: on a side of a conditional jump, what its
+going that way says is brought in first, and a side the flags rule out needs
+nothing more. -/
+private def solveSide (g : MVarId) (branch? : Option (Sym.FlagsS × Cond × Bool)) (Φ : Expr)
+    (lName kName : Name) (params : Array Expr) (t : Nat) (Δ : Sym.CtxS) (cs : List Sym.CondS)
+    (atoms : Sym.Atoms) : TacticM Unit := do
+  if branch?.isNone then
+    solveLeaf g Φ lName kName params t Δ cs atoms
+    return
+  let goals ← getGoals
+  let [g₁] ← runOn g introBranch | throwError "unexpected goals"
+  unless ← closeIfImpossible g₁ do
+    solveLeaf g₁ Φ lName kName params t Δ cs atoms
+  setGoals goals
+
 /-- Looks for a context allowed at the label at `t` that the context reached
 may stand for, with everything that takes shown: tried here with the values
 the walk names standing as variables, so that the walk can be given the
 context before it is made. -/
 private def findEnter (Φ : Expr) (atoms : Sym.Atoms) (named : Array (Nat × Reg))
-    (cur : Sym.CtxS) (at' t : Nat) : TacticM (Option (EnterInfo × Sym.Atoms)) := do
+    (cur : Sym.CtxS) (at' t : Nat) (branch? : Option (Sym.FlagsS × Cond × Bool) := none) :
+    TacticM (Option (EnterInfo × Sym.Atoms)) := do
   if ← enterOff.get then return none
   let some (_, _, T, labels) ← labelInfo Φ | return none
   let some (_, lName) := labels.find? (·.1 == t) | return none
@@ -2814,8 +2951,8 @@ private def findEnter (Φ : Expr) (atoms : Sym.Atoms) (named : Array (Nat × Reg
             ownedRest := ← sameAtom atoms''.owned cur.ownedRest Δ.ownedRest }
           let some cs := Sym.subCtx cur Δ
             | do trace[TypedAsm.fast] "{kName}: the contexts do not compare"; return none
-          let g ← mkFreshExprSyntheticOpaqueMVar (← leafType Φ atoms'' t Δ cs)
-          try solveLeaf g.mvarId! Φ lName kName params t Δ cs atoms''
+          let g ← mkFreshExprSyntheticOpaqueMVar (← sideType Φ atoms'' t Δ cs branch?)
+          try solveSide g.mvarId! branch? Φ lName kName params t Δ cs atoms''
           catch e =>
             trace[TypedAsm.fast] "{kName}: {e.toMessageData}"
             throw e
@@ -3173,6 +3310,28 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         | _ => none
       let some (info, atoms') ← findEnter Φ atoms named cur at' t | return none
       return some (info, atoms', .jump at' i len')
+    -- A conditional jump to a label with contexts of its own: the side that
+    -- jumps is handed over there, and the other is handed over at the next
+    -- instruction if that is at such a label too, the block otherwise going on.
+    let branchEnter (atoms : Sym.Atoms) (moves : Array WalkMove) (at' : Nat) (cur : Sym.CtxS) :
+        TacticM (Option (Array EnterInfo × Sym.Atoms × WalkMove)) := do
+      let some stops := stops? | return none
+      unless ← labelsKnown.get do return none
+      let some (i, len') := instrs[at']? | return none
+      let .jcc c d := i | return none
+      let t := (BitVec.ofNat 64 at' + len' + d.signExtend 64).toNat
+      unless stops.contains t do return none
+      let named := moves.filterMap fun
+        | .name k r => some (k, r)
+        | _ => none
+      let some (taken, atoms₁) ← findEnter Φ atoms named cur at' t (some (cur.flags, c, true))
+        | return none
+      let next' := at' + len'.toNat
+      if stops.contains next' && next' != t then
+        if let some (fall, atoms₂) ← findEnter Φ atoms₁ named cur at' next'
+            (some (cur.flags, c, false)) then
+          return some (#[taken, fall], atoms₂, .split at' i len')
+      return some (#[taken], atoms₁, .split at' i len')
     let mut atoms := atoms
     let mut enters : Array EnterInfo := #[]
     let (S₀, moves, atEnd, arrived) ← match result with
@@ -3199,7 +3358,13 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           atoms := atoms'
           enters := enters.push info
           pure (S₀, moves.push mv, atEnd, arrived)
-        | none => pure (S₀, moves, atEnd, arrived)
+        | none =>
+          match ← branchEnter atoms moves atEnd arrived with
+          | some (infos, atoms', mv) =>
+            atoms := atoms'
+            enters := enters ++ infos
+            pure (S₀, moves.push mv, atEnd, arrived)
+          | none => pure (S₀, moves, atEnd, arrived)
       | .inl (none, none) => return none
       | .inl (none, some S₀) =>
         -- the block may begin with the jump that hands it over
@@ -3208,7 +3373,13 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           atoms := atoms'
           enters := enters.push info
           pure (S₀, #[mv], n, S₀)
-        | none => return none
+        | none =>
+          match ← branchEnter atoms #[] n S₀ with
+          | some (infos, atoms', mv) =>
+            atoms := atoms'
+            enters := enters ++ infos
+            pure (S₀, #[mv], n, S₀)
+          | none => return none
       | .inl (some (_, _, _, .noForm), _) => return none
       | .inl (some (at', i, tried, why), _) =>
         let msg ← explainReject (withNames atoms tried) i.onStack why
@@ -3314,6 +3485,23 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let condInstrs := (condMoves.map (·.1)).toArray
     let condMoveIdx := (condMoves.map (·.2)).toArray
     let condsSeen : IO.Ref Nat ← IO.mkRef 0
+    -- where the block is handed over: what `sideType` states, shown
+    let enterLeaf (atoms : Sym.Atoms) (t : BitVec 64) (Δ : Sym.CtxS) (cs : List Sym.CondS)
+        (branch? : Option (Sym.FlagsS × Cond × Bool)) : TacticM Expr := do
+      let some info := enters.find? (·.t == t.toNat)
+        | throwError "the block is handed over where no context was chosen"
+      -- the parameters, with the walk's names for the values they speak of
+      let temps := info.temps.map (·.2)
+      let reals := info.temps.map fun (k, _) => atoms.val.getD k (toExpr (0 : BitVec 64))
+      let params := info.params.map (·.replaceFVars temps reals)
+      let m ← mkFreshExprSyntheticOpaqueMVar (← sideType Φ atoms t.toNat Δ cs branch?)
+      try solveSide m.mvarId! branch? Φ info.lName info.kName params t.toNat Δ cs atoms
+      catch e =>
+        trace[TypedAsm.fast] "handing over failed where it was found to succeed: {e.toMessageData}"
+        enterOff.set true
+        throw e
+      trace[TypedAsm.fast] "handed over within the walk at `{info.lName.components.getLast!}`"
+      instantiateMVars m
     let rec down (W : Sym.Walk) (atoms : Sym.Atoms) (vs : Array Expr) (names : Array Name) :
         TacticM Expr := do
       match W with
@@ -3389,6 +3577,8 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         -- each side is left as it stands, to be taken up with what the
         -- flags say of the condition as its first hypotheses
         let side (child : Sym.Walk) (b : Bool) : TacticM Expr := do
+          -- a side on which the block is handed over is settled here
+          if let .enter t Δ cs := child then return ← enterLeaf atoms t Δ cs (some (fl, c, b))
           let .stop a' Γ' := child | throwError "a branch's side is not where the walk stopped"
           let Γ'E ← Sym.denCtx atoms Γ'
           let P ← Sym.denFlags atoms fl
@@ -3405,21 +3595,7 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         let hFall ← side fall false
         let hTaken ← side taken true
         mkAppM ``And.intro #[hTaken, hFall]
-      | .enter t Δ cs =>
-        let some info := enters.find? (·.t == t.toNat)
-          | throwError "the block is handed over where no context was chosen"
-        -- the parameters, with the walk's names for the values they speak of
-        let temps := info.temps.map (·.2)
-        let reals := info.temps.map fun (k, _) => atoms.val.getD k (toExpr (0 : BitVec 64))
-        let params := info.params.map (·.replaceFVars temps reals)
-        let m ← mkFreshExprSyntheticOpaqueMVar (← leafType Φ atoms t.toNat Δ cs)
-        try solveLeaf m.mvarId! Φ info.lName info.kName params t.toNat Δ cs atoms
-        catch e =>
-          trace[TypedAsm.fast] "handing over failed where it was found to succeed: {e.toMessageData}"
-          enterOff.set true
-          throw e
-        trace[TypedAsm.fast] "handed over within the walk at `{info.lName.components.getLast!}`"
-        instantiateMVars m
+      | .enter t Δ cs => enterLeaf atoms t Δ cs none
       | .byte k zero more =>
         let hz ← down zero atoms vs names
         let hm ← withLocalDeclD `b bv fun v => do
@@ -4152,116 +4328,6 @@ elab_rules : tactic
       (try simp only [$[$defs:ident],*, AluOp.apply, subBorrow_fst, addCarry_fst, imulTrunc_fst,
           BitVec.and_self, BitVec.setWidth_eq, BitVec.reduceSignExtend] at $[$hyps:ident]* ⊢
        first | omega | bv_omega)))
-
-/-- Introduces the flags hypotheses of one side of a conditional jump. When
-the flags are known exactly they are substituted. The fact about which way
-the condition went is named `hcond`. -/
-private def introBranch : TacticM Unit := do
-  let hcond := mkIdent `hcond
-  -- `rfl` must be written without macro hygiene, or `rintro` takes it for a name.
-  let subst := mkIdent `rfl
-  evalTactic (← `(tactic| first
-    | rintro f $subst:ident $hcond:ident
-    | (intro f hflags $hcond:ident; try dsimp only at hflags)))
-  -- What an unsigned comparison's outcome says about the two numbers is put
-  -- among the hypotheses as `hlt` or `hge`, for bounds on an index.
-  let hlt := mkIdent `hlt
-  let hge := mkIdent `hge
-  -- only where the flags are those of a comparison: matching the lemmas
-  -- against flags of another kind would set about computing them
-  -- only where the flags are those of a comparison and the condition is one
-  -- of "below" and "not below": the lemma is picked from the condition and
-  -- the way it went. Matching a lemma against flags or a condition of
-  -- another kind would set about computing them.
-  let lemma? : Option (Name × Bool) ← withMainContext do
-    let some d := (← getLCtx).findFromUserName? `hcond | pure none
-    let t ← instantiateMVars d.type
-    unless (t.find? (·.isConstOf ``AluOp.cmp)).isSome do return none
-    let some (_, lhs, rhs) := t.eq? | pure none
-    unless lhs.isAppOfArity ``Cond.eval 2 do return none
-    let c := lhs.appArg!
-    let went := rhs.isAppOfArity ``Option.some 2 && rhs.appArg!.isConstOf ``Bool.true
-    let wentNot := rhs.isAppOfArity ``Option.some 2 && rhs.appArg!.isConstOf ``Bool.false
-    if c.isConstOf ``Cond.b && went then pure (some (``cmp_below, true))
-    else if c.isConstOf ``Cond.b && wentNot then pure (some (``cmp_not_below, false))
-    else if c.isConstOf ``Cond.ae && went then pure (some (``cmp_ae, false))
-    else if c.isConstOf ``Cond.ae && wentNot then pure (some (``cmp_not_ae, true))
-    else pure none
-  if let some (lem, below) := lemma? then try
-    let name := if below then hlt else hge
-    Tactic.withoutRecover do evalTactic (← `(tactic|
-      (have $name := $(mkIdent lem) $hcond
-       try simp only [BitVec.toNat_ofNat, Nat.reduceMod, Nat.reducePow] at $name:ident)))
-  catch _ => pure ()
-  -- What a test of the zero flag says of the result the flag was set from
-  -- is put among the hypotheses as `hz`, that it is zero, or `hnz`, that it
-  -- is not: for a comparison the result is the difference.
-  let zero? : Option (Name × Bool) ← withMainContext do
-    let some d := (← getLCtx).findFromUserName? `hcond | pure none
-    let t ← instantiateMVars d.type
-    let some (_, lhs, rhs) := t.eq? | pure none
-    unless lhs.isAppOfArity ``Cond.eval 2 do return none
-    let c := lhs.appArg!
-    let F := lhs.appFn!.appArg!
-    let went := rhs.isAppOfArity ``Option.some 2 && rhs.appArg!.isConstOf ``Bool.true
-    let wentNot := rhs.isAppOfArity ``Option.some 2 && rhs.appArg!.isConstOf ``Bool.false
-    let direct := F.isAppOf ``Flags.ofResult
-    let ofOp := F.isAppOfArity ``Prod.snd 3 && F.appArg!.isAppOf ``AluOp.apply
-    unless direct || ofOp do return none
-    if c.isConstOf ``Cond.e && went then
-      pure (some (if direct then ``zero_of_e' else ``zero_of_e, true))
-    else if c.isConstOf ``Cond.e && wentNot then
-      pure (some (if direct then ``ne_zero_of_not_e' else ``ne_zero_of_not_e, false))
-    else if c.isConstOf ``Cond.ne && went then
-      pure (some (if direct then ``ne_zero_of_ne' else ``ne_zero_of_ne, false))
-    else if c.isConstOf ``Cond.ne && wentNot then
-      pure (some (if direct then ``zero_of_not_ne' else ``zero_of_not_ne, true))
-    else pure none
-  if let some (lem, isZero) := zero? then try
-    let name := mkIdent (if isZero then `hz else `hnz)
-    Tactic.withoutRecover do evalTactic (← `(tactic|
-      (have $name := $(mkIdent lem) $hcond
-       try simp only [AluOp.apply, subBorrow_fst, addCarry_fst, BitVec.and_self, BitVec.or_self]
-         at $name:ident)))
-  catch _ => pure ()
-
-/-- Closes a goal reached under an assumption about a condition that the
-exactly known flags contradict. Returns whether it did. -/
-private def closeIfImpossible (g : MVarId) : TacticM Bool := do
-  let saved ← saveState
-  try
-    setGoals [g]
-    Tactic.withoutRecover do
-      evalTactic (← `(tactic| (refine absurd $(mkIdent `hcond) ?_; decide)))
-    return (← getUnsolvedGoals).isEmpty
-  catch _ =>
-    saved.restore
-    -- The flags may come from a value known only by a fact about it: an
-    -- error number, or a byte that is not zero.
-    let isErr ← g.withContext do
-      (← getLCtx).anyM fun d => do
-        let t ← instantiateMVars d.type
-        return t.isAppOf ``SysErr || t.isAppOf ``Ne || t.isAppOf ``LT.lt
-    unless isErr do return false
-    try
-      setGoals [g]
-      Tactic.withoutRecover do
-        evalTactic (← `(tactic| (
-          refine absurd $(mkIdent `hcond) ?_
-          try simp only [SysErr] at *
-          simp only [Cond.eval, Flags.ofResult, AluOp.apply, subBorrow, bind, Option.bind, pure,
-            Option.map, Option.some.injEq]
-          try simp only [BitVec.and_self, BitVec.or_self]
-          first
-            | bv_omega
-            | (simp only [BitVec.msb_eq_decide, beq_iff_eq, decide_eq_true_eq,
-                 decide_eq_false_iff_not, Bool.not_eq_true, Bool.not_eq_false, Nat.not_le,
-                 Nat.not_lt]
-               bv_omega))))
-      return (← getUnsolvedGoals).isEmpty
-    catch _ =>
-      saved.restore
-      return false
 
 /-- Shows the flags decide a condition. -/
 private def decideCond : TacticM Unit := do
