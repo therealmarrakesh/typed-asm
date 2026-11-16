@@ -4324,6 +4324,11 @@ inductive Walk
   function, `Δ` is what its signature says it returns with, and the caller's
   requirement is what makes that stand for the context returned to. -/
   | leave (i : Nat) (Δ : CtxS) (cs : List CondS)
+  /-- The block calls: the code at `t` is entered in a context `Δ` allowed
+  there, with a return address on the stack whose type, the variable `j`,
+  is that of code wanting `R`, a context allowed at `next`; and this is what
+  is left to be shown for the context the call makes to stand for `Δ`. -/
+  | call (t next : BitVec 64) (j : Nat) (R Δ : CtxS) (cs : List CondS)
 
 /-- That a walk's conditions hold, that `P` holds of where it stopped, and
 that `Q` allows each context it was handed over to: for every value each
@@ -4342,6 +4347,8 @@ def Walk.holds (Q : CodeTy) (P : BitVec 64 → Ctx → Prop) : Walk → Env → 
   | .enter t Δ cs, ρ => Q t (Δ.den ρ) ∧ CondS.all ρ cs
   | .leave i Δ cs, ρ =>
     (∃ D, (TyS.atom i).den ρ = .code D ∧ CtxSub (Δ.den ρ) D) ∧ CondS.all ρ cs
+  | .call t next j R Δ cs, ρ =>
+    (TyS.atom j).den ρ = .code (R.den ρ) ∧ Q next (R.den ρ) ∧ Q t (Δ.den ρ) ∧ CondS.all ρ cs
 
 /-- The first register an instruction needs the value of that the context
 only knows to hold a number. -/
@@ -4380,6 +4387,10 @@ structure Prog where
   /-- Where a block returns: at the instruction at the address, to code
   wanting the context given. -/
   leaves : List (BitVec 64 × CtxS) := []
+  /-- Where a block calls: at the instruction at the address, with the
+  variable that is the return address's type, the context wanted where the
+  call returns, and the context the code called is entered in. -/
+  calls : List (BitVec 64 × Nat × CtxS × CtxS) := []
 
 /-- That the blocks said to be of a kind are. -/
 def TagsOk (Ψ : MemTy) : List (BitVec 64 × Nat) → Prop
@@ -4751,6 +4762,72 @@ theorem leaveAt_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
     · cases h
   · cases h
 
+/-- What the code called is entered with: the return address pushed, its
+type the variable `j`. With what is left to be shown for there to be room. -/
+def afterCall (Γ : CtxS) (j : Nat) : Option (CtxS × List CondS) :=
+  match Γ.moveSp (-8) with
+  | some Γ' =>
+    some ({ Γ' with
+      stack := .mk (.lit 8) (.cons 0 (.atom j) .nil) :: Γ.stack,
+      room := (Γ.room.minus 8).1 }, (Γ.room.minus 8).2)
+  | none => none
+
+/-- A call, where the contexts it is typed with were given. -/
+def callAt (P : Prog) (a len : BitVec 64) (Γ : CtxS) : Instr → Option Walk
+  | .call (.rel d) =>
+    match P.calls.find? (·.1 == a) with
+    | some e =>
+      match afterCall Γ e.2.1 with
+      | some (Γ', rc) =>
+        match subCtx Γ' e.2.2.2 with
+        | some cs =>
+          some (.call (a + len + d.signExtend 64) (a + len) e.2.1 e.2.2.1 e.2.2.2 (rc ++ cs))
+        | none => none
+      | none => none
+    | none => none
+  | _ => none
+
+theorem callAt_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
+    {P : Prog} {a len : BitVec 64} {Γ : CtxS} {i : Instr} {W : Walk}
+    (hf : fetch a = some (i, len)) (h : callAt P a len Γ i = some W)
+    (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) ρ) : BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
+  unfold callAt at h
+  split at h
+  · next d =>
+    split at h
+    · next e _ =>
+      split at h
+      · next Γ' rc hc =>
+        split at h
+        · next cs hs =>
+          cases h
+          obtain ⟨hty, hret, hΔ, hall⟩ := hW
+          unfold afterCall at hc
+          split at hc
+          · next Γ'' hm =>
+            cases hc
+            obtain ⟨hrc, hcs⟩ := CondS.all_append (Γ.room.minus 8).2 cs hall
+            obtain ⟨υ, rfl, hυ⟩ := CtxS.moveSp_spec hm
+            have hsub := subCtx_sound hs hcs
+            have e₁ : ({ Γ.setReg .rsp υ with
+                  stack := .mk (.lit 8) (.cons 0 (.atom e.2.1) .nil) :: Γ.stack,
+                  room := (Γ.room.minus 8).1 } : CtxS).den ρ
+                = { (Γ.den ρ).moveSp (-8) with
+                    stack := .slot (.code (e.2.2.1.den ρ)) :: (Γ.den ρ).stack,
+                    room := (Γ.room.minus 8).1.den ρ } := by
+              refine (CtxS.den_sp ρ Γ υ _ _ Γ.flags).trans ?_
+              rw [hυ]
+              show ({ (Γ.den ρ).moveSp (-8) with
+                stack := ShapeOf.mk 8 [(0, (TyS.atom e.2.1).den ρ)] :: _, room := _ } : Ctx) = _
+              rw [hty]; rfl
+            rw [e₁] at hsub
+            exact .last hf (.call (Num.minus_spec hrc) hret ⟨_, hΔ, hsub⟩)
+          · cases hc
+        · cases h
+      · cases h
+    · cases h
+  · cases h
+
 /-- The checker walked from an address for at most so many moves, `k` being
 a variable no term yet mentions. Before an instruction, a pointer to a block
 of a kind that it reaches through is opened, and a value it needs to speak
@@ -4763,6 +4840,9 @@ def walk (P : Prog) (code : List (BitVec 64 × Instr × BitVec 64)) :
     | none => .stop a Γ
     | some (i, len) =>
       match leaveAt P a Γ i with
+      | some W => W
+      | none =>
+      match callAt P a len Γ i with
       | some W => W
       | none =>
       match enterJump P a len Γ i with
@@ -4827,6 +4907,9 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
     · next i len hl =>
       split at h
       · next W hj => exact leaveAt_sound (Agrees.lookup code hcode hl) hj h
+      next =>
+      split at h
+      · next W hj => exact callAt_sound (Agrees.lookup code hcode hl) hj h
       next =>
       split at h
       · next W hj => exact enterJump_sound (Agrees.lookup code hcode hl) hj h

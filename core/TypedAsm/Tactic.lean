@@ -3599,9 +3599,11 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       | .branch _ _ _ _ => none
       | .enter _ _ _ => none
       | .leave _ _ _ => none
+      | .call .. => none
     let rec enters? : Sym.Walk → Bool
       | .enter _ _ _ => true
       | .leave _ _ _ => true
+      | .call .. => true
       | .conds _ rest => enters? rest
       | .name _ rest => enters? rest
       | .both l r => enters? l || enters? r
@@ -3789,6 +3791,7 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         let hTaken ← side taken true
         mkAppM ``And.intro #[hTaken, hFall]
       | .enter t Δ cs => enterLeaf atoms t Δ cs none
+      | .call .. => throwError "a call within the walk is not made by the tactics yet"
       | .leave i Δ cs =>
         let some info := leave? | throwError "the block returns where no context was read"
         let m ← mkFreshExprSyntheticOpaqueMVar (← leaveType atoms i Δ cs)
