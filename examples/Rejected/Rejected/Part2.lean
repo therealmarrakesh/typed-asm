@@ -25,7 +25,8 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i19) Γ := by ty_step
 #guard_msgs in
 example : BlockOk Φj jumpFetch linux Ψ (Asm.addr jumps 0 .needsSlot) oneSlot := by ty_block
 
-/-- error: `munmap` is typed for a block the context owns: `rax` must hold exactly 11, `rdi` exactly the address of an owned block, and `rsi` an exactly known length -/
+/-- error: `munmap` is typed for a block the context owns: `rax` must hold exactly 11, `rdi` exactly the address of an owned block, and `rsi` an exactly known length
+`rax` was given its type by `mov eax, 11` at address 2 -/
 #guard_msgs in
 example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .unmodelled) bare := by ty_block
 

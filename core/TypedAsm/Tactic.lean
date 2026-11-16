@@ -2861,9 +2861,56 @@ private def fastStep (goal : MVarId) (ty : Expr) (named : Bool) : TacticM (Optio
   goal.assign (mkAppN (mkConst ``BlockOk.step) #[Φ, fetch, sys, Ψ, a, Γ, stCtx, iE, lenE, hf, hs, eta])
   return some rest.mvarId!
 
+/-- For each address a block has been typed up to: which instruction last
+gave each register, and the flags, what the context says of them there. It is
+what lets a rejection say where a type came from. It is kept by address, and
+the last block to pass an address is the one remembered. -/
+initialize trailRef :
+    IO.Ref (Std.HashMap (UInt64 × Nat) (Std.HashMap String (Nat × String))) ← IO.mkRef {}
+
+/-- A block goal's program and address, and what its context says of each
+register and of the flags, where the context is written out as a table. -/
+private def trailKey (g : MVarId) :
+    MetaM (Option ((UInt64 × Nat) × Expr × Array (String × Expr))) := g.withContext do
+  let ty := (← instantiateMVars (← g.getType)).consumeMData
+  unless ty.isAppOfArity ``BlockOk 6 do return none
+  let args := ty.getAppArgs
+  let some n ← addrNat args[4]! | return none
+  let Γ := args[5]!
+  let mut parts : Array (String × Expr) := #[]
+  if Γ.isAppOfArity ``CtxOf.mk 7 then
+    let c := Γ.getAppArgs
+    if c[1]!.isAppOfArity ``RegMap.get 2 && c[1]!.appArg!.isAppOfArity ``RegMap.mk 17 then
+      let tbl := c[1]!.appArg!.getAppArgs
+      for r in allRegs do
+        parts := parts.push (r.name64, tbl[1 + regIdx r]!)
+    parts := parts.push ("flags", c[4]!)
+  return some ((args[1]!.hash, n), args[1]!, parts)
+
+/-- What to add to a rejection at an address: for each register the message
+speaks of, and for the flags if it speaks of them, the earlier instruction of
+the block that gave it what it has. Nothing is added for what the block was
+entered with. -/
+private def trailNote (key : UInt64 × Nat) (msg : String) : IO String := do
+  let t := (← trailRef.get)[key]?.getD {}
+  let has (s : String) : Bool := (msg.splitOn s).length > 1
+  let mut note := ""
+  for r in allRegs do
+    let some (m, asm) := t[r.name64]? | continue
+    if has s!"`{r.name64}₀`" then
+      note := note ++ s!"\n`{r.name64}₀` is what `{asm}` at address {m} left in `{r.name64}`"
+    else if has s!"`{r.name64}`" then
+      note := note ++ s!"\n`{r.name64}` was given its type by `{asm}` at address {m}"
+  if has "flags" then
+    if let some (m, asm) := t["flags"]? then
+      note := note ++ s!"\nthe flags were last set by `{asm}` at address {m}"
+  -- said once, however many layers the rejection passes through
+  if note != "" && has note then return ""
+  return note
+
 /-- Types the first instruction of a block goal if it is a straight-line
 instruction, leaving the rest of the block as the main goal. -/
-private partial def typeStep (named : Bool := false) : TacticM StepResult :=
+private partial def typeStepCore (named : Bool := false) : TacticM StepResult :=
     deep <| withMainContext do
   let goal ← getMainGoal
   let ty := (← instantiateMVars (← goal.getType)).consumeMData
@@ -2976,7 +3023,7 @@ private partial def typeStep (named : Bool := false) : TacticM StepResult :=
         setGoals [goal]
         evalTactic tac
         setGoals ((← getGoals) ++ others)
-        return ← typeStep (named := false)
+        return ← typeStepCore (named := false)
     -- Registers the rules need to speak of, but which are only known to be
     -- integers, are given names first.
     unless named do
@@ -2993,7 +3040,7 @@ private partial def typeStep (named : Bool := false) : TacticM StepResult :=
           nameRegister (mkIdent (Name.str ``Reg r.name64))
             (mkIdent (Name.mkSimple s!"{r.name64}₀"))
         setGoals ((← getGoals) ++ others)
-        return ← typeStep (named := true)
+        return ← typeStepCore (named := true)
   setGoals [instrGoal]
   let addr ← instantiateMVars ty.getAppArgs[4]!
   let at? ← if addr.hasExprMVar || addr.hasFVar then pure none
@@ -3038,6 +3085,53 @@ private partial def typeStep (named : Bool := false) : TacticM StepResult :=
     catch _ => before.restore
   setGoals ((← getGoals) ++ others)
   return .stepped
+
+/-- Takes one step in a block, keeping the record of which instruction gave
+each register its type, and adding to a rejection what that record says of
+the registers it speaks of. -/
+private def typeStep (named : Bool := false) : TacticM StepResult := do
+  let g ← getMainGoal
+  let mut before ← try trailKey g catch _ => pure none
+  -- a block whose address is still written as its label is one just begun
+  if let some (key, _, _) := before then
+    let ty := (← instantiateMVars (← g.getType)).consumeMData
+    unless isAddrLit ty.getAppArgs[4]! do trailRef.modify (·.insert key {})
+  -- a context given by name is written out first, so that what the step
+  -- changes can be seen
+  if let some (_, _, parts) := before then
+    if parts.size < 17 then
+      try
+        let others := (← getGoals).drop 1
+        setGoals [g]
+        evalTactic (← `(tactic| ty_normalize))
+        setGoals ((← getGoals) ++ others)
+        before ← trailKey (← getMainGoal)
+      catch _ => pure ()
+  let r ← try typeStepCore named
+    catch e =>
+      match before with
+      | some (key, _, _) =>
+        let note ← trailNote key (← e.toMessageData.toString)
+        if note == "" then throw e else throwError "{e.toMessageData}{note}"
+      | none => throw e
+  if let (.stepped, some (key, fetch, old)) := (r, before) then
+    try
+      let some (key', _, new) ← trailKey (← getMainGoal) | return r
+      if key' == key then return r
+      let instr? := ((← instrsOf fetch).bind (·[key.2]?)).map (·.1)
+      let asm := (instr?.map (·.toAsm)).getD "the instruction"
+      let named := (instr?.map (·.wantsNamed.map (·.name64))).getD []
+      let mut t := (← trailRef.get)[key]?.getD {}
+      for (name, e') in new do
+        let some (_, e) := old.find? (·.1 == name) | continue
+        if e' == e then continue
+        -- a register only given a name holds what it held
+        if named.contains name && e.isConstOf ``Ty.int && e'.isAppOfArity ``Ty.eq 1
+            && e'.appArg!.isFVar then continue
+        t := t.insert name (key.2, asm)
+      trailRef.modify (·.insert key' t)
+    catch _ => pure ()
+  return r
 
 /-- Types one straight-line instruction at the start of a block. -/
 elab "ty_step" : tactic => do
@@ -3464,7 +3558,7 @@ private def jumpsForward : Instr → Bool
   | _ => false
 
 /-- Types the control transfer at the head of a block goal. -/
-private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
+private def finishBlockCore (goal : MVarId) (instr : Instr) : TacticM Finish := do
   match instr with
   | .jmp (.rel _) =>
     let before ← saveState
@@ -3704,6 +3798,30 @@ private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
     return .needsHelp m!"`{instr.toAsm}`: a call needs the callee's signature; use `ty_call <signature>`"
   | _ =>
     return .needsHelp m!"`{instr.toAsm}` is not handled by `ty_block`"
+
+/-- Ends a block, adding to a rejection where the registers and flags it
+speaks of got what they have, and carrying that record on to wherever the
+block goes on from here. -/
+private def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
+  let before ← try trailKey goal catch _ => pure none
+  let r ← try finishBlockCore goal instr
+    catch e =>
+      match before with
+      | some (key, _, _) =>
+        let note ← trailNote key (← e.toMessageData.toString)
+        if note == "" then throw e else throwError "{e.toMessageData}{note}"
+      | none => throw e
+  if let some (key, _, _) := before then
+    let t := (← trailRef.get)[key]?.getD {}
+    let gs := match r with
+      | .continues rest _ => [rest]
+      | .forks blocks _ => blocks
+      | _ => []
+    for g in gs do
+      try
+        if let some (key', _, _) ← trailKey g then trailRef.modify (·.insert key' t)
+      catch _ => pure ()
+  return r
 
 /-- The addresses of the labels a labelled code typing declares a context
 at: where a block may hand over to another. -/

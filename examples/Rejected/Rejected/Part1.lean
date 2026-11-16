@@ -19,7 +19,8 @@ example : BlockOk Φc callFetch linux Ψ (Asm.addr calls 0 .direct) bare := by t
 #guard_msgs in
 example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .noBuffer) bare := by ty_block
 
-/-- error: `getrandom` could overwrite something that is not plain bytes: the buffer in `rdi` does not have room for the count in `rsi` in plain bytes of its block -/
+/-- error: `getrandom` could overwrite something that is not plain bytes: the buffer in `rdi` does not have room for the count in `rsi` in plain bytes of its block
+`rsi` was given its type by `mov esi, 24` at address 26 -/
 #guard_msgs in
 example : BlockOk Φy fillFetch linux Ψ (Asm.addr fills 0 .randomLong) (twoAt .rdi) := by
   ty_block

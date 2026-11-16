@@ -41,7 +41,8 @@ example : BlockOk Φc callFetch linux Ψ (Asm.addr calls 0 .f) bare := by ty_cal
 
 example : BlockOk Φf flaggedFetch linux Ψ (Asm.addr flagged 0 .carry) bare := by ty_block
 
-/-- error: `read` could overwrite something that is not plain bytes: the buffer in `rsi` does not have room for the count in `rdx` in plain bytes of its block -/
+/-- error: `read` could overwrite something that is not plain bytes: the buffer in `rsi` does not have room for the count in `rdx` in plain bytes of its block
+`rdx` was given its type by `mov edx, 16` at address 29 -/
 #guard_msgs in
 example : BlockOk Φy sysFetch linux Ψ (Asm.addr sys 0 .overPointer)
     (buffer ⟨16, [(8, .ptr (.raw 8) false 0)]⟩) := by
