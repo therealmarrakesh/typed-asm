@@ -1939,6 +1939,65 @@ theorem mulDivExact_next {Γ : Ctx} {s : State} {op : MulDivOp} {w : Width} {r :
       (P := (· = fl)) rfl⟩
   simp [exec, State.readRM, State.readReg_of ha, State.readReg_of hd, State.readReg_of hb, hev]
 
+/-- What is read of an operand at 64 bits is read at either width, cut to
+that width: the low half of a register, and the first four of eight bytes. -/
+theorem State.readRM_narrow {s : State} {rm : RM} {v : BitVec 64}
+    (h : s.readRM .w64 rm = .next v) (w : Width) :
+    s.readRM w rm = .next (v.setWidth w.bits) := by
+  cases w with
+  | w64 => simpa using h
+  | w32 =>
+    cases rm with
+    | reg r =>
+      simp only [State.readRM, Result.next.injEq, State.readReg] at h ⊢
+      rw [← h]
+      simp
+    | mem m =>
+      simp only [State.readRM, Result.through_eq_next] at h ⊢
+      have h8 : s.canRead (s.ea m) 8 = true := by
+        cases hc : s.canRead (s.ea m) 8 with
+        | true => rfl
+        | false =>
+          have hc' : s.canRead (s.ea m) Width.w64.bytes.toNat = false := hc
+          simp [State.read, hc'] at h
+      have h4 : s.canRead (s.ea m) 4 = true := by
+        have := State.canRead_sub (o := 0) (m := 4) h8 (by omega)
+        simpa using this
+      rw [State.read_w64 h8] at h
+      rw [State.read_w32 h4]
+      cases h
+      show _ = Result.next (BitVec.setWidth 32 (s.load32 (s.ea m + 4) ++ s.load32 (s.ea m)))
+      congr 1
+      generalize s.load32 (s.ea m + 4) = x
+      generalize s.load32 (s.ea m) = y
+      ext i hi
+      simp only [BitVec.getElem_setWidth, BitVec.getLsbD_append, hi, ↓reduceIte,
+        BitVec.getLsbD_eq_getElem hi]
+
+/-- A multiply or divide by an exactly known value in memory that produces a
+result continues, with exactly known results. -/
+theorem mulDivHeld_next {Γ : Ctx} {s : State} {op : MulDivOp} {w : Width} {m : Mem}
+    {a d b : BitVec 64} {lo hi : BitVec w.bits} {fl : Flags}
+    (h : WellTyped fetch sys Ψ ix Γ s) (hΨ : Ψ.WF) (hrip : s.rip = next)
+    (hm : Holds Ψ next Γ (.mem m) (.eq b)) (hΓa : Γ.regs .rax = .eq a)
+    (hΓd : Γ.regs .rdx = .eq d)
+    (hev : op.eval (d.setWidth w.bits) (a.setWidth w.bits) (b.setWidth w.bits)
+      = .next (lo, hi, fl)) :
+    ∃ s', exec sys (.mulDiv op w (.mem m)) s = .next s' ∧ s'.rip = s.rip ∧
+      WellTyped fetch sys Ψ ix
+        { (Γ.setReg .rax (.eq (lo.setWidth 64))).setReg .rdx (.eq (hi.setWidth 64)) with
+          flags := (· = fl) } s' := by
+  have ha := h.eqReg (by decide) hΓa
+  have hd := h.eqReg (by decide) hΓd
+  obtain ⟨v, hv, hty⟩ := hm.sound h hΨ hrip
+  have hb : v = b := hasTy_eq.mp hty
+  subst hb
+  have hread := State.readRM_narrow hv w
+  refine ⟨{ (s.writeReg w .rax lo).writeReg w .rdx hi with flags := fl }, ?_, rfl,
+    ((h.setReg (by decide) (hasTy_eq.mpr rfl)).setReg (by decide) (hasTy_eq.mpr rfl)).setFlags
+      (P := (· = fl)) rfl⟩
+  simp [exec, hread, State.readReg_of ha, State.readReg_of hd, hev]
+
 /-- A straight-line typed instruction, run in a matching state, continues to
 the next instruction and leaves a state matching the rule's result context. -/
 theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
@@ -2016,6 +2075,7 @@ theorem Straight.sound {next : BitVec 64} {Γ Γ' : Ctx} {i : Instr}
   | @mulRM w src hr => exact mulDiv_next hr h hrip (fun _ => ⟨_, rfl, Flags.ofMul_defined _⟩)
   | @imulRM w src hr => exact mulDiv_next hr h hrip (fun _ => ⟨_, rfl, Flags.ofMul_defined _⟩)
   | mulDivExact hr hΓa hΓd hΓr hev => exact mulDivExact_next h hr hΓa hΓd hΓr hev
+  | mulDivHeld hm hΓa hΓd hev => exact mulDivHeld_next h hΨ hrip hm hΓa hΓd hev
   | @xorSelf w d hd =>
     refine ⟨{ s.setReg d 0 with flags := .ofResult (0 : BitVec w.bits) false false }, ?_, rfl,
       (h.setReg hd (hasTy_eq.mpr rfl)).setFlags (P := (· = _)) rfl⟩

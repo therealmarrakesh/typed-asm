@@ -717,6 +717,16 @@ inductive Straight (Ψ : MemTy) (next : BitVec 64) : Ctx → Instr → Ctx → P
     Straight Ψ next Γ (.mulDiv op w (.reg r))
       { (Γ.setReg .rax (.eq (lo.setWidth 64))).setReg .rdx (.eq (hi.setWidth 64)) with
         flags := (· = fl) }
+  /-- The same with the operand in memory: a typed value of a block or of the
+  stack that is exactly known. With the rule above this is every divide: one
+  whose divisor is only known to be a number is not typed. -/
+  | mulDivHeld {Γ : Ctx} {op : MulDivOp} {w : Width} {m : Mem} {a d b : BitVec 64}
+      {lo hi : BitVec w.bits} {fl : Flags} :
+    Holds Ψ next Γ (.mem m) (.eq b) → Γ.regs .rax = .eq a → Γ.regs .rdx = .eq d →
+    op.eval (d.setWidth w.bits) (a.setWidth w.bits) (b.setWidth w.bits) = .next (lo, hi, fl) →
+    Straight Ψ next Γ (.mulDiv op w (.mem m))
+      { (Γ.setReg .rax (.eq (lo.setWidth 64))).setReg .rdx (.eq (hi.setWidth 64)) with
+        flags := (· = fl) }
   | cdqExact {Γ : Ctx} {a : BitVec 64} : Γ.regs .rax = .eq a →
     Straight Ψ next Γ .cdq (Γ.setReg .rdx (.eq ((signFill (a.setWidth 32)).setWidth 64)))
   | cqoExact {Γ : Ctx} {a : BitVec 64} : Γ.regs .rax = .eq a →
@@ -804,7 +814,8 @@ local macro "ext_premise" : tactic =>
   `(tactic| first
     | assumption
     | exact ReadOk.ext (by assumption) (by assumption)
-    | exact WriteIntOk.ext (by assumption) (by assumption))
+    | exact WriteIntOk.ext (by assumption) (by assumption)
+    | exact Holds.ext (by assumption) (by assumption))
 
 /-- Carries a rule, whichever it is, to a larger memory typing. -/
 local macro "ext_rule" : tactic =>
@@ -878,6 +889,7 @@ local macro "ext_rule" : tactic =>
     | (apply Straight.imul2Exact <;> ext_premise)
     | (apply Straight.imul3Exact <;> ext_premise)
     | (apply Straight.mulDivExact <;> ext_premise)
+    | (apply Straight.mulDivHeld <;> ext_premise)
     | (apply Straight.cdqExact <;> ext_premise)
     | (apply Straight.cqoExact <;> ext_premise)
     | (apply Straight.movsxdExact <;> ext_premise)

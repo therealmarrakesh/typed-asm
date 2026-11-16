@@ -91,6 +91,39 @@ example (i : BitVec 64) :
 #guard_msgs in
 example : BlockOk Φb backFetch linux Ψ (Asm.addr back 0 .start) bare := by ty_block
 
+/-! A divide by a value in memory is typed like one by a register: the
+value must be exactly known, and known not to be zero. Here it is on the
+stack, and then a field reached through a pointer. -/
+
+/-- A context for a divide: `rax` exactly 100, `rdx` zero, and one value on
+the stack. -/
+def dividing (τ : Ty) : Ctx :=
+  ⟨fun r => if r = .rax then .eq 100 else if r = .rdx then .eq 0
+    else if r = .rdi then .ptr ⟨16, [(8, .eq 7)]⟩ false 0 else .int,
+    [.slot τ], 0, Flags.Any, [], 0⟩
+
+example (c : BitVec 64) (hc : c ≠ 0) :
+    ∃ Γ', Straight Ψ 10 (dividing (.eq c)) (.mulDiv .div .w64 (.mem (.sib (some .rsp) none 0))) Γ' :=
+  ⟨_, by ty_straight⟩
+
+example : ∃ Γ', Straight Ψ 10 (dividing .int)
+    (.mulDiv .div .w32 (.mem (.sib (some .rdi) none 8))) Γ' :=
+  ⟨_, by ty_straight⟩
+
+/-- error: cannot type `div qword ptr [rsp]` in the current context
+• divHeld: the value there must be exactly known, but has type `int`: a divide is typed only when its divisor is known not to be zero -/
+#guard_msgs in
+example : ∃ Γ', Straight Ψ 10 (dividing .int)
+    (.mulDiv .div .w64 (.mem (.sib (some .rsp) none 0))) Γ' :=
+  ⟨_, by ty_straight⟩
+
+/-- error: cannot type `div qword ptr [rsp]` in the current context
+• divHeld: the divisor, `c`, is not known to be non-zero: a check is needed before the divide. Dividing by zero is a divide error -/
+#guard_msgs in
+example (c : BitVec 64) :
+    ∃ Γ', Straight Ψ 10 (dividing (.eq c)) (.mulDiv .div .w64 (.mem (.sib (some .rsp) none 0))) Γ' :=
+  ⟨_, by ty_straight⟩
+
 -- Which addresses the processor has depends on its width. `2 ^ 47` is not
 -- one with 48-bit addresses, and is one with 57-bit addresses; no program
 -- has memory there either way, so only the fault differs.

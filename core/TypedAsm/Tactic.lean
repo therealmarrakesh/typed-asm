@@ -338,6 +338,29 @@ theorem Straight.idivSafe {Ψ : MemTy} {next : BitVec 64} {Γ : Ctx} {w : Width}
         flags := (· = Flags.unknown) } :=
   .mulDivExact hr hΓa hΓd hΓr (by rw [hd]; exact MulDivOp.eval_idiv _ _ hb hov)
 
+/-- The unsigned divide by a value in memory: a typed value of a block or of
+the stack, exactly known and known not to be zero. -/
+theorem Straight.divHeld {Ψ : MemTy} {next : BitVec 64} {Γ : Ctx} {w : Width} {m : Mem}
+    {a d b : BitVec 64} (hm : Holds Ψ next Γ (.mem m) (.eq b)) (hΓa : Γ.regs .rax = .eq a)
+    (hΓd : Γ.regs .rdx = .eq d) (hd : d.setWidth w.bits = 0) (hb : b.setWidth w.bits ≠ 0) :
+    Straight Ψ next Γ (.mulDiv .div w (.mem m))
+      { (Γ.setReg .rax (.eq ((a.setWidth w.bits / b.setWidth w.bits).setWidth 64))).setReg .rdx
+          (.eq ((a.setWidth w.bits % b.setWidth w.bits).setWidth 64)) with
+        flags := (· = Flags.unknown) } :=
+  .mulDivHeld hm hΓa hΓd (by rw [hd]; exact MulDivOp.eval_div _ _ hb)
+
+/-- The signed divide by a value in memory, likewise. -/
+theorem Straight.idivHeld {Ψ : MemTy} {next : BitVec 64} {Γ : Ctx} {w : Width} {m : Mem}
+    {a d b : BitVec 64} (hm : Holds Ψ next Γ (.mem m) (.eq b)) (hΓa : Γ.regs .rax = .eq a)
+    (hΓd : Γ.regs .rdx = .eq d) (hd : d.setWidth w.bits = signFill (a.setWidth w.bits))
+    (hb : b.setWidth w.bits ≠ 0)
+    (hov : a.setWidth w.bits ≠ BitVec.intMin w.bits ∨ b.setWidth w.bits ≠ -1#w.bits) :
+    Straight Ψ next Γ (.mulDiv .idiv w (.mem m))
+      { (Γ.setReg .rax (.eq (((a.setWidth w.bits).sdiv (b.setWidth w.bits)).setWidth 64))).setReg
+          .rdx (.eq (((a.setWidth w.bits).srem (b.setWidth w.bits)).setWidth 64)) with
+        flags := (· = Flags.unknown) } :=
+  .mulDivHeld hm hΓa hΓd (by rw [hd]; exact MulDivOp.eval_idiv _ _ hb hov)
+
 theorem Flags.cf_isSome_of_known {f : Flags} (h : Flags.Known f) : f.cf.isSome = true := by
   simp only [Flags.Known, Flags.defined, Bool.and_eq_true] at h
   exact h.1.1.1
@@ -1284,6 +1307,8 @@ def Instr.rules : Instr → List Name
   -- a divide is typed only when shown not to raise a divide error
   | .mulDiv .div _ (.reg _) => [``Straight.mulDivExact, ``Straight.divSafe]
   | .mulDiv .idiv _ (.reg _) => [``Straight.mulDivExact, ``Straight.idivSafe]
+  | .mulDiv .div _ (.mem _) => [``Straight.mulDivHeld, ``Straight.divHeld]
+  | .mulDiv .idiv _ (.mem _) => [``Straight.mulDivHeld, ``Straight.idivHeld]
   | .imul2 _ _ (.reg _) => [``Straight.imul2Exact, ``Straight.imul2RM]
   | .imul2 _ _ _ => [``Straight.imul2RM]
   | .imul3 _ _ (.reg _) _ => [``Straight.imul3Exact, ``Straight.imul3RM]
@@ -1307,7 +1332,7 @@ since the general rule's reason is the one that matters. -/
 def sharpeningRules : List Name := [``Straight.leaSp, ``Straight.mov32Exact, ``Straight.aluExact32,
   ``Straight.aluExactRR32, ``Straight.shiftExact, ``Straight.leaExactB, ``Straight.leaExactBI,
   ``Straight.negExact, ``Straight.notExact, ``Straight.imul2Exact, ``Straight.imul3Exact,
-  ``Straight.mulDivExact, ``Straight.cdqExact, ``Straight.cqoExact,
+  ``Straight.mulDivExact, ``Straight.mulDivHeld, ``Straight.cdqExact, ``Straight.cqoExact,
   ``Straight.movsxdExact, ``Straight.movzxExact, ``Straight.movsxExact, ``Straight.popcntExact,
   ``Straight.bswapExact, ``Straight.cmovExact, ``Straight.setccExact]
 
@@ -1385,7 +1410,7 @@ def Instr.endsBlock : Instr → Bool
   | _ => false
 
 /-- Every straight-line rule, for instructions whose shape is not known. -/
-def allStraightRules : List Name := sharpeningRules ++ [``Straight.movRR64, ``Straight.movRR32, ``Straight.movRI, ``Straight.movAbs, ``Straight.leaRip, ``Straight.lea, ``Straight.loadStack, ``Straight.loadField, ``Straight.storeStack, ``Straight.storeField, ``Straight.push, ``Straight.pop, ``Straight.allocFrame, ``Straight.freeFrame', ``Straight.aluExact, ``Straight.aluExactRR, ``Straight.addPtr, ``Straight.aluRR, ``Straight.aluRI, ``Straight.testExact, ``Straight.nop, ``Straight.aluStoreR, ``Straight.aluStoreI, ``Straight.cmpR, ``Straight.cmpI, ``Straight.aluLoad, ``Straight.testRM, ``Straight.negRM, ``Straight.notRM, ``Straight.shiftImm, ``Straight.shiftCl, ``Straight.mulRM, ``Straight.imulRM, ``Straight.divSafe, ``Straight.idivSafe, ``Straight.imul2RM, ``Straight.imul3RM, ``Straight.popcntRM, ``Straight.bswap, ``Straight.cdq, ``Straight.cqo, ``Straight.movsxdRM, ``Straight.cmovRM, ``Straight.setccRM, ``Straight.movzxRM, ``Straight.movsxRM, ``Straight.loadInt, ``Straight.storeInt, ``Straight.storeImm, ``Straight.store8RM, ``Straight.store16RM, ``Straight.loadGlobal_of, ``Straight.storeGlobal_of, ``Straight.xorSelf,
+def allStraightRules : List Name := sharpeningRules ++ [``Straight.movRR64, ``Straight.movRR32, ``Straight.movRI, ``Straight.movAbs, ``Straight.leaRip, ``Straight.lea, ``Straight.loadStack, ``Straight.loadField, ``Straight.storeStack, ``Straight.storeField, ``Straight.push, ``Straight.pop, ``Straight.allocFrame, ``Straight.freeFrame', ``Straight.aluExact, ``Straight.aluExactRR, ``Straight.addPtr, ``Straight.aluRR, ``Straight.aluRI, ``Straight.testExact, ``Straight.nop, ``Straight.aluStoreR, ``Straight.aluStoreI, ``Straight.cmpR, ``Straight.cmpI, ``Straight.aluLoad, ``Straight.testRM, ``Straight.negRM, ``Straight.notRM, ``Straight.shiftImm, ``Straight.shiftCl, ``Straight.mulRM, ``Straight.imulRM, ``Straight.divSafe, ``Straight.idivSafe, ``Straight.divHeld, ``Straight.idivHeld, ``Straight.imul2RM, ``Straight.imul3RM, ``Straight.popcntRM, ``Straight.bswap, ``Straight.cdq, ``Straight.cqo, ``Straight.movsxdRM, ``Straight.cmovRM, ``Straight.setccRM, ``Straight.movzxRM, ``Straight.movsxRM, ``Straight.loadInt, ``Straight.storeInt, ``Straight.storeImm, ``Straight.store8RM, ``Straight.store16RM, ``Straight.loadGlobal_of, ``Straight.storeGlobal_of, ``Straight.xorSelf,
   ``Straight.loadIndexed, ``Straight.storeIndexed, ``Straight.loadStackIndexed,
   ``Straight.loadOwned, ``Straight.storeOwnedTyped, ``Straight.storeOwnedKeep]
 
@@ -2078,6 +2103,11 @@ private def describePremise (onStack : Bool) (ty : Expr) : MetaM MessageData := 
     if lhs.isAppOf ``ShapeOf.valAt && !actual.isAppOf ``Option.some then
       return m!"the block is not known to hold a typed value there: a bound on the index is \
         needed among the hypotheses"
+    if rhs.isAppOf ``Option.some && actual.isAppOf ``Option.some
+        && rhs.appArg!.isAppOfArity ``Ty.eq 1 && rhs.appArg!.appArg!.getAppFn.isMVar then
+      return m!"the value there must be exactly known, but has type \
+        `{← ppTy actual.appArg!}`: a divide is typed only when its divisor is known not to \
+        be zero"
     if rhs.isAppOf ``Option.some && actual.isAppOf ``Option.some then
       return m!"the field must have type `{← ppTy rhs.appArg!}`, but has type \
         `{← ppTy actual.appArg!}`"
