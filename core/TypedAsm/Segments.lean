@@ -170,6 +170,100 @@ theorem holds_of_holdsAll {segs parts : List (Nat × Perm × List Byte)} (s : St
     cases hk
   · exact holds_of_holdsIn segs s hin
 
+/-! ### The comparison without the bytes
+
+That a line's bytes are the ones its segment has where the line is, is so
+for every program: the segments are made of the lines. What a program's own
+proof has left to compare is then where things are, and no byte. -/
+
+/-- Whether a run of bytes is within a segment's extent. -/
+def rangeIn (seg g : Nat × Perm × List Byte) : Bool :=
+  decide (seg.1 ≤ g.1) && decide (g.1 + g.2.2.length ≤ seg.1 + seg.2.2.length)
+
+/-- What `inside` asks besides the extent and the bytes. -/
+def insideLen (seg g : Nat × Perm × List Byte) : Bool :=
+  decide (seg.1 + seg.2.2.length ≤ addrTop) && (g.2.1 != .rx || seg.2.1 == .rx)
+
+/-- Whether a run of bytes is in memory once the segments are placed, if the
+first segment whose extent it is within has its bytes there. -/
+def holdsInLen : List (Nat × Perm × List Byte) → Nat × Perm × List Byte → Bool
+  | [], _ => false
+  | seg :: rest, g =>
+    if rangeIn seg g then insideLen seg g && rest.all (clear · g) else holdsInLen rest g
+
+/-- Whether every run of bytes is in memory once the segments are placed, if
+each has its bytes in the first segment whose extent it is within. -/
+def holdsAllLen (segs parts : List (Nat × Perm × List Byte)) : Bool :=
+  parts.all fun g => g.2.2.isEmpty || holdsInLen segs g
+
+/-- A segment has a run of bytes: within its extent, with those bytes there. -/
+def Has (seg g : Nat × Perm × List Byte) : Prop :=
+  rangeIn seg g = true ∧ (seg.2.2.drop (g.1 - seg.1)).take g.2.2.length = g.2.2
+
+theorem not_clear_of_has {seg g : Nat × Perm × List Byte} (h : Has seg g) (hne : g.2.2 ≠ []) :
+    clear seg g = false := by
+  obtain ⟨hr, _⟩ := h
+  simp only [rangeIn, Bool.and_eq_true, decide_eq_true_eq] at hr
+  have hlen : 0 < g.2.2.length := List.length_pos_iff.mpr hne
+  have hseg : seg.2.2 ≠ [] := by
+    intro e
+    rw [e] at hr
+    simp only [List.length_nil] at hr
+    omega
+  cases hc : clear seg g with
+  | false => rfl
+  | true =>
+    simp only [clear, Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq, List.isEmpty_iff] at hc
+    rcases hc with he | ⟨⟨_, hd⟩, _⟩
+    · exact absurd he hseg
+    · omega
+
+theorem holdsIn_of_len {g : Nat × Perm × List Byte} (hne : g.2.2 ≠ []) :
+    ∀ segs : List (Nat × Perm × List Byte), (∃ seg ∈ segs, Has seg g) →
+      holdsInLen segs g = true → holdsIn segs g = true
+  | [], _, h => by cases h
+  | seg :: rest, hhas, h => by
+    unfold holdsInLen at h
+    unfold holdsIn
+    by_cases hr : rangeIn seg g = true
+    · simp only [hr, ↓reduceIte] at h
+      simp only [Bool.and_eq_true] at h
+      obtain ⟨hi, hc⟩ := h
+      have hseg : Has seg g := by
+        obtain ⟨s', hs', hH⟩ := hhas
+        rcases List.mem_cons.mp hs' with rfl | hin
+        · exact hH
+        · have := List.all_eq_true.mp hc s' hin
+          rw [not_clear_of_has hH hne] at this
+          cases this
+      have hin : inside seg g = true := by
+        simp only [rangeIn, Bool.and_eq_true, decide_eq_true_eq] at hr
+        simp only [insideLen, Bool.and_eq_true, decide_eq_true_eq] at hi
+        simp only [inside, Bool.and_eq_true, decide_eq_true_eq, beq_iff_eq]
+        exact ⟨⟨⟨⟨hr.1, hr.2⟩, hi.1⟩, hseg.2⟩, hi.2⟩
+      rw [hin, hc]; rfl
+    · simp only [hr, Bool.false_eq_true, ↓reduceIte] at h
+      have : ∃ seg ∈ rest, Has seg g := by
+        obtain ⟨s', hs', hH⟩ := hhas
+        rcases List.mem_cons.mp hs' with rfl | hin
+        · exact absurd hH.1 hr
+        · exact ⟨s', hin, hH⟩
+      rw [holdsIn_of_len hne rest this h, Bool.or_true]
+
+/-- The comparison without the bytes says what the one with them does, where
+each run of bytes is some segment's. -/
+theorem holdsAll_of_len {segs parts : List (Nat × Perm × List Byte)}
+    (hhas : ∀ g ∈ parts, g.2.2 ≠ [] → ∃ seg ∈ segs, Has seg g)
+    (h : holdsAllLen segs parts = true) : holdsAll segs parts = true := by
+  refine List.all_eq_true.mpr fun g hg => ?_
+  have := List.all_eq_true.mp h g hg
+  rw [Bool.or_eq_true] at this ⊢
+  rcases this with he | hl
+  · exact .inl he
+  · by_cases hne : g.2.2 = []
+    · exact .inl (List.isEmpty_iff.mpr hne)
+    · exact .inr (holdsIn_of_len hne segs (hhas g hg hne) hl)
+
 /-- Whether giving the `len` bytes at `base` a permission leaves a run of
 bytes as it was: it is not code, or its pages are others. -/
 def offPages (base len : Nat) (g : Nat × Perm × List Byte) : Bool :=
@@ -250,23 +344,170 @@ they come from. Where it puts none, zero. -/
 def dataAt (base : BitVec 64) (prog : List (Asm L)) (l : L) (n : Nat) : List Byte :=
   (List.range n).map fun k => (partsByte (parts base prog) ((addr prog base l).toNat + k)).getD 0
 
+/-! ### Every line is in its segment
+
+The segments are made of the lines, so each line's bytes are in the segment
+it belongs to, where the line is. This is so for every program. -/
+
+theorem le_alignUp (a n : Nat) : a ≤ alignUp a n := by
+  unfold alignUp
+  split
+  · exact Nat.le_refl a
+  · next hn =>
+    have hn' : 0 < n := Nat.pos_of_ne_zero hn
+    have h := Nat.lt_mul_div_succ (a + (n - 1)) hn'
+    rw [Nat.mul_succ, Nat.mul_comm] at h
+    omega
+
+omit [DecidableEq L] in
+/-- A line that does not start a segment ends where the next begins. -/
+theorem next_eq (target : L → BitVec 64) (a : Nat) (x : Asm L) (hx : ∀ q, x ≠ .segment q) :
+    next a x = a + (lineBytes target a x).length := by
+  cases x with
+  | segment q => exact absurd rfl (hx q)
+  | align n =>
+    show alignUp a n = a + (List.replicate (alignUp a n - a) (0 : Byte)).length
+    rw [List.length_replicate]
+    have := le_alignUp a n
+    omega
+  | ins i => rfl
+  | label l => rfl
+  | jmp l => show a + _ = a + _; simp [len, lineBytes, instr, Instr.length, Instr.encode, le32]
+  | jcc c l => show a + _ = a + _; simp [len, lineBytes, instr, Instr.length, Instr.encode, le32]
+  | call l => show a + _ = a + _; simp [len, lineBytes, instr, Instr.length, Instr.encode, le32]
+  | ref i l past =>
+    show a + i.length = a + ((i.aim _ _).encode).length
+    rw [← Instr.length_aim i]; rfl
+  | bytes bs => rfl
+  | quad l => show a + 8 = a + (le64 _).length; simp [le64, le32]
+  | space n => show a + n = a + (List.replicate n (0 : Byte)).length; rw [List.length_replicate]
+
+omit [DecidableEq L] in
+/-- The segment being put together is among the segments, with what was
+put in it so far at its start. -/
+theorem segmentsFrom_grows (target : L → BitVec 64) :
+    ∀ (prog : List (Asm L)) (a : Nat) (cur : Nat × Perm × List Byte),
+      ∃ seg ∈ segmentsFrom target a cur prog,
+        seg.1 = cur.1 ∧ seg.2.1 = cur.2.1 ∧ ∃ more, seg.2.2 = cur.2.2 ++ more
+  | [], _, cur => ⟨cur, List.mem_singleton.mpr rfl, rfl, rfl, [], (List.append_nil _).symm⟩
+  | x :: rest, a, cur => by
+    by_cases hx : ∃ q, x = .segment q
+    · obtain ⟨q, rfl⟩ := hx
+      exact ⟨cur, List.mem_cons_self, rfl, rfl, [], (List.append_nil _).symm⟩
+    · have hx' : ∀ q, x ≠ .segment q := fun q e => hx ⟨q, e⟩
+      have hstep : segmentsFrom target a cur (x :: rest) =
+          segmentsFrom target (next a x) (cur.1, cur.2.1, cur.2.2 ++ lineBytes target a x) rest := by
+        cases x <;> first | rfl | exact absurd rfl (hx' _)
+      obtain ⟨seg, hs, h1, h2, more, hm⟩ := segmentsFrom_grows target rest (next a x)
+        (cur.1, cur.2.1, cur.2.2 ++ lineBytes target a x)
+      exact ⟨seg, by rw [hstep]; exact hs, h1, h2, lineBytes target a x ++ more,
+        by rw [hm]; exact List.append_assoc _ _ _⟩
+
+omit [DecidableEq L] in
+/-- **Each line's bytes are in a segment, where the line is.** -/
+theorem partsFrom_has (target : L → BitVec 64) :
+    ∀ (prog : List (Asm L)) (a : Nat) (p : Perm) (cur : Nat × Perm × List Byte),
+      a = cur.1 + cur.2.2.length →
+      ∀ g ∈ partsFrom target a p prog, g.2.2 ≠ [] →
+        ∃ seg ∈ segmentsFrom target a cur prog, Loaded.Has seg g
+  | [], _, _, _, _, g, hg, _ => by cases hg
+  | x :: rest, a, p, cur, ha, g, hg, hne => by
+    rcases List.mem_cons.mp hg with rfl | hin
+    · -- the line itself: in the segment being put together
+      by_cases hx : ∃ q, x = .segment q
+      · obtain ⟨q, rfl⟩ := hx
+        exact absurd rfl hne
+      · have hx' : ∀ q, x ≠ .segment q := fun q e => hx ⟨q, e⟩
+        have hstep : segmentsFrom target a cur (x :: rest) =
+            segmentsFrom target (next a x) (cur.1, cur.2.1, cur.2.2 ++ lineBytes target a x) rest := by
+          cases x <;> first | rfl | exact absurd rfl (hx' _)
+        obtain ⟨seg, hs, h1, _, more, hm⟩ := segmentsFrom_grows target rest (next a x)
+          (cur.1, cur.2.1, cur.2.2 ++ lineBytes target a x)
+        refine ⟨seg, by rw [hstep]; exact hs, ?_, ?_⟩
+        · simp only [Loaded.rangeIn, Bool.and_eq_true, decide_eq_true_eq]
+          rw [h1, hm]
+          simp only [List.length_append]
+          omega
+        · show (seg.2.2.drop (a - seg.1)).take (lineBytes target a x).length = lineBytes target a x
+          rw [h1, hm, show a - cur.1 = cur.2.2.length from by omega, List.append_assoc,
+            List.drop_left, List.take_left]
+    · -- a later line
+      by_cases hx : ∃ q, x = .segment q
+      · obtain ⟨q, rfl⟩ := hx
+        obtain ⟨seg, hs, hH⟩ := partsFrom_has target rest (pageUp a) q (pageUp a, q, [])
+          (by simp) g hin hne
+        exact ⟨seg, List.mem_cons_of_mem _ hs, hH⟩
+      · have hx' : ∀ q, x ≠ .segment q := fun q e => hx ⟨q, e⟩
+        have hstep : segmentsFrom target a cur (x :: rest) =
+            segmentsFrom target (next a x) (cur.1, cur.2.1, cur.2.2 ++ lineBytes target a x) rest := by
+          cases x <;> first | rfl | exact absurd rfl (hx' _)
+        have hperm : perm p x = p := by
+          cases x <;> first | rfl | exact absurd rfl (hx' _)
+        rw [hstep]
+        refine partsFrom_has target rest (next a x) p _ ?_ g (by rw [← hperm]; exact hin) hne
+        rw [next_eq target a x hx']
+        simp only [List.length_append]
+        omega
+
+/-- Whether the file's headers fit in front of the program's first segment. -/
+def headOk (base : BitVec 64) (prog : List (Asm L)) (start : L) : Bool :=
+  match segments base prog with
+  | [] => true
+  | (a, _, first) :: rest =>
+    decide ((Elf.headers (addr prog base start).toNat first.length rest).length ≤ a)
+
+/-- Each line's bytes are in what the kernel maps, where the line is. -/
+theorem image_has (base : BitVec 64) (prog : List (Asm L)) (start : L)
+    (hh : headOk base prog start = true) :
+    ∀ g ∈ parts base prog, g.2.2 ≠ [] → ∃ seg ∈ image base prog start, Loaded.Has seg g := by
+  intro g hg hne
+  obtain ⟨seg, hs, hH⟩ := partsFrom_has (addr prog base) prog base.toNat .rx
+    (base.toNat, .rx, []) (by simp) g hg hne
+  unfold headOk at hh
+  unfold image
+  have hs' : seg ∈ segments base prog := hs
+  cases hsegs : segments base prog with
+  | nil => rw [hsegs] at hs'; cases hs'
+  | cons s₀ rest =>
+    obtain ⟨a, p, first⟩ := s₀
+    rw [hsegs] at hs' hh
+    simp only [decide_eq_true_eq] at hh
+    rcases List.mem_cons.mp hs' with rfl | hin
+    · -- in the first segment, which the headers are put in front of
+      refine ⟨_, List.mem_cons_self, ?_, ?_⟩
+      · obtain ⟨hr, _⟩ := hH
+        simp only [Loaded.rangeIn, Bool.and_eq_true, decide_eq_true_eq, List.length_append] at hr ⊢
+        omega
+      · obtain ⟨hr, hb⟩ := hH
+        simp only [Loaded.rangeIn, Bool.and_eq_true, decide_eq_true_eq] at hr
+        show (List.drop (g.1 - (a - _)) (_ ++ first)).take _ = _
+        rw [show g.1 - (a - (Elf.headers (addr prog base start).toNat first.length rest).length)
+            = (Elf.headers (addr prog base start).toNat first.length rest).length + (g.1 - a)
+          from by omega, List.drop_append, List.drop_of_length_le (Nat.le_add_right _ _),
+          List.nil_append, Nat.add_sub_cancel_left]
+        exact hb
+    · exact ⟨seg, List.mem_cons_of_mem _ hin, hH⟩
+
 /-- **A loaded program is in memory**, line by line, if the comparison of
-its lines with what the kernel maps says so. -/
+where its lines are with what the kernel maps says so: that each line's
+bytes are the ones mapped there is so for every program. -/
 theorem load_holds (s : State) (base : BitVec 64) (prog : List (Asm L)) (start : L)
-    (h : Loaded.holdsAll (image base prog start) (parts base prog) = true) :
+    (h : Loaded.holdsAllLen (image base prog start) (parts base prog) = true)
+    (hh : headOk base prog start = true) :
     ∀ g ∈ parts base prog, (load s base prog start).Holds g :=
-  Loaded.holds_of_holdsAll s h
+  Loaded.holds_of_holdsAll s (Loaded.holdsAll_of_len (image_has base prog start hh) h)
 
 /-- The same, in the state a program declared with `asm_program` starts in:
 the program loaded, a stack given, and the stack pointer set. -/
 theorem prepared_holds (s : State) (base : BitVec 64) (prog : List (Asm L)) (start : L)
     (sb len v : BitVec 64)
-    (h : Loaded.holdsAll (image base prog start) (parts base prog) = true)
+    (h : Loaded.holdsAllLen (image base prog start) (parts base prog) = true)
+    (hh : headOk base prog start = true)
     (hs : (parts base prog).all (Loaded.offPages sb.toNat len.toNat) = true) :
     ∀ g ∈ parts base prog,
       (((load s base prog start).setPerm sb len .rw).setReg .rsp v).Holds g :=
   fun g hg =>
-    (Loaded.holds_setPerm (List.all_eq_true.mp hs g hg) (load_holds s base prog start h g hg)).congr
+    (Loaded.holds_setPerm (List.all_eq_true.mp hs g hg) (load_holds s base prog start h hh g hg)).congr
       rfl rfl
 
 end Asm

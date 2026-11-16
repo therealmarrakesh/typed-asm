@@ -6492,9 +6492,10 @@ elab "ty_loaded" : tactic => withMainContext do
       -- other kind fails only after the two have been compared at length.
       if let some holds := t.find? (·.isAppOfArity ``State.Holds 2) then
         -- The state is looked at to see how it was made. One made by loading
-        -- the program needs no byte of memory looked at: that loading puts
-        -- each line in memory is proved once, from a comparison of the lines
-        -- with the segments. Any other state has each byte looked at.
+        -- the program needs no byte looked at, of memory or of the program:
+        -- that each line's bytes are in its segment is so for every program,
+        -- and what is compared here is only where the lines and the segments
+        -- are. Any other state has each byte looked at.
         let p := holds.appFn!.appArg!
         let p' ← (do
           match p.getAppFn.constName? with
@@ -6505,10 +6506,12 @@ elab "ty_loaded" : tactic => withMainContext do
             pure (some (← `(tactic|
               exact Asm.prepared_holds _ _ _ _ _ _ _
                 (by set_option maxRecDepth 100000 in decide +kernel)
+                (by set_option maxRecDepth 100000 in decide +kernel)
                 (by set_option maxRecDepth 100000 in decide +kernel))))
           else if p'.isAppOf ``Asm.load then
             pure (some (← `(tactic|
-              exact Asm.load_holds _ _ _ _ (by set_option maxRecDepth 100000 in decide +kernel))))
+              exact Asm.load_holds _ _ _ _ (by set_option maxRecDepth 100000 in decide +kernel)
+                (by set_option maxRecDepth 100000 in decide +kernel))))
           else pure none
         let done ← match viaLoad with
           | some tac =>
