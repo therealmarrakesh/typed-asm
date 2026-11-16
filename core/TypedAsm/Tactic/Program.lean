@@ -374,9 +374,6 @@ elab_rules : command
     let kind := ((← liftTermElabM do entryKindOf start).map (·.1)).getD .plain
     let mut exits : Option Term := none
     let mut writes : Option Term := none
-    if r?.isSome && kind != .plain then
-      throwError "asm_safety: `writes` is for a program that does not look at its arguments, \
-        for now"
     if kind == .plain then
       elabCommand (← `(
         /-- **From any state meeting the entry contract, the program is safe on the
@@ -412,14 +409,26 @@ elab_rules : command
           $(id `safeMem_of_entry) (($(id `start_entry)).withWorld w)))
     else
       -- a program that looks at its arguments: for every number of them
-      let both ← if kind == .args then
-          `(h.safeMem_exits $(id `blocksOk) $(id `memOk) $start (plain_of_check (by decide)))
-        else `(h.safeMem_exits $(id `blocksOk) rfl $start (plain_of_check (by decide)))
-      let safe ← if q?.isSome then `(($both).1)
-        else if kind == .args then
-          `(h.safeMem $(id `blocksOk) $(id `memOk) $start (plain_of_check (by decide)))
-        else `(h.safeMem $(id `blocksOk) rfl $start (plain_of_check (by decide)))
-      if q?.isSome then exits := some (← `(($both).2))
+      -- which theorem: safety alone, or with what the program ends with,
+      -- what it writes, or both
+      let thm := mkIdent (match q?, r? with
+        | some _, some _ => `safeMem_exits_writes
+        | some _, none => `safeMem_exits
+        | none, some _ => `safeMem_writes
+        | none, none => `safeMem)
+      let all ← if kind == .args then
+          `(h.$thm:ident $(id `blocksOk) $(id `memOk) $start (plain_of_check (by decide)))
+        else `(h.$thm:ident $(id `blocksOk) rfl $start (plain_of_check (by decide)))
+      let safe ← match q?, r? with
+        | none, none => pure all
+        | _, _ => `(($all).1)
+      match q?, r? with
+      | some _, some _ =>
+        exits := some (← `(($all).2.1))
+        writes := some (← `(($all).2.2))
+      | some _, none => exits := some (← `(($all).2))
+      | none, some _ => writes := some (← `(($all).2))
+      | none, none => pure ()
       elabCommand (← `(
         /-- **From any state meeting the entry contract, however many arguments the
         program was given and whatever they are, it is safe on the machine that

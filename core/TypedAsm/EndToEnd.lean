@@ -219,4 +219,57 @@ theorem Entry.safeMem_exits_writes {Q : BitVec 32 → Prop}
   ⟨.of_safe linux_frame (Asm.loaded h.loaded) he.1, he.2,
     fun s' hs' len hf hax => hw.2 s' hs'.exitsOnly len hf hax⟩
 
+/-! The same for a program that looks at its arguments, as numbers or as
+text: for every number of them. -/
+
+theorem EntryArgs.safeMem_writes {R : BitVec 64 → List (BitVec 8) → Prop}
+    (h : EntryArgs (Asm.addr code base start) (Asm.parts base code) blocks room s)
+    (hty : BlocksOk (.ofLabels code base At) (Asm.fetch base code) (linux.writesOnly R)
+      (.ofList blocks kinds))
+    (hwf : (MemTy.ofList blocks kinds).WF) (hstart : ∀ c, At start (argsCtx room c))
+    (hfields : ∀ x ∈ blocks, x.2.shape.vals = []) :
+    SafeMem linux s ∧ WritesOnly (Asm.fetch base code) R s :=
+  have hs := Safe.of_writesOnly (h.safe hty hwf hstart hfields)
+  ⟨.of_safe linux_frame (Asm.loaded h.choose_spec.1.loaded) hs.1, hs.2⟩
+
+theorem EntryArgs.safeMem_exits_writes {Q : BitVec 32 → Prop}
+    {R : BitVec 64 → List (BitVec 8) → Prop}
+    (h : EntryArgs (Asm.addr code base start) (Asm.parts base code) blocks room s)
+    (hty : BlocksOk (.ofLabels code base At) (Asm.fetch base code)
+      ((linux.exitsOnly Q).writesOnly R) (.ofList blocks kinds))
+    (hwf : (MemTy.ofList blocks kinds).WF) (hstart : ∀ c, At start (argsCtx room c))
+    (hfields : ∀ x ∈ blocks, x.2.shape.vals = []) :
+    SafeMem linux s ∧ ExitsOnly (Asm.fetch base code) Q s ∧
+      WritesOnly (Asm.fetch base code) R s :=
+  have hw := Safe.of_writesOnly (h.safe hty hwf hstart hfields)
+  have he := Safe.of_exitsOnly hw.1
+  ⟨.of_safe linux_frame (Asm.loaded h.choose_spec.1.loaded) he.1, he.2,
+    fun s' hs' len hf hax => hw.2 s' hs'.exitsOnly len hf hax⟩
+
+theorem EntryTexts.safeMem_writes {R : BitVec 64 → List (BitVec 8) → Prop}
+    (h : EntryTexts (Asm.addr code base start) (Asm.parts base code) blocks room s)
+    (hty : BlocksOk (.ofLabels code base At) (Asm.fetch base code) (linux.writesOnly R)
+      (.ofList blocks kinds))
+    (hkinds : MemTy.declared kinds blocks = MemTy.actual blocks)
+    (hstart : ∀ c, At start (textsCtx room c))
+    (hfields : ∀ x ∈ blocks, x.2.shape.vals = []) :
+    SafeMem linux s ∧ WritesOnly (Asm.fetch base code) R s :=
+  have hs := Safe.of_writesOnly (h.safe hty hkinds hstart hfields)
+  ⟨.of_safe linux_frame (Asm.loaded h.choose_spec.1.loaded) hs.1, hs.2⟩
+
+theorem EntryTexts.safeMem_exits_writes {Q : BitVec 32 → Prop}
+    {R : BitVec 64 → List (BitVec 8) → Prop}
+    (h : EntryTexts (Asm.addr code base start) (Asm.parts base code) blocks room s)
+    (hty : BlocksOk (.ofLabels code base At) (Asm.fetch base code)
+      ((linux.exitsOnly Q).writesOnly R) (.ofList blocks kinds))
+    (hkinds : MemTy.declared kinds blocks = MemTy.actual blocks)
+    (hstart : ∀ c, At start (textsCtx room c))
+    (hfields : ∀ x ∈ blocks, x.2.shape.vals = []) :
+    SafeMem linux s ∧ ExitsOnly (Asm.fetch base code) Q s ∧
+      WritesOnly (Asm.fetch base code) R s :=
+  have hw := Safe.of_writesOnly (h.safe hty hkinds hstart hfields)
+  have he := Safe.of_exitsOnly hw.1
+  ⟨.of_safe linux_frame (Asm.loaded h.choose_spec.1.loaded) he.1, he.2,
+    fun s' hs' len hf hax => hw.2 s' hs'.exitsOnly len hf hax⟩
+
 end TypedAsm
