@@ -1,6 +1,6 @@
 name = "typed-assembly"
 version = "0.1.0"
-defaultTargets = ["TypedAsm", "Sum", "Swap", "Frame", "Ops", "Index", "Echo", "Table", "Dispatch", "List", "Fact", "Buffer", "Keep", "Alloc", "Cat", "Stat", "Args", "Own", "Double", "Fresh", "Pair", "Lend", "Random", "Pick", "Rejected", "sum", "swap", "frame", "ops", "index", "echo", "table", "dispatch", "list", "fact", "buffer", "keep", "alloc", "cat", "stat", "args", "own", "double", "fresh", "pair", "lend", "random", "pick"]
+defaultTargets = ["TypedAsm", "Sum", "Swap", "Frame", "Ops", "Index", "Echo", "Table", "Dispatch", "List", "Fact", "Buffer", "Keep", "Alloc", "Cat", "Stat", "Args", "Own", "Double", "Fresh", "Pair", "Lend", "Random", "Pick", "Hello", "Rejected", "sum", "swap", "frame", "ops", "index", "echo", "table", "dispatch", "list", "fact", "buffer", "keep", "alloc", "cat", "stat", "args", "own", "double", "fresh", "pair", "lend", "random", "pick", "hello"]
 testDriver = "tests"
 
 # The core library: machine model, instruction set, semantics, type system.
@@ -98,6 +98,16 @@ roots = ["Table", "TableProgram"]
 name = "table"
 root = "TableMain"
 srcDir = "examples/Table"
+
+[[lean_lib]]
+name = "Hello"
+srcDir = "examples/Hello"
+roots = ["Hello", "HelloProgram"]
+
+[[lean_exe]]
+name = "hello"
+root = "HelloMain"
+srcDir = "examples/Hello"
 
 [[lean_lib]]
 name = "Dispatch"

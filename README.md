@@ -34,6 +34,12 @@ What exists and is checked today:
 - Beyond safety, what a program ends with: a program can be proved to exit
   only with a status satisfying a stated condition. `examples/Fact` is proved
   to end with 120, the factorial of five, through its recursion.
+- And what it writes: data that is never written can say the bytes it
+  holds, the type system keeps that true, and a program can be proved to
+  offer the kernel, at every `write`, only bytes satisfying a stated
+  condition. `examples/Hello` is proved to write exactly its message, on
+  standard output. So far this covers what is written from such data; bytes
+  a program computes and then writes are not yet followed.
 - An assembler with labels for code and data. A program can have any number
   of segments, in any order. Each segment is executable, read-only or
   writable, and can be aligned.
@@ -42,7 +48,7 @@ What exists and is checked today:
   `exit`, `exit_group`, `clock_gettime`, `getrandom`). Where the kernel has a choice the model has
   it too: a call may hand over fewer bytes than were asked for, or fail, and
   what a program may conclude from a result is stated and proved.
-- Twenty-three example programs in `examples/`, each built into an executable
+- Twenty-four example programs in `examples/`, each built into an executable
   whose safety theorem depends only on Lean's three standard axioms.
 - Tests against real tools: 79,628 instructions against the GNU assembler,
   13,579 instruction sequences against a real processor, including which
@@ -64,9 +70,11 @@ jumped back to, called or returned to, and three commands:
 - `asm_safety At.start` proves the program well typed and, from that, safe
   from every state meeting the contract, whatever the outside world does.
   With `exits Q` after it, it also proves that the program ends only with a
-  status satisfying `Q`.
+  status satisfying `Q`; with `writes R`, that every `write` it makes offers
+  a descriptor and bytes satisfying `R` (`asm_typing At data` first makes the
+  program's read-only data say its bytes).
 
-Each instruction is typed without being told how. Seventeen of the twenty-three
+Each instruction is typed without being told how. Eighteen of the twenty-four
 examples need nothing more than this. In the others, a label's block says
 what cannot be read off the program: where an owned block is split, joined
 or made part of the shared memory, which piece of the stack is lent to a

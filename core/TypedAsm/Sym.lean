@@ -4395,6 +4395,11 @@ structure Prog where
   /-- Whether the operating system is one that returns from the calls Linux
   returns from, as Linux does: then system calls that return are stepped over. -/
   linux : Bool := false
+  /-- The blocks whose address, once taken, is kept as the number it is and
+  not made a pointer: those whose bytes are to be written out, where what a
+  program writes is being shown. A pointer's type does not say which block
+  it points into; the number does. -/
+  keep : List (BitVec 64) := []
 
 /-- That the blocks said to be of a kind are. -/
 def TagsOk (Ψ : MemTy) : List (BitVec 64 × Nat) → Prop
@@ -4499,9 +4504,10 @@ def castData (P : Prog) (Γ : CtxS) (i : Instr) : CtxS :=
       | .eq (.lit v) =>
         match blockAt P.blocks v with
         | some (base, S, w, off) =>
-          match lookupTag P.tags base with
-          | some tag => Γ.setReg d (.ref tag w (.lit off))
-          | none => Γ.setReg d (.ptr S w (.lit off))
+          if P.keep.contains base then Γ
+          else match lookupTag P.tags base with
+            | some tag => Γ.setReg d (.ref tag w (.lit off))
+            | none => Γ.setReg d (.ptr S w (.lit off))
         | none => Γ
       | _ => Γ
   | _ => Γ
@@ -4522,6 +4528,8 @@ theorem castData_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy
         · next base S w off hb =>
           obtain ⟨⟨l, hl, hs, hw⟩, hv⟩ := blockAt_spec _ hP.blocks hb
           have hΓ' : (Γ.den ρ).regs d = .eq v := by rw [CtxS.den_regs, hΓ]; rfl
+          split at h
+          · exact h
           split at h
           · next tag ht =>
             obtain ⟨l', hl', htag⟩ := TagsOk.lookup _ hP.tags ht

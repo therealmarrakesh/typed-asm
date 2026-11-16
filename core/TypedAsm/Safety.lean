@@ -256,7 +256,7 @@ variable {R : BitVec 64 → List (BitVec 8) → Prop}
 theorem Syscall.writesOnly_eq {s : State} (h : s.getReg .rax = 1 → R (s.getReg .rdi) s.offered) :
     sys.writesOnly R s = sys s := by
   simp only [Syscall.writesOnly]
-  rw [ite_cond_eq_true _ _ (eq_true h)]
+  rw [ite_eq_left_of_eq_true _ _ (eq_true h)]
 
 /-- What the stricter system lets through is what the plain one does, and
 if it is a `write`, what was offered satisfies the condition. -/
@@ -266,7 +266,7 @@ theorem Syscall.safe_of_writesOnly {s : State} (h : (sys.writesOnly R s).isSafe 
   by_cases hR : s.getReg .rax = 1 → R (s.getReg .rdi) s.offered
   · exact ⟨Syscall.writesOnly_eq hR, hR⟩
   · simp only [Syscall.writesOnly] at h
-    rw [ite_cond_eq_false _ _ (eq_false hR)] at h
+    rw [ite_eq_right_of_eq_false _ _ (eq_false hR)] at h
     exact absurd h (by simp [Result.isSafe])
 
 /-- A step the stricter system lets through is the plain system's step. -/

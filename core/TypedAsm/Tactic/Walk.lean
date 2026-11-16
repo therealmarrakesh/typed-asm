@@ -776,11 +776,110 @@ def typeBufferOwned (goal : MVarId) (rule : Name) (sized : Bool) : TacticM MVarI
   let some rest := rest? | throwError "unexpected goals"
   return rest
 
+/-- A `write` where what the program writes is being shown: the buffer's
+address must be exactly known and lie in a block that says its bytes, and
+the count exactly known; the bytes offered are then that part of what the
+block says. That they satisfy the condition is settled by computing where
+it can be, and is left to be shown otherwise. Returns the rest of the block
+and what is left. -/
+def typeWriteOnly (goal : MVarId) : TacticM (MVarId × List MVarId) := goal.withContext do
+  let ty := (← instantiateMVars (← goal.getType)).consumeMData
+  let Ψ := ty.getAppArgs[3]!
+  let ctx := ty.getAppArgs[5]!
+  let regTy (r : Name) : MetaM Expr := do whnf (← mkAppM ``CtxOf.regs #[ctx, mkConst r])
+  let bufTy ← regTy ``Reg.rsi
+  unless bufTy.isAppOfArity ``Ty.eq 1 do
+    throwError "`write`: what the program writes is being shown, so the buffer's address in \
+      `rsi` must be exactly known, but its type is `{← ppTy bufTy}`. A pointer's type does \
+      not say which block it points into, and only a block that says its bytes \
+      (`asm_typing … data`) has its address kept"
+  let a ← try evalAddr bufTy.appArg! catch _ =>
+    throwError "`write`: the buffer's address in `rsi` is not a number written out"
+  -- the block the address is in: one that says its bytes
+  let mut Ψ' := Ψ
+  for _ in [0:4] do
+    if Ψ'.isAppOfArity ``MemTy.ofList 2 then break
+    let some u ← unfoldDefinition? Ψ' | break
+    Ψ' := u.headBeta
+  unless Ψ'.isAppOfArity ``MemTy.ofList 2 do
+    throwError "`write`: the program's blocks are not a list written out"
+  let mut l ← whnf Ψ'.appFn!.appArg!
+  let mut found : Option (Nat × Nat) := none
+  for _ in [0:256] do
+    unless l.isAppOfArity ``List.cons 3 do break
+    let cell ← whnf l.getAppArgs[1]!
+    if cell.isAppOfArity ``Prod.mk 4 then
+      let base ← try evalAddr cell.getAppArgs[2]! catch _ => pure 0
+      let lay ← whnf cell.getAppArgs[3]!
+      if lay.isAppOfArity ``Layout.mk 5 then
+        let said ← whnf lay.getAppArgs[4]!
+        if said.isAppOf ``Option.some then
+          let n ← try evalNat (← mkAppM ``List.length #[said.appArg!]) catch _ => pure 0
+          if base ≤ a && a < base + n then found := some (base, a - base)
+    l ← whnf l.getAppArgs[2]!
+  let some (base, off) := found
+    | throwError "`write`: what the program writes is being shown, and the buffer at address \
+        {a} is in no block that says its bytes. Only what a block says it holds is known \
+        to be what is written"
+  let baseQ ← `((($(Syntax.mkNumLit (toString base)) : BitVec 64)))
+  let offQ := Syntax.mkNumLit (toString off)
+  let gs ← try
+      runOn goal (do evalTactic (← `(tactic|
+        refine BlockOk.sys (by ty_fetch)
+          (linux_write_only (base := $baseQ) (off := $offQ) (l := ?_) (bs := ?_) rfl rfl rfl rfl ?hl
+            ?hs ?ha ?hin ?hR)
+          ?rest)))
+    catch e =>
+      trace[TypedAsm.fast] "write: {e.toMessageData}"
+      throwError "`write`: what the program writes is being shown, so `rax` must hold \
+        exactly 1, and `rdi` and `rdx` exactly known values"
+  let mut rest? : Option MVarId := none
+  let mut left : List MVarId := []
+  let tagOf (g : MVarId) : MetaM Name := do return (← g.getTag).eraseMacroScopes
+  -- which block, what it says, where in it, and that the bytes are within
+  -- it: in that order, each settling what the next speaks of
+  for want in [`hl, `hs, `ha, `hin] do
+    for g in gs do
+      if ← g.isAssigned then continue
+      unless (← tagOf g) == want do continue
+      try
+        discard <| runOn g (do evalTactic (← `(tactic| first | exact rfl | decide)))
+      catch _ =>
+        if want == `hin then
+          throwError "`write`: the bytes offered from address {a} do not all lie in the \
+            block that says its bytes at {base}: it would write out more than is known"
+        throwError "`write`: the block at {base} could not be read for what it says"
+  for g in gs do
+    if ← g.isAssigned then continue
+    let tag ← tagOf g
+    if tag == `rest then rest? := some g
+    else if tag == `hR then
+      -- settled by computing where it can be; where it cannot, it is said
+      -- what was offered, and the condition is left to be shown of it
+      let after ← try
+          runOn g (do evalTactic (← `(tactic| first | decide | decide +kernel | rfl | (simp; done))))
+        catch _ => pure [g]
+      unless after.isEmpty do
+        logInfo m!"`write` at address {(← addrNat ty.getAppArgs[4]!).getD 0}: the program offers \
+          the {← (do try pure (toString (← evalNat (← mkAppM ``BitVec.toNat #[(← regTy ``Reg.rdx).appArg!]))) catch _ => pure "?")} \
+          bytes at address {a}, byte {off} of the block that says its bytes at {base}; \
+          that they are as wanted is left to be shown"
+      left := left ++ after
+  let some rest := rest? | throwError "ty_block: unexpected goals at `syscall`"
+  return (rest, left)
+
 /-- Types a system call that returns, at the head of a block goal, leaving
 the rest of the block as the main goal. -/
 def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
   trace[TypedAsm.fast] "system call the long way: {nr}"
   let ctx := (← instantiateMVars (← goal.getType)).consumeMData.getAppArgs[5]!
+  let sysArg := (← instantiateMVars (← goal.getType)).consumeMData.getAppArgs[2]!
+  if nr == 1 && sysArg.isAppOf ``Syscall.writesOnly then
+    let (rest, left) ← typeWriteOnly goal
+    setGoals [rest]
+    evalTactic (← `(tactic| ty_normalize))
+    setGoals ((← getGoals) ++ left)
+    return
   if let some (_, _, rule) := plainCalls.find? (·.1 == nr) then
     let gs ← applySysRule goal rule .plain
     let mut rest? : Option MVarId := none
@@ -2172,6 +2271,20 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       let prog? ← if listed && (ahead || held) then
           Sym.reifyProg Ψ'.appFn!.appArg! Ψ'.appArg!
         else pure none
+      -- Where what the program writes is being shown, the address of a block
+      -- that says its bytes is kept as the number it is: that is what says
+      -- which bytes a `write` from there offers.
+      let prog? ← match prog? with
+        | some (Pr, lays, tagLays) =>
+          if sys.isAppOf ``Syscall.writesOnly then
+            let mut keep : List (BitVec 64) := []
+            for ((base, _, _), lay) in Pr.blocks.zip lays.toList do
+              let l ← whnf lay
+              if l.isAppOfArity ``Layout.mk 5 then
+                if (← whnf l.getAppArgs[4]!).isAppOf ``Option.some then keep := keep ++ [base]
+            pure (some ({ Pr with keep := keep }, lays, tagLays))
+          else pure (some (Pr, lays, tagLays))
+        | none => pure none
       let P : Sym.Prog := (prog?.map (·.1)).getD {}
       let mut cur := S₀
       let mut at' := n

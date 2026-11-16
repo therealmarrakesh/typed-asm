@@ -386,6 +386,10 @@ def finishBlockCore (goal : MVarId) (instr : Instr) : TacticM Finish := do
     match ← syscallNumber ctx with
     | some 60 =>
       if sysArg.isAppOf ``Syscall.exitsOnly then return .done (← exitOnly ``linux_exit_only)
+      if sysArg.isAppOf ``Syscall.writesOnly then
+        let gs ← runOn goal (do evalTactic (← `(tactic|
+          refine BlockOk.last (by ty_fetch) (HasType.syscallExit (linux_exit_writes rfl)))))
+        return .done gs
       let gs ← try
           runOn goal (do evalTactic (← `(tactic|
             refine BlockOk.last (by ty_fetch) (HasType.syscallExit (linux_exit rfl)))))
@@ -394,6 +398,10 @@ def finishBlockCore (goal : MVarId) (instr : Instr) : TacticM Finish := do
     | some 231 =>
       if sysArg.isAppOf ``Syscall.exitsOnly then
         return .done (← exitOnly ``linux_exit_group_only)
+      if sysArg.isAppOf ``Syscall.writesOnly then
+        let gs ← runOn goal (do evalTactic (← `(tactic|
+          refine BlockOk.last (by ty_fetch) (HasType.syscallExit (linux_exit_group_writes rfl)))))
+        return .done gs
       let gs ← try
           runOn goal (do evalTactic (← `(tactic|
             refine BlockOk.last (by ty_fetch) (HasType.syscallExit (linux_exit_group rfl)))))
@@ -1957,20 +1965,43 @@ elab "ty_loaded" : tactic => withMainContext do
   let t ← whnfR (← instantiateMVars (← g.getType))
   let tac ←
     if t.isAppOf ``TypedAsm.Entry then
-      `(tactic| refine Entry.ofLoad ?_ ?_ ?_ ?_ ?_ ?_)
+      `(tactic| refine Entry.ofLoad ?_ ?_ ?_ ?_ ?_ ?_ ?_)
     else if t.isAppOf ``TypedAsm.EntryArgs then
-      `(tactic| refine EntryArgs.ofLoad _ ?_ ?_ ?_ ?_ ?_ ?_)
+      `(tactic| refine EntryArgs.ofLoad _ ?_ ?_ ?_ ?_ ?_ ?_ ?_)
     else if t.isAppOf ``TypedAsm.EntryTexts then
-      `(tactic| refine EntryTexts.ofLoad _ ?_ ?_ ?_ ?_ ?_ ?_ ?_)
+      `(tactic| refine EntryTexts.ofLoad _ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_)
     else throwError "ty_loaded: the goal is not an entry contract"
   let gs ← try runOn g (do evalTactic tac)
     catch _ =>
       throwError "ty_loaded: the state must be one with the program loaded and `rip` set to \
         its entry"
+  -- that the program is in memory, to be used again for the blocks that say
+  -- their bytes
+  let mut holds? : Option MVarId := none
+  for g in gs do
+    let t ← instantiateMVars (← g.getType)
+    if (t.find? (·.isAppOfArity ``State.Holds 2)).isSome then holds? := some g
   for g in gs do
     if ← g.isAssigned then continue
     let t ← instantiateMVars (← g.getType)
     try
+      -- That each block that says its bytes holds them: nothing to look at
+      -- where none does; otherwise they are compared with the program's own
+      -- bytes, which are in memory.
+      if (t.find? (·.isConstOf ``saidCheck)).isSome then
+        let quick ← (do
+          let s ← saveState
+          try
+            discard <| runOn g (do evalTactic (← `(tactic| decide)))
+            pure true
+          catch _ => s.restore; pure false)
+        unless quick do
+          let some h := holds? | throwError "no proof that the program is in memory"
+          let hq ← Term.exprToSyntax (mkMVar h)
+          discard <| runOn g (do evalTactic (← `(tactic|
+            exact saidCheck_of_parts $hq
+              (by set_option maxRecDepth 100000 in decide +kernel))))
+        continue
       -- that the program is in memory: each byte is looked at, by the
       -- kernel; anything else: by the kernel too. Stating the check for a
       -- long run of data takes more nesting than the default allows.

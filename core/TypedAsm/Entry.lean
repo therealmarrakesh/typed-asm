@@ -128,6 +128,33 @@ structure Entry (entry : BitVec 64) (parts : List (Nat × Perm × List Byte))
   /-- And such a block may not be written, and says all its bytes. -/
   saidOk : MemTy.saidOk blocks = true
 
+/-- Whether each block that says its bytes may not be written, says all of
+them, and they are the bytes the program puts there: told from the program
+alone, with no state looked at. -/
+def saidParts (parts : List (Nat × Perm × List Byte)) (bs : List (BitVec 64 × Layout)) : Bool :=
+  bs.all fun x =>
+    match x.2.said with
+    | none => true
+    | some b => !x.2.writable && b.length == x.2.size && partsHave parts x.1 b
+
+/-- In a state that has the program in memory, the blocks hold the bytes
+they say, if those are the program's. -/
+theorem saidCheck_of_parts {s : State} {parts : List (Nat × Perm × List Byte)}
+    {bs : List (BitVec 64 × Layout)} (hl : ∀ g ∈ parts, s.Holds g)
+    (h : saidParts parts bs = true) : saidCheck s bs = true := by
+  refine List.all_eq_true.mpr fun x hx => ?_
+  have hx' := List.all_eq_true.mp h x hx
+  cases hb : x.2.said with
+  | none => rfl
+  | some b =>
+    simp only [hb, Bool.and_eq_true] at hx'
+    obtain ⟨hok, hp⟩ := hx'
+    simp only [Bool.and_eq_true]
+    refine ⟨hok, List.all_eq_true.mpr fun k hk => ?_⟩
+    have hk' := List.all_eq_true.mp hp k hk
+    rw [beq_iff_eq] at hk' ⊢
+    exact State.mem_of_partsByte hl hk'
+
 /-- **The stack of a starting state is where a program can have memory.** No
 state meets an entry contract with its stack at an address the processor
 would refuse, or one the kernel keeps for itself. -/

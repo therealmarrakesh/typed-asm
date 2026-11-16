@@ -55,6 +55,13 @@ unsafe def evalRunsUnsafe (e : Expr) : MetaM (List (Nat × Nat × Bool)) := do
     ← mkAppM ``Prod #[mkConst ``Nat, mkConst ``Bool]]]
   evalExpr (List (Nat × Nat × Bool)) ty e
 
+unsafe def evalNatsUnsafe (e : Expr) : MetaM (List Nat) := do
+  evalExpr (List Nat) (← mkAppM ``List #[mkConst ``Nat]) e
+
+/-- The value of a closed term for a list of numbers. -/
+@[implemented_by evalNatsUnsafe]
+opaque evalNats (e : Expr) : MetaM (List Nat)
+
 /-- The value of a closed term for a list of runs of data: where each is,
 how long, and whether it may be written. -/
 @[implemented_by evalRunsUnsafe]
@@ -102,6 +109,10 @@ for every number of arguments `c`, `argsCtx n c` for a program that reads
 them as numbers, `textsCtx n c` for one that reads their text. The contract
 then asks for the stack as Linux leaves it for a new program.
 
+With `data` at the end, each run of data that is never written also says
+the bytes it holds, which is what lets a `write` from it be known for what
+it writes (`asm_safety … writes R`).
+
 Each of these may be said instead of worked out:
 `asm_typing At blocks bs kinds ks room n`. The blocks are said when some of
 the data is more than plain bytes: holds pointers, is of a declared kind, or
@@ -109,12 +120,12 @@ is text. The room is said when the entry label's context is of another form.
 
 The proof that the program is well typed, `blocksOk`, comes after this if
 some label needs something said, and `asm_safety` after that. -/
-syntax "asm_typing " ident (&" blocks " term:max)? (&" kinds " term:max)? (&" room " term:max)? :
-  command
+syntax "asm_typing " ident (&" blocks " term:max)? (&" kinds " term:max)? (&" room " term:max)?
+  (&" data")? : command
 
 open Lean Elab Command Meta in
 elab_rules : command
-  | `(asm_typing $ctxs $[blocks $bs?]? $[kinds $ks?]? $[room $n?]?) => do
+  | `(asm_typing $ctxs $[blocks $bs?]? $[kinds $ks?]? $[room $n?]? $[data%$d?]?) => do
     let id (n : Name) := mkIdent n
     let code := id `code
     let base := id `base
@@ -129,8 +140,22 @@ elab_rules : command
           evalRuns (← instantiateMVars e)
         let items ← runs.toArray.mapM fun (a, size, w) => do
           let wq := if w then mkIdent ``true else mkIdent ``false
-          `(((($(Syntax.mkNumLit (toString a)) : BitVec 64)),
-            (⟨ShapeOf.raw $(Syntax.mkNumLit (toString size)), $wq, none, 0, none⟩ : Layout)))
+          -- with `data`, a run that is never written says the bytes it holds
+          if d?.isSome && !w then
+            let bytes ← liftTermElabM do
+              let e ← Term.elabTerm (← `((List.range $(Syntax.mkNumLit (toString size))).map
+                fun k => ((partsByte (Asm.parts $base $code)
+                  ($(Syntax.mkNumLit (toString a)) + k)).getD 0).toNat)) none
+              Term.synthesizeSyntheticMVarsNoPostponing
+              evalNats (← instantiateMVars e)
+            let bq ← bytes.toArray.mapM fun b =>
+              `((($(Syntax.mkNumLit (toString b)) : BitVec 8)))
+            `(((($(Syntax.mkNumLit (toString a)) : BitVec 64)),
+              (⟨ShapeOf.raw $(Syntax.mkNumLit (toString size)), $wq, none, 0, some [$bq,*]⟩ :
+                Layout)))
+          else
+            `(((($(Syntax.mkNumLit (toString a)) : BitVec 64)),
+              (⟨ShapeOf.raw $(Syntax.mkNumLit (toString size)), $wq, none, 0, none⟩ : Layout)))
         let blocks := id `blocks
         elabCommand (← `(
           /-- The program's blocks of memory: its labelled runs of data, as plain
@@ -315,18 +340,22 @@ are of those types is settled by reading them (`ty_values`). For a value
 that cannot be settled so, say what shows the values are of their types with
 `values h` after the label, where `h` is a proof for every state meeting
 the contract. -/
-syntax "asm_safety " term:max (&" values " term:max)? (&" exits " term:max)? : command
+syntax "asm_safety " term:max (&" values " term:max)? (&" exits " term:max)?
+  (&" writes " term:max)? : command
 
 open Lean Elab Command in
 elab_rules : command
-  | `(asm_safety $start $[values $v?]? $[exits $q?]?) => do
+  | `(asm_safety $start $[values $v?]? $[exits $q?]? $[writes $r?]?) => do
     let id (n : Name) := mkIdent n
     -- The system the program is typed against: `linux`, or, where what the
     -- program ends with is to be shown, `linux` refusing any other status.
     -- Safety under `linux` follows from the typing either way.
-    let os ← match q? with
-      | some q => `(Syscall.exitsOnly linux $q)
-      | none => `(linux)
+    if q?.isSome && r?.isSome then
+      throwError "asm_safety: `exits` and `writes` are shown one at a time for now"
+    let os ← match q?, r? with
+      | some q, _ => `(Syscall.exitsOnly linux $q)
+      | none, some r => `(Syscall.writesOnly linux $r)
+      | none, none => `(linux)
     let fields ← match v? with
       | some v => `($v)
       | none => `(by
@@ -345,17 +374,25 @@ elab_rules : command
           ty_program))
     let kind := ((← liftTermElabM do entryKindOf start).map (·.1)).getD .plain
     let mut exits : Option Term := none
+    let mut writes : Option Term := none
+    if r?.isSome && kind != .plain then
+      throwError "asm_safety: `writes` is for a program that does not look at its arguments, \
+        for now"
     if kind == .plain then
       elabCommand (← `(
         /-- **From any state meeting the entry contract, the program is safe on the
         machine that fetches instructions by decoding memory.** It never gets stuck and
         never faults. -/
         theorem $(id `safeMem_of_entry) {s : State} (h : $(id `Entry) s) : SafeMem linux s :=
-          $(← match q? with
-            | some _ => `((h.safeMem_exits $(id `blocksOk) $(id `memOk) $start $fields).1)
-            | none => `(h.safeMem $(id `blocksOk) $(id `memOk) $start $fields))))
+          $(← match q?, r? with
+            | some _, _ => `((h.safeMem_exits $(id `blocksOk) $(id `memOk) $start $fields).1)
+            | none, some _ =>
+              `((h.safeMem_writes $(id `blocksOk) $(id `memOk) $start $fields).1)
+            | none, none => `(h.safeMem $(id `blocksOk) $(id `memOk) $start $fields))))
       if q?.isSome then
         exits := some (← `((h.safeMem_exits $(id `blocksOk) $(id `memOk) $start $fields).2))
+      if r?.isSome then
+        writes := some (← `((h.safeMem_writes $(id `blocksOk) $(id `memOk) $start $fields).2))
       elabCommand (← `(
         /-- The starting state used by the simulator meets the entry contract. -/
         theorem $(id `start_entry) : $(id `Entry) $(id `start) := by ty_loaded))
@@ -412,6 +449,16 @@ elab_rules : command
             ExitsOnly $(id `fetch) $q s :=
           $pf))
       thms := thms ++ [`exits_of_entry]
+    if let (some r, some pf) := (r?, writes) then
+      elabCommand (← `(
+        /-- **From any state meeting the entry contract, the program writes only
+        what is wanted**: wherever it reaches a `write`, the descriptor and the
+        bytes it offers the kernel are as the condition says. This is on the
+        machine that looks instructions up in the program. -/
+        theorem $(id `writes_of_entry) {s : State} (h : $(id `Entry) s) :
+            WritesOnly $(id `fetch) $r s :=
+          $pf))
+      thms := thms ++ [`writes_of_entry]
     -- the proofs rest on Lean's three standard axioms and nothing else
     for thm in thms do
       let axs ← Lean.collectAxioms (ns ++ thm)
