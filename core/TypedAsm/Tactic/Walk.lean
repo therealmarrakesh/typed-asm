@@ -1,4 +1,5 @@
 import TypedAsm.Tactic.Basic
+import TypedAsm.Tactic.Match
 
 /-!
 # The tactics: walk
@@ -1520,18 +1521,39 @@ partial def matchPart (p a : Expr) : MetaM Unit := do
   else
     try discard <| isDefEq p a catch _ => pure ()
 
+/-- Each label context that has been written out, as a function of its
+parameters: read once, by the constructor that declares it. -/
+initialize patCache : IO.Ref (Std.HashMap (Name × UInt64) (Option Expr)) ← IO.mkRef {}
+
 /-- One of a label's contexts taken at the parameters that bring it closest
 to a context reached: the parameters, and the context at them. Nothing where
-a parameter is left that nothing settles. -/
+a parameter is left that nothing settles. A parameter that is a number or a
+value is found by arithmetic on the terms the two contexts are read as
+(`Sym.Match`); what a context demands that is among what is known fixes the
+parameters it speaks of; and anything else is found by bringing the two
+contexts together as they are written. -/
 def matchCtor (kName lName : Name) (ΓE : Expr) : TacticM (Option (Array Expr × Expr)) := do
   let kTy ← inferType (mkConst kName)
-  let pat? ← forallTelescope kTy fun xs body => do
-    let args := body.getAppArgs
-    if args.size < 2 then return none
-    unless args[args.size - 2]!.isConstOf lName do return none
-    let some patN ← normalCtx args[args.size - 1]!
-      | do trace[TypedAsm.fast] "{kName}: its context is not written out"; return none
-    return some (← mkLambdaFVars xs patN)
+  let key := (kName, kTy.hash)
+  let pat? ← match (← patCache.get)[key]? with
+    | some (some pat) =>
+      -- written out before: only whether it is this label's is looked at
+      let mine ← forallTelescope kTy fun _ body => do
+        let args := body.getAppArgs
+        pure (args.size ≥ 2 && args[args.size - 2]!.isConstOf lName)
+      pure (if mine then some pat else none)
+    | some none => pure none
+    | none =>
+      let (r, mine) ← forallTelescope kTy fun xs body => do
+        let args := body.getAppArgs
+        if args.size < 2 then return (none, false)
+        let mine := args[args.size - 2]!.isConstOf lName
+        let some patN ← normalCtx args[args.size - 1]!
+          | do trace[TypedAsm.fast] "{kName}: its context is not written out"
+               return (none, mine)
+        return (some (← mkLambdaFVars xs patN), mine)
+      patCache.modify (·.insert key r)
+      pure (if mine then r else none)
   let some patAbs := pat? | return none
   -- the parameters as unknowns of this scope, not of the one the context
   -- was written out in
@@ -1546,6 +1568,33 @@ def matchCtor (kName lName : Name) (ΓE : Expr) : TacticM (Option (Array Expr ×
     if t.isAppOf ``LT.lt || t.isAppOf ``LE.le || t.isAppOf ``GT.gt || t.isAppOf ``GE.ge ||
         t.isAppOf ``Eq || t.isAppOf ``Ne || t.isAppOf ``Not then continue
     try m.mvarId!.assumption catch _ => pure ()
+  -- the parameters that are numbers or values, by arithmetic on the terms
+  try
+    let patI ← instantiateMVars patM
+    let open? ← ms.filterM fun m => do
+      return (← instantiateMVars m).isMVar
+    unless open?.isEmpty do
+      let ((cur?, pat?), sc) ← (do
+        let a ← Sym.reifyCtx ΓE
+        let b ← Sym.reifyCtx patI
+        return (a, b) : Sym.ReifyM _).run {}
+      if let (some cur, some pat) := (cur?, pat?) then
+        let idx (tbl : Array Expr) : Array (Nat × Expr) :=
+          open?.filterMap fun m => (tbl.findIdx? (· == m)).map (·, m)
+        let nums := idx sc.num
+        let vals := idx sc.val
+        let sol := Sym.Match.ctx ⟨nums.toList.map (·.1), vals.toList.map (·.1)⟩ pat cur
+        for (i, m) in nums do
+          if let some (_, t) := sol.num.find? (·.1 == i) then
+            let e ← Sym.denNum sc t
+            if !e.hasExprMVar && (← isDefEq (← inferType e) (← inferType m)) then
+              m.mvarId!.assign e
+        for (i, m) in vals do
+          if let some (_, t) := sol.val.find? (·.1 == i) then
+            let e ← Sym.denVal sc t
+            if !e.hasExprMVar && (← isDefEq (← inferType e) (← inferType m)) then
+              m.mvarId!.assign e
+  catch _ => pure ()
   unless patM.isAppOfArity ``CtxOf.mk 7 && ΓE.isAppOfArity ``CtxOf.mk 7 do return none
   let pa := patM.getAppArgs
   let ga := ΓE.getAppArgs

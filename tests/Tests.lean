@@ -3,3 +3,4 @@ import Tests.Hardware
 import Tests.Programs
 import Tests.Syscalls
 import Tests.Checker
+import Tests.Match
