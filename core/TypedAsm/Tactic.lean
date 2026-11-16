@@ -2174,6 +2174,7 @@ private def typeBufferOwned (goal : MVarId) (rule : Name) (sized : Bool) : Tacti
 /-- Types a system call that returns, at the head of a block goal, leaving
 the rest of the block as the main goal. -/
 private def typeSyscallStep (goal : MVarId) (nr : Nat) : TacticM Unit := do
+  trace[TypedAsm.fast] "system call the long way: {nr}"
   let ctx := (← instantiateMVars (← goal.getType)).consumeMData.getAppArgs[5]!
   if let some (_, _, rule) := plainCalls.find? (·.1 == nr) then
     let gs ← applySysRule goal rule .plain
