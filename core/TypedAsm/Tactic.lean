@@ -1,4 +1,5 @@
 import Lean
+import TypedAsm.Check
 import TypedAsm.Program
 import TypedAsm.Fn
 import TypedAsm.Print
@@ -1856,6 +1857,18 @@ def typeStraight : TacticM Unit := deep <| withMainContext do
   unless ty.isAppOfArity ``Straight 5 do
     throwError "ty_straight: the goal is not of the form `Straight Ψ next Γ i Γ'`"
   let instrExpr := ty.getAppArgs[3]!
+  -- First by computation: the checker works the step out, where it covers
+  -- the instruction and the context says what it needs to know.
+  let before ← saveState
+  try
+    Tactic.withoutRecover do
+      evalTactic (← `(tactic|
+        (refine Check.straight_sound (st := ?_) ?hc ?hn
+         case hc => exact rfl
+         case hn => first | trivial | ty_side)))
+      unless (← getGoals).isEmpty do throwError "left over"
+    return
+  catch _ => before.restore
   let instr? ← knownInstr instrExpr
   let rules := match instr? with
     | some i => i.rules
