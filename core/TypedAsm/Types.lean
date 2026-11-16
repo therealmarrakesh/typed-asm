@@ -1120,6 +1120,38 @@ theorem hasTy_fnAll {ι : Type} [Chosen ι] {sig : FnSigEx ι} {v : BitVec 64} :
   rw [FnSigEx.ty, HasTy]
   rfl
 
+/-- `τ.Enters Δ`: a value of type `τ` is the address of code that may be
+entered in the context `Δ`. Code wanting `Δ` is; code ready for a family of
+contexts is, for each of them; and a pointer to a function is, for the
+function's entry from any caller that meets its signature. This is what a
+jump or a call through a value asks of its type. -/
+inductive Ty.Enters : Ty → Ctx → Prop
+  | code (Δ : Ctx) : Ty.Enters (.code Δ) Δ
+  | codeAll (pre : (Nat → BitVec 64) → Ctx) (x : Nat → BitVec 64) :
+    Ty.Enters (.codeAll pre) (pre x)
+  | fn {sig : FnSig} {saved : Reg → Ty} {ret : Ctx} {rest : List Shape} {room : Nat} :
+    sig.CallerOk saved ret rest room → Ty.Enters sig.ty (sig.entry saved ret rest room)
+  | fnAll {ι : Type} [Chosen ι] {sig : FnSigEx ι} {saved : Reg → Ty}
+      {ret : (Nat → BitVec 64) → Ctx} {rest : List Shape} {room : Nat}
+      {frame : List (BitVec 64 × Shape)} {above : Nat} :
+    sig.raw.CallerOk saved ret rest room frame above →
+    Ty.Enters sig.ty (sig.raw.entry saved ret rest room frame above)
+
+/-- A value whose type enters a context is the address of code wanting it. -/
+theorem Ty.Enters.sound {τ : Ty} {Δ : Ctx} {v : BitVec 64} (he : τ.Enters Δ)
+    (h : HasTy fetch sys Ψ n τ v) : HasTy fetch sys Ψ n (.code Δ) v := by
+  cases he with
+  | code => exact h
+  | codeAll pre x => exact hasTy_codeAll.mp h x
+  | fn hK =>
+    rw [hasTy_code]
+    intro k hk Ψ' he' hΨ' s hs hw
+    exact hasTy_fn.mp h k hk Ψ' he' hΨ' _ _ _ _ hK s hs hw
+  | fnAll hK =>
+    rw [hasTy_code]
+    intro k hk Ψ' he' hΨ' s hs hw
+    exact hasTy_fnAll.mp h k hk Ψ' he' hΨ' _ _ _ _ _ _ hK s hs hw
+
 /-- A type's meaning at a step count implies its meaning at every smaller one. -/
 theorem HasTy.mono {m : Nat} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys Ψ n τ v)
     (hle : m ≤ n) : HasTy fetch sys Ψ m τ v := by

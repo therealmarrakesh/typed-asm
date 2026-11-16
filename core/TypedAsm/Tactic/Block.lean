@@ -1348,6 +1348,50 @@ elab "ty_fn_ptr " r:term " to " sig:term : tactic => do
   evalTactic (← `(tactic| ty_normalize))
   setGoals ((← getGoals) ++ left ++ others)
 
+elab_rules : tactic
+  | `(tactic| ty_code_at) => do
+    let goal ← getMainGoal
+    let others := (← getGoals).drop 1
+    let start ← saveState
+    -- what a label demands of the context, shown where it is routine
+    let settle (gs : List MVarId) : TacticM Unit := do
+      for g in gs do
+        if ← g.isAssigned then continue
+        let t ← instantiateMVars (← g.getType)
+        let left ← if t.isAppOf ``FnSig.CallerOk then (do
+            let parts ← runOn g (do evalTactic (← `(tactic|
+              first | assumption | refine FnSig.CallerOk.mk ?gives ?ret ?room)))
+            let mut left : List MVarId := []
+            for p in parts do
+              left := left ++ (← runOn p (do evalTactic (← `(tactic|
+                first | rfl | ctx_sub | decide | omega))))
+            pure left)
+          else runOn g (do evalTactic (← `(tactic| first | assumption | decide | omega)))
+        unless left.isEmpty do throwError "left over"
+    -- code wanting a context allowed at the address
+    try
+      let gs ← runOn goal (do evalTactic (← `(tactic| refine Or.inl ⟨_, rfl, ?here⟩)))
+      settle (← proveAtLabel (← goalNamed gs `here) (pure []))
+      setGoals others
+      return
+    catch _ => start.restore
+    -- a function typed there
+    try
+      let gs ← runOn goal (do evalTactic (← `(tactic|
+        refine Or.inr (Or.inl ⟨_, rfl, ?here⟩))))
+      let [entry] ← runOn (← goalNamed gs `here) (do evalTactic (← `(tactic| intro _ _ _ _ hK)))
+        | throwError "unexpected goals"
+      settle (← proveAtLabel entry (pure []))
+      setGoals others
+      return
+    catch _ => start.restore
+    let gs ← runOn goal (do evalTactic (← `(tactic|
+      refine Or.inr (Or.inr ⟨_, _, _, rfl, ?here⟩))))
+    let [entry] ← runOn (← goalNamed gs `here) (do evalTactic (← `(tactic| intro _ _ _ _ _ _ hK)))
+      | throwError "unexpected goals"
+    settle (← proveAtLabel entry (pure []))
+    setGoals others
+
 macro_rules
   | `(tactic| ty_code_ptr_fwd $r to $Δ) => `(tactic| ty_code_ptr $r to $Δ)
   | `(tactic| ty_fn_ptr_fwd $r to $s) => `(tactic| ty_fn_ptr $r to $s)

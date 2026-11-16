@@ -1718,9 +1718,65 @@ theorem ValsS.den_allClear (ρ : Env) : (vs : ValsS) → (o n : Nat) →
     rw [List.all_cons, ValsS.den_allClear ρ rest o n]
     rfl
 
-/-- What a shape's terms say is at a byte: a typed value, plain bytes, or
-nothing that can be read off them. -/
-def ShapeS.look : ShapeS → Num → Option (Option TyS)
+/-- A number with no variable in it, worked out. -/
+def Num.closed? : Num → Option Nat
+  | .lit n => some n
+  | .add a b =>
+    match a.closed?, b.closed? with
+    | some x, some y => some (x + y)
+    | _, _ => none
+  | .mul a b =>
+    match a.closed?, b.closed? with
+    | some x, some y => some (x * y)
+    | _, _ => none
+  | .sub a b =>
+    match a.closed?, b.closed? with
+    | some x, some y => some (x - y)
+    | _, _ => none
+  | .toNat (.lit v) => some v.toNat
+  | _ => none
+
+theorem Num.closed?_den {ρ : Env} : {a : Num} → {n : Nat} → a.closed? = some n → a.den ρ = n
+  | .lit _, _, h => by cases h; rfl
+  | .add a b, n, h => by
+    unfold Num.closed? at h
+    split at h
+    · next x y hx hy => cases h; show a.den ρ + b.den ρ = _; rw [closed?_den hx, closed?_den hy]
+    · cases h
+  | .mul a b, n, h => by
+    unfold Num.closed? at h
+    split at h
+    · next x y hx hy => cases h; show a.den ρ * b.den ρ = _; rw [closed?_den hx, closed?_den hy]
+    · cases h
+  | .sub a b, n, h => by
+    unfold Num.closed? at h
+    split at h
+    · next x y hx hy => cases h; show a.den ρ - b.den ρ = _; rw [closed?_den hx, closed?_den hy]
+    · cases h
+  | .toNat v, n, h => by
+    cases v with
+    | lit w => simp only [Num.closed?, Option.some.injEq] at h; subst h; rfl
+    | _ => simp [Num.closed?] at h
+  | .var _, _, h => by simp [Num.closed?] at h
+  | .size _, _, h => by simp [Num.closed?] at h
+
+/-- A number written out, where it has no variable in it. -/
+def Num.folded (a : Num) : Num :=
+  match a.closed? with
+  | some n => .lit n
+  | none => a
+
+theorem Num.den_folded (ρ : Env) (a : Num) : a.folded.den ρ = a.den ρ := by
+  unfold Num.folded
+  split
+  · next n h => exact (Num.closed?_den h).symm
+  · rfl
+
+/-- What a block holds at a byte: a typed value, plain bytes, or nothing the
+terms can say. The byte is worked out first where it has no variable in it,
+as it is for an index that is a number. -/
+def ShapeS.look (S : ShapeS) (o : Num) : Option (Option TyS) :=
+  match S, o.folded with
   | .mk _ .nil, _ => some none
   | .mk _ vals, .lit i => some (vals.find i)
   | _, _ => none
@@ -1730,7 +1786,8 @@ theorem ShapeS.look_typed {ρ : Env} {S : ShapeS} {o : Num} {τ : TyS}
   unfold ShapeS.look at h
   split at h
   · cases h
-  · next sz vals i _ =>
+  · next sz vals i _ hf =>
+    rw [← Num.den_folded ρ o, hf]
     exact ShapeS.den_valAt (S := .mk sz vals) (Option.some.inj h)
   · cases h
 
@@ -4371,6 +4428,33 @@ inductive Walk
   number in `rax`, named `k`, and with the address of the new pages there,
   named `k`, the context then owning them. -/
   | fresh (k : Nat) (err ok : Walk)
+  /-- The block jumps through a value of this type: the type enters `Δ`,
+  and this is what is left to be shown for the context reached to stand for
+  `Δ`. -/
+  | jumpVia (τ : TyS) (Δ : CtxS) (cs : List CondS)
+  /-- The block calls through a value of this type, which enters `Δ`, with
+  a return address on the stack whose type, the variable `j`, is that of
+  code wanting `R`, a context allowed at `next`. -/
+  | callVia (τ : TyS) (next : BitVec 64) (j : Nat) (R Δ : CtxS) (cs : List CondS)
+  /-- A register was given the address `v` of code, and from here on has
+  the type that is the variable `h`: a pointer to that code. -/
+  | asCode (v : BitVec 64) (h : Nat) (rest : Walk)
+
+/-- That `τ` is the type of a pointer to the code at `v`: code wanting a
+context allowed there, or a function typed there. -/
+def CodeAt (Φ : CodeTy) (v : BitVec 64) (τ : Ty) : Prop :=
+  (∃ Δ, τ = .code Δ ∧ Φ v Δ) ∨ (∃ sig : FnSig, τ = sig.ty ∧ sig.At Φ v) ∨
+    (∃ (ι : Type) (_ : Chosen ι) (sig : FnSigEx ι), τ = sig.ty ∧ sig.At Φ v)
+
+/-- A register holding exactly the address of code may be treated as a
+pointer to it from there on. -/
+theorem CodeAt.block {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {v a : BitVec 64}
+    {τ : Ty} {Γ : Ctx} {r : Reg} (h : CodeAt Φ v τ) (hr : r ≠ .rsp) (hΓ : Γ.regs r = .eq v)
+    (hb : BlockOk Φ fetch sys Ψ a (Γ.setReg r τ)) : BlockOk Φ fetch sys Ψ a Γ := by
+  rcases h with ⟨Δ, rfl, hΦ⟩ | ⟨sig, rfl, hat⟩ | ⟨ι, inst, sig, rfl, hat⟩
+  · exact .codePtr hr hΓ hΦ hb
+  · exact .fnPtr hr hΓ hat hb
+  · exact .fnPtrAll hr hΓ hat hb
 
 /-- That a walk's conditions hold, that `P` holds of where it stopped, that
 `Q` allows each context it was handed over to, and that `E` holds of the
@@ -4396,6 +4480,11 @@ def Walk.holds (Q : CodeTy) (P : BitVec 64 → Ctx → Prop) (E : Option (BitVec
   | .fresh k l r, ρ =>
     (∀ e, SysErr e → l.holds Q P E (ρ.setVal k e)) ∧
       ∀ p : BitVec 64, p.toNat % 4096 = 0 → p < 0x800000000000 → r.holds Q P E (ρ.setVal k p)
+  | .jumpVia τ Δ cs, ρ => (τ.den ρ).Enters (Δ.den ρ) ∧ CondS.all ρ cs
+  | .callVia τ next j R Δ cs, ρ =>
+    (τ.den ρ).Enters (Δ.den ρ) ∧ (TyS.atom j).den ρ = .code (R.den ρ) ∧ Q next (R.den ρ) ∧
+      CondS.all ρ cs
+  | .asCode v h rest, ρ => CodeAt Q v ((TyS.atom h).den ρ) ∧ rest.holds Q P E ρ
 
 /-- The first register an instruction needs the value of that the context
 only knows to hold a number. -/
@@ -4438,6 +4527,9 @@ structure Prog where
   variable that is the return address's type, the context wanted where the
   call returns, and the context the code called is entered in. -/
   calls : List (BitVec 64 × Nat × CtxS × CtxS) := []
+  /-- Addresses of code a register given one is made a pointer to, each
+  with the variable that is the pointer's type. -/
+  codes : List (BitVec 64 × Nat) := []
   /-- Whether the operating system is one that returns from the calls Linux
   returns from, as Linux does: then system calls that return are stepped over. -/
   linux : Bool := false
@@ -5394,6 +5486,152 @@ theorem callAt_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} 
     · cases h
   · cases h
 
+/-- The type of the value an operand holds, where the rules for jumping and
+calling through one have a form for where it is. -/
+def held (next : BitVec 64) (Γ : CtxS) : RM → Option (TyS × List CondS)
+  | .reg r => if r = .rsp then none else some (Γ.regs.get r, [])
+  | .mem m =>
+    match locate next Γ m with
+    | some (pl, cs) =>
+      if holdable pl.kind m then
+        match pl.shape.look pl.off with
+        | some (some τ) => some (τ, cs)
+        | _ => none
+      else none
+    | none => none
+
+theorem held_sound {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
+    (hB : BlocksOk Ψ ρ Γ.blocks) {rm : RM} {x : TyS × List CondS}
+    (h : held next Γ rm = some x) (hc : CondS.all ρ x.2) :
+    Holds Ψ next (Γ.den ρ) rm (x.1.den ρ) := by
+  unfold held at h
+  split at h
+  · next r =>
+    split at h
+    · cases h
+    · next hr => cases h; exact .reg hr (CtxS.den_regs ρ Γ r)
+  · next m =>
+    split at h
+    · next pl cs hl =>
+      split at h
+      · next hh =>
+        split at h
+        · next τ hτ =>
+          cases h
+          obtain ⟨hκ, hm⟩ := holdable_spec (ρ := ρ) hh
+          exact (locate_spec hB (Ψ := Ψ) (next := next) hl hc).holds hκ hm
+            (ShapeS.look_typed hτ)
+        · cases h
+      · cases h
+    · cases h
+
+/-- A jump or a call through an operand, where the contexts it is typed
+with were given: the operand holds a value of a type, which is to enter the
+context the one reached is compared with. -/
+def viaAt (P : Prog) (a len : BitVec 64) (Γ : CtxS) : Instr → Option Walk
+  | .jmp (.ind rm) =>
+    match P.enters.find? (·.1 == a), held (a + len) { Γ with blocks := P.blocks } rm with
+    | some e, some (τ, hc) =>
+      match subCtx Γ e.2.2 with
+      | some cs => some (.jumpVia τ e.2.2 (hc ++ cs))
+      | none => none
+    | _, _ => none
+  | .call (.ind rm) =>
+    match P.calls.find? (·.1 == a), held (a + len) { Γ with blocks := P.blocks } rm with
+    | some e, some (τ, hc) =>
+      match afterCall Γ e.2.1 with
+      | some (Γ', rc) =>
+        match subCtx Γ' e.2.2.2 with
+        | some cs => some (.callVia τ (a + len) e.2.1 e.2.2.1 e.2.2.2 (hc ++ (rc ++ cs)))
+        | none => none
+      | none => none
+    | _, _ => none
+  | _ => none
+
+theorem viaAt_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
+    {P : Prog} {a len : BitVec 64} {Γ : CtxS} {i : Instr} {W : Walk}
+    {E : Option (BitVec 64) → Prop} (hP : P.Ok Ψ ρ)
+    (hf : fetch a = some (i, len)) (h : viaAt P a len Γ i = some W)
+    (hW : W.holds Φ (BlockOk Φ fetch sys Ψ) E ρ) : BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
+  unfold viaAt at h
+  split at h
+  · next rm =>
+    split at h
+    · next e τ hc _ hh =>
+      split at h
+      · next cs hs =>
+        cases h
+        obtain ⟨hen, hall⟩ := hW
+        obtain ⟨h₁, h₂⟩ := CondS.all_append hc cs hall
+        exact .last hf (.jmpAs
+          (held_sound (Γ := { Γ with blocks := P.blocks }) hP.blocks hh h₁) hen
+          (subCtx_sound hs h₂))
+      · cases h
+    · cases h
+  · next rm =>
+    split at h
+    · next e τ hc _ hh =>
+      split at h
+      · next Γ' rc hcall =>
+        split at h
+        · next cs hs =>
+          cases h
+          obtain ⟨hen, hty, hret, hall⟩ := hW
+          obtain ⟨h₁, h₂⟩ := CondS.all_append hc (rc ++ cs) hall
+          unfold afterCall at hcall
+          split at hcall
+          · next Γ'' hm =>
+            cases hcall
+            obtain ⟨hrc, hcs⟩ := CondS.all_append (Γ.room.minus 8).2 cs h₂
+            obtain ⟨υ, rfl, hυ⟩ := CtxS.moveSp_spec hm
+            have hsub := subCtx_sound hs hcs
+            have e₁ : ({ Γ.setReg .rsp υ with
+                  stack := .mk (.lit 8) (.cons 0 (.atom e.2.1) .nil) :: Γ.stack,
+                  room := (Γ.room.minus 8).1 } : CtxS).den ρ
+                = { (Γ.den ρ).moveSp (-8) with
+                    stack := .slot (.code (e.2.2.1.den ρ)) :: (Γ.den ρ).stack,
+                    room := (Γ.room.minus 8).1.den ρ } := by
+              refine (CtxS.den_sp ρ Γ υ _ _ Γ.flags).trans ?_
+              rw [hυ]
+              show ({ (Γ.den ρ).moveSp (-8) with
+                stack := ShapeOf.mk 8 [(0, (TyS.atom e.2.1).den ρ)] :: _, room := _ } : Ctx) = _
+              rw [hty]; rfl
+            rw [e₁] at hsub
+            exact .last hf (.callAs
+              (held_sound (Γ := { Γ with blocks := P.blocks }) hP.blocks hh h₁) hen
+              (Num.minus_spec hrc) hret hsub)
+          · cases hcall
+        · cases h
+      · cases h
+    · cases h
+  · cases h
+
+/-- The register an instruction has just given the address of code that it
+is to be a pointer to, with the address and the variable that is the
+pointer's type. -/
+def codeCast (P : Prog) (Γ : CtxS) : Instr → Option (Reg × BitVec 64 × Nat)
+  | .lea .w64 d (.rip _) =>
+    if d = .rsp then none
+    else match Γ.regs.get d with
+      | .eq (.lit v) => (P.codes.find? (·.1 == v)).map fun e => (d, v, e.2)
+      | _ => none
+  | _ => none
+
+theorem codeCast_spec {P : Prog} {Γ : CtxS} {i : Instr} {d : Reg} {v : BitVec 64} {h : Nat}
+    (hc : codeCast P Γ i = some (d, v, h)) : d ≠ .rsp ∧ Γ.regs.get d = .eq (.lit v) := by
+  unfold codeCast at hc
+  split at hc
+  · split at hc
+    · cases hc
+    · next hd =>
+      split at hc
+      · next v' hΓ =>
+        cases hf : P.codes.find? (·.1 == v') with
+        | none => rw [hf] at hc; cases hc
+        | some e => rw [hf] at hc; cases hc; exact ⟨hd, hΓ⟩
+      · cases hc
+  · cases hc
+
 /-- The context the block is to be compared with at an instruction, where it
 is handed over, returns or calls there. -/
 def hintAt (P : Prog) (a : BitVec 64) : Option CtxS :=
@@ -5554,6 +5792,9 @@ def walk (P : Prog) (code : List (BitVec 64 × Instr × BitVec 64)) :
       match mmapAt P k (a + len) Γ i with
       | some W => W
       | none =>
+      match viaAt P a len Γ i with
+      | some W => W
+      | none =>
       match leaveAt P a Γ i with
       | some W => W
       | none =>
@@ -5607,7 +5848,11 @@ def walk (P : Prog) (code : List (BitVec 64 × Instr × BitVec 64)) :
             -- the next instruction may be where the block is handed over
             match handOver P a (a + len) Γ' with
             | some (Δ, cs') => .conds cs (.enter (a + len) Δ cs')
-            | none => .conds cs (walk P code fuel k (a + len) (castData P Γ' i))
+            | none =>
+              match codeCast P Γ' i with
+              | some (d, v, h) =>
+                .conds cs (.asCode v h (walk P code fuel k (a + len) (Γ'.setReg d (.atom h))))
+              | none => .conds cs (walk P code fuel k (a + len) (castData P Γ' i))
           | none => .stop a Γ
 
 /-- **A walk whose conditions hold types the block it started at**, if the
@@ -5637,6 +5882,9 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
       next =>
       split at h
       · next W hj => exact mmapAt_sound hsys (Agrees.lookup code hcode hl) hj h
+      next =>
+      split at h
+      · next W hj => exact viaAt_sound hP (Agrees.lookup code hcode hl) hj h
       next =>
       split at h
       · next W hj => exact leaveAt_sound (Agrees.lookup code hcode hl) hj h
@@ -5755,8 +6003,15 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
             · next Δ cs' hh =>
               exact .last (Agrees.lookup code hcode hl)
                 (.straight (hst h.1) (handOver_sound hh h.2.1 h.2.2))
-            · exact .step (Agrees.lookup code hcode hl) (hst h.1)
-                (castData_sound hP (walk_sound hcode hsys hw hE fuel k (a + len) _ ρ hP h.2))
+            · split at h
+              · next d v hh hcc =>
+                obtain ⟨hd, hΓd⟩ := codeCast_spec hcc
+                have hrest := walk_sound hcode hsys hw hE fuel k (a + len) _ ρ hP h.2.2
+                rw [CtxS.den_setReg] at hrest
+                exact .step (Agrees.lookup code hcode hl) (hst h.1)
+                  (h.2.1.block hd (by rw [CtxS.den_regs, hΓd]; rfl) hrest)
+              · exact .step (Agrees.lookup code hcode hl) (hst h.1)
+                  (castData_sound hP (walk_sound hcode hsys hw hE fuel k (a + len) _ ρ hP h.2))
           · exact h
 
 /-- The same, from the walk written out. -/

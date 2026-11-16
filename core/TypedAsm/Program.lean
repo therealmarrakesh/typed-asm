@@ -121,6 +121,8 @@ theorem HasType.mono (h : ∀ a Γ, Φ a Γ → Φ' a Γ) {next : BitVec 64} {Γ
   | syscallExit hexit => exact .syscallExit hexit
   | jmpInd hcode hsub => exact .jmpInd hcode hsub
   | callInd hcode hroom hret hsub => exact .callInd hcode hroom (h _ _ hret) hsub
+  | jmpAs hh he hsub => exact .jmpAs hh he hsub
+  | callAs hh he hroom hret hsub => exact .callAs hh he hroom (h _ _ hret) hsub
   | unreachable hun => exact .unreachable hun
   | sem hs hacc => exact .sem hs (fun x => (hacc x).mono h)
   | fnPtr hr hΓ hat _ ih => exact .fnPtr hr hΓ (fun sv rt rs rm hK => h _ _ (hat sv rt rs rm hK)) ih

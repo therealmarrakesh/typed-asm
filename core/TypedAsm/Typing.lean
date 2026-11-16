@@ -1049,6 +1049,17 @@ inductive HasType (Φ : CodeTy) (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (ne
   | callInd {Γ Δ ret : Ctx} {rm : RM} {n : Nat} : Holds Ψ next Γ rm (.code Δ) → Γ.room = n + 8 → Φ next ret →
     CtxSub { Γ.moveSp (-8) with stack := .slot (.code ret) :: Γ.stack, room := n } Δ →
     HasType Φ fetch sys Ψ next Γ (.call (.ind rm))
+  /-- Jump through a register, field or stack slot holding a value whose
+  type enters a context the one here may stand for: code, or a function
+  whose caller's requirement is met. -/
+  | jmpAs {Γ Δ : Ctx} {rm : RM} {τ : Ty} : Holds Ψ next Γ rm τ → τ.Enters Δ → CtxSub Γ Δ →
+    HasType Φ fetch sys Ψ next Γ (.jmp (.ind rm))
+  /-- Call through such a value. The callee sees the return address on top
+  of the stack. -/
+  | callAs {Γ Δ ret : Ctx} {rm : RM} {τ : Ty} {n : Nat} : Holds Ψ next Γ rm τ → τ.Enters Δ →
+    Γ.room = n + 8 → Φ next ret →
+    CtxSub { Γ.moveSp (-8) with stack := .slot (.code ret) :: Γ.stack, room := n } Δ →
+    HasType Φ fetch sys Ψ next Γ (.call (.ind rm))
   /-- A register holding exactly the address of a function may be treated as
   a pointer to that function, to be called by any caller. -/
   | fnPtr {Γ : Ctx} {i : Instr} {r : Reg} {a : BitVec 64} {sig : FnSig} :

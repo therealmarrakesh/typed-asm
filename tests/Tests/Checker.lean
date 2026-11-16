@@ -372,6 +372,46 @@ example : (stepSys (giving 8192)).map (·.2.length) = some 1 := by decide
 -- and an address that is not a block's own is refused
 example : (stepSys (reg (giving 4096) .rdi (.eq (.lit 5)))).isNone = true := by decide
 
+/-! ## Jumps and calls through a value -/
+
+/-- A table of two values of a type the terms have no form for, as a
+function pointer's is. -/
+def fns : ShapeS := .mk (.lit 16) (.cons 0 (.atom 4) (.cons 8 (.atom 4) .nil))
+
+/-- `rbx` points to the table, and `rcx` holds an index. -/
+def atTable (i : BitVec 64) : CtxS :=
+  reg (reg base .rbx (.ptr fns false (.lit 0))) .rcx (.eq (.lit i))
+
+-- what a register holds, and what a field does, an index worked out
+example : (held 0x1000 (reg base .r12 (.atom 4)) (.reg .r12)).map (·.1) = some (.atom 4) := by
+  decide
+example : (held 0x1000 (atTable 1) (.mem (idx .rbx .rcx .s8 0))).map (·.1) = some (.atom 4) := by
+  decide
+-- not past the table, and not the stack pointer
+example : (held 0x1000 (atTable 2) (.mem (idx .rbx .rcx .s8 0))).isNone = true := by decide
+example : (held 0x1000 base (.reg .rsp)).isNone = true := by decide
+-- a number with no variable in it is worked out
+example : (Num.add (.mul (.toNat (.lit 3)) (.lit 8)) (.lit 4)).folded = .lit 28 := by decide
+example : (Num.add (.var 0) (.lit 4)).folded = .add (.var 0) (.lit 4) := by decide
+
+/-- A program that says where a jump through `rcx` at 0x1000 goes, and that
+0x2000 is the address of code. -/
+def jumping : Prog := { enters := [(0x1000, 0, base)], codes := [(0x2000, 4)] }
+
+-- the jump is typed through the value's type, whatever it is: that the type
+-- enters the context is what is left to be shown
+example : (match viaAt jumping 0x1000 2 (reg base .rcx (.atom 4)) (.jmp (.ind (.reg .rcx))) with
+    | some (.jumpVia τ _ cs) => some (τ, cs.length)
+    | _ => none) = some (.atom 4, 0) := by decide
+-- nothing is said where no context was given for the instruction
+example : (viaAt {} 0x1000 2 (reg base .rcx (.atom 4)) (.jmp (.ind (.reg .rcx)))).isNone = true := by
+  decide
+-- a register given the address of code is made a pointer to it; another address is not
+example : codeCast jumping (reg base .rax (.eq (.lit 0x2000))) (.lea .w64 .rax (.rip 0))
+    = some (.rax, 0x2000, 4) := by decide
+example : (codeCast jumping (reg base .rax (.eq (.lit 0x3000))) (.lea .w64 .rax (.rip 0))).isNone
+    = true := by decide
+
 /-! ## Why an instruction is refused -/
 
 def isReason (Γ : CtxS) (i : Instr) (p : Reject → Bool) : Bool :=

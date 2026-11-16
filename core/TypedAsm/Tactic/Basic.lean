@@ -790,6 +790,10 @@ syntax "ty_err " term " as " ident : tactic
 syntax "ty_mmap " term : tactic
 syntax "ty_mmap_kind " term : tactic
 syntax "ty_into " term : tactic
+/-- Shows that a type is that of a pointer to the code at an address
+(`Sym.CodeAt`): code wanting a context allowed there, or a function typed
+there. -/
+syntax "ty_code_at" : tactic
 syntax "ty_code_ptr_fwd " term " to " term : tactic
 syntax "ty_fn_ptr_fwd " term " to " term : tactic
 syntax "ty_byte " "as " ident : tactic

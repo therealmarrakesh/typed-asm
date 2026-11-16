@@ -2888,6 +2888,42 @@ theorem HasType.sound {next : BitVec 64} {Γ : Ctx} {i : Instr} {n : Nat}
     cases heq
     exact hp n (Nat.lt_succ_self n) Ψ' (.refl _) hΨ _ rfl
       (((hw'.sub hsub).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
+  | @jmpAs Γ Δ rm τ hholds henters hsub =>
+    obtain ⟨v, hv, hp⟩ := (hholds.ext he).sound h hΨ hrip
+    have hp := henters.sound hp
+    rw [hasTy_code] at hp
+    have hex : exec sys (.jmp (.ind rm)) s = .next { s with rip := v } := by
+      simp [exec, hv]
+    rw [hex]
+    refine ⟨rfl, fun s' heq => ?_⟩
+    cases heq
+    exact hp n (Nat.lt_succ_self n) Ψ' (.refl _) hΨ _ rfl
+      (((h.sub hsub).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
+  | @callAs Γ Δ ret rm τ m hholds henters hroom hret hsub =>
+    obtain ⟨v, hv, hp⟩ := (hholds.ext he).sound h hΨ hrip
+    have hp := henters.sound hp
+    rw [hasTy_code] at hp
+    have hw : (s.setReg .rsp (s.getReg .rsp - 8)).canWrite (s.getReg .rsp - 8) 8 = true :=
+      h.canWrite_push hroom
+    have hra : HasTy fetch sys Ψ' (n + 1) (.code ret) s.rip := by
+      rw [hasTy_code]
+      intro k hk Ψ'' he' hΨ'' t ht hwt
+      exact ih k (by omega) Ψ'' (he.trans he') hΨ'' next ret hret t (ht.trans hrip) hwt
+    have hex : exec sys (.call (.ind rm)) s
+        = .next { (s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip with
+            rip := v } := by
+      have hpush : s.push64 s.rip
+          = .next ((s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip) := by
+        simp only [State.push64, State.write64, hw, ite_true, Result.onStack_next]
+      simp [exec, hv, hpush]
+    have hw' := h.push hΨ hroom hra
+    generalize (s.setReg .rsp (s.getReg .rsp - 8)).store64 (s.getReg .rsp - 8) s.rip = s₁
+      at hex hw'
+    rw [hex]
+    refine ⟨rfl, fun s' heq => ?_⟩
+    cases heq
+    exact hp n (Nat.lt_succ_self n) Ψ' (.refl _) hΨ _ rfl
+      (((hw'.sub hsub).mono (Nat.le_succ n)).congr rfl rfl rfl rfl)
   | @sem ι Γ Γ' i hsem hacc =>
     obtain ⟨s', x, hex, hr, Ψ₂, he₂, hΨ₂, hw⟩ := hsem Ψ' he hΨ _ _ h hrip
     rw [hex]

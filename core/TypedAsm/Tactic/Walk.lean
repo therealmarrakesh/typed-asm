@@ -1427,6 +1427,43 @@ def labelInfo (Φ : Expr) : MetaM (Option (Expr × Expr × Expr × Array (Nat ×
   labelCache.modify (·.push (Φ, prog, base, T, out))
   return some (prog, base, T, out)
 
+/-- The type a register holding the address `v` is given, where `v` is the
+address of a label with one declared context: a pointer to the function
+there, where that context is a signature's entry, and otherwise to the code
+there, where the context has nothing left open. -/
+def codeTypeAt (Φ : Expr) (v : Nat) : MetaM (Option Expr) := do
+  let mut f := Φ
+  for _ in [0:4] do
+    if f.isAppOf ``CodeTy.ofLabels then break
+    let some f' ← unfoldDefinition? f | return none
+    f := f'.headBeta
+  unless f.isAppOf ``CodeTy.ofLabels && f.getAppNumArgs ≥ 3 do return none
+  let args := f.getAppArgs
+  let T := args[args.size - 1]!
+  let base := args[args.size - 2]!
+  let prog := args[args.size - 3]!
+  let .const tn _ := T.getAppFn | return none
+  let some (.inductInfo info) := (← getEnv).find? tn | return none
+  let mut found : Array (Option Expr) := #[]
+  for c in info.ctors do
+    let some ci := (← getEnv).find? c | continue
+    let r ← forallTelescope ci.type fun xs body => do
+      let bs := body.getAppArgs
+      unless bs.size ≥ 2 do return none
+      let some l := bs[bs.size - 2]!.getAppFn.constName? | return none
+      let some n ← addrNat (← mkAppM ``Asm.addr #[prog, base, mkConst l]) | return none
+      unless n == v do return none
+      let ctx := bs[bs.size - 1]!
+      if ctx.isAppOf ``FnSig.entry && ctx.getAppNumArgs ≥ 1 && !ctx.getAppArgs[0]!.hasFVar then
+        return some (some (← mkAppM ``FnSig.ty #[ctx.getAppArgs[0]!]))
+      if ctx.isAppOf ``FnSigEx.entry && ctx.getAppNumArgs ≥ 3 && !ctx.getAppArgs[2]!.hasFVar then
+        return some (some (← mkAppM ``FnSigEx.ty #[ctx.getAppArgs[2]!]))
+      if xs.size == 0 && !ctx.hasFVar then return some (some (← mkAppM ``Ty.code #[ctx]))
+      return some none
+    if let some x := r then found := found.push x
+  let #[some τ] := found | return none
+  return some τ
+
 /-- How a context reached is made ready to be compared with one wanted,
 where the comparison is being looked for on the walk's behalf: registers
 holding exactly a block's address are made pointers where the context
@@ -1665,8 +1702,10 @@ def findEnter (Φ : Expr) (atoms : Sym.Atoms) (named : Array (Nat × Reg))
     for kName in info.ctors do
       let s ← saveState
       let r ← try (do
-          let some (params, Δ0) ← matchCtor kName lName ΓE | return none
-          let some ΔN ← normalCtx Δ0 | return none
+          let some (params, Δ0) ← matchCtor kName lName ΓE
+            | do trace[TypedAsm.fast] "{kName}: its context does not match the one reached"; return none
+          let some ΔN ← normalCtx Δ0
+            | do trace[TypedAsm.fast] "{kName}: its context is not written out"; return none
           let (Δ?, atoms'') ← (Sym.reifyCtx ΔN).run atoms'
           let some Δ := Δ? | do trace[TypedAsm.fast] "{kName}: its context is not read"; return none
           -- nothing new that the context speaks of may speak of a value the
@@ -2097,6 +2136,293 @@ def findCall (Φ : Expr) (atoms : Sym.Atoms) (named : Array (Nat × Reg))
   s.restore
   return r
 
+/-- A call through a value found typed within a walk: a pointer to a
+function, whose signature says what it is entered with and what it returns
+with; the return point is a label's context at parameters. -/
+structure ViaCall where
+  at' : Nat
+  next : Nat
+  j : Nat
+  R : Sym.CtxS
+  Δ : Sym.CtxS
+  τ : Sym.TyS
+  R0 : Expr
+  lRet : Name
+  kRet : Name
+  paramsR : Array Expr
+  Δ0 : Expr
+  temps : Array (Nat × Expr)
+
+/-- What is to be shown where a block calls through a value. -/
+def viaCallType (Φ : Expr) (atoms : Sym.Atoms) (c : ViaCall) (cs : List Sym.CondS) :
+    MetaM Expr := do
+  let mut allE := mkConst ``True
+  for x in cs.reverse do
+    allE := mkApp2 (mkConst ``And) (← Sym.denCond atoms x) allE
+  let tyE := atoms.ty.getD c.j (mkConst ``Ty.int)
+  let RE ← Sym.denCtx atoms c.R
+  let ΔE ← Sym.denCtx atoms c.Δ
+  let τE ← Sym.denTy atoms c.τ
+  return mkApp2 (mkConst ``And) (mkApp2 (mkConst ``Ty.Enters) τE ΔE)
+    (mkApp2 (mkConst ``And) (← mkEq tyE (← mkAppM ``Ty.code #[RE]))
+      (mkApp2 (mkConst ``And) (mkAppN Φ #[toExpr (BitVec.ofNat 64 c.next), RE]) allE))
+
+/-- That a type enters a context, for the context with its register types
+as a table: from the proof for the context as it is written. -/
+def entersTabled (τE Δ0 pf : Expr) (atoms : Sym.Atoms) (Δ : Sym.CtxS) : MetaM Expr := do
+  let env ← getEnv
+  let lctx ← getLCtx
+  let P ← withLocalDeclD `X (mkConst ``Ctx) fun X => do
+    mkLambdaFVars #[X] (mkApp2 (mkConst ``Ty.Enters) τE X)
+  unless Kernel.isDefEqGuarded env lctx (← inferType pf) (mkApp2 (mkConst ``Ty.Enters) τE Δ0) do
+    throwError "the value's type is not seen to enter the context chosen"
+  let ΔE ← Sym.denCtx atoms Δ
+  let want := mkApp2 (mkConst ``Ty.Enters) τE ΔE
+  let tabled := mkApp3 (mkConst ``Ctx.asTable) P Δ0 pf
+  unless Kernel.isDefEqGuarded env lctx (← inferType tabled) want do
+    throwError "the context chosen is not the one compared"
+  mkExpectedTypeHint tabled want
+
+/-- Shows what `viaCallType` states. `Δ0` is the function's entry, written
+with its signature, and the parameters are those of this scope. -/
+def solveCallVia (g : MVarId) (Φ : Expr) (c : ViaCall) (R0 Δ0 : Expr)
+    (paramsR : Array Expr) (cs : List Sym.CondS) (atoms : Sym.Atoms) : TacticM Unit :=
+    g.withContext do
+  let env ← getEnv
+  let lctx ← getLCtx
+  let kwhnf (e : Expr) : MetaM Expr := ofExceptKernelException (Kernel.whnf env lctx e)
+  let goals ← getGoals
+  let tyE := atoms.ty.getD c.j (mkConst ``Ty.int)
+  let RE ← Sym.denCtx atoms c.R
+  let ΔE ← Sym.denCtx atoms c.Δ
+  let τE ← Sym.denTy atoms c.τ
+  -- the type of the return address
+  let A ← mkEq tyE (← mkAppM ``Ty.code #[RE])
+  let P ← withLocalDeclD `X (mkConst ``Ctx) fun X => do
+    mkLambdaFVars #[X] (← mkEq tyE (← mkAppM ``Ty.code #[X]))
+  let h0 ← mkExpectedTypeHint (← mkEqRefl tyE) (mkApp P R0).headBeta
+  let tabled := mkApp3 (mkConst ``Ctx.asTable) P R0 h0
+  unless Kernel.isDefEqGuarded env lctx (← inferType tabled) A do
+    throwError "the return point's context is not the one compared"
+  let hA ← mkExpectedTypeHint tabled A
+  -- the return point
+  let (hR, premsR) ← labelProof Φ c.lRet c.kRet paramsR c.next c.R atoms
+  for m in premsR do
+    if ← m.isAssigned then continue
+    let t ← instantiateMVars (← m.getType)
+    if t.isAppOf ``FnSig.CallerOk then
+      closeCallerOk m
+    else
+      let left ← runOn m do
+        evalTactic (← `(tactic| first | assumption | omega | decide | ty_arith))
+      unless left.isEmpty do throwError "left over"
+  -- the function: its requirement of its caller is met
+  unless Δ0.isAppOfArity ``FnSig.entry 5 do throwError "the function's entry is not written out"
+  let a := Δ0.getAppArgs
+  let hK ← mkFreshExprSyntheticOpaqueMVar (mkAppN (mkConst ``FnSig.CallerOk) a)
+  closeCallerOk hK.mvarId!
+  let hEn ← entersTabled τE Δ0 (mkAppN (mkConst ``Ty.Enters.fn) (a.push (← instantiateMVars hK)))
+    atoms c.Δ
+  let mut hn := mkConst ``True.intro
+  let mut allE := mkConst ``True
+  arithLeft.set #[]
+  for x in cs.reverse do
+    let leaf ← Sym.denCond atoms x
+    let h ← closeNeeds env lctx kwhnf pure #[] leaf
+    hn := mkApp4 (mkConst ``And.intro) leaf allE h hn
+    allE := mkApp2 (mkConst ``And) leaf allE
+  closeArithLeft
+  let tR := mkAppN Φ #[toExpr (BitVec.ofNat 64 c.next), RE]
+  let tE := mkApp2 (mkConst ``Ty.Enters) τE ΔE
+  let inner := mkApp4 (mkConst ``And.intro) tR allE hR (← instantiateMVars hn)
+  let mid := mkApp4 (mkConst ``And.intro) A (mkApp2 (mkConst ``And) tR allE) hA inner
+  g.assign (mkApp4 (mkConst ``And.intro) tE
+    (mkApp2 (mkConst ``And) A (mkApp2 (mkConst ``And) tR allE)) hEn mid)
+  setGoals goals
+
+/-- The signature of the function a type is that of a pointer to. -/
+def fnSigOf (τE : Expr) : MetaM (Option Expr) := do
+  if τE.isAppOfArity ``FnSig.ty 1 then return some τE.appArg!
+  let w ← whnf τE
+  if w.isAppOfArity ``Ty.fn 6 then return some (mkAppN (mkConst ``FnSig.mk) w.getAppArgs)
+  return none
+
+/-- Looks at a call through an operand that holds a pointer to a function,
+returning to a label. The pointer's type says the signature; the registers
+the function preserves, the caller's stack and its room are the caller's
+own; and the return point is the context at the next label that what the
+function returns with may stand for. -/
+def findCallVia (Φ : Expr) (atoms : Sym.Atoms) (named : Array (Nat × Reg))
+    (cur : Sym.CtxS) (at' next : Nat) (τ : Sym.TyS) (hc : List Sym.CondS) :
+    TacticM (Option (ViaCall × Sym.Atoms)) := do
+  if ← enterOff.get then return none
+  let some (_, _, T, labels) ← labelInfo Φ | return none
+  let some (_, lRet) := labels.find? (·.1 == next) | return none
+  let .const tn _ := T.getAppFn | return none
+  let some (.inductInfo info) := (← getEnv).find? tn | return none
+  let bv := mkApp (mkConst ``BitVec) (mkNatLit 64)
+  let decls := named.map fun (_, r) => (Name.mkSimple s!"{r.name64}₀", bv)
+  let s ← saveState
+  let r ← withLocalDeclsDND decls fun temps => do
+    let mut atoms' := atoms
+    for ((k, _), v) in named.zip temps do
+      let pad := atoms'.val ++ Array.replicate (k + 1 - atoms'.val.size) (toExpr (0 : BitVec 64))
+      atoms' := { atoms' with val := pad.set! k v }
+    let some sig ← fnSigOf (← Sym.denTy atoms' τ)
+      | do trace[TypedAsm.fast] "call through a value: its type is not a function pointer's"
+           return none
+    let j := atoms'.ty.size
+    let some (pushed, rc) := Sym.afterCall cur j | return none
+    let preE ← Sym.denCtx atoms' { pushed with stack := cur.stack }
+    let pre := preE.getAppArgs
+    let regsE := pre[1]!
+    let stackE := pre[2]!
+    let roomE := pre[3]!
+    let ownedE := pre[5]!
+    let aboveE := pre[6]!
+    for kRet in info.ctors do
+      let st ← saveState
+      let found ← try (do
+          -- the return point: what the function returns with stands for it
+          let ownedBack ← mkAppM ``HAppend.hAppend #[← mkAppM ``FnSig.gives #[sig],
+            ← mkAppM ``List.drop #[← mkAppM ``List.length #[← mkAppM ``FnSig.takes #[sig]], ownedE]]
+          let returned ← mkAppM ``FnSig.returned #[sig, regsE, stackE, roomE, ownedBack, aboveE]
+          let some retN ← normalCtx returned | return none
+          let some (paramsR, R0) ← matchCtor kRet lRet retN | return none
+          let Δ0 := mkAppN (mkConst ``FnSig.entry) #[sig, regsE, R0, stackE, roomE]
+          if temps.any fun v => R0.containsFVar v.fvarId! then return none
+          let atoms₁ := { atoms' with ty := atoms'.ty.push (← mkAppM ``Ty.code #[R0]) }
+          let some RN ← normalCtx R0 | return none
+          let some ΔN ← normalCtx Δ0 | return none
+          let ((R?, Δ?), atoms₂) ← (do
+            let R? ← Sym.reifyCtx RN
+            let Δ? ← Sym.reifyCtx ΔN
+            return (R?, Δ?) : Sym.ReifyM _).run atoms₁
+          let (some R, some Δ) := (R?, Δ?) | return none
+          let fresh := atoms₂.val.extract atoms₁.val.size atoms₂.val.size ++
+            atoms₂.num.extract atoms₁.num.size atoms₂.num.size ++
+            atoms₂.ty.extract atoms₁.ty.size atoms₂.ty.size ++
+            atoms₂.shape.extract atoms₁.shape.size atoms₂.shape.size ++
+            atoms₂.flags.extract atoms₁.flags.size atoms₂.flags.size ++
+            atoms₂.stack.extract atoms₁.stack.size atoms₂.stack.size ++
+            atoms₂.owned.extract atoms₁.owned.size atoms₂.owned.size
+          if fresh.any fun e => temps.any fun v => e.containsFVar v.fvarId! then return none
+          let sameAtom (tbl : Array Expr) (i? j? : Option Nat) : MetaM (Option Nat) := do
+            let (some i, some j) := (i?, j?) | return j?
+            if i == j then return j?
+            let (some a, some b) := (tbl[i]?, tbl[j]?) | return j?
+            if ← withoutModifyingState (isDefEq a b) then return some i
+            return j?
+          let Δ := { Δ with
+            stackRest := ← sameAtom atoms₂.stack pushed.stackRest Δ.stackRest
+            ownedRest := ← sameAtom atoms₂.owned pushed.ownedRest Δ.ownedRest }
+          let some cs := Sym.subCtx pushed Δ
+            | do trace[TypedAsm.fast] "call through a value: the contexts do not compare"
+                 return none
+          let all := hc ++ (rc ++ cs)
+          let info : ViaCall := ⟨at', next, j, R, Δ, τ, R0, lRet, kRet, paramsR, Δ0,
+            (named.map (·.1)).zip temps⟩
+          let g ← mkFreshExprSyntheticOpaqueMVar (← viaCallType Φ atoms₂ info all)
+          solveCallVia g.mvarId! Φ info R0 Δ0 paramsR all atoms₂
+          let mut vals := atoms₂.val
+          for (k, _) in named do
+            if k < vals.size then vals := vals.set! k (toExpr (0 : BitVec 64))
+          return some (info, { atoms₂ with val := vals }))
+        catch e =>
+          trace[TypedAsm.fast] "call through a value ({kRet}): {e.toMessageData}"
+          pure none
+      st.restore
+      if found.isSome then return found
+    return none
+  s.restore
+  return r
+
+/-- A jump through a value found typed within a walk: a pointer to code
+wanting a context the one reached may stand for. -/
+structure ViaJump where
+  at' : Nat
+  Δ : Sym.CtxS
+  τ : Sym.TyS
+  Δ0 : Expr
+
+/-- What is to be shown where a block jumps through a value. -/
+def viaJumpType (atoms : Sym.Atoms) (c : ViaJump) (cs : List Sym.CondS) : MetaM Expr := do
+  let mut allE := mkConst ``True
+  for x in cs.reverse do
+    allE := mkApp2 (mkConst ``And) (← Sym.denCond atoms x) allE
+  return mkApp2 (mkConst ``And)
+    (mkApp2 (mkConst ``Ty.Enters) (← Sym.denTy atoms c.τ) (← Sym.denCtx atoms c.Δ)) allE
+
+/-- Shows what `viaJumpType` states. -/
+def solveJumpVia (g : MVarId) (c : ViaJump) (cs : List Sym.CondS) (atoms : Sym.Atoms) :
+    TacticM Unit := g.withContext do
+  let env ← getEnv
+  let lctx ← getLCtx
+  let kwhnf (e : Expr) : MetaM Expr := ofExceptKernelException (Kernel.whnf env lctx e)
+  let goals ← getGoals
+  let τE ← Sym.denTy atoms c.τ
+  let hEn ← entersTabled τE c.Δ0 (mkApp (mkConst ``Ty.Enters.code) c.Δ0) atoms c.Δ
+  let mut hn := mkConst ``True.intro
+  let mut allE := mkConst ``True
+  arithLeft.set #[]
+  for x in cs.reverse do
+    let leaf ← Sym.denCond atoms x
+    let h ← closeNeeds env lctx kwhnf pure #[] leaf
+    hn := mkApp4 (mkConst ``And.intro) leaf allE h hn
+    allE := mkApp2 (mkConst ``And) leaf allE
+  closeArithLeft
+  g.assign (mkApp4 (mkConst ``And.intro)
+    (mkApp2 (mkConst ``Ty.Enters) τE (← Sym.denCtx atoms c.Δ)) allE hEn (← instantiateMVars hn))
+  setGoals goals
+
+/-- Looks at a jump through an operand that holds a pointer to code: the
+context the code wants is the one the context reached is compared with. -/
+def findJumpVia (atoms : Sym.Atoms) (named : Array (Nat × Reg)) (cur : Sym.CtxS) (at' : Nat)
+    (τ : Sym.TyS) (hc : List Sym.CondS) : TacticM (Option (ViaJump × Sym.Atoms)) := do
+  if ← enterOff.get then return none
+  let bv := mkApp (mkConst ``BitVec) (mkNatLit 64)
+  let decls := named.map fun (_, r) => (Name.mkSimple s!"{r.name64}₀", bv)
+  let s ← saveState
+  let r ← withLocalDeclsDND decls fun temps => do
+    let mut atoms' := atoms
+    for ((k, _), v) in named.zip temps do
+      let pad := atoms'.val ++ Array.replicate (k + 1 - atoms'.val.size) (toExpr (0 : BitVec 64))
+      atoms' := { atoms' with val := pad.set! k v }
+    try
+      let τE ← Sym.denTy atoms' τ
+      let w ← if τE.isAppOfArity ``Ty.code 1 then pure τE else whnf τE
+      unless w.isAppOfArity ``Ty.code 1 do
+        trace[TypedAsm.fast] "jump through a value: its type is not that of a pointer to code"
+        return none
+      let Δ0 := w.appArg!
+      let some ΔN ← normalCtx Δ0 | return none
+      let (Δ?, atoms'') ← (Sym.reifyCtx ΔN).run atoms'
+      let some Δ := Δ? | return none
+      let sameAtom (tbl : Array Expr) (i? j? : Option Nat) : MetaM (Option Nat) := do
+        let (some i, some j) := (i?, j?) | return j?
+        if i == j then return j?
+        let (some a, some b) := (tbl[i]?, tbl[j]?) | return j?
+        if ← withoutModifyingState (isDefEq a b) then return some i
+        return j?
+      let Δ := { Δ with
+        stackRest := ← sameAtom atoms''.stack cur.stackRest Δ.stackRest
+        ownedRest := ← sameAtom atoms''.owned cur.ownedRest Δ.ownedRest }
+      let some cs := Sym.subCtx cur Δ
+        | do trace[TypedAsm.fast] "jump through a value: the contexts do not compare"
+             return none
+      let info : ViaJump := ⟨at', Δ, τ, Δ0⟩
+      let g ← mkFreshExprSyntheticOpaqueMVar (← viaJumpType atoms'' info (hc ++ cs))
+      solveJumpVia g.mvarId! info (hc ++ cs) atoms''
+      let mut vals := atoms''.val
+      for (k, _) in named do
+        if k < vals.size then vals := vals.set! k (toExpr (0 : BitVec 64))
+      return some (info, { atoms'' with val := vals })
+    catch e =>
+      trace[TypedAsm.fast] "jump through a value: {e.toMessageData}"
+      pure none
+  s.restore
+  return r
+
 /-- That what was read of the program's blocks is so: each by looking. -/
 def blocksProof (Ψ ρ : Expr) (blocks : List (BitVec 64 × Sym.ShapeS × Bool))
     (lays : Array Expr) : MetaM Expr := do
@@ -2235,9 +2561,9 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
   let tbl := regs.appArg!.getAppArgs
   let some instrs ← instrsOf fetch | return none
   let some (instr, len) := instrs[n]? | return none
-  -- a jump may be one the walk follows; nothing else that ends a block is
-  if instr.endsBlock && !(instr matches .jmp (.rel _)) && !(instr matches .jcc _ _) &&
-      !(instr matches .ret) && !(instr matches .call (.rel _)) && !(instr matches .syscall) then
+  -- an instruction that ends a block is one the walk may end at
+  if instr.endsBlock && !(instr matches .jmp _) && !(instr matches .jcc _ _) &&
+      !(instr matches .ret) && !(instr matches .call _) && !(instr matches .syscall) then
     return none
   let typeOf (r : Reg) : MetaM Expr := whnf tbl[1 + regIdx r]!
   let iE := toExpr instr
@@ -2296,6 +2622,9 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let linuxNW? : Option Expr ← (do
       try pure (some (← synthInstance (mkApp (mkConst ``LikeLinuxNW) sys)))
       catch _ => pure none)
+    -- addresses of code a register was made a pointer to, each with the
+    -- variable that is the pointer's type
+    let codesRef : IO.Ref (Array (BitVec 64 × Nat)) ← IO.mkRef #[]
     let ((result, prog?), atoms) ← (do
       let some S₀ ← (match kept? with
         | some (Sc, _) => pure (some Sc)
@@ -2436,22 +2765,36 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           cur := cur.setReg r (.eq (.var k))
           k := k + 1
           continue
-        -- the address of something that is not data is left to the long way,
-        -- which makes it a pointer to code
-        if let .lea .w64 _ (.rip disp) := i then
-          if (Sym.blockAt P.blocks (BitVec.ofNat 64 at' + len' + disp.signExtend 64)).isNone then
-            break
+        -- the address of a label where code is typed makes the register a
+        -- pointer to that code, or to the function there; the address of
+        -- anything else that is not data is left to the long way
+        let mut codeH? : Option (Reg × Nat) := none
+        if let .lea .w64 d (.rip disp) := i then
+          let v := BitVec.ofNat 64 at' + len' + disp.signExtend 64
+          if (Sym.blockAt P.blocks v).isNone then
+            if d == .rsp || (← enterOff.get) then break
+            let some τE ← codeTypeAt Φ v.toNat | break
+            let st ← get
+            let h ← match st.ty.findIdx? (· == τE) with
+              | some h => pure h
+              | none => do set { st with ty := st.ty.push τE }; pure st.ty.size
+            codesRef.modify fun cs => if cs.any (·.1 == v) then cs else cs.push (v, h)
+            codeH? := some (d, h)
         let some (S', cs) :=
           Sym.step (BitVec.ofNat 64 at' + len') { cur with blocks := P.blocks } i | do
             -- refused, and the first instruction asked of the walk: why
-            unless advanced do
+            -- (an instruction that ends the block is no step: its ending is
+            -- looked for instead)
+            unless advanced || i.endsBlock do
               refused := some (at', i, moves,
                 Sym.why (BitVec.ofNat 64 at' + len') { cur with blocks := P.blocks } i)
             break
         moves := moves.push (.step at' i len' arrived cs)
         steps := steps + 1
         advanced := true
-        cur := Sym.castData P S' i
+        cur := match codeH? with
+          | some (d, h) => S'.setReg d (.atom h)
+          | none => Sym.castData P S' i
         if let some (ms, a, before) := tailMark then
           if a == at' then
             tail? := some (ms, a, before, S')
@@ -2506,7 +2849,9 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       let some (i, len') := instrs[at']? | return none
       let .jcc c d := i | return none
       let t := (BitVec.ofNat 64 at' + len' + d.signExtend 64).toNat
-      unless stops.contains t do return none
+      unless stops.contains t do
+        trace[TypedAsm.fast] "`{i.toAsm}` at {at'}: not to a label with contexts of its own"
+        return none
       let named := moves.filterMap fun
         | .name k r => some (k, r)
         | _ => none
@@ -2554,6 +2899,37 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       let found ← try findCall Φ atoms named cur at' t next' finally castRef.set none
       let some (info, atoms') := found | return none
       return some (info, atoms', .jump at' i len')
+    -- A call or a jump through an operand that holds a pointer to a function
+    -- or to code.
+    let named' (moves : Array WalkMove) := moves.filterMap fun
+      | .name k r => some (k, r)
+      | _ => none
+    let viaCall (atoms : Sym.Atoms) (moves : Array WalkMove) (at' : Nat) (cur : Sym.CtxS) :
+        TacticM (Option (ViaCall × Sym.Atoms × WalkMove)) := do
+      let some stops := stops? | return none
+      unless ← labelsKnown.get do return none
+      let some (i, len') := instrs[at']? | return none
+      let .call (.ind rm) := i | return none
+      let next' := at' + len'.toNat
+      unless stops.contains next' do
+        trace[TypedAsm.fast] "`{i.toAsm}`: it does not return to a label with contexts of its own"
+        return none
+      let some (τ, hc) := Sym.held (BitVec.ofNat 64 next')
+          { cur with blocks := (prog?.map fun x => x.1.blocks).getD [] } rm
+        | do trace[TypedAsm.fast] "`{i.toAsm}`: what the operand holds is not read"; return none
+      let some (info, atoms') ← findCallVia Φ atoms (named' moves) cur at' next' τ hc
+        | return none
+      return some (info, atoms', .jump at' i len')
+    let viaJump (atoms : Sym.Atoms) (moves : Array WalkMove) (at' : Nat) (cur : Sym.CtxS) :
+        TacticM (Option (ViaJump × Sym.Atoms × WalkMove)) := do
+      if stops?.isNone then return none
+      let some (i, len') := instrs[at']? | return none
+      let .jmp (.ind rm) := i | return none
+      let some (τ, hc) := Sym.held (BitVec.ofNat 64 (at' + len'.toNat))
+          { cur with blocks := (prog?.map fun x => x.1.blocks).getD [] } rm
+        | do trace[TypedAsm.fast] "`{i.toAsm}`: what the operand holds is not read"; return none
+      let some (info, atoms') ← findJumpVia atoms (named' moves) cur at' τ hc | return none
+      return some (info, atoms', .jump at' i len')
     -- When a call ends the program, for the system the block is typed
     -- against: any status, or one exactly known and as wanted.
     let sysE := sys.consumeMData
@@ -2589,6 +2965,8 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let mut enters : Array EnterInfo := #[]
     let mut leave? : Option LeaveInfo := none
     let mut call? : Option CallInfo := none
+    let mut via? : Option ViaCall := none
+    let mut jvia? : Option ViaJump := none
     let (S₀, moves, atEnd, arrived) ← match result with
       | .inr (S₀, moves, atEnd, arrived, some (ms, ai, before, raw)) =>
         -- the walk ran into a label: handed over there if a context is found
@@ -2632,47 +3010,64 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
                 call? := some info
                 pure (S₀, moves.push mv, atEnd, arrived)
               | none =>
-                match ← exitEnd atEnd arrived with
-                | some mv => pure (S₀, moves.push mv, atEnd, arrived)
-                | none => pure (S₀, moves, atEnd, arrived)
+                match ← viaCall atoms moves atEnd arrived with
+                | some (info, atoms', mv) =>
+                  atoms := atoms'
+                  via? := some info
+                  pure (S₀, moves.push mv, atEnd, arrived)
+                | none =>
+                  match ← viaJump atoms moves atEnd arrived with
+                  | some (info, atoms', mv) =>
+                    atoms := atoms'
+                    jvia? := some info
+                    pure (S₀, moves.push mv, atEnd, arrived)
+                  | none =>
+                    match ← exitEnd atEnd arrived with
+                    | some mv => pure (S₀, moves.push mv, atEnd, arrived)
+                    | none => pure (S₀, moves, atEnd, arrived)
       | .inl (none, none) => return none
-      | .inl (none, some S₀) =>
-        -- the block may begin with the jump that hands it over
+      | .inl (none, some S₀) | .inl (some (_, _, _, .noForm), some S₀) =>
+        -- the block may be nothing but its ending: a jump that hands it
+        -- over, a return, a call, or a call that ends the program
         match ← jumpEnter atoms #[] n S₀ with
         | some (info, atoms', mv) =>
           atoms := atoms'
           enters := enters.push info
           pure (S₀, #[mv], n, S₀)
         | none =>
-          match ← branchEnter atoms #[] n S₀ with
-          | some (infos, atoms', mv) =>
-            atoms := atoms'
-            enters := enters ++ infos
-            pure (S₀, #[mv], n, S₀)
-          | none =>
-            match ← retLeave atoms #[] n S₀ with
-            | some (info, atoms', mv) =>
-              atoms := atoms'
-              leave? := some info
-              pure (S₀, #[mv], n, S₀)
-            | none =>
-              match ← exitEnd n S₀ with
-              | some mv => pure (S₀, #[mv], n, S₀)
-              | none => return none
-      | .inl (some (_, _, _, .noForm), some S₀) =>
-        -- the block may be nothing but a return
+        match ← branchEnter atoms #[] n S₀ with
+        | some (infos, atoms', mv) =>
+          atoms := atoms'
+          enters := enters ++ infos
+          pure (S₀, #[mv], n, S₀)
+        | none =>
         match ← retLeave atoms #[] n S₀ with
         | some (info, atoms', mv) =>
           atoms := atoms'
           leave? := some info
           pure (S₀, #[mv], n, S₀)
         | none =>
-          match ← callEnter atoms #[] n S₀ with
-          | some (info, atoms', mv) =>
-            atoms := atoms'
-            call? := some info
-            pure (S₀, #[mv], n, S₀)
-          | none => return none
+        match ← callEnter atoms #[] n S₀ with
+        | some (info, atoms', mv) =>
+          atoms := atoms'
+          call? := some info
+          pure (S₀, #[mv], n, S₀)
+        | none =>
+        match ← viaCall atoms #[] n S₀ with
+        | some (info, atoms', mv) =>
+          atoms := atoms'
+          via? := some info
+          pure (S₀, #[mv], n, S₀)
+        | none =>
+        match ← viaJump atoms #[] n S₀ with
+        | some (info, atoms', mv) =>
+          atoms := atoms'
+          jvia? := some info
+          pure (S₀, #[mv], n, S₀)
+        | none =>
+        match ← exitEnd n S₀ with
+        | some mv => pure (S₀, #[mv], n, S₀)
+        | none => return none
       | .inl (some (_, _, _, .noForm), none) => return none
       | .inl (some (at', i, tried, why), _) =>
         let msg ← explainReject (withNames atoms tried) i.onStack why
@@ -2680,11 +3075,14 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         throwError "refused"
     let P : Sym.Prog := { (prog?.map (·.1)).getD {} with
       labels := ((stops?.getD #[]).map (BitVec.ofNat 64)).toList
-      enters := enters.toList.map fun e => (BitVec.ofNat 64 e.at', BitVec.ofNat 64 e.t, e.Δ)
+      enters := (enters.toList.map fun e => (BitVec.ofNat 64 e.at', BitVec.ofNat 64 e.t, e.Δ)) ++
+        (jvia?.toList.map fun e => (BitVec.ofNat 64 e.at', 0, e.Δ))
       leaves := leave?.toList.map fun e => (BitVec.ofNat 64 e.at', e.Δ)
-      calls := call?.toList.map fun e => (BitVec.ofNat 64 e.at', e.j, e.R, e.Δ)
+      calls := (call?.toList.map fun e => (BitVec.ofNat 64 e.at', e.j, e.R, e.Δ)) ++
+        (via?.toList.map fun e => (BitVec.ofNat 64 e.at', e.j, e.R, e.Δ))
       linux := linuxNW?.isSome
-      plainWrite := linux?.isSome }
+      plainWrite := linux?.isSome
+      codes := (← codesRef.get).toList }
     let S := { S₀ with blocks := [] }
     -- the context at the end: the walk again, as the checker makes it
     let code : List (BitVec 64 × Instr × BitVec 64) :=
@@ -2707,11 +3105,17 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       | .call .. => none
       | .exit _ => none
       | .fresh _ _ _ => none
+      | .jumpVia .. => none
+      | .callVia .. => none
+      | .asCode _ _ rest => final rest
     let rec enters? : Sym.Walk → Bool
       | .enter _ _ _ => true
       | .leave _ _ _ => true
       | .call .. => true
       | .exit _ => false
+      | .jumpVia .. => true
+      | .callVia .. => true
+      | .asCode _ _ rest => enters? rest
       | .fresh _ l r => enters? l || enters? r
       | .conds _ rest => enters? rest
       | .name _ rest => enters? rest
@@ -2722,7 +3126,8 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       | .stop _ _ => false
     -- a hand-over the checker did not make as it was found leaves the jump
     -- where it was, and is not tried again in this block
-    if (!enters.isEmpty || leave?.isSome || call?.isSome) && !enters? W then
+    if (!enters.isEmpty || leave?.isSome || call?.isSome || via?.isSome || jvia?.isSome) &&
+        !enters? W then
       trace[TypedAsm.fast] "the checker did not hand the block over as found"
       enterOff.set true
       throwError "the block was not handed over as found"
@@ -2734,6 +3139,7 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       | .err _ l r => exits? l || exits? r
       | .byte _ l r => exits? l || exits? r
       | .fresh _ l r => exits? l || exits? r
+      | .asCode _ _ rest => exits? rest
       | .branch _ _ l r => exits? l || exits? r
       | _ => false
     let S'? := final W
@@ -2946,6 +3352,43 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
                 (((names.push `p).push `hpage).push `hlow)
               mkLambdaFVars #[v, h₁, h₂] (← instantiateMVars body)
         mkAppM ``And.intro #[hl, hr]
+      | .asCode v h rest =>
+        let some τE := atoms.ty[h]? | throwError "the pointer's type is not known"
+        let m ← mkFreshExprSyntheticOpaqueMVar (mkApp3 (mkConst ``Sym.CodeAt) Φ (toExpr v) τE)
+        let left ← try runOn m.mvarId! (do evalTactic (← `(tactic| ty_code_at)))
+          catch e =>
+            trace[TypedAsm.fast] "the address {v} is not shown to be that of the code: {e.toMessageData}"
+            enterOff.set true
+            throw e
+        unless left.isEmpty do
+          enterOff.set true
+          throwError "the address is not shown to be that of the code"
+        mkAppM ``And.intro #[← instantiateMVars m, ← down rest atoms vs names]
+      | .jumpVia _ _ cs =>
+        let some info := jvia? | throwError "the block jumps where no context was read"
+        let m ← mkFreshExprSyntheticOpaqueMVar (← viaJumpType atoms info cs)
+        try solveJumpVia m.mvarId! info cs atoms
+        catch e =>
+          trace[TypedAsm.fast] "jumping failed where it was found to succeed: {e.toMessageData}"
+          enterOff.set true
+          throw e
+        trace[TypedAsm.fast] "jumped through a value within the walk"
+        instantiateMVars m
+      | .callVia _ _ _ _ _ cs =>
+        let some info := via? | throwError "the block calls where no contexts were chosen"
+        let temps := info.temps.map (·.2)
+        let reals := info.temps.map fun (k, _) => atoms.val.getD k (toExpr (0 : BitVec 64))
+        let inst (e : Expr) := e.replaceFVars temps reals
+        let m ← mkFreshExprSyntheticOpaqueMVar (← viaCallType Φ atoms info cs)
+        try
+          solveCallVia m.mvarId! Φ info (inst info.R0) (inst info.Δ0) (info.paramsR.map inst) cs
+            atoms
+        catch e =>
+          trace[TypedAsm.fast] "calling failed where it was found to succeed: {e.toMessageData}"
+          enterOff.set true
+          throw e
+        trace[TypedAsm.fast] "called through a value within the walk"
+        instantiateMVars m
       | .exit v =>
         match wantQ?, v with
         | none, _ => pure (mkConst ``True.intro)
@@ -2994,7 +3437,8 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         mkAppM ``And.intro #[hz, hm]
     let hW ← down W atoms #[] #[]
     let rests ← restRef.get
-    if rests.isEmpty && enters.isEmpty && leave?.isNone && call?.isNone && !exits? W then
+    if rests.isEmpty && enters.isEmpty && leave?.isNone && call?.isNone && via?.isNone &&
+        jvia?.isNone && !exits? W then
       return none
     -- two more moves than the driver counted: a context made ready to be
     -- compared is a move of the checker's
