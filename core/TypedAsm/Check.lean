@@ -15,7 +15,7 @@ for them. Where it needs to know what a register holds it looks, and where
 the context does not say, as for a register a function was handed by
 whoever called it, it has no answer and the rules are used directly.
 
-It covers the forms that work on registers alone. For an instruction with
+It covers the forms that work on registers alone, and `push` and `pop`. For an instruction with
 several rules it takes the one that keeps most, in the order the rules are
 tried by hand: an exactly known result where the operands are exactly
 known, and otherwise a number.
@@ -97,6 +97,26 @@ def testRR (Γ : Ctx) (r r' : Reg) : Option Step :=
     else some ⟨{ Γ with flags := (· = Flags.ofResult (a &&& b) false false) }, True⟩
   | _, _ => some ⟨{ Γ with flags := Flags.Known }, True⟩
 
+/-- A `push`: eight bytes of the free room become a slot holding what the
+register holds. Left to be shown: that there are eight bytes of room. -/
+def push (Γ : Ctx) (r : Reg) : Option Step :=
+  if r = .rsp then none
+  else some ⟨{ Γ.moveSp (-8) with stack := .slot (Γ.regs r) :: Γ.stack, room := Γ.room - 8 },
+    8 ≤ Γ.room⟩
+
+/-- A `pop`: the top piece of the stack, if it is eight bytes, goes into the
+register, with its type if it is one typed value. -/
+def pop (Γ : Ctx) (r : Reg) : Option Step :=
+  if r = .rsp then none
+  else match Γ.stack with
+    | ⟨8, [(0, τ)]⟩ :: σ =>
+      some ⟨CtxOf.setReg { Γ.moveSp 8 with stack := σ, room := Γ.room + 8 } r τ, True⟩
+    | S :: σ =>
+      if S.size = 8 then
+        some ⟨CtxOf.setReg { Γ.moveSp 8 with stack := σ, room := Γ.room + 8 } r .int, True⟩
+      else none
+    | [] => none
+
 /-- **The checker for one instruction that goes on to the next.** `next` is
 the address of the instruction after it. -/
 def straight (next : BitVec 64) (Γ : Ctx) : Instr → Option Step
@@ -118,6 +138,8 @@ def straight (next : BitVec 64) (Γ : Ctx) : Instr → Option Step
     else aluRR Γ .xor w d s
   | .alu op w (.rm_r (.reg d) s) => aluRR Γ op w d s
   | .alu op w (.rm_i (.reg d) imm) => aluRI Γ op w d imm
+  | .push r => push Γ r
+  | .pop r => pop Γ r
   | .test .w64 (.reg r) (.reg r') => testRR Γ r r'
   | .test _ (.reg _) _ => some ⟨{ Γ with flags := Flags.Known }, True⟩
   | _ => none
@@ -190,6 +212,32 @@ theorem testRR_sound {r r' : Reg} {st : Step} (h : testRR Γ r r' = some st) :
       exact .testExact (fun e => hc (.inl e)) (fun e => hc (.inr e)) (exactly_eq ha) (exactly_eq hb)
   · cases h; exact .testRM (.reg _)
 
+theorem push_sound {r : Reg} {st : Step} (h : push Γ r = some st) (hn : st.needs) :
+    Straight Ψ next Γ (.push r) st.ctx := by
+  unfold push at h
+  split at h
+  · cases h
+  · next hr =>
+    cases h
+    have hroom : Γ.room = (Γ.room - 8) + 8 := by
+      have : 8 ≤ Γ.room := hn
+      omega
+    exact .push hr hroom
+
+theorem pop_sound {r : Reg} {st : Step} (h : pop Γ r = some st) :
+    Straight Ψ next Γ (.pop r) st.ctx := by
+  unfold pop at h
+  split at h
+  · cases h
+  · next hr =>
+    split at h
+    · next τ σ hst => cases h; exact .pop hr hst
+    · next S σ _ hst =>
+      split at h
+      · next hsz => cases h; exact .popPlain hr hst hsz
+      · cases h
+    · cases h
+
 /-- **What the checker works out is a typing step.** -/
 theorem straight_sound {i : Instr} {st : Step} (h : straight next Γ i = some st)
     (hn : st.needs) : Straight Ψ next Γ i st.ctx := by
@@ -218,6 +266,8 @@ theorem straight_sound {i : Instr} {st : Step} (h : straight next Γ i = some st
     · exact aluRR_sound h hn
   · exact aluRR_sound h hn
   · exact aluRI_sound h hn
+  · exact push_sound h hn
+  · exact pop_sound h
   · exact testRR_sound h
   · cases h; exact .testRM (.reg _)
   · cases h
