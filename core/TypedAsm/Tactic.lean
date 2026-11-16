@@ -540,11 +540,20 @@ macro "ty_cond_value" : tactic => do
   let subst := Lean.mkIdent `rfl
   `(tactic| (rintro f $subst:ident; rfl))
 
-/-- Proves which byte a scaled index lands on. -/
-macro "ty_index" : tactic =>
+macro "ty_index_core" : tactic =>
   `(tactic| first
     | (refine index8_slot _ _ ?_ ?_ <;> decide)
     | (refine index_bytes _ _ _ ?_; decide))
+
+open Lean Meta Elab Tactic in
+/-- Proves which byte a scaled index lands on. A goal with no scaled index
+in it is refused at once: matching it against the lemmas for one would have
+the two sides worked out at length before the mismatch showed. -/
+elab "ty_index" : tactic => withMainContext do
+  let t ← instantiateMVars (← getMainTarget)
+  unless (t.find? (·.isConstOf ``HShiftLeft.hShiftLeft)).isSome do
+    throwError "no scaled index here"
+  evalTactic (← `(tactic| ty_index_core))
 
 open Lean Meta Elab Tactic in
 /-- Writes out a shape that the goal asks the size or the typed values of,
@@ -3802,10 +3811,14 @@ elab "ty_loaded" : tactic => withMainContext do
       -- that the program is in memory: each byte is looked at, by the
       -- kernel; anything else: by the kernel too. Stating the check for a
       -- long run of data takes more nesting than the default allows.
-      discard <| runOn g (do evalTactic (← `(tactic|
-        first
-          | exact State.holds_of_check (by set_option maxRecDepth 100000 in decide +kernel)
-          | (set_option maxRecDepth 100000 in decide +kernel))))
+      -- Which it is is told from the goal. Trying the first on a goal of the
+      -- other kind fails only after the two have been compared at length.
+      if (t.find? (·.isConstOf ``State.Holds)).isSome then
+        discard <| runOn g (do evalTactic (← `(tactic|
+          exact State.holds_of_check (by set_option maxRecDepth 100000 in decide +kernel))))
+      else
+        discard <| runOn g (do evalTactic (← `(tactic|
+          (set_option maxRecDepth 100000 in decide +kernel))))
     catch _ =>
       throwError "ty_loaded: the starting state does not meet the entry contract; this does \
         not hold:{indentExpr t}"
