@@ -2382,6 +2382,38 @@ private partial def typeStep (named : Bool := false) : TacticM StepResult :=
             setGoals ((← getGoals) ++ others)
             return .stepped
       return .endOfBlock instr
+    -- What a register holds is looked into where the instruction turns on
+    -- it. A test of a register against itself, when it holds a pointer that
+    -- may be null or what a system call handed back, is where a program
+    -- tells the two apart: the block goes on once for each. A register that
+    -- points to a block of a declared kind is opened to that kind's shape
+    -- where something is reached through it.
+    unless named do
+      let ctx := ty.getAppArgs[5]!
+      let typeOf (r : Reg) : TacticM Expr := goal.withContext do
+        whnf (← mkAppM ``CtxOf.regs #[ctx, mkConst (Name.str ``Reg r.name64)])
+      let regId (r : Reg) := mkIdent (Name.str ``Reg r.name64)
+      let look? : Option (TSyntax `tactic) ← match instr with
+        | .test _ (.reg r) (.reg r') =>
+          if r == r' then do
+            let τ ← typeOf r
+            if τ.isAppOf ``Ty.nullable then pure (some (← `(tactic| ty_null $(regId r))))
+            else if τ.isAppOf ``Ty.orErr then
+              pure (some (← `(tactic| ty_err $(regId r) as $(mkIdent `e))))
+            else pure none
+          else pure none
+        | i =>
+          match i.memOperand? with
+          | some (.sib (some b) _ _) => do
+            if (← typeOf b).isAppOf ``Ty.ref then pure (some (← `(tactic| ty_open $(regId b))))
+            else pure none
+          | _ => pure none
+      if let some tac := look? then
+        saved.restore
+        setGoals [goal]
+        evalTactic tac
+        setGoals ((← getGoals) ++ others)
+        return ← typeStep (named := false)
     -- Registers the rules need to speak of, but which are only known to be
     -- integers, are given names first.
     unless named do
@@ -3047,6 +3079,8 @@ elab "ty_block" : tactic => do
       | .notABlock => break
     let some instr := endInstr? | stuck := stuck ++ (← getGoals); continue
     let goal ← getMainGoal
+    -- a step that told two cases apart left the other case behind this one
+    work := (← getGoals).drop 1 ++ work
     match ← finishBlock goal instr with
     | .done l => left := left ++ l
     | .continues rest l =>

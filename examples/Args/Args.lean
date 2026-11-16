@@ -73,8 +73,7 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_byte as b
     -- zero: the test sends control to `found`
     · ty_block
-    -- not zero: so not the text's last byte, and the place may move on
-    · ty_block
+    ty_block
 
 /-! ## The memory typing and the entry contract -/
 

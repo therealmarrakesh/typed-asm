@@ -51,22 +51,7 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     -- the arguments, then the `mmap` for a node
     ty_steps
     ty_mmap_kind 1
-    -- what came back is an error number or a node
-    ty_err .rax as e
-    -- an error number is negative: the test sends control to `print`
-    · ty_block
-    -- a node: it is linked in, read into, and its length recorded
-    · ty_step
-      ty_branch
-      ty_step
-      ty_open .r12
-      ty_block
-  case print =>
-    -- the link in `rbx` is zero or it is a node
-    ty_null .rbx
-    · ty_block
-    · ty_open .rbx
-      ty_block
+    ty_block
 
 /-! ## The memory typing and the entry contract -/
 

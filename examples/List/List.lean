@@ -48,21 +48,6 @@ def Ψ : MemTy := .ofList blocks [(1, nodeShape)]
 
 theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   ty_program
-  case start =>
-    -- lea rdi, [rip + list]
-    ty_step
-    -- `rdi` holds the first node's address, so it points to a node,
-    -- and a node has a value and a link
-    ty_open .rdi
-    ty_block
-  case loop =>
-    -- the link in `rdi` is zero or it is a node
-    ty_null .rdi
-    -- zero: the test sends control to `done`, and what follows is not reached
-    · ty_block
-    -- a node: it may be read, and its link goes round the loop
-    · ty_open .rdi
-      ty_block
 
 /-! ## The memory typing and the entry contract -/
 
