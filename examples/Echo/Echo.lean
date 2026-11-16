@@ -37,9 +37,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     ty_step
     ty_step
     ty_step
-    -- `rsi` holds exactly the buffer's address, so it is a pointer to it
-    refine BlockOk.castPtr (r := .rsi) (base := dataBase) (i := 0) (w := true) (by decide) rfl rfl
-      (by decide) (fun _ => rfl) ?_
     -- the `read`, the test of its result, the way out, the `write`, and round again
     ty_block
 

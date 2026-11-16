@@ -66,9 +66,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
         ty_munmap
         -- lea rcx, [rip + record]
         ty_step
-        -- `rcx` holds exactly the record's address, so it is a pointer to it
-        refine BlockOk.castPtr (r := .rcx) (base := dataBase) (i := 0) (w := false) (by decide)
-          rfl rfl (by decide) (fun h => absurd h (by decide)) ?_
         -- mov [rbx], rcx: the page's first field is now a pointer to the record
         ty_step
         -- so the page can become an ordinary block with that field

@@ -40,9 +40,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
     -- mov r12, rax; lea r13, [rip + buffer]
     ty_step
     ty_step
-    -- `r13` holds exactly the buffer's address, so it is a pointer to it
-    refine BlockOk.castPtr (r := .r13) (base := bufferAt) (i := 0) (w := true) (by decide) rfl rfl
-      (by decide) (fun _ => rfl) ?_
     -- the rest: each call that stores into the buffer finds room for what it stores
     ty_block
 

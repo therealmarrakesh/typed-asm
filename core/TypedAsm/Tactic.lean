@@ -187,6 +187,31 @@ theorem Straight.storeGlobal_of {s : Reg} (hs : s ≠ .rsp)
     Straight (MemTy.ofList bs kinds) next Γ (.mov .w64 (.rm_r (.mem (.rip disp)) s)) Γ :=
   .storeGlobal hs hl hw haddr hi hso hsub
 
+/-- A register holding exactly an address inside one of the program's
+blocks is a pointer into that block, as writable as the block is. This is
+`BlockOk.castPtr` with the block found from the address. -/
+theorem BlockOk.castPtr_of {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {a : BitVec 64}
+    {r : Reg} {v : BitVec 64} {i : Nat} (hr : r ≠ .rsp) (hΓ : Γ.regs r = .eq v)
+    (_ : MemTy.locate bs v = some (base, i))
+    (hl : MemTy.ofList bs kinds base = some l) (hv : v = base + BitVec.ofNat 64 i)
+    (hrest : BlockOk Φ fetch sys (MemTy.ofList bs kinds) a
+      (Γ.setReg r (.ptr l.shape l.writable i))) :
+    BlockOk Φ fetch sys (MemTy.ofList bs kinds) a Γ :=
+  .castPtr hr hΓ hl hv (fun h => h) hrest
+
+/-- The same for a block of a declared kind: the register is a pointer to a
+block of that kind. This is `BlockOk.castRef` with the block found from the
+address. -/
+theorem BlockOk.castRef_of {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {a : BitVec 64}
+    {r : Reg} {v : BitVec 64} {i tag : Nat} (hr : r ≠ .rsp) (hΓ : Γ.regs r = .eq v)
+    (_ : MemTy.locate bs v = some (base, i))
+    (hl : MemTy.ofList bs kinds base = some l) (htag : l.tag = some tag)
+    (hv : v = base + BitVec.ofNat 64 i)
+    (hrest : BlockOk Φ fetch sys (MemTy.ofList bs kinds) a
+      (Γ.setReg r (.ref tag l.writable i))) :
+    BlockOk Φ fetch sys (MemTy.ofList bs kinds) a Γ :=
+  .castRef hr hΓ hl htag hv (fun h => h) hrest
+
 end Globals
 
 /-! Indexed operands: which byte a scaled index lands on. These hold for any
@@ -1183,6 +1208,13 @@ private unsafe def evalInstrUnsafe (e : Expr) : MetaM Instr :=
 private unsafe def evalAddrUnsafe (e : Expr) : MetaM Nat := do
   let v ← evalExpr (BitVec 64) (mkApp (mkConst ``BitVec) (mkNatLit 64)) e
   return v.toNat
+
+private unsafe def evalNatUnsafe (e : Expr) : MetaM Nat :=
+  evalExpr Nat (mkConst ``Nat) e
+
+/-- The number a closed term for a number denotes. -/
+@[implemented_by evalNatUnsafe]
+private opaque evalNat (e : Expr) : MetaM Nat
 
 /-- The number a closed address term denotes. -/
 @[implemented_by evalAddrUnsafe]
@@ -2200,6 +2232,36 @@ private partial def typeStep (named : Bool := false) : TacticM StepResult :=
     | none => throw e
   setGoals [restGoal]
   evalTactic (← `(tactic| ty_normalize))
+  -- A register just loaded with the address of some of the program's data
+  -- is a pointer to it from here on.
+  if let some (.lea .w64 d (.rip _)) ← knownInstr instrTy.getAppArgs[3]! then
+    let reg := mkIdent (Name.str ``Reg d.name64)
+    let before ← saveState
+    try
+      Tactic.withoutRecover do
+        -- a block of a declared kind gives a pointer to that kind; any other,
+        -- a pointer to its shape
+        evalTactic (← `(tactic|
+          first
+          | (refine BlockOk.castRef_of (r := $reg) (by decide) rfl (by first | rfl | decide)
+               (by first | rfl | decide) (by first | rfl | decide) (by first | rfl | decide) ?_
+             ty_normalize)
+          | (refine BlockOk.castPtr_of (r := $reg) (by decide) rfl (by first | rfl | decide)
+               (by first | rfl | decide) (by first | rfl | decide) ?_
+             ty_normalize)))
+        -- how far into the block: worked out as a number
+        let g ← getMainGoal
+        let ty ← instantiateMVars (← g.getType)
+        let regE := mkConst (Name.str ``Reg d.name64)
+        let regTy ← g.withContext (do whnf (← mkAppM ``CtxOf.regs #[ty.getAppArgs[5]!, regE]))
+        if regTy.isAppOfArity ``Ty.ptr 3 || regTy.isAppOfArity ``Ty.ref 3 then
+          let off := regTy.appArg!
+          unless off.isRawNatLit || off.isAppOf ``OfNat.ofNat do
+            let n ← g.withContext (evalNat off)
+            let lit := mkNatLit n
+            let ty' := ty.replace fun e => if e == off then some lit else none
+            setGoals [← g.replaceTargetDefEq ty']
+    catch _ => before.restore
   setGoals ((← getGoals) ++ others)
   return .stepped
 

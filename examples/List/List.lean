@@ -50,9 +50,7 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   | start =>
     -- lea rdi, [rip + list]
     ty_step
-    -- `rdi` holds exactly the first node's address, so it points to a node
-    refine BlockOk.castRef (r := .rdi) (base := dataBase) (i := 0) (w := false) (tag := 1)
-      (by decide) rfl rfl rfl rfl (fun h => absurd h (by decide)) ?_
+    -- `rdi` holds the first node's address, so it points to a node,
     -- and a node has a value and a link
     ty_open .rdi
     ty_block

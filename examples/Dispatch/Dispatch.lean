@@ -59,9 +59,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   | start =>
     -- lea rbx, [rip + table]
     ty_step
-    -- `rbx` holds exactly the table's address, so it is a pointer to it
-    refine BlockOk.castPtr (r := .rbx) (base := dataBase) (i := 0) (w := false) (by decide) rfl rfl
-      (by decide) (fun h => absurd h (by decide)) ?_
     -- the index is checked, then the call goes through the table
     ty_block
     ty_call unary

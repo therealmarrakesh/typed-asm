@@ -53,9 +53,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   | start =>
     -- lea rdi, [rip + record]
     ty_step
-    -- `rdi` holds exactly the record's address, so it is a pointer to it
-    refine BlockOk.castPtr (r := .rdi) (base := dataBase) (i := 0) (w := true) (by decide) rfl rfl
-      (by decide) (fun _ => rfl) ?_
     ty_block
     ty_call swapSig
   | afterFirst => ty_block; ty_call swapSig

@@ -53,9 +53,6 @@ theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
   | start =>
     -- lea rdi, [rip + array]
     ty_step
-    -- `rdi` holds exactly the array's address, so it is a pointer to its first element
-    refine BlockOk.castPtr (r := .rdi) (base := dataBase) (i := 0) (w := false) (by decide) rfl rfl
-      (by decide) (fun h => absurd h (by decide)) ?_
     ty_steps
     ty_call (getSig 5)
   | afterCall => ty_block
