@@ -3064,7 +3064,8 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       moves.toList.filterMap fun
         | .inr (at', i, len', _, _) => some (BitVec.ofNat 64 at', i, len')
         | .inl _ => none
-    let W := Sym.walk B code moves.size k₀ (BitVec.ofNat 64 n) S
+    let P : Sym.Prog := { blocks := B }
+    let W := Sym.walk P code moves.size k₀ (BitVec.ofNat 64 n) S
     let rec final : Sym.Walk → Option Sym.CtxS
       | .stop _ Γ => some Γ
       | .conds _ rest => final rest
@@ -3140,12 +3141,14 @@ private partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     let hW ← down W atoms #[] #[]
     let some (m, names) ← restRef.get | return none
     let fuelE := mkNatLit moves.size
-    let BE := toExpr B
+    let PE := toExpr P
     let WE := toExpr W
-    let walkE := mkAppN (mkConst ``Sym.walk) #[BE, codeE, fuelE, mkNatLit k₀, a, SE]
+    let hP := mkAppN (mkConst ``Sym.Prog.Ok.mk)
+      #[Ψ, ρ, PE, hB, mkConst ``True.intro, mkConst ``True.intro]
+    let walkE := mkAppN (mkConst ``Sym.walk) #[PE, codeE, fuelE, mkNatLit k₀, a, SE]
     let hwalk ← mkExpectedTypeHint (← mkEqRefl walkE) (← mkEq walkE WE)
     goal.assign (mkAppN (mkConst ``Sym.walk_sound')
-      #[Φ, fetch, sys, Ψ, ρ, BE, codeE, hB, hcode, fuelE, mkNatLit k₀, a, SE, WE, hwalk, hW])
+      #[Φ, fetch, sys, Ψ, ρ, PE, codeE, hP, hcode, fuelE, mkNatLit k₀, a, SE, WE, hwalk, hW])
     -- the values named are in the goal for the rest of the block
     let mut g := m.mvarId!
     let mut newVals : Array Expr := #[]

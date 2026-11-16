@@ -4028,70 +4028,239 @@ theorem BlocksOk.setVal {Ψ : MemTy} {ρ : Env} {k : Nat} {x : BitVec 64} :
     exact ⟨⟨l, hl, by rw [ShapeS.den_setVal S hu.1]; exact hs, hw⟩,
       BlocksOk.setVal rest hu.2 hrest⟩
 
+/-- What the checker is given of the program besides its instructions: its
+blocks, which of them are of a declared kind, and the shape each kind has. -/
+structure Prog where
+  blocks : List (BitVec 64 × ShapeS × Bool) := []
+  tags : List (BitVec 64 × Nat) := []
+  kinds : List (Nat × ShapeS) := []
+
+/-- That the blocks said to be of a kind are. -/
+def TagsOk (Ψ : MemTy) : List (BitVec 64 × Nat) → Prop
+  | [] => True
+  | (base, tag) :: rest => (∃ l, Ψ base = some l ∧ l.tag = some tag) ∧ TagsOk Ψ rest
+
+/-- That the kinds have the shapes they are said to. -/
+def KindsOk (Ψ : MemTy) (ρ : Env) : List (Nat × ShapeS) → Prop
+  | [] => True
+  | (tag, S) :: rest => Ψ.kinds tag = some (S.den ρ) ∧ KindsOk Ψ ρ rest
+
+theorem TagsOk.cons {Ψ : MemTy} {base : BitVec 64} {tag : Nat} {rest : List (BitVec 64 × Nat)}
+    (l : Layout) (h₁ : Ψ base = some l) (h₂ : l.tag = some tag) (h : TagsOk Ψ rest) :
+    TagsOk Ψ ((base, tag) :: rest) := ⟨⟨l, h₁, h₂⟩, h⟩
+
+/-- That what the checker is given of the program is so. -/
+structure Prog.Ok (Ψ : MemTy) (ρ : Env) (P : Prog) : Prop where
+  blocks : BlocksOk Ψ ρ P.blocks
+  tags : TagsOk Ψ P.tags
+  kinds : KindsOk Ψ ρ P.kinds
+
+def lookupNat {α : Type} : List (Nat × α) → Nat → Option α
+  | [], _ => none
+  | (k, x) :: rest, n => if k = n then some x else lookupNat rest n
+
+def lookupTag : List (BitVec 64 × Nat) → BitVec 64 → Option Nat
+  | [], _ => none
+  | (b, t) :: rest, a => if b = a then some t else lookupTag rest a
+
+theorem KindsOk.lookup {Ψ : MemTy} {ρ : Env} : (K : List (Nat × ShapeS)) → KindsOk Ψ ρ K →
+    {tag : Nat} → {S : ShapeS} → lookupNat K tag = some S → Ψ.kinds tag = some (S.den ρ)
+  | [], _, _, _, h => by cases h
+  | (t, T) :: rest, hK, tag, S, h => by
+    unfold lookupNat at h
+    split at h
+    · next e => cases h; subst e; exact hK.1
+    · exact KindsOk.lookup rest hK.2 h
+
+theorem TagsOk.lookup {Ψ : MemTy} : (T : List (BitVec 64 × Nat)) → TagsOk Ψ T →
+    {base : BitVec 64} → {tag : Nat} → lookupTag T base = some tag →
+    ∃ l, Ψ base = some l ∧ l.tag = some tag
+  | [], _, _, _, h => by cases h
+  | (b, t) :: rest, hT, base, tag, h => by
+    unfold lookupTag at h
+    split at h
+    · next e => cases h; subst e; exact hT.1
+    · exact TagsOk.lookup rest hT.2 h
+
+def kindsUnder (k : Nat) : List (Nat × ShapeS) → Bool
+  | [] => true
+  | (_, S) :: rest => S.under k && kindsUnder k rest
+
+theorem KindsOk.setVal {Ψ : MemTy} {ρ : Env} {k : Nat} {x : BitVec 64} :
+    (K : List (Nat × ShapeS)) → kindsUnder k K = true → KindsOk Ψ ρ K →
+    KindsOk Ψ (ρ.setVal k x) K
+  | [], _, _ => trivial
+  | (tag, S) :: rest, hu, hK => by
+    simp only [kindsUnder, Bool.and_eq_true] at hu
+    exact ⟨by rw [ShapeS.den_setVal S hu.1]; exact hK.1, KindsOk.setVal rest hu.2 hK.2⟩
+
+theorem Prog.Ok.setVal {Ψ : MemTy} {ρ : Env} {k : Nat} {x : BitVec 64} {P : Prog}
+    (hb : blocksUnder k P.blocks = true) (hk : kindsUnder k P.kinds = true) (h : P.Ok Ψ ρ) :
+    P.Ok Ψ (ρ.setVal k x) :=
+  ⟨BlocksOk.setVal _ hb h.blocks, h.tags, KindsOk.setVal _ hk h.kinds⟩
+
+/-- The register an instruction reaches memory through, or moves on by a
+constant. -/
+def baseOf : Instr → Option Reg
+  | .alu .add .w64 (.rm_i (.reg d) _) => some d
+  | i =>
+    match i.memOperand? with
+    | some (.sib (some b) _ _) => some b
+    | _ => none
+
+/-- The register an instruction reaches memory through, or moves on, that
+holds a pointer to a block of a kind: it is opened first, to a pointer to a
+block of the shape that kind has. -/
+def toOpen (Γ : CtxS) (i : Instr) : Option (Reg × Nat × Bool × Num) :=
+  match baseOf i with
+  | some r =>
+    match Γ.regs.get r with
+    | .ref tag w off => some (r, tag, w, off)
+    | _ => none
+  | none => none
+
+theorem toOpen_spec {Γ : CtxS} {i : Instr} {r : Reg} {tag : Nat} {w : Bool} {off : Num}
+    (h : toOpen Γ i = some (r, tag, w, off)) : Γ.regs.get r = .ref tag w off := by
+  unfold toOpen at h
+  split at h
+  · split at h
+    · next hΓ => cases h; exact hΓ
+    · cases h
+  · cases h
+
+/-- A register just loaded with the address of a byte of one of the
+program's blocks is a pointer into that block, or to a block of its kind. -/
+def castData (P : Prog) (Γ : CtxS) (i : Instr) : CtxS :=
+  match i with
+  | .lea .w64 d (.rip _) =>
+    if d = .rsp then Γ
+    else match Γ.regs.get d with
+      | .eq (.lit v) =>
+        match blockAt P.blocks v with
+        | some (base, S, w, off) =>
+          match lookupTag P.tags base with
+          | some tag => Γ.setReg d (.ref tag w (.lit off))
+          | none => Γ.setReg d (.ptr S w (.lit off))
+        | none => Γ
+      | _ => Γ
+  | _ => Γ
+
+theorem castData_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
+    {P : Prog} (hP : P.Ok Ψ ρ) {a : BitVec 64} {Γ : CtxS} {i : Instr}
+    (h : BlockOk Φ fetch sys Ψ a ((castData P Γ i).den ρ)) :
+    BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
+  unfold castData at h
+  split at h
+  · next d disp =>
+    split at h
+    · exact h
+    · next hd =>
+      split at h
+      · next v hΓ =>
+        split at h
+        · next base S w off hb =>
+          obtain ⟨⟨l, hl, hs, hw⟩, hv⟩ := blockAt_spec _ hP.blocks hb
+          have hΓ' : (Γ.den ρ).regs d = .eq v := by rw [CtxS.den_regs, hΓ]; rfl
+          split at h
+          · next tag ht =>
+            obtain ⟨l', hl', htag⟩ := TagsOk.lookup _ hP.tags ht
+            rw [hl] at hl'; cases hl'
+            rw [CtxS.den_setReg] at h
+            exact .castRef hd hΓ' hl htag hv (fun _ => by rw [hw]; assumption) h
+          · rw [CtxS.den_setReg] at h
+            have h' : BlockOk Φ fetch sys Ψ a ((Γ.den ρ).setReg d (.ptr l.shape w off)) := by
+              rw [hs]; exact h
+            exact .castPtr hd hΓ' hl hv (fun e => by rw [hw]; exact e) h'
+        · exact h
+      · exact h
+  · exact h
+
 /-- The checker walked from an address for at most so many moves, `k` being
-a variable no term yet mentions. -/
-def walk (B : List (BitVec 64 × ShapeS × Bool)) (code : List (BitVec 64 × Instr × BitVec 64)) :
+a variable no term yet mentions. Before an instruction, a pointer to a block
+of a kind that it reaches through is opened, and a value it needs to speak
+of is named; after it, an address of data just loaded is made a pointer. -/
+def walk (P : Prog) (code : List (BitVec 64 × Instr × BitVec 64)) :
     Nat → Nat → BitVec 64 → CtxS → Walk
   | 0, _, a, Γ => .stop a Γ
   | fuel + 1, k, a, Γ =>
     match lookup code a with
     | none => .stop a Γ
     | some (i, len) =>
-      match toName Γ i with
-      | some r =>
-        if Γ.under k && blocksUnder k B then
-          .name k (walk B code fuel (k + 1) a (Γ.setReg r (.eq (.var k))))
-        else .stop a Γ
-      | none =>
-        match step (a + len) { Γ with blocks := B } i with
-        | some (Γ', cs) => .conds cs (walk B code fuel k (a + len) Γ')
+      match toOpen Γ i with
+      | some (r, tag, w, off) =>
+        match lookupNat P.kinds tag with
+        | some S =>
+          if r = .rsp then .stop a Γ
+          else walk P code fuel k a (Γ.setReg r (.ptr S w off))
         | none => .stop a Γ
+      | none =>
+        match toName Γ i with
+        | some r =>
+          if Γ.under k && blocksUnder k P.blocks && kindsUnder k P.kinds then
+            .name k (walk P code fuel (k + 1) a (Γ.setReg r (.eq (.var k))))
+          else .stop a Γ
+        | none =>
+          match step (a + len) { Γ with blocks := P.blocks } i with
+          | some (Γ', cs) => .conds cs (walk P code fuel k (a + len) (castData P Γ' i))
+          | none => .stop a Γ
 
 /-- **A walk whose conditions hold types the block it started at**, if the
 block where it stopped is typed. -/
-theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
-    {B : List (BitVec 64 × ShapeS × Bool)} {code : List (BitVec 64 × Instr × BitVec 64)}
-    (hcode : Agrees fetch code) : (fuel k : Nat) → (a : BitVec 64) → (Γ : CtxS) → (ρ : Env) →
-    BlocksOk Ψ ρ B → (walk B code fuel k a Γ).holds (BlockOk Φ fetch sys Ψ) ρ →
+theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P : Prog}
+    {code : List (BitVec 64 × Instr × BitVec 64)} (hcode : Agrees fetch code) :
+    (fuel k : Nat) → (a : BitVec 64) → (Γ : CtxS) → (ρ : Env) → P.Ok Ψ ρ →
+    (walk P code fuel k a Γ).holds (BlockOk Φ fetch sys Ψ) ρ →
     BlockOk Φ fetch sys Ψ a (Γ.den ρ)
   | 0, _, _, _, _, _, h => h
-  | fuel + 1, k, a, Γ, ρ, hB, h => by
+  | fuel + 1, k, a, Γ, ρ, hP, h => by
     unfold walk at h
     split at h
     · exact h
     · next i len hl =>
       split at h
-      · next r hr =>
+      · next r tag w off ho =>
         split at h
-        · next hu =>
-          simp only [Bool.and_eq_true] at hu
-          have key : ∀ x, BlockOk Φ fetch sys Ψ a ((Γ.den ρ).setReg r (.eq x)) := fun x => by
-            have := walk_sound hcode fuel (k + 1) a (Γ.setReg r (.eq (.var k))) (ρ.setVal k x)
-              (BlocksOk.setVal B hu.2 hB) (h x)
-            rw [CtxS.den_setReg, CtxS.den_setVal hu.1] at this
-            have e : (TyS.eq (.var k)).den (ρ.setVal k x) = .eq x := by
-              show Ty.eq ((padSet 0 ρ.val k x).getD k 0) = _
-              rw [getD_padSet]; simp
-            rw [e] at this
-            exact this
-          by_cases hsp : r = .rsp
-          · subst hsp; exact .nameSp key
-          · exact .name hsp key
+        · next S hk =>
+          split at h
+          · exact h
+          · next hr =>
+            have := walk_sound hcode fuel k a (Γ.setReg r (.ptr S w off)) ρ hP h
+            rw [CtxS.den_setReg] at this
+            exact .openRef hr (by rw [CtxS.den_regs, toOpen_spec ho]; rfl)
+              (KindsOk.lookup _ hP.kinds hk) this
         · exact h
       · split at h
-        · next Γ' cs hs =>
-          exact .step (Agrees.lookup code hcode hl)
-            (step_sound (Γ := { Γ with blocks := B }) hB hs h.1)
-            (walk_sound hcode fuel k (a + len) Γ' ρ hB h.2)
-        · exact h
+        · next r hr =>
+          split at h
+          · next hu =>
+            simp only [Bool.and_eq_true] at hu
+            have key : ∀ x, BlockOk Φ fetch sys Ψ a ((Γ.den ρ).setReg r (.eq x)) := fun x => by
+              have := walk_sound hcode fuel (k + 1) a (Γ.setReg r (.eq (.var k)))
+                (ρ.setVal k x) (hP.setVal hu.1.2 hu.2) (h x)
+              rw [CtxS.den_setReg, CtxS.den_setVal hu.1.1] at this
+              have e : (TyS.eq (.var k)).den (ρ.setVal k x) = .eq x := by
+                show Ty.eq ((padSet 0 ρ.val k x).getD k 0) = _
+                rw [getD_padSet]; simp
+              rw [e] at this
+              exact this
+            by_cases hsp : r = .rsp
+            · subst hsp; exact .nameSp key
+            · exact .name hsp key
+          · exact h
+        · split at h
+          · next Γ' cs hs =>
+            exact .step (Agrees.lookup code hcode hl)
+              (step_sound (Γ := { Γ with blocks := P.blocks }) hP.blocks hs h.1)
+              (castData_sound hP (walk_sound hcode fuel k (a + len) _ ρ hP h.2))
+          · exact h
 
 /-- The same, from the walk written out. -/
 theorem walk_sound' {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
-    {B : List (BitVec 64 × ShapeS × Bool)} {code : List (BitVec 64 × Instr × BitVec 64)}
-    (hB : BlocksOk Ψ ρ B) (hcode : Agrees fetch code) {fuel k : Nat} {a : BitVec 64} {Γ : CtxS}
-    {W : Walk} (h : walk B code fuel k a Γ = W) (hW : W.holds (BlockOk Φ fetch sys Ψ) ρ) :
+    {P : Prog} {code : List (BitVec 64 × Instr × BitVec 64)}
+    (hP : P.Ok Ψ ρ) (hcode : Agrees fetch code) {fuel k : Nat} {a : BitVec 64} {Γ : CtxS}
+    {W : Walk} (h : walk P code fuel k a Γ = W) (hW : W.holds (BlockOk Φ fetch sys Ψ) ρ) :
     BlockOk Φ fetch sys Ψ a (Γ.den ρ) :=
-  walk_sound hcode fuel k a Γ ρ hB (by rw [h]; exact hW)
+  walk_sound hcode fuel k a Γ ρ hP (by rw [h]; exact hW)
 
 end Sym
 
