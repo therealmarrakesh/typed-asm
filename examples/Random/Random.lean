@@ -24,7 +24,8 @@ asm_typing At
 
 /-! ## Safety -/
 
-asm_safety At.start
+-- And it ends only with status 0 or 1: 1 where the kernel handed it nothing.
+asm_safety At.start exits (fun c => c = 0 ∨ c = 1)
 
 end Random
 

@@ -3650,14 +3650,39 @@ private def finishBlockCore (goal : MVarId) (instr : Instr) : TacticM Finish := 
     -- `write` and `read` are typed as steps; what reaches here is `exit`, or
     -- a call the type system has no rule for.
     let ctx := (← instantiateMVars (← goal.getType)).consumeMData.getAppArgs[5]!
+    let sysArg := (← instantiateMVars (← goal.getType)).consumeMData.getAppArgs[2]!
+    -- Where the program is being shown to end only with a status that is
+    -- as wanted, the status must be exactly known here and be so. That it
+    -- is, is left as a goal where it does not follow by computing.
+    let exitOnly (rule : Name) : TacticM (List MVarId) := do
+      let gs ← try
+          runOn goal (do evalTactic (← `(tactic|
+            refine BlockOk.last (by ty_fetch)
+              (HasType.syscallExit ($(mkIdent rule) rfl rfl ?status)))))
+        catch _ =>
+          let actual ← goal.withContext do
+            ppTy (← whnf (← mkAppM ``CtxOf.regs #[ctx, mkConst ``Reg.rdi]))
+          throwError "`syscall`: what the program ends with is being shown, so the status in \
+            `rdi` must be exactly known here, but its type is `{actual}`"
+      let mut left : List MVarId := []
+      for g in gs do
+        if ← g.isAssigned then continue
+        left := left ++ (← try
+            runOn g (do evalTactic (← `(tactic|
+              first | (dsimp only; decide) | decide | rfl | (dsimp only; ty_arith) | ty_arith)))
+          catch _ => pure [g])
+      return left
     match ← syscallNumber ctx with
     | some 60 =>
+      if sysArg.isAppOf ``Syscall.exitsOnly then return .done (← exitOnly ``linux_exit_only)
       let gs ← try
           runOn goal (do evalTactic (← `(tactic|
             refine BlockOk.last (by ty_fetch) (HasType.syscallExit (linux_exit rfl)))))
         catch _ => throwError "`syscall`: the operating system here is not the Linux model"
       return .done gs
     | some 231 =>
+      if sysArg.isAppOf ``Syscall.exitsOnly then
+        return .done (← exitOnly ``linux_exit_group_only)
       let gs ← try
           runOn goal (do evalTactic (← `(tactic|
             refine BlockOk.last (by ty_fetch) (HasType.syscallExit (linux_exit_group rfl)))))
@@ -5159,8 +5184,8 @@ case next =>
 
 named for the label's context and binding its arguments, as with `case`.
 Such a label's block is typed only as its case says, and not tried first
-without. A label with no case whose block does not type by itself is left as
-a goal. -/
+without. A label with no case whose block does not type by itself is
+reported, with what stood in the way. -/
 syntax (name := tyProgram) "ty_program" (Lean.Parser.Tactic.case)* : tactic
 
 open Lean Meta Elab Tactic in
@@ -5183,14 +5208,34 @@ open Lean Meta Elab Tactic in
     | none =>
       let start ← saveState
       let mut done := false
+      let mut why : MessageData := m!""
       try
         setGoals [g]
         let before ← saveState
         try evalTactic (← `(tactic| ty_room)) catch _ => before.restore
         Tactic.withoutRecover do evalTactic (← `(tactic| ty_block))
-        if (← getGoals).isEmpty then done := true else start.restore
-      catch _ => start.restore
-      unless done do left := left ++ [g]
+        let rest ← getGoals
+        if rest.isEmpty then done := true
+        else
+          -- what was left to be shown, before it is forgotten
+          let mut shown : MessageData := m!""
+          for r in rest.take 3 do
+            let ty ← instantiateMVars (← r.getType)
+            if ty.isAppOf ``BlockOk then
+              shown := shown ++ m!"\n• the block is not typed to its end"
+            else shown := shown ++ m!"\n• left to be shown: {← r.withContext (ppExpr ty)}"
+          why := shown
+          start.restore
+      catch e =>
+        why := m!"\n• {e.toMessageData}"
+        start.restore
+      unless done do
+        -- Said here, with the reason, and the goal given up: otherwise all
+        -- that would be said is that a goal was left.
+        logError m!"the block at label `{tag.components.getLast!}` does not type by itself:{why}\n\
+          What it needs is said in a block after `ty_program`, beginning \
+          `case {tag.components.getLast!}`."
+        admitGoal g
   for (name, arm) in named do
     unless used.contains name do
       throwErrorAt arm "no context is declared under the name `{name}`"
@@ -5501,11 +5546,11 @@ are of those types is settled by reading them (`ty_values`). For a value
 that cannot be settled so, say what shows the values are of their types with
 `values h` after the label, where `h` is a proof for every state meeting
 the contract. -/
-syntax "asm_safety " term:max (&" values " term:max)? : command
+syntax "asm_safety " term:max (&" values " term:max)? (&" exits " term:max)? : command
 
 open Lean Elab Command in
 elab_rules : command
-  | `(asm_safety $start $[values $v?]?) => do
+  | `(asm_safety $start $[values $v?]? $[exits $q?]?) => do
     let id (n : Name) := mkIdent n
     let fields ← match v? with
       | some v => `($v)
@@ -5572,6 +5617,41 @@ elab_rules : command
         theorem $(id `safeMem_world) (args : List (List Byte)) (w : World) :
             SafeMem linux { $(id `startArgs) args with world := w } :=
           $(id `safeMem_of_entry) (($(id `start_entry) args).withWorld w)))
+    -- What the program ends with: it is typed once more, against the system
+    -- that refuses any other status, and that it is safe there says it ends
+    -- only so.
+    if let some q := q? then
+      elabCommand (← `(
+        /-- The program is well typed where the operating system lets it end only
+        with a status that is as wanted. -/
+        theorem $(id `exitsOk) :
+            BlocksOk $(id `Φ) $(id `fetch) (Syscall.exitsOnly linux $q) $(id `Ψ) := by
+          ty_program))
+      let safe ← if kind == .plain then
+          `(h.safe $(id `exitsOk) $(id `memOk) $start (by
+              first
+              | exact Entry.plain (plain_of_check (by decide))
+              | exact fun n => Entry.valuesOk_of
+                  (P := HasTy $(id `fetch) (Syscall.exitsOnly linux $q) $(id `Ψ) n) h
+                  (by ty_values $(id `exitsOk))))
+        else if kind == .args then
+          `(h.safe $(id `exitsOk) $(id `memOk) $start (plain_of_check (by decide)))
+        else `(h.safe $(id `exitsOk) rfl $start (plain_of_check (by decide)))
+      elabCommand (← `(
+        /-- **From any state meeting the entry contract, the program ends only with
+        a status that is as wanted**: wherever it reaches a system call that ends
+        it, the status satisfies the condition given. This is on the machine that
+        looks instructions up in the program. -/
+        theorem $(id `exits_of_entry) {s : State} (h : $(id `Entry) s) :
+            ∀ s', Steps $(id `fetch) linux s s' → ∀ len c,
+              $(id `fetch) s'.rip = some (.syscall, len) →
+              linux { s' with rip := s'.rip + len } = .exit c → $q c :=
+          (Safe.of_exitsOnly $safe).2))
+      let axs ← Lean.collectAxioms (ns ++ `exits_of_entry)
+      for a in axs do
+        unless [``propext, ``Classical.choice, ``Quot.sound].contains a do
+          throwError "`{ns ++ `exits_of_entry}` depends on the axiom `{a}`, which is not one \
+            of Lean's three standard axioms"
     -- the proofs rest on Lean's three standard axioms and nothing else
     for thm in [`safeMem_of_entry, `safeMem_world] do
       let axs ← Lean.collectAxioms (ns ++ thm)

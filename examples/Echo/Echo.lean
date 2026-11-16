@@ -23,7 +23,8 @@ asm_typing At
 
 /-! ## Safety -/
 
-asm_safety At.start
+-- And it ends only with status 0, whatever it was given to read.
+asm_safety At.start exits (· = 0)
 
 end Echo
 

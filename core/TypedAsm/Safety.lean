@@ -128,4 +128,108 @@ theorem safe_of_safeN {s : State} (h : ∀ n, SafeN fetch sys n s) : Safe fetch 
   | refl => exact (h 1).1
   | step hstep _ ih => exact ih (fun n => (h (n + 1)).2 _ hstep)
 
+/-! ## What a program exits with
+
+Safety says a program does nothing bad; it does not say what the program
+does. One thing it does that can be said in the same terms is end, with a
+status. An operating system that refuses every exit whose status is not as
+wanted makes such an exit a bad step: so a program that is safe under that
+operating system is safe under the real one, and ends only as wanted. The
+typing of a program against it is then a proof of what the program exits
+with. -/
+
+/-- The operating system `sys`, refusing to end a program with a status that
+does not satisfy `Q`. -/
+noncomputable def Syscall.exitsOnly (sys : Syscall) (Q : BitVec 32 → Prop) : Syscall :=
+  fun s =>
+    match sys s with
+    | .exit c => haveI := Classical.propDecidable (Q c); if Q c then .exit c else .stuck
+    | r => r
+
+variable {Q : BitVec 32 → Prop}
+
+theorem Syscall.exitsOnly_next {s t : State} (h : sys s = .next t) :
+    sys.exitsOnly Q s = .next t := by
+  simp [Syscall.exitsOnly, h]
+
+theorem Syscall.exitsOnly_exit {s : State} {c : BitVec 32} (h : sys s = .exit c) (hQ : Q c) :
+    sys.exitsOnly Q s = .exit c := by
+  simp [Syscall.exitsOnly, h, hQ]
+
+/-- What the stricter system lets through, the plain one did. -/
+theorem Syscall.safe_of_exitsOnly {s : State} (h : (sys.exitsOnly Q s).isSafe = true) :
+    (sys s).isSafe = true ∧ ∀ c, sys s = .exit c → Q c := by
+  unfold Syscall.exitsOnly at h
+  cases hs : sys s with
+  | next t => exact ⟨rfl, fun c hc => by cases hc⟩
+  | fault f => rw [hs] at h; exact absurd h (by simp [Result.isSafe])
+  | stuck => rw [hs] at h; exact absurd h (by simp [Result.isSafe])
+  | exit c =>
+    rw [hs] at h
+    refine ⟨rfl, fun c' hc => ?_⟩
+    cases hc
+    haveI := Classical.propDecidable (Q c)
+    by_cases hQ : Q c
+    · exact hQ
+    · simp [hQ, Result.isSafe] at h
+
+/-- An instruction other than a system call does the same whatever the
+operating system. -/
+theorem exec_congr {sys' : Syscall} {i : Instr} (hi : i ≠ .syscall) (s : State) :
+    exec sys' i s = exec sys i s := by
+  cases i <;> first
+    | rfl
+    | exact absurd rfl hi
+    | (rename_i t; cases t <;> rfl)
+    | (rename_i op _ _; cases op <;> rfl)
+
+theorem step_exitsOnly_of_next {s s' : State} (h : step fetch sys s = .next s') :
+    step fetch (sys.exitsOnly Q) s = .next s' := by
+  unfold step at h ⊢
+  cases hf : fetch s.rip with
+  | none => rw [hf] at h; cases h
+  | some x =>
+    obtain ⟨i, len⟩ := x
+    rw [hf] at h
+    by_cases hi : i = .syscall
+    · subst hi
+      exact Syscall.exitsOnly_next h
+    · show exec (sys.exitsOnly Q) i _ = _
+      rw [exec_congr hi]
+      exact h
+
+theorem Steps.exitsOnly {s s' : State} (h : Steps fetch sys s s') :
+    Steps fetch (sys.exitsOnly Q) s s' := by
+  induction h with
+  | refl => exact .refl _
+  | step hs _ ih => exact .step (step_exitsOnly_of_next hs) ih
+
+/-- **A program safe under the system that refuses unwanted exits is safe,
+and ends only as wanted**: wherever it reaches a system call that ends it,
+the status satisfies `Q`. -/
+theorem Safe.of_exitsOnly {s : State} (h : Safe fetch (sys.exitsOnly Q) s) :
+    Safe fetch sys s ∧
+      ∀ s', Steps fetch sys s s' → ∀ len c, fetch s'.rip = some (.syscall, len) →
+        sys { s' with rip := s'.rip + len } = .exit c → Q c := by
+  refine ⟨fun s' hs' => ?_, fun s' hs' len c hf hc => ?_⟩
+  · have hsafe := h s' hs'.exitsOnly
+    unfold TypedAsm.step at hsafe ⊢
+    cases hf : fetch s'.rip with
+    | none => rw [hf] at hsafe; exact hsafe
+    | some x =>
+      obtain ⟨i, len⟩ := x
+      rw [hf] at hsafe
+      by_cases hi : i = .syscall
+      · subst hi
+        exact (Syscall.safe_of_exitsOnly hsafe).1
+      · have e : exec (sys.exitsOnly Q) i { s' with rip := s'.rip + len }
+            = exec sys i { s' with rip := s'.rip + len } := exec_congr hi _
+        show (exec sys i _).isSafe = true
+        rw [← e]
+        exact hsafe
+  · have hsafe := h s' hs'.exitsOnly
+    unfold TypedAsm.step at hsafe
+    rw [hf] at hsafe
+    exact (Syscall.safe_of_exitsOnly hsafe).2 c hc
+
 end TypedAsm

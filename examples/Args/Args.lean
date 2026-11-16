@@ -45,6 +45,7 @@ asm_typing At
 /-! ## Safety -/
 
 -- Safe however many arguments the program is given and whatever they say.
-asm_safety At.start
+-- And it ends only with status 0.
+asm_safety At.start exits (· = 0)
 
 end Args

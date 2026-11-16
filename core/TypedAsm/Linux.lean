@@ -1876,62 +1876,96 @@ theorem linux_exit_group (hΓ : Γ.regs .rax = .eq 231) : SysExits fetch linux �
   have hax := h.eqReg (by decide) hΓ
   exact ⟨s.readReg .w32 .rdi, by simp [linux, hax]⟩
 
+/-- An operating system that does what `linux` does wherever `linux` lets
+the program go on. The rules for the calls that return hold for any such:
+for `linux` itself, and for `linux` made to refuse some exits. -/
+class LikeLinux (sys : Syscall) : Prop where
+  next : ∀ {s t : State}, linux s = .next t → sys s = .next t
+
+instance : LikeLinux linux := ⟨id⟩
+
+instance (Q : BitVec 32 → Prop) : LikeLinux (linux.exitsOnly Q) := ⟨Syscall.exitsOnly_next⟩
+
+/-- `exit`, where only a status satisfying `Q` is let through: with 60 in
+`rax` and a status in `rdi` that is exactly known and satisfies `Q`, the
+program ends. -/
+theorem linux_exit_only {Q : BitVec 32 → Prop} {v : BitVec 64} (hΓ : Γ.regs .rax = .eq 60)
+    (hd : Γ.regs .rdi = .eq v) (hQ : Q (v.setWidth 32)) :
+    SysExits fetch (linux.exitsOnly Q) Ψ Γ := by
+  intro Ψ₁ _ hΨ n s h
+  have hax := h.eqReg (by decide) hΓ
+  have hdi := h.eqReg (by decide) hd
+  exact ⟨v.setWidth 32,
+    Syscall.exitsOnly_exit (by simp [linux, hax, State.readReg, hdi]) hQ⟩
+
+/-- `exit_group`, likewise. -/
+theorem linux_exit_group_only {Q : BitVec 32 → Prop} {v : BitVec 64}
+    (hΓ : Γ.regs .rax = .eq 231) (hd : Γ.regs .rdi = .eq v) (hQ : Q (v.setWidth 32)) :
+    SysExits fetch (linux.exitsOnly Q) Ψ Γ := by
+  intro Ψ₁ _ hΨ n s h
+  have hax := h.eqReg (by decide) hΓ
+  have hdi := h.eqReg (by decide) hd
+  exact ⟨v.setWidth 32,
+    Syscall.exitsOnly_exit (by simp [linux, hax, State.readReg, hdi]) hQ⟩
+
+variable {sys : Syscall} [LikeLinux sys]
+
 /-- `write`: with 1 in `rax`, the call returns, whatever its arguments. A
 buffer that cannot be read is refused by the kernel, not a fault. -/
 theorem linux_write (hΓ : Γ.regs .rax = .eq 1) :
-    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+    SysReturns fetch sys Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
-  exact ⟨Linux.write s, by simp [linux, hax], (Linux.write_only s).rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.write s, LikeLinux.next (by simp [linux, hax]), (Linux.write_only s).rip, Ψ₁, .refl _, hΨ,
     (Linux.write_only s).ok h⟩
 
 /-- `openat`: with 257 in `rax`, the call returns, whatever its arguments. A
 name that cannot be read is refused by the kernel, not a fault. -/
 theorem linux_openat (hΓ : Γ.regs .rax = .eq 257) :
-    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+    SysReturns fetch sys Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
-  exact ⟨Linux.openat s, by simp [linux, hax], (Linux.openat_only s).rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.openat s, LikeLinux.next (by simp [linux, hax]), (Linux.openat_only s).rip, Ψ₁, .refl _, hΨ,
     (Linux.openat_only s).ok h⟩
 
 /-- `close`: with 3 in `rax`, the call returns, whatever its argument. -/
 theorem linux_close (hΓ : Γ.regs .rax = .eq 3) :
-    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+    SysReturns fetch sys Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
-  exact ⟨Linux.close s, by simp [linux, hax], (Linux.close_only s).rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.close s, LikeLinux.next (by simp [linux, hax]), (Linux.close_only s).rip, Ψ₁, .refl _, hΨ,
     (Linux.close_only s).ok h⟩
 
 /-- `fsync`: with 74 in `rax`, the call returns, whatever its argument. -/
 theorem linux_fsync (hΓ : Γ.regs .rax = .eq 74) :
-    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+    SysReturns fetch sys Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
-  exact ⟨Linux.fsync s, by simp [linux, hax], (Linux.fsync_only s).rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.fsync s, LikeLinux.next (by simp [linux, hax]), (Linux.fsync_only s).rip, Ψ₁, .refl _, hΨ,
     (Linux.fsync_only s).ok h⟩
 
 /-- `fdatasync`: with 75 in `rax`, likewise. -/
 theorem linux_fdatasync (hΓ : Γ.regs .rax = .eq 75) :
-    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+    SysReturns fetch sys Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
-  exact ⟨Linux.fsync s, by simp [linux, hax], (Linux.fsync_only s).rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.fsync s, LikeLinux.next (by simp [linux, hax]), (Linux.fsync_only s).rip, Ψ₁, .refl _, hΨ,
     (Linux.fsync_only s).ok h⟩
 
 /-- `getpid`: with 39 in `rax`, the call returns. -/
 theorem linux_getpid (hΓ : Γ.regs .rax = .eq 39) :
-    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+    SysReturns fetch sys Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
-  exact ⟨Linux.getpid s, by simp [linux, hax], (Linux.getpid_only s).rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.getpid s, LikeLinux.next (by simp [linux, hax]), (Linux.getpid_only s).rip, Ψ₁, .refl _, hΨ,
     (Linux.getpid_only s).ok h⟩
 
 /-- `lseek`: with 8 in `rax`, the call returns, whatever its arguments. -/
 theorem linux_lseek (hΓ : Γ.regs .rax = .eq 8) :
-    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+    SysReturns fetch sys Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
-  exact ⟨Linux.lseek s, by simp [linux, hax], (Linux.lseek_only s).rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.lseek s, LikeLinux.next (by simp [linux, hax]), (Linux.lseek_only s).rip, Ψ₁, .refl _, hΨ,
     (Linux.lseek_only s).ok h⟩
 
 /-- `read`: with 0 in `rax`, the call returns, provided the buffer in `rsi`
@@ -1940,12 +1974,12 @@ of it. Without that the kernel could overwrite a typed pointer. -/
 theorem linux_read {S : Shape} {off : Nat} {len : BitVec 64} (hΓ : Γ.regs .rax = .eq 0)
     (hbuf : Γ.regs .rsi = .ptr S true off) (hlen : Γ.regs .rdx = .eq len)
     (hle : off + len.toNat ≤ S.size) (hfree : S.free off len.toNat = true) :
-    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+    SysReturns fetch sys Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.read_fills s
   rw [h.eqReg (by decide) hlen] at hf
-  exact ⟨Linux.read s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.read s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok h hΨ (by decide) hbuf hle hfree⟩
 
 /-- `read` into the stack: with 0 in `rax`, the call returns, provided the
@@ -1957,13 +1991,13 @@ theorem linux_read_stack {v d len : BitVec 64} {k i : Nat} {S : Shape}
     (hsp : Γ.regs .rsp = .eq v) (hbuf : Γ.regs .rsi = .eq (v + d))
     (hat : StackAt Γ.stack k S d.toNat i) (hlen : Γ.regs .rdx = .eq len)
     (hle : i + len.toNat ≤ S.size) :
-    SysReturns fetch linux Ψ Γ
+    SysReturns fetch sys Ψ Γ
       ({ Γ with stack := Γ.stack.set k (S.clear i len.toNat) } : Ctx).afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.read_fills s
   rw [h.eqReg (by decide) hlen] at hf
-  exact ⟨Linux.read s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.read s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok_stack h hΨ (by decide) hsp hbuf hat hle⟩
 
 /-- `fstat`: with 5 in `rax`, the call returns, provided the buffer in `rsi`
@@ -1972,11 +2006,11 @@ kernel stores, are plain bytes of it. -/
 theorem linux_fstat {S : Shape} {off : Nat} (hΓ : Γ.regs .rax = .eq 5)
     (hbuf : Γ.regs .rsi = .ptr S true off)
     (hle : off + 144 ≤ S.size) (hfree : S.free off 144 = true) :
-    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+    SysReturns fetch sys Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.fstat_fills s
-  exact ⟨Linux.fstat s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.fstat s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok h hΨ (by decide) hbuf hle hfree⟩
 
 /-- `fstat` into the stack: as `linux_fstat`, with the buffer a known
@@ -1985,12 +2019,12 @@ theorem linux_fstat_stack {v d : BitVec 64} {k i : Nat} {S : Shape}
     (hΓ : Γ.regs .rax = .eq 5)
     (hsp : Γ.regs .rsp = .eq v) (hbuf : Γ.regs .rsi = .eq (v + d))
     (hat : StackAt Γ.stack k S d.toNat i) (hle : i + 144 ≤ S.size) :
-    SysReturns fetch linux Ψ Γ
+    SysReturns fetch sys Ψ Γ
       ({ Γ with stack := Γ.stack.set k (S.clear i 144) } : Ctx).afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.fstat_fills s
-  exact ⟨Linux.fstat s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.fstat s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok_stack h hΨ (by decide) hsp hbuf hat hle⟩
 
 /-- `clock_gettime`: with 228 in `rax`, the call returns, provided the buffer
@@ -1999,11 +2033,11 @@ bytes of it. -/
 theorem linux_clock_gettime {S : Shape} {off : Nat} (hΓ : Γ.regs .rax = .eq 228)
     (hbuf : Γ.regs .rsi = .ptr S true off)
     (hle : off + 16 ≤ S.size) (hfree : S.free off 16 = true) :
-    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+    SysReturns fetch sys Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.clockGettime_fills s
-  exact ⟨Linux.clockGettime s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.clockGettime s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok h hΨ (by decide) hbuf hle hfree⟩
 
 /-- `clock_gettime` into the stack. -/
@@ -2011,12 +2045,12 @@ theorem linux_clock_gettime_stack {v d : BitVec 64} {k i : Nat} {S : Shape}
     (hΓ : Γ.regs .rax = .eq 228)
     (hsp : Γ.regs .rsp = .eq v) (hbuf : Γ.regs .rsi = .eq (v + d))
     (hat : StackAt Γ.stack k S d.toNat i) (hle : i + 16 ≤ S.size) :
-    SysReturns fetch linux Ψ Γ
+    SysReturns fetch sys Ψ Γ
       ({ Γ with stack := Γ.stack.set k (S.clear i 16) } : Ctx).afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.clockGettime_fills s
-  exact ⟨Linux.clockGettime s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.clockGettime s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok_stack h hΨ (by decide) hsp hbuf hat hle⟩
 
 /-- `getrandom`: with 318 in `rax`, the call returns, provided the buffer in
@@ -2026,12 +2060,12 @@ theorem linux_getrandom {S : Shape} {off : Nat} {len : BitVec 64}
     (hΓ : Γ.regs .rax = .eq 318) (hbuf : Γ.regs .rdi = .ptr S true off)
     (hlen : Γ.regs .rsi = .eq len)
     (hle : off + len.toNat ≤ S.size) (hfree : S.free off len.toNat = true) :
-    SysReturns fetch linux Ψ Γ Γ.afterSyscall := by
+    SysReturns fetch sys Ψ Γ Γ.afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.getrandom_fills s
   rw [h.eqReg (by decide) hlen] at hf
-  exact ⟨Linux.getrandom s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.getrandom s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok h hΨ (by decide) hbuf hle hfree⟩
 
 /-- `getrandom` into the stack. -/
@@ -2040,13 +2074,13 @@ theorem linux_getrandom_stack {v d len : BitVec 64} {k i : Nat} {S : Shape}
     (hsp : Γ.regs .rsp = .eq v) (hbuf : Γ.regs .rdi = .eq (v + d))
     (hat : StackAt Γ.stack k S d.toNat i) (hlen : Γ.regs .rsi = .eq len)
     (hle : i + len.toNat ≤ S.size) :
-    SysReturns fetch linux Ψ Γ
+    SysReturns fetch sys Ψ Γ
       ({ Γ with stack := Γ.stack.set k (S.clear i len.toNat) } : Ctx).afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.getrandom_fills s
   rw [h.eqReg (by decide) hlen] at hf
-  exact ⟨Linux.getrandom s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.getrandom s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok_stack h hΨ (by decide) hsp hbuf hat hle⟩
 
 /-- `read` into memory the program owns: the buffer lies inside an owned
@@ -2056,13 +2090,13 @@ theorem linux_read_owned {k lo : Nat} {a v : BitVec 64} {S : Shape} {len : BitVe
     (hat : OwnedByte Γ.owned k a S v lo)
     (hlen : Γ.regs .rdx = .eq len)
     (hle : lo + len.toNat ≤ S.size) :
-    SysReturns fetch linux Ψ Γ
+    SysReturns fetch sys Ψ Γ
       ({ Γ with owned := Γ.owned.set k (a, S.clear lo len.toNat) } : Ctx).afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.read_fills s
   rw [h.eqReg (by decide) hlen] at hf
-  exact ⟨Linux.read s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.read s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok_owned h hΨ (by decide) hbuf hat hle⟩
 
 /-- `fstat` into memory the program owns: the buffer lies inside an owned
@@ -2071,12 +2105,12 @@ theorem linux_fstat_owned {k lo : Nat} {a v : BitVec 64} {S : Shape}
     (hΓ : Γ.regs .rax = .eq 5) (hbuf : Γ.regs .rsi = .eq v)
     (hat : OwnedByte Γ.owned k a S v lo)
     (hle : lo + 144 ≤ S.size) :
-    SysReturns fetch linux Ψ Γ
+    SysReturns fetch sys Ψ Γ
       ({ Γ with owned := Γ.owned.set k (a, S.clear lo 144) } : Ctx).afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.fstat_fills s
-  exact ⟨Linux.fstat s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.fstat s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok_owned h hΨ (by decide) hbuf hat hle⟩
 
 /-- `clock_gettime` into memory the program owns: the buffer lies inside an owned
@@ -2085,12 +2119,12 @@ theorem linux_clock_gettime_owned {k lo : Nat} {a v : BitVec 64} {S : Shape}
     (hΓ : Γ.regs .rax = .eq 228) (hbuf : Γ.regs .rsi = .eq v)
     (hat : OwnedByte Γ.owned k a S v lo)
     (hle : lo + 16 ≤ S.size) :
-    SysReturns fetch linux Ψ Γ
+    SysReturns fetch sys Ψ Γ
       ({ Γ with owned := Γ.owned.set k (a, S.clear lo 16) } : Ctx).afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.clockGettime_fills s
-  exact ⟨Linux.clockGettime s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.clockGettime s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok_owned h hΨ (by decide) hbuf hat hle⟩
 
 /-- `getrandom` into memory the program owns: the buffer lies inside an owned
@@ -2100,13 +2134,13 @@ theorem linux_getrandom_owned {k lo : Nat} {a v : BitVec 64} {S : Shape} {len : 
     (hat : OwnedByte Γ.owned k a S v lo)
     (hlen : Γ.regs .rsi = .eq len)
     (hle : lo + len.toNat ≤ S.size) :
-    SysReturns fetch linux Ψ Γ
+    SysReturns fetch sys Ψ Γ
       ({ Γ with owned := Γ.owned.set k (a, S.clear lo len.toNat) } : Ctx).afterSyscall := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   have hf := Linux.getrandom_fills s
   rw [h.eqReg (by decide) hlen] at hf
-  exact ⟨Linux.getrandom s, by simp [linux, hax], hf.rip, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.getrandom s, LikeLinux.next (by simp [linux, hax]), hf.rip, Ψ₁, .refl _, hΨ,
     hf.ok_owned h hΨ (by decide) hbuf hat hle⟩
 
 /-- `mmap` for a block of a given shape: with 9 in `rax`, the length in
@@ -2121,7 +2155,7 @@ theorem linux_mmap {len : BitVec 64} {S : Shape} (hΓ : Γ.regs .rax = .eq 9)
     (hfit : S.size ≤ len.toNat)
     (hne : 0 < S.size) (hin : S.fits = true)
     (hzero : S.vals.all (fun p => p.2.zeroOk) = true) :
-    SysReturns fetch linux Ψ Γ (Γ.afterSyscall.setReg .rax (.orErr (.ptr S true 0))) := by
+    SysReturns fetch sys Ψ Γ (Γ.afterSyscall.setReg .rax (.orErr (.ptr S true 0))) := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   obtain ⟨Ψ₂, he₂, hΨ₂, hw⟩ := Linux.mmap_ok (tag := none) h hΨ hlen hprot hflags hfit hne
@@ -2130,7 +2164,7 @@ theorem linux_mmap {len : BitVec 64} {S : Shape} (hΓ : Γ.regs .rax = .eq 9)
       show a = a + BitVec.ofNat 64 0
       simp⟩)
   have hdi := h.eqReg (by decide) hhint
-  exact ⟨Linux.mmap s, by simp [linux, hax, hdi], Linux.mmap_rip s, Ψ₂, he₂, hΨ₂, hw⟩
+  exact ⟨Linux.mmap s, LikeLinux.next (by simp [linux, hax, hdi]), Linux.mmap_rip s, Ψ₂, he₂, hΨ₂, hw⟩
 
 /-- `mmap` for a block of a declared kind: as `linux_mmap`, but the new
 block is of kind `tag`, has that kind's shape, and the result is a pointer
@@ -2143,7 +2177,7 @@ theorem linux_mmap_kind {len : BitVec 64} {tag : Nat} {S : Shape}
     (hfit : S.size ≤ len.toNat)
     (hne : 0 < S.size) (hin : S.fits = true)
     (hzero : S.vals.all (fun p => p.2.zeroOk) = true) :
-    SysReturns fetch linux Ψ Γ (Γ.afterSyscall.setReg .rax (.orErr (.ref tag true 0))) := by
+    SysReturns fetch sys Ψ Γ (Γ.afterSyscall.setReg .rax (.orErr (.ref tag true 0))) := by
   intro Ψ₁ he hΨ n s h
   have hax := h.eqReg (by decide) hΓ
   obtain ⟨Ψ₂, he₂, hΨ₂, hw⟩ := Linux.mmap_ok (tag := some tag) h hΨ hlen hprot hflags hfit hne
@@ -2153,7 +2187,7 @@ theorem linux_mmap_kind {len : BitVec 64} {tag : Nat} {S : Shape}
       show a = a + BitVec.ofNat 64 0
       simp⟩)
   have hdi := h.eqReg (by decide) hhint
-  exact ⟨Linux.mmap s, by simp [linux, hax, hdi], Linux.mmap_rip s, Ψ₂, he₂, hΨ₂, hw⟩
+  exact ⟨Linux.mmap s, LikeLinux.next (by simp [linux, hax, hdi]), Linux.mmap_rip s, Ψ₂, he₂, hΨ₂, hw⟩
 
 /-- `mmap` for memory the program is to own: with 9 in `rax`, the length in
 `rsi`, 3 in `rdx` and 0x22 in `r10`, the call continues with an error number
@@ -2162,12 +2196,12 @@ block of integers. -/
 theorem linux_mmap_own {next : BitVec 64} {len : BitVec 64} (hΓ : Γ.regs .rax = .eq 9)
     (hlen : Γ.regs .rsi = .eq len) (hprot : Γ.regs .rdx = .eq 3)
     (hflags : Γ.regs .r10 = .eq 0x22) (hhint : Γ.regs .rdi = .eq 0) :
-    StepsTo fetch linux Ψ next Γ .syscall (Linux.mmapOwnCtx Γ len) := by
+    StepsTo fetch sys Ψ next Γ .syscall (Linux.mmapOwnCtx Γ len) := by
   intro Ψ₁ _ hΨ n s h _
   have hax := h.eqReg (by decide) hΓ
   obtain ⟨x, hw⟩ := Linux.mmapOwn_ok h hΨ hlen hprot hflags
   have hdi := h.eqReg (by decide) hhint
-  exact ⟨Linux.mmap s, x, by show linux s = _; simp [linux, hax, hdi], Linux.mmap_rip s, Ψ₁,
+  exact ⟨Linux.mmap s, x, (LikeLinux.next (by simp [linux, hax, hdi]) : sys s = _), Linux.mmap_rip s, Ψ₁,
     .refl _,
     hΨ, hw⟩
 
@@ -2178,10 +2212,10 @@ theorem linux_munmap {k : Nat} {a len : BitVec 64} {S : Shape} (hΓ : Γ.regs .r
     (hdi : Γ.regs .rdi = .eq a) (hsi : Γ.regs .rsi = .eq len)
     (hk : Γ.owned[k]? = some (a, S))
     (hsz : S.size = (len.toNat + 4095) / 4096 * 4096) :
-    SysReturns fetch linux Ψ Γ { Γ.afterSyscall with owned := Γ.owned.eraseIdx k } := by
+    SysReturns fetch sys Ψ Γ { Γ.afterSyscall with owned := Γ.owned.eraseIdx k } := by
   intro Ψ₁ _ hΨ n s h
   have hax := h.eqReg (by decide) hΓ
-  exact ⟨Linux.munmap s, by simp [linux, hax], Linux.munmap_rip s, Ψ₁, .refl _, hΨ,
+  exact ⟨Linux.munmap s, LikeLinux.next (by simp [linux, hax]), Linux.munmap_rip s, Ψ₁, .refl _, hΨ,
     Linux.munmap_ok h hΨ hdi hsi hk hsz⟩
 
 /-! ## Memory the program cannot write stays as it was -/

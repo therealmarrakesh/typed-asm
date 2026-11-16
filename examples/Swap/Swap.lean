@@ -41,7 +41,8 @@ asm_typing At
 
 /-! ## Safety -/
 
-asm_safety At.start
+-- And it ends only with status 0.
+asm_safety At.start exits (· = 0)
 
 end Swap
 

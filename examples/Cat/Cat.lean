@@ -35,6 +35,8 @@ asm_typing At
 
 -- Safe however many arguments the program is given and whatever they are,
 -- whatever files there are and whatever they hold.
-asm_safety At.start
+-- And it ends only with status 0 or 1: 1 where it stopped at a file it could
+-- not open.
+asm_safety At.start exits (fun c => c = 0 ∨ c = 1)
 
 end Cat
