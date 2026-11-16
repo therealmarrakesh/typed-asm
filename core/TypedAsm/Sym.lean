@@ -1344,33 +1344,55 @@ whose length is a number no greater than how far it is without the index:
 the index only takes it further. The first piece it is not seen to be past
 is the one the index runs over. -/
 
-/-- The piece of the stack a byte `D` above the stack pointer plus an index
-is taken to be in, counting pieces from `k`, and how far into it without the
-index. -/
-def pieceIdx : List ShapeS → Nat → Nat → Option (Nat × ShapeS × Nat)
+/-- The piece of the stack an indexed access is in: the displacement is
+carried past the pieces before it, whose lengths are numbers written out. A
+piece whose length is not is the one, with the index counted from its start;
+unless the index is exactly its length, as when a count of slots is stepped
+over to what lies after them, and then the access is in what follows. -/
+def pieceIdxT (T : Num) : List ShapeS → Nat → Nat → Option (Nat × ShapeS × Num)
   | [], _, _ => none
   | S :: σ, k, D =>
     match S.size.lit? with
-    | some sz => if sz ≤ D then pieceIdx σ (k + 1) (D - sz) else some (k, S, D)
-    | none => some (k, S, D)
+    | some sz => if sz ≤ D then pieceIdxT T σ (k + 1) (D - sz) else some (k, S, T.plus (.lit D))
+    | none =>
+      if S.size = T then
+        match pieceAt σ (k + 1) D with
+        | some (k', S', i, _) => some (k', S', .lit i)
+        | none => none
+      else some (k, S, T.plus (.lit D))
 
-theorem pieceIdx_spec (ρ : Env) (rest : List Shape) : (σ : List ShapeS) → (k₀ D : Nat) →
-    {k : Nat} → {S : ShapeS} → {R : Nat} → pieceIdx σ k₀ D = some (k, S, R) →
-    ∃ j, k = k₀ + j ∧ σ[j]? = some S ∧ D = stackOff (denShapes ρ σ rest) j + R
+theorem pieceIdxT_spec (ρ : Env) (rest : List Shape) (T : Num) : (σ : List ShapeS) →
+    (k₀ D : Nat) → {k : Nat} → {S : ShapeS} → {o : Num} → pieceIdxT T σ k₀ D = some (k, S, o) →
+    ∃ j, k = k₀ + j ∧ σ[j]? = some S ∧
+      T.den ρ + D = stackOff (denShapes ρ σ rest) j + o.den ρ
   | [], _, _, _, _, _, h => by cases h
-  | T :: σ, k₀, D, k, S, R, h => by
-    unfold pieceIdx at h
+  | U :: σ, k₀, D, k, S, o, h => by
+    unfold pieceIdxT at h
+    have here : T.den ρ + D = stackOff (denShapes ρ (U :: σ) rest) 0 + (T.plus (.lit D)).den ρ := by
+      rw [Num.den_plus]
+      show _ = 0 + (T.den ρ + D)
+      omega
     split at h
     · next tz ht =>
-      have hT : (T.den ρ).size = tz := by rw [ShapeS.den_size, Num.lit?_den ht]
+      have hT : (U.den ρ).size = tz := by rw [ShapeS.den_size, Num.lit?_den ht]
       split at h
       · next hle =>
-        obtain ⟨j, hk, hj, hd⟩ := pieceIdx_spec ρ rest σ (k₀ + 1) (D - tz) h
+        obtain ⟨j, hk, hj, hd⟩ := pieceIdxT_spec ρ rest T σ (k₀ + 1) (D - tz) h
         refine ⟨j + 1, by omega, hj, ?_⟩
-        show D = (T.den ρ).size + stackOff (denShapes ρ σ rest) j + R
+        show T.den ρ + D = (U.den ρ).size + stackOff (denShapes ρ σ rest) j + o.den ρ
         omega
-      · cases h; exact ⟨0, rfl, rfl, by simp⟩
-    · cases h; exact ⟨0, rfl, rfl, by simp⟩
+      · cases h; exact ⟨0, rfl, rfl, here⟩
+    · split at h
+      · next heq =>
+        split at h
+        · next k' S' i sz hp =>
+          cases h
+          obtain ⟨j, hk, hj, hd, _, _⟩ := pieceAt_spec ρ rest σ (k₀ + 1) D hp
+          refine ⟨j + 1, by omega, hj, ?_⟩
+          show T.den ρ + D = (U.den ρ).size + stackOff (denShapes ρ σ rest) j + i
+          rw [ShapeS.den_size, heq]; omega
+        · cases h
+      · cases h; exact ⟨0, rfl, rfl, here⟩
 
 /-- Where an operand reached through the stack pointer is. -/
 def locateSp (Γ : CtxS) (ix : Option (IndexReg × Scale)) (disp : BitVec 32) :
@@ -1382,10 +1404,12 @@ def locateSp (Γ : CtxS) (ix : Option (IndexReg × Scale)) (disp : BitVec 32) :
       | some (k, S, i, _) => some (⟨.piece k, S, .lit i⟩, [])
       | none => none
     | some (x, sc) =>
-      match exactly (Γ.regs.get x.toReg), pieceIdx Γ.stack 0 disp.toNat with
-      | some c, some (k, S, R) =>
-        some (⟨.piece k, S, Num.plus (.mul (.toNat c) (.lit (2 ^ sc.shift))) (.lit R)⟩, [])
-      | _, _ => none
+      match exactly (Γ.regs.get x.toReg) with
+      | some c =>
+        match pieceIdxT (.mul (.toNat c) (.lit (2 ^ sc.shift))) Γ.stack 0 disp.toNat with
+        | some (k, S, o) => some (⟨.piece k, S, o⟩, [])
+        | none => none
+      | none => none
   else none
 
 theorem locateSp_spec {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
@@ -1409,17 +1433,19 @@ theorem locateSp_spec {Ψ : MemTy} {next : BitVec 64} {ρ : Env} {Γ : CtxS}
       · cases h
     · next xr sc =>
       split at h
-      · next c k S R hc hp =>
-        cases h
-        obtain ⟨j, hk, hj, hoff⟩ := pieceIdx_spec ρ (stackTail ρ Γ.stackRest) _ _ _ hp
-        have hkj : k = j := by omega
-        subst hkj
-        refine .slotIndexed (d := (c.den ρ).toNat * 2 ^ sc.shift + disp.toNat)
-          (by rw [CtxS.den_regs, exactly_den hc]) (Addr.index_bytes _ sc disp hlt)
-          ⟨by rw [CtxS.den_stack]; exact denShapes_getElem? ρ _ _ _ _ hj, ?_⟩
-        rw [CtxS.den_stack, Num.den_plus]
-        show _ = _ + ((c.den ρ).toNat * 2 ^ sc.shift + R)
-        omega
+      · next c hc =>
+        split at h
+        · next k S o hp =>
+          cases h
+          obtain ⟨j, hk, hj, hoff⟩ := pieceIdxT_spec ρ (stackTail ρ Γ.stackRest) _ _ _ _ hp
+          have hkj : k = j := by omega
+          subst hkj
+          refine .slotIndexed (d := (c.den ρ).toNat * 2 ^ sc.shift + disp.toNat)
+            (by rw [CtxS.den_regs, exactly_den hc]) (Addr.index_bytes _ sc disp hlt)
+            ⟨by rw [CtxS.den_stack]; exact denShapes_getElem? ρ _ _ _ _ hj, ?_⟩
+          rw [CtxS.den_stack]
+          exact hoff
+        · cases h
       · cases h
   · cases h
 
@@ -2131,13 +2157,15 @@ theorem locate_listed {next : BitVec 64} {Γ : CtxS} {m : Mem} {pl : PlaceS} {cs
             subst this; exact hj
           · cases h
         · split at h
-          · next c k S R hc hp =>
-            cases h
-            obtain ⟨j, hk, hj, _⟩ := pieceIdx_spec (default : Env) [] _ _ _ hp
-            refine ⟨fun _ _ e => (by cases e), fun k' e => ?_⟩
-            cases e
-            have : k = j := by omega
-            subst this; exact hj
+          · split at h
+            · next k S o hp =>
+              cases h
+              obtain ⟨j, hk, hj, _⟩ := pieceIdxT_spec (default : Env) [] _ _ _ _ hp
+              refine ⟨fun _ _ e => (by cases e), fun k' e => ?_⟩
+              cases e
+              have : k = j := by omega
+              subst this; exact hj
+            · cases h
           · cases h
       · cases h
     · split at h

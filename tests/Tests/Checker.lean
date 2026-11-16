@@ -239,6 +239,24 @@ example : needs { base with room := .var 0 } { base with room := .add (.var 1) (
 -- the owned blocks must be written the same
 example : needs { base with owned := [(v 5, .mk (.lit 32) .nil)] } base = none := by decide
 
+/-! ## Past a piece of the stack whose length is not a number written out -/
+
+/-- A count, that many slots, and 32 plain bytes; `rax` holds the count. -/
+def counted : CtxS :=
+  { reg base .rax (.eq (v 0)) with
+    stack := [.mk (.lit 8) (.cons 0 (.eq (v 0)) .nil),
+      .rep (.toNat (v 0)) (.mk (.lit 8) (.cons 0 (.str false) .nil)), .mk (.lit 32) .nil] }
+
+-- indexed by the count itself, the access is in what follows the slots
+example : after counted (.mov .w64 (.r_m .rcx (idx .rsp .rax .s8 8))) .rcx = some .int := by
+  decide
+example : left counted (.mov .w64 (.r_m .rcx (idx .rsp .rax .s8 8))) = some 0 := by decide
+-- and is held to that piece's length
+example : refused counted (.mov .w64 (.r_m .rcx (idx .rsp .rax .s8 36))) = true := by decide
+-- indexed by anything else it is in the slots, within bounds to be shown
+example : left (reg counted .rax (.eq (v 1))) (.mov .w64 (.r_m .rcx (idx .rsp .rax .s8 8)))
+    = some 1 := by decide
+
 /-! ## Why an instruction is refused -/
 
 def isReason (Γ : CtxS) (i : Instr) (p : Reject → Bool) : Bool :=
