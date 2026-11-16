@@ -694,28 +694,6 @@ elab "ty_val" : tactic => withMainContext do
   unless found do throwError "not an array"
   evalTactic (← `(tactic| ty_val_core))
 
-/-- The alternatives of `ty_side`, for a goal that is not settled by
-computation alone. -/
-syntax "ty_side_search" : tactic
-
-open Lean Meta Elab Tactic in
-/-- A side condition that is a closed yes-or-no computation, such as whether
-some bytes of a shape are plain, has the kernel work it out, and that is the
-end of it either way: if the answer is no, nothing else will prove it, and
-trying would have the unifier work the same computation out many times
-over. One with a variable in it is tried the same way first, since the
-answer may not turn on the variable, and goes on to the search if that does
-not settle it. Anything else goes straight to the search. -/
-elab "ty_side_core" : tactic => withMainContext do
-  let t ← instantiateMVars (← getMainTarget)
-  let yesNo := t.isAppOfArity ``Eq 3 && t.getAppArgs[0]!.isConstOf ``Bool && !t.hasExprMVar
-  if yesNo && !t.hasFVar then
-    evalTactic (← `(tactic| decide +kernel))
-  else if yesNo then
-    evalTactic (← `(tactic| first | decide +kernel | ty_side_search))
-  else
-    evalTactic (← `(tactic| ty_side_search))
-
 /-- Proves a fact with no unknowns in it from the hypotheses: the fact
 itself, or one side of an "or". A goal with unknowns is refused, since a
 hypothesis of the right shape would settle them whether or not it was the
@@ -735,10 +713,7 @@ at the first that fails. For rules whose first premise computes what the
 others refer to, where carrying on after a failure would be slow. -/
 syntax "ty_rule_ordered " term : tactic
 
-/-- Proves that an operand can be read, can be written, or holds a value of
-a given type: it is a register, a stack slot, a field of a pointer, or a field
-of a block at a fixed address. -/
-macro "ty_operand" : tactic =>
+macro "ty_operand_any" : tactic =>
   `(tactic| first
     | ty_rule_ordered ReadOk.reg | ty_rule_ordered ReadOk.slot | ty_rule_ordered ReadOk.slotIndexed
     | ty_rule_ordered ReadOk.field
@@ -752,6 +727,79 @@ macro "ty_operand" : tactic =>
     | ty_rule_ordered WriteIntOk.global_of
     | ty_rule_ordered Holds.reg | ty_rule_ordered Holds.slot | ty_rule_ordered Holds.field
     | ty_rule_ordered Holds.indexed | ty_rule_ordered Holds.global_of)
+
+open Lean Meta Elab Tactic in
+/-- Proves that an operand can be read, can be written, or holds a value of
+a given type: it is a register, a stack slot, a field of a pointer, or a field
+of a block at a fixed address. Only the rules for the judgment asked and for
+the operand's own form are tried, in the order `ty_operand_any` has them;
+where the form is not yet known, all are. -/
+elab "ty_operand" : tactic => withMainContext do
+  let t ← instantiateMVars (← getMainTarget)
+  let (judgment, rm?) :=
+    if t.isAppOfArity ``ReadOk 5 then (``ReadOk, some t.getAppArgs[4]!)
+    else if t.isAppOfArity ``WriteIntOk 6 then (``WriteIntOk, some t.getAppArgs[4]!)
+    else if t.isAppOfArity ``Holds 5 then (``Holds, some t.getAppArgs[3]!)
+    else (Name.anonymous, none)
+  let some rm := rm? | evalTactic (← `(tactic| ty_operand_any))
+  -- the operand's form: a register; or memory through the stack pointer or
+  -- another register, with or without an index; or at a fixed distance
+  let rm ← whnfR rm
+  let form : Option String ←
+    if rm.isAppOfArity ``RM.reg 1 then pure (some "reg")
+    else if rm.isAppOfArity ``RM.mem 1 then do
+      let m ← whnfR rm.appArg!
+      if m.isAppOfArity ``Mem.rip 1 then pure (some "rip")
+      else if m.isAppOfArity ``Mem.sib 3 then
+        let base ← whnfR m.getAppArgs[0]!
+        let index ← whnfR m.getAppArgs[1]!
+        if !(base.isAppOfArity ``Option.some 2) then pure none
+        else
+          let b ← whnfR base.appArg!
+          let indexed := index.isAppOfArity ``Option.some 2
+          let plain := index.isAppOfArity ``Option.none 1
+          if !(indexed || plain) || !b.isConst then pure none
+          else if b.isConstOf ``Reg.rsp then pure (some (if indexed then "spIndex" else "sp"))
+          else pure (some (if indexed then "index" else "base"))
+      else pure none
+    else pure none
+  let some form := form | evalTactic (← `(tactic| ty_operand_any))
+  let rules : List Name :=
+    match judgment, form with
+    | ``ReadOk, "reg" => [``ReadOk.reg]
+    | ``ReadOk, "sp" => [``ReadOk.slot, ``ReadOk.owned, ``ReadOk.ownedAt]
+    | ``ReadOk, "spIndex" => [``ReadOk.slotIndexed, ``ReadOk.owned, ``ReadOk.ownedAt]
+    | ``ReadOk, "base" => [``ReadOk.field, ``ReadOk.owned, ``ReadOk.ownedAt]
+    | ``ReadOk, "index" => [``ReadOk.owned, ``ReadOk.ownedAt, ``ReadOk.indexed]
+    | ``ReadOk, "rip" => [``ReadOk.owned, ``ReadOk.ownedAt, ``ReadOk.global_of]
+    | ``WriteIntOk, "reg" => [``WriteIntOk.reg]
+    | ``WriteIntOk, "sp" =>
+      [``WriteIntOk.owned, ``WriteIntOk.ownedAt, ``WriteIntOk.ownedClear, ``WriteIntOk.slot]
+    | ``WriteIntOk, "spIndex" =>
+      [``WriteIntOk.owned, ``WriteIntOk.ownedAt, ``WriteIntOk.ownedClear, ``WriteIntOk.slotIndexed]
+    | ``WriteIntOk, "base" =>
+      [``WriteIntOk.owned, ``WriteIntOk.ownedAt, ``WriteIntOk.ownedClear, ``WriteIntOk.field]
+    | ``WriteIntOk, "index" =>
+      [``WriteIntOk.owned, ``WriteIntOk.ownedAt, ``WriteIntOk.ownedClear, ``WriteIntOk.indexed]
+    | ``WriteIntOk, "rip" =>
+      [``WriteIntOk.owned, ``WriteIntOk.ownedAt, ``WriteIntOk.ownedClear, ``WriteIntOk.global_of]
+    | ``Holds, "reg" => [``Holds.reg]
+    | ``Holds, "sp" => [``Holds.slot]
+    | ``Holds, "base" => [``Holds.field]
+    | ``Holds, "index" => [``Holds.indexed]
+    | ``Holds, "rip" => [``Holds.global_of]
+    | _, _ => []
+  if rules.isEmpty then evalTactic (← `(tactic| ty_operand_any))
+  else
+    let goal ← getMainGoal
+    for r in rules do
+      let saved ← saveState
+      try
+        setGoals [goal]
+        evalTactic (← `(tactic| ty_rule_ordered $(mkIdent r)))
+        return
+      catch _ => saved.restore
+    throwError "no rule for this operand applies"
 
 /-- Shows that a known offset falls inside a block of known length. -/
 macro "ty_inside" : tactic =>
@@ -824,6 +872,48 @@ whatever of the right type lies nearest. -/
 elab "ty_prop_only" : tactic => do
   unless ← isProp (← getMainTarget) do
     throwError "not a proposition"
+
+/-- The alternatives of `ty_side`, for a goal that is not settled by
+computation alone. -/
+syntax "ty_side_search" : tactic
+
+open Lean Meta Elab Tactic in
+/-- A side condition that is a closed yes-or-no computation, such as whether
+some bytes of a shape are plain, has the kernel work it out, and that is the
+end of it either way: if the answer is no, nothing else will prove it, and
+trying would have the unifier work the same computation out many times
+over. One with a variable in it is tried the same way first, since the
+answer may not turn on the variable, and goes on to the search if that does
+not settle it. Anything else goes straight to the search. -/
+elab "ty_side_core" : tactic => withMainContext do
+  let t ← instantiateMVars (← getMainTarget)
+  let yesNo := t.isAppOfArity ``Eq 3 && t.getAppArgs[0]!.isConstOf ``Bool && !t.hasExprMVar
+  if yesNo && !t.hasFVar then
+    evalTactic (← `(tactic| decide +kernel))
+  else if yesNo then
+    evalTactic (← `(tactic| first | decide +kernel | ty_side_search))
+  -- A judgment with a tactic of its own goes to that tactic, or is found
+  -- among the hypotheses: nothing else in the search could prove it, and
+  -- trying everything else on it is most of what a failed rule costs.
+  else if t.isAppOf ``StackAt then
+    evalTactic (← `(tactic| first | ty_stack_at | ty_known))
+  else if t.isAppOf ``OwnedAt then
+    evalTactic (← `(tactic| first | ty_owned_at | ty_known))
+  else if t.isAppOf ``OwnedByte then
+    evalTactic (← `(tactic| first | ty_owned_byte | ty_known))
+  else if t.isAppOf ``EaIs then
+    evalTactic (← `(tactic| first
+      | exact EaIs.base (by decide) rfl
+      | exact EaIs.indexed (by decide) rfl rfl
+      | ty_known))
+  else if t.isAppOf ``Sub then
+    evalTactic (← `(tactic| first | ty_sub | ty_known))
+  else if t.isAppOf ``ReadOk || t.isAppOf ``WriteIntOk || t.isAppOf ``Holds then
+    evalTactic (← `(tactic| first | ty_operand | ty_known))
+  else if t.isAppOf ``byteDisp then
+    evalTactic (← `(tactic| first | (refine byteDisp_of _ ?_; decide) | ty_known))
+  else
+    evalTactic (← `(tactic| ty_side_search))
 
 macro_rules
   | `(tactic| ty_side) => `(tactic| ty_prop_only; ty_side_core)
