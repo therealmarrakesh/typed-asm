@@ -21,11 +21,15 @@ namespace Echo
 
 /-! ## What the labels want -/
 
+/-- The blocks the program says its segments are. The buffer: sixteen bytes that may be written. -/
+def blocks : List (BitVec 64 × U.Layout) :=
+  blocksWith code .start [(Asm.addr code base .buffer, plainBlock 16 true)]
+
 /-- The program for the checker: its instructions; that the buffer is in
-the segment it was written in; and that it is to end with status nought. -/
+one of the blocks said; and that it is to end with status nought. -/
 def pg : Prog :=
   { code := progCode (Asm.table base code)
-    statics := staticIn (blocksOf code .start) (Asm.addr code base .buffer)
+    statics := staticIn blocks (Asm.addr code base .buffer)
     pre := preExits (· == 0) }
 
 /-- One label: the start, which the program comes back to after each line
@@ -36,6 +40,6 @@ def labels : List U.Label := [⟨entry, entryOf 0⟩]
 
 /-! ## The check, and what it shows -/
 
-asm_checked code start .start stack 0 program pg labels labels fuel 30 exits (· == 0)
+asm_checked code start .start stack 0 program pg labels labels blocks blocks fuel 30 exits (· == 0)
 
 end Echo

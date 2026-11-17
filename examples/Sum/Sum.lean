@@ -24,11 +24,15 @@ def arr : Val := .lit (Asm.addr code base .array)
 /-- How many elements the loop has taken. -/
 def i : Val := .named 0
 
+/-- The blocks the program says its segments are. The array: five numbers, not to be written. -/
+def blocks : List (BitVec 64 × U.Layout) :=
+  blocksWith code .start [(Asm.addr code base .array, plainBlock 40 false)]
+
 /-- The program for the checker: its instructions, and that the array is in
-the segment it was written in. -/
+one of the blocks said. -/
 def pg : Prog :=
   { code := progCode (Asm.table base code)
-    statics := staticIn (blocksOf code .start) (Asm.addr code base .array) }
+    statics := staticIn blocks (Asm.addr code base .array) }
 
 /-- The labels. `sum` is entered with the array in `rdi` and its length in
 `rsi`; going round the loop, `rdi` is at element `i` and `rsi` is what is
@@ -42,6 +46,6 @@ def labels : List U.Label :=
 
 /-! ## The check, and what it shows -/
 
-asm_checked code start .start stack 1 program pg labels labels fuel 14
+asm_checked code start .start stack 1 program pg labels labels blocks blocks fuel 14
 
 end Sum

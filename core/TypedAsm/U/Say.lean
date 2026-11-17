@@ -83,4 +83,31 @@ def staticIn (blocks : List (BitVec 64 × Layout)) (a : BitVec 64) : List (Val �
   | some b => [(.lit a, .ptr (.mk b.2.shape.size .nil) b.2.writable (a - b.1).toNat)]
   | none => []
 
+/-- A block of plain bytes. -/
+def plainBlock (size : Nat) (writable : Bool) : Layout := ⟨⟨size, []⟩, writable, none, 0, none⟩
+
+/-- A segment's pages as the blocks said of it, in the order of their
+addresses, and blocks of plain bytes for what lies between and after. -/
+def cutSeg (g : Nat × Perm × List Byte) : Nat → List (BitVec 64 × Layout) →
+    List (BitVec 64 × Layout)
+  | cur, [] =>
+    if cur < g.1 + pageBytes g.2.2.length then
+      [(BitVec.ofNat 64 cur, plainBlock (g.1 + pageBytes g.2.2.length - cur) g.2.1.writable)]
+    else []
+  | cur, x :: xs =>
+    (if cur < x.1.toNat then
+      [(BitVec.ofNat 64 cur, plainBlock (x.1.toNat - cur) g.2.1.writable)] else []) ++
+      x :: cutSeg g (x.1.toNat + x.2.size) xs
+
+variable {L : Type} [DecidableEq L]
+
+/-- **A program's first blocks, some of them said**: each segment's pages
+cut into the blocks said of it, which are to be given in the order of their
+addresses, with plain bytes between. -/
+def blocksWith (code : List (Asm L)) (l : L) (says : List (BitVec 64 × Layout)) :
+    List (BitVec 64 × Layout) :=
+  (Asm.image (Asm.base code) code l).flatMap fun g =>
+    cutSeg g g.1 (says.filter fun x =>
+      decide (g.1 ≤ x.1.toNat) && decide (x.1.toNat < g.1 + pageBytes g.2.2.length))
+
 end TypedAsm.U

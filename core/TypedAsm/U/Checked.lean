@@ -30,13 +30,17 @@ satisfy `q`, it states instead of `safe_in` the theorem `safe_exits_in`,
 that the program is safe and ends only with a status `q` holds of; and
 with `safe`, the theorem `exits`.
 
-`fuel k` before `exits` gives how many instructions a walk from a label may
-take; forty where it is left out. -/
+`blocks bs` after the labels gives the blocks the program says its segments
+are; where it is left out, each segment is one block of plain bytes.
+`fuel k` gives how many instructions a walk from a label may take; forty
+where it is left out. -/
 syntax "asm_checked " ident &" start " term:max &" stack " term:max &" program " term:max
-  &" labels " term:max (&" fuel " term:max)? (&" exits " term:max)? : command
+  &" labels " term:max (&" blocks " term:max)? (&" fuel " term:max)? (&" exits " term:max)? :
+  command
 
 macro_rules
-  | `(asm_checked $code start $l stack $n program $pg labels $ls $[fuel $k?]? $[exits $q?]?) => do
+  | `(asm_checked $code start $l stack $n program $pg labels $ls $[blocks $bs?]? $[fuel $k?]?
+      $[exits $q?]?) => do
     let checked := mkIdent `checked
     let startEq := mkIdent `start_eq
     let safeIn := mkIdent `safe_in
@@ -51,10 +55,13 @@ macro_rules
     let k ← match k? with
       | some k => pure k
       | none => `(40)
+    let bs ← match bs? with
+      | some bs => pure bs
+      | none => `((blocksOf $code $l))
     let mut cmds : Array (TSyntax `command) := #[]
     cmds := cmds.push (← `(/-- **The check**: the labels' code is typed, and the state the
       program is loaded into starts as its entry asks. -/
-      theorem $checked : wholeOk $code $l $n $pg $ls $k = true := by decide +kernel))
+      theorem $checked : wholeOkWith $code $l $n $bs $pg $ls $k = true := by decide +kernel))
     cmds := cmds.push (← `(/-- The state the program is started in is the one the check is of,
       in the world it has. -/
       theorem $startEq : $start = startIn $code $l $n ($start).world := by

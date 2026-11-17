@@ -21,11 +21,15 @@ namespace Index
 /-- Where the array is. -/
 def arr : Val := .lit (Asm.addr code base .array)
 
+/-- The blocks the program says its segments are. The array: five numbers, not to be written. -/
+def blocks : List (BitVec 64 × U.Layout) :=
+  blocksWith code .start [(Asm.addr code base .array, plainBlock 40 false)]
+
 /-- The program for the checker: its instructions, and that the array is in
-the segment it was written in. -/
+one of the blocks said. -/
 def pg : Prog :=
   { code := progCode (Asm.table base code)
-    statics := staticIn (blocksOf code .start) (Asm.addr code base .array) }
+    statics := staticIn blocks (Asm.addr code base .array) }
 
 /-- The labels. `get` takes the array in `rdi`, its length in `rsi`, and in
 `rdx` any number at all as the index: the comparison it makes is what lets
@@ -36,6 +40,6 @@ def labels : List U.Label :=
 
 /-! ## The check, and what it shows -/
 
-asm_checked code start .start stack 1 program pg labels labels fuel 30
+asm_checked code start .start stack 1 program pg labels labels blocks blocks fuel 30
 
 end Index
