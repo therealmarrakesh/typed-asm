@@ -112,7 +112,7 @@ theorem FlagsT.says_den (ρ : Env) {t : FlagsT} {cnd : Cond} {p : CmpT} (h : t.s
   cases t with
   | lit f => cases h
   | var j => cases h
-  | bvar => cases h
+  | bvar _ => cases h
   | out i a b c fl next ea cell =>
     rw [FlagsT.says] at h
     cases hs : i.flagSrc with

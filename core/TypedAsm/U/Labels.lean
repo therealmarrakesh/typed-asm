@@ -41,9 +41,10 @@ structure InstL where
 
 def InstL.inst (l : InstL) : Inst := Inst.ofLists l.vs l.fs l.ts l.r
 
-/-- Whether the terms mention none of a family's values. -/
+/-- Whether the terms mention no family's values. -/
 def InstL.closed (l : InstL) : Bool :=
-  (l.vs.all fun p => p.2.closed) && l.fs.all fun p => p.2.closed
+  (l.vs.all fun p => p.2.closedAt 0) && (l.fs.all fun p => p.2.closedAt 0) &&
+    l.ts.all fun p => p.2.closedAt 0
 
 theorem lookup_mem {α : Type} : (l : List (Nat × α)) → (j : Nat) → (v : α) →
     l.lookup j = some v → (j, v) ∈ l
@@ -61,13 +62,18 @@ theorem InstL.closed_inst {l : InstL} (h : l.closed = true) : l.inst.Closed := b
   simp only [InstL.closed, Bool.and_eq_true, List.all_eq_true] at h
   constructor
   · intro j
-    show ((l.vs.lookup j).getD (.lit 0)).closed = true
+    show ((l.vs.lookup j).getD (.lit 0)).closedAt 0 = true
     cases hl : l.vs.lookup j with
     | none => rfl
-    | some v => exact h.1 _ (lookup_mem _ _ _ hl)
+    | some v => exact h.1.1 _ (lookup_mem _ _ _ hl)
   · intro j
-    show ((l.fs.lookup j).getD (.lit Flags.unknown)).closed = true
+    show ((l.fs.lookup j).getD (.lit Flags.unknown)).closedAt 0 = true
     cases hl : l.fs.lookup j with
+    | none => rfl
+    | some v => exact h.1.2 _ (lookup_mem _ _ _ hl)
+  · intro j
+    show ((l.ts.lookup j).getD .any).closedAt 0 = true
+    cases hl : l.ts.lookup j with
     | none => rfl
     | some v => exact h.2 _ (lookup_mem _ _ _ hl)
 

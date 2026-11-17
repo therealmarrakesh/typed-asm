@@ -33,7 +33,7 @@ theorem fate_of_no_desc {i : Instr} (h : i.desc = none) (x : Flag) : i.fate x = 
 def FlagsT.defined : FlagsT → Flag → Bool
   | .lit f, x => (f.get x).isSome
   | .var _, _ => false
-  | .bvar, _ => false
+  | .bvar _, _ => false
   | .out i _ _ _ fl _ _ _, x =>
     match i.fate x with
     | .defines => true
@@ -44,7 +44,7 @@ theorem FlagsT.defined_den (ρ : Env) : (t : FlagsT) → (x : Flag) → t.define
     ((t.den ρ).get x).isSome = true
   | .lit f, x, h => h
   | .var _, _, h => nomatch h
-  | .bvar, _, h => nomatch h
+  | .bvar _, _, h => nomatch h
   | .out i a b c fl next ea cell, x, h => by
     unfold FlagsT.defined at h
     show ((effectOf i _ (fl.den ρ) next _ _).flags.get x).isSome = true

@@ -39,7 +39,7 @@ theorem Val.summands_den (ρ : Env) : (a : Val) → a.den ρ = sumDen ρ a.summa
     rw [Val.summands_den ρ a, Val.summands_den ρ b]
     bv_omega
   | .var i => by simp [Val.summands, sumDen]
-  | .bvar i => by simp [Val.summands, sumDen]
+  | .bvar d i => by simp [Val.summands, sumDen]
   | .shl a k => by simp [Val.summands, sumDen]
   | .out .. => by simp [Val.summands, sumDen]
   | .stored .. => by simp [Val.summands, sumDen]

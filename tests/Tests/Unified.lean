@@ -1,4 +1,5 @@
 import TypedAsm.U.Labels
+import TypedAsm.U.Open
 
 /-!
 # What the checker on the one model answers
@@ -266,5 +267,29 @@ def checkZ (n : BitVec 32) : Bool :=
 -- zero may be null, whatever else is known; one may not
 example : checkZ 0 = true := by decide +kernel
 example : checkZ 1 = false := by decide +kernel
+
+/-! ## Code wanting a family of contexts, inside another
+
+A value known to be code wanting contexts in which `rax` holds a value of
+the family the knowledge sits in, one out from its own. -/
+
+/-- Code wanting `rax` to hold the first value of the family one out, and
+any flags of its own. -/
+def innerCode : TyS := .code (Γw.regs.set .rax (.bvar 1 0)) (.bvar 0) [] .nil none
+
+-- it speaks of an enclosing family, so it is not knowledge that stands alone,
+-- and is knowledge that may sit inside one family
+example : innerCode.closedAt 0 = false := by decide +kernel
+example : innerCode.closedAt 1 = true := by decide +kernel
+
+-- the enclosing family taken at a particular value: the inner code now wants
+-- `rax` to hold that value, and its own flags are still its own
+example : innerCode.open ⟨fun _ => .var 7, .var 0⟩ 0
+    = .code (Γw.regs.set .rax (.var 7)) (.bvar 0) [] .nil none := by decide +kernel
+
+-- its own family's value is untouched when the enclosing one is taken
+example : (TyS.code (Γw.regs.set .rax (.bvar 0 0)) (.bvar 0) [] .nil none).open
+      ⟨fun _ => .var 7, .var 0⟩ 0
+    = .code (Γw.regs.set .rax (.bvar 0 0)) (.bvar 0) [] .nil none := by decide +kernel
 
 end Tests.Unified

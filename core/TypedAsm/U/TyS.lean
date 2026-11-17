@@ -75,11 +75,12 @@ def TyS.den (ρ : Env) : TyS → Ty
   | .str more => .str more
   | .atom i => ρ.ty i
   | .code regs flags held known rest => .code fun z =>
-    { val := fun r => (regs.get r).den { ρ with bound := z }
-      flags := flags.den { ρ with bound := z }
-      held := (held.map fun b => (b.1.den { ρ with bound := z }, b.2.den { ρ with bound := z }))
-        ++ restDen { ρ with bound := z } rest
-      known := known.den { ρ with bound := z } }
+    { val := fun r => (regs.get r).den { ρ with bound := z :: ρ.bound }
+      flags := flags.den { ρ with bound := z :: ρ.bound }
+      held := (held.map fun b => (b.1.den { ρ with bound := z :: ρ.bound },
+          b.2.den { ρ with bound := z :: ρ.bound }))
+        ++ restDen { ρ with bound := z :: ρ.bound } rest
+      known := known.den { ρ with bound := z :: ρ.bound } }
 
 def ShapeS.den (ρ : Env) : ShapeS → Shape
   | .mk size vals => ⟨size, vals.den ρ⟩
