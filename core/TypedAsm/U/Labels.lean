@@ -282,11 +282,20 @@ theorem askedCode_spec {Γ Δ : CtxS} {x : BitVec 64 × CtxS × (Val × TyS)}
 
 /-! ## Regarding the context reached as a member of a family -/
 
+/-- What a context knows that mentions no value of any family: it is so of
+the same values whatever family a context is a member of. -/
+def carried (Γ : CtxS) : List (Val × TyS) :=
+  Γ.known.filter fun f => f.1.closedAt 0 && f.2.closedAt 0
+
 /-- The things a member of a family knows of addresses, that they are
-code, which the context reached does not know and which are justified. -/
+code, which the context reached does not know and which are justified: for
+the family wanted there, with what the context reached knows besides. So
+what a caller knows of a value a function keeps is known still where the
+function returns. -/
 def learnedFacts (justify : Nat → BitVec 64 → CtxS → Bool) (kj : Nat) (Γ Δ : CtxS) :
     List (Val × TyS) :=
-  ((askedCode Γ Δ).filter fun x => justify kj x.1 x.2.1).map fun x => x.2.2
+  ((askedCode Γ Δ).filter fun x => justify kj x.1 (x.2.1.addKnown (carried Γ))).map
+    fun x => x.2.2
 
 /-- **The context reached, made ready to be regarded as a member of a
 family**: its regions that lie end to end taken as one; the values the
@@ -318,7 +327,7 @@ made ready, given that it may be regarded as the member, holds of the
 context reached: for anything that holds of a context when it holds of one
 the context may be regarded as; when it holds whatever value a region holds
 at bytes the context says nothing of; and when it holds with more known
-that is so. -/
+that is so wherever what the context knows is. -/
 def CloseSound (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (n : Nat)
     (cc : CtxS → CtxS → Nat → Option (CtxS × OpenL)) : Prop :=
   ∀ (Q : Ctx → Prop),
@@ -327,7 +336,8 @@ def CloseSound (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (n : Nat)
       (∀ x, Q { Γ with held := Γ.held.set i (b, ⟨S.size, (o, x) :: S.vals⟩) }) → Q Γ) →
     (∀ {Γ Δ : Ctx}, Regards fetch sys Ψ Γ Δ → Q Δ → Q Γ) →
     (∀ {Γ : Ctx} (fs : List Fact),
-      (∀ f ∈ fs, ∀ k, k ≤ n + 1 → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → HasTy fetch sys Ψ' k f.2 f.1) →
+      (∀ f ∈ fs, ∀ k, k ≤ n + 1 → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF →
+        (∀ g ∈ Γ.known, HasTy fetch sys Ψ' k g.2 g.1) → HasTy fetch sys Ψ' k f.2 f.1) →
       Q { Γ with known := fs ++ Γ.known } → Q Γ) →
     ∀ {P Γ Γ' : CtxS} {o : OpenL} {k : Nat}, cc P Γ k = some (Γ', o) → ∀ ρ : Env,
     (∀ ρ', Env.SameBelow k ρ' ρ →
@@ -357,16 +367,31 @@ theorem closeCtx_sound {n : Nat} {ent : Nat → TyS → TyS → Bool}
         refine hlearn ((learnedFacts justify
             (k + (wantedCode P (joinAll Γ.held.length Γ)).length) Γ₁
             (P.open (matchOpen P Γ₁).opening)).map fun f => (f.1.den ρ', f.2.den ρ')) ?_ ?_
-        · intro f hf k' hk' Ψ' he hwf
+        · intro f hf k' hk' Ψ' he hwf hΓk
           obtain ⟨g, hg, rfl⟩ := List.mem_map.mp hf
           obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hg
           obtain ⟨hx1, hx2⟩ := List.mem_filter.mp hx
           obtain ⟨hlit, r, fl, hd, kn, rs, hty, hE⟩ := askedCode_spec hx1
           show HasTy fetch sys Ψ' k' (x.2.2.2.den ρ') (x.2.2.1.den ρ')
-          rw [Val.lit?_den hlit, hty, code_den]
-          refine hasTy_code_of_ok (fun z => ?_) k' hk' Ψ' he hwf
-          rw [← hE]
-          exact hj _ _ _ hx2 ρ' z
+          rw [Val.lit?_den hlit, hty, code_den, hasTy_code, ← hE]
+          intro z j hjlt Ψ'' he' hwf' s hs hw
+          refine hj _ _ _ hx2 ρ' z j (by omega) Ψ'' (he.trans he') hwf' s hs ?_
+          have e : CtxS.den { ρ' with bound := z :: ρ'.bound } (x.2.1.addKnown (carried Γ₁))
+              = { x.2.1.den { ρ' with bound := z :: ρ'.bound } with known :=
+                  ((carried Γ₁).map fun f => (f.1.den { ρ' with bound := z :: ρ'.bound },
+                    f.2.den { ρ' with bound := z :: ρ'.bound }))
+                    ++ (x.2.1.den { ρ' with bound := z :: ρ'.bound }).known } :=
+            ctx_ext rfl rfl rfl (List.map_append)
+          rw [e]
+          refine hw.addKnown _ fun c hc => ?_
+          obtain ⟨c₀, hc₀, rfl⟩ := List.mem_map.mp hc
+          obtain ⟨hmem, hcl⟩ := List.mem_filter.mp hc₀
+          rw [Bool.and_eq_true] at hcl
+          show HasTy fetch sys Ψ'' j (c₀.2.den { ρ' with bound := z :: ρ'.bound })
+            (c₀.1.den { ρ' with bound := z :: ρ'.bound })
+          rw [Val.den_bound ρ' _ c₀.1 hcl.1, TyS.den_bound ρ' _ c₀.2 hcl.2]
+          exact ((hΓk (c₀.1.den ρ', c₀.2.den ρ')
+            (List.mem_map.mpr ⟨c₀, hmem, rfl⟩)).ext he').mono (Nat.le_of_lt hjlt)
         · have e : CtxS.den ρ' (Γ₁.addKnown (learnedFacts justify
                 (k + (wantedCode P (joinAll Γ.held.length Γ)).length) Γ₁
                 (P.open (matchOpen P Γ₁).opening)))
@@ -499,7 +524,7 @@ theorem Walk.holds_of_closes {n : Nat} {labels : List Label}
       show Ok fetch sys Ψ n a (Γ.den ρ)
       refine hcc (Ok fetch sys Ψ n a) (fun hi _ ho h => Ok.nameSlot hi ho h)
         (fun hr hΔ => Ok.regard hr hΔ)
-        (fun fs hfs h => Ok.learn fs (fun f hf k hk => hfs f hf k (by omega)) h) hc ρ
+        (fun fs hfs h => Ok.learnRel fs (fun f hf k hk => hfs f hf k (by omega)) h) hc ρ
         fun ρ' _ hreg => ?_
       refine Ok.regard hreg ?_
       rw [← ha]
@@ -523,7 +548,7 @@ theorem Walk.holds_of_closes {n : Nat} {labels : List Label}
         simp only [List.contains_iff_mem] at h
         refine hcc (Arrives fetch sys Ψ n (tv.den ρ))
           (fun hi _ ho h => Arrives.nameSlot hi ho h) (fun hr hΔ => Arrives.regard hr hΔ)
-          (fun fs hfs h => Arrives.learn fs hfs h) hc ρ fun ρ' hag hreg => ?_
+          (fun fs hfs h => Arrives.learnRel fs hfs h) hc ρ fun ρ' hag hreg => ?_
         rw [← Val.den_under hag tv htv]
         have hf : (tv.den ρ', Ty.code fun z => (codeCtx regs flags held known rest).den
             { ρ' with bound := z :: ρ'.bound }) ∈ (Γ'.den ρ').known := by
@@ -679,7 +704,8 @@ theorem entF_sound : (f : Nat) → ∀ K, EntSound fetch sys (entF f K)
           (fun hi _ ho hall s hrip hw => hall _ s hrip (hw.nameSlot hi ho))
           (fun hr hQ s hrip hw => hQ s hrip (hr k Ψ₂ (MemTy.Ext.refl _) hwf s hw))
           (fun fs hfs hQ s hrip hw => hQ s hrip
-            (hw.addKnown fs fun f hf => hfs f hf k (Nat.le_succ k) Ψ₂ (MemTy.Ext.refl _) hwf))
+            (hw.addKnown fs fun f hf =>
+              hfs f hf k (Nat.le_succ k) Ψ₂ (MemTy.Ext.refl _) hwf hw.known))
           hcc (ρ.withFam K x)
           (fun ρ' hag hreg s hrip hw => by
             have hs : Env.SameBelow K ρ' ρ :=
@@ -737,7 +763,7 @@ theorem justifyF_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
         obtain ⟨⟨Γ', o⟩, hc⟩ := Option.isSome_iff_exists.mp hl
         refine hcc (Ok fetch sys Ψ n a) (fun hi _ ho h => Ok.nameSlot hi ho h)
           (fun hr hΔ => Ok.regard hr hΔ)
-          (fun fs hfs h => Ok.learn fs (fun f hf k hk => hfs f hf k (by omega)) h) hc ρ'
+          (fun fs hfs h => Ok.learnRel fs (fun f hf k hk => hfs f hf k (by omega)) h) hc ρ'
           fun ρ'' _ hreg => ?_
         refine Ok.regard hreg ?_
         rw [← ha]

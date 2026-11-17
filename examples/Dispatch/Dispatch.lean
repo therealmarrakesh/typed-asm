@@ -1,62 +1,54 @@
 import DispatchProgram
-import TypedAsm.Tactic
+import TypedAsm.U.Checked
 
 /-!
 # Dispatch: typing and safety
 
-The program is in `DispatchProgram.lean`. This file types it and proves it
-safe. It is kept separate so that running the program does not link the tactics.
+The program is in `DispatchProgram.lean`. This file says what its labels want
+and checks it: one check, run by Lean's kernel, that the code is typed and
+that the state the kernel loads the program into starts as its entry asks.
+Nothing is proved by hand.
+
+It is kept separate so that running the program does not link the checker.
 -/
 
-open TypedAsm
+open TypedAsm TypedAsm.U
 
 namespace Dispatch
 
--- Where the table is loaded.
-asm_label dataBase .table
+/-! ## What the labels want -/
 
-/-! ## The typing -/
+/-- A pointer to a function: to code wanting what a function's label wants.
+Its return address is on the stack, it gives back the registers a function
+must as it found them, and it holds whatever else its caller does. -/
+def fn : TyS := codeOf inFunction
 
-/-- Both functions take an integer in `rdi`, return one in `rax`, use no
-stack, and preserve the callee-saved registers. -/
-def unary : FnSig where
-  args := fun _ => .int
-  results := fun _ => .int
-  preserved := calleeSaved
-  need := 0
+/-- The blocks the program says its segments are: the table, two pointers
+to functions, not to be written. That each of its entries is the address of
+a function is read from the program's bytes, and that the code there is a
+function's is the labels' typing. -/
+def blocks : List (BitVec 64 × U.LayoutS) :=
+  blocksWith code .start
+    [(Asm.addr code base .table,
+      { shape := .mk 16 (.cons 0 fn (.cons 8 fn .nil)), writable := false })]
 
-/-- A pointer to the table: two pointers to functions of that kind. -/
-def tablePtr : Ty := .ptr ⟨16, [(0, unary.ty), (8, unary.ty)]⟩ false 0
+/-- The program for the checker: its instructions, and that the table is
+one of the blocks said. -/
+def pg : Prog :=
+  { code := progCode (Asm.table base code)
+    statics := staticIn blocks (Asm.addr code base .table) }
 
-/-- After the first call: `rbx` still points to the table. -/
-def withTable : Ctx := ⟨fun r => if r = .rbx then tablePtr else .int, [], 8, Flags.Any, [], 0⟩
+/-- The labels: the start, and the two functions. A function is called
+through the table at an index the program has compared with the table's
+length, and through a register loaded from the table: what the program
+knows of that register is known still after each call. -/
+def labels : List U.Label :=
+  [⟨entry, inProgram 1⟩,
+   ⟨Asm.addr code base .double, inFunction⟩,
+   ⟨Asm.addr code base .square, inFunction⟩]
 
-/-- After the later calls: `r12` also still holds a function pointer. -/
-def withFn : Ctx :=
-  ⟨fun r => if r = .rbx then tablePtr else if r = .r12 then unary.ty else .int, [], 8, Flags.Any, [], 0⟩
+/-! ## The check, and what it shows -/
 
-/-- The contexts allowed at each label. -/
-inductive At : Label → Ctx → Prop
-  | start : At .start (entryCtx 1)
-  | afterFirst : At .afterFirst withTable
-  | afterSecond : At .afterSecond withFn
-  | afterThird : At .afterThird withFn
-  | double (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
-    unary.CallerOk saved ret rest room → At .double (unary.entry saved ret rest room)
-  | square (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
-    unary.CallerOk saved ret rest room → At .square (unary.entry saved ret rest room)
-
-def tableLayout : Layout := ⟨⟨16, [(0, unary.ty), (8, unary.ty)]⟩, false, none, 0, none⟩
-
-/-- One memory block: the table. -/
-def blocks : List (BitVec 64 × Layout) := [(dataBase, tableLayout)]
-
-asm_typing At blocks blocks
-
-/-! ## Safety -/
-
--- The table holds the addresses of `double` and `square`, which are function
--- pointers because those functions are typed: read from the program's bytes.
-asm_safety At.start
+asm_checked code start .start stack 1 program pg labels labels blocks blocks fuel 40
 
 end Dispatch
