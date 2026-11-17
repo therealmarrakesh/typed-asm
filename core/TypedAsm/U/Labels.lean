@@ -162,7 +162,7 @@ be a value: where the pattern is a number and the name, or a number less
 the name, what that makes the name. -/
 def bindB (pat got : Val) : List (Nat × Val) :=
   match pat.lin with
-  | ([(c, .bvar 0 j)], k) =>
+  | ⟨[(c, .bvar 0 j)], k⟩ =>
     if c = 1 then [(j, if k = 0 then got else .add got (.lit (-k)))]
     else if c = -1 then [(j, .add (.lit k) (.un (.neg .w64) got))]
     else []
