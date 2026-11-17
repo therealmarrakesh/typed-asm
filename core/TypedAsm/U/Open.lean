@@ -78,6 +78,7 @@ def Val.open (o : Opening) (n : Nat) : Val → Val
   | .bin u x y => .bin u (x.open o n) (y.open o n)
   | .tri u x y z => .tri u (x.open o n) (y.open o n) (z.open o n)
   | .fop u fl x y => .fop u (fl.open o n) (x.open o n) (y.open o n)
+  | .app u x y => .app u (x.open o n) (y.open o n)
 
 def FlagsT.open (o : Opening) (n : Nat) : FlagsT → FlagsT
   | .lit f => .lit f
@@ -121,6 +122,8 @@ theorem Val.den_open (ρ : Env) (o : Opening) (ho : o.Closed) (pre zs : List Fam
   | .fop u fl x y => by
     simp only [Val.open, Val.den, FlagsT.den_open ρ o ho pre zs fl,
       Val.den_open ρ o ho pre zs x, Val.den_open ρ o ho pre zs y]
+  | .app u x y => by
+    simp only [Val.open, Val.den, Val.den_open ρ o ho pre zs x, Val.den_open ρ o ho pre zs y]
 
 theorem FlagsT.den_open (ρ : Env) (o : Opening) (ho : o.Closed) (pre zs : List Fam) :
     (f : FlagsT) → (f.open o pre.length).den { ρ with bound := pre ++ zs }

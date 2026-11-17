@@ -41,29 +41,31 @@ structure Env.SameBelow (k : Nat) (ρ₁ ρ₂ : Env) : Prop where
   bound : ρ₁.bound = ρ₂.bound
   slot : ρ₁.slot = ρ₂.slot
   old : ρ₁.old = ρ₂.old
+  fn : ρ₁.fn = ρ₂.fn
 
 theorem Env.SameBelow.refl (k : Nat) (ρ : Env) : Env.SameBelow k ρ ρ :=
-  ⟨fun _ _ => rfl, fun _ _ => rfl, fun _ _ => rfl, rfl, rfl, rfl, rfl⟩
+  ⟨fun _ _ => rfl, fun _ _ => rfl, fun _ _ => rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 theorem Env.SameBelow.trans {k : Nat} {ρ₁ ρ₂ ρ₃ : Env} (h₁ : Env.SameBelow k ρ₁ ρ₂)
     (h₂ : Env.SameBelow k ρ₂ ρ₃) : Env.SameBelow k ρ₁ ρ₃ :=
   ⟨fun i hi => (h₁.val i hi).trans (h₂.val i hi), fun i hi => (h₁.flags i hi).trans (h₂.flags i hi),
     fun i hi => (h₁.frame i hi).trans (h₂.frame i hi), h₁.ty.trans h₂.ty, h₁.bound.trans h₂.bound,
-    h₁.slot.trans h₂.slot, h₁.old.trans h₂.old⟩
+    h₁.slot.trans h₂.slot, h₁.old.trans h₂.old, h₁.fn.trans h₂.fn⟩
 
 theorem Env.SameBelow.mono {k j : Nat} {ρ₁ ρ₂ : Env} (h : Env.SameBelow k ρ₁ ρ₂) (hjk : j ≤ k) :
     Env.SameBelow j ρ₁ ρ₂ :=
   ⟨fun i hi => h.val i (Nat.lt_of_lt_of_le hi hjk), fun i hi => h.flags i (Nat.lt_of_lt_of_le hi hjk),
-    fun i hi => h.frame i (Nat.lt_of_lt_of_le hi hjk), h.ty, h.bound, h.slot, h.old⟩
+    fun i hi => h.frame i (Nat.lt_of_lt_of_le hi hjk), h.ty, h.bound, h.slot, h.old, h.fn⟩
 
 theorem Env.SameBelow.push {k : Nat} {ρ₁ ρ₂ : Env} (h : Env.SameBelow k ρ₁ ρ₂) (z : Fam) :
     Env.SameBelow k { ρ₁ with bound := z :: ρ₁.bound } { ρ₂ with bound := z :: ρ₂.bound } :=
   ⟨h.val, h.flags, h.frame, h.ty, by show z :: ρ₁.bound = z :: ρ₂.bound; rw [h.bound], h.slot,
-    h.old⟩
+    h.old, h.fn⟩
 
 theorem Env.SameBelow.setVal (ρ : Env) (k : Nat) (x : BitVec 64) :
     Env.SameBelow k (ρ.setVal k x) ρ :=
-  ⟨fun _ hi => Env.setVal_get_lt ρ k x hi, fun _ _ => rfl, fun _ _ => rfl, rfl, rfl, rfl, rfl⟩
+  ⟨fun _ hi => Env.setVal_get_lt ρ k x hi, fun _ _ => rfl, fun _ _ => rfl, rfl, rfl, rfl, rfl,
+    rfl⟩
 
 mutual
 
@@ -77,6 +79,7 @@ def Val.under (k : Nat) : Val → Bool
   | .bin _ a b => a.under k && b.under k
   | .tri _ a b c => a.under k && b.under k && c.under k
   | .fop _ fl a b => fl.under k && a.under k && b.under k
+  | .app _ a b => a.under k && b.under k
 
 def FlagsT.under (k : Nat) : FlagsT → Bool
   | .lit _ => true
@@ -110,6 +113,9 @@ theorem Val.under_mono {k k' : Nat} (hk : k ≤ k') : (a : Val) → a.under k = 
   | .fop _ fl a b, h => by
     simp only [Val.under, Bool.and_eq_true] at h ⊢
     exact ⟨⟨FlagsT.under_mono hk fl h.1.1, Val.under_mono hk a h.1.2⟩, Val.under_mono hk b h.2⟩
+  | .app _ a b, h => by
+    simp only [Val.under, Bool.and_eq_true] at h ⊢
+    exact ⟨Val.under_mono hk a h.1, Val.under_mono hk b h.2⟩
 
 theorem FlagsT.under_mono {k k' : Nat} (hk : k ≤ k') :
     (f : FlagsT) → f.under k = true → f.under k' = true
@@ -155,6 +161,9 @@ theorem Val.den_under {k : Nat} {ρ₁ ρ₂ : Env} (hs : Env.SameBelow k ρ₁ 
     simp only [Val.under, Bool.and_eq_true] at h
     simp only [Val.den, FlagsT.den_under hs fl h.1.1, Val.den_under hs a h.1.2,
       Val.den_under hs b h.2]
+  | .app o a b, h => by
+    simp only [Val.under, Bool.and_eq_true] at h
+    simp only [Val.den, Val.den_under hs a h.1, Val.den_under hs b h.2, hs.fn]
 
 theorem FlagsT.den_under {k : Nat} {ρ₁ ρ₂ : Env} (hs : Env.SameBelow k ρ₁ ρ₂) :
     (f : FlagsT) → f.under k = true → f.den ρ₁ = f.den ρ₂

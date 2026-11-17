@@ -51,6 +51,7 @@ def Val.lift : Val → Val
   | .bin u x y => .bin u x.lift y.lift
   | .tri u x y z => .tri u x.lift y.lift z.lift
   | .fop u fl x y => .fop u fl.lift x.lift y.lift
+  | .app u x y => .app u x.lift y.lift
 
 def FlagsT.lift : FlagsT → FlagsT
   | .lit f => .lit f

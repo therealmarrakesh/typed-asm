@@ -29,6 +29,7 @@ def Val.closedAt (n : Nat) : Val → Bool
   | .bin _ a b => a.closedAt n && b.closedAt n
   | .tri _ a b c => a.closedAt n && b.closedAt n && c.closedAt n
   | .fop _ fl a b => fl.closedAt n && a.closedAt n && b.closedAt n
+  | .app _ a b => a.closedAt n && b.closedAt n
 
 def FlagsT.closedAt (n : Nat) : FlagsT → Bool
   | .lit _ => true
@@ -77,6 +78,9 @@ theorem Val.den_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n zs 
     simp only [Val.closedAt, Bool.and_eq_true] at h
     simp only [Val.den, FlagsT.den_agree ρ n zs zs' hz fl h.1.1,
       Val.den_agree ρ n zs zs' hz a h.1.2, Val.den_agree ρ n zs zs' hz b h.2]
+  | .app o a b, h => by
+    simp only [Val.closedAt, Bool.and_eq_true] at h
+    simp only [Val.den, Val.den_agree ρ n zs zs' hz a h.1, Val.den_agree ρ n zs zs' hz b h.2]
 
 theorem FlagsT.den_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n zs zs') :
     (f : FlagsT) → f.closedAt n = true →

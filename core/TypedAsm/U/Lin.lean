@@ -145,6 +145,7 @@ theorem Val.lin_den (ρ : Env) : (a : Val) → a.lin.den (Val.den ρ) = a.den ρ
   | .un .low16 _ => Lin.leaf_den _ _
   | .tri .. => Lin.leaf_den _ _
   | .fop .. => Lin.leaf_den _ _
+  | .app .. => Lin.leaf_den _ _
 
 /-- Whether two terms come apart the same way: taking one from the other
 leaves nothing. -/

@@ -459,7 +459,7 @@ theorem sameBelow_withFam (ρ : Env) (k : Nat) (fam : Fam) :
   ⟨fun i hi => by show (if i < k then ρ.val i else _) = _; simp only [hi, ↓reduceIte],
     fun i hi => by show (if i < k then ρ.flags i else _) = _; simp only [hi, ↓reduceIte],
     fun i hi => by show (if i < k then ρ.frame i else _) = _; simp only [hi, ↓reduceIte],
-    rfl, rfl, rfl, rfl⟩
+    rfl, rfl, rfl, rfl, rfl⟩
 
 /-- **Code typed from a member of a family at names of its own, whatever
 those stand for, is typed for every member of the family.** -/
@@ -616,6 +616,7 @@ def Val.bmax (d : Nat) : Val → Nat
   | .bin _ a b => max (a.bmax d) (b.bmax d)
   | .tri _ a b c => max (max (a.bmax d) (b.bmax d)) (c.bmax d)
   | .fop _ fl a b => max (max (fl.bmax d) (a.bmax d)) (b.bmax d)
+  | .app _ a b => max (a.bmax d) (b.bmax d)
 
 def FlagsT.bmax (d : Nat) : FlagsT → Nat
   | .src _ fl a b c => max (max (fl.bmax d) (a.bmax d)) (max (b.bmax d) (c.bmax d))

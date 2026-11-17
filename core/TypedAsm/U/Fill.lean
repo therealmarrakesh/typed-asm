@@ -37,6 +37,7 @@ def Val.fill (σ : Filling) : Val → Val
   | .bin o a b => .bin o (a.fill σ) (b.fill σ)
   | .tri o a b c => .tri o (a.fill σ) (b.fill σ) (c.fill σ)
   | .fop o fl a b => .fop o (fl.fill σ) (a.fill σ) (b.fill σ)
+  | .app o a b => .app o (a.fill σ) (b.fill σ)
 
 def FlagsT.fill (σ : Filling) : FlagsT → FlagsT
   | .lit f => .lit f
@@ -62,6 +63,9 @@ theorem Val.den_fill (ρ : Env) (σ : Filling) : (a : Val) → (a.fill σ).den �
     simp only [Val.fill, Val.den, Val.den_fill ρ σ a, Val.den_fill ρ σ b, Val.den_fill ρ σ c]
   | .fop o fl a b => by
     simp only [Val.fill, Val.den, FlagsT.den_fill ρ σ fl, Val.den_fill ρ σ a, Val.den_fill ρ σ b]
+  | .app o a b => by
+    simp only [Val.fill, Val.den, Val.den_fill ρ σ a, Val.den_fill ρ σ b]
+    rfl
 
 theorem FlagsT.den_fill (ρ : Env) (σ : Filling) :
     (f : FlagsT) → (f.fill σ).den ρ = f.den (ρ.filled σ)

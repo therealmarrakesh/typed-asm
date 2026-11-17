@@ -213,6 +213,7 @@ def Val.fillN (σ : Filling) : Val → Val
   | .bin o a b => mkBin o (a.fillN σ) (b.fillN σ)
   | .tri o a b c => mkTri o (a.fillN σ) (b.fillN σ) (c.fillN σ)
   | .fop o fl a b => mkFop o (fl.fill σ) (a.fillN σ) (b.fillN σ)
+  | .app f a b => .app f (a.fillN σ) (b.fillN σ)
   | t => t.fill σ
 
 theorem Val.den_fillN (ρ : Env) (σ : Filling) : (a : Val) → (a.fillN σ).den ρ = a.den (ρ.filled σ)
@@ -230,5 +231,8 @@ theorem Val.den_fillN (ρ : Env) (σ : Filling) : (a : Val) → (a.fillN σ).den
   | .lit v => Val.den_fill ρ σ (.lit v)
   | .var j => Val.den_fill ρ σ (.var j)
   | .bvar d j => Val.den_fill ρ σ (.bvar d j)
+  | .app f a b => by
+    simp only [Val.fillN, Val.den, Val.den_fillN ρ σ a, Val.den_fillN ρ σ b]
+    rfl
 
 end TypedAsm.U

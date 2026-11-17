@@ -32,6 +32,9 @@ structure Env where
   slot : Slot → BitVec 64 := fun _ => 0
   /-- The flags before an instruction, likewise. -/
   old : Flags := ⟨none, none, none, none⟩
+  /-- The functions a program's author defines, by number: what each gives
+  of two values. -/
+  fn : Nat → BitVec 64 → BitVec 64 → BitVec 64 := fun _ _ _ => 0
 
 mutual
 
@@ -50,6 +53,9 @@ inductive Val
   | bin (o : Bin) (a b : Val)
   | tri (o : Tri) (a b c : Val)
   | fop (o : FOp) (fl : FlagsT) (a b : Val)
+  /-- What a function the program's author defines gives of two values: the
+  `f`th of them. A function of one value takes no notice of the second. -/
+  | app (f : Nat) (a b : Val)
 
 /-- The flags, as a term. -/
 inductive FlagsT
@@ -84,6 +90,7 @@ def Val.den (ρ : Env) : Val → BitVec 64
   | .bin o a b => o.eval (a.den ρ) (b.den ρ)
   | .tri o a b c => o.eval (a.den ρ) (b.den ρ) (c.den ρ)
   | .fop o fl a b => o.eval (fl.den ρ) (a.den ρ) (b.den ρ)
+  | .app f a b => ρ.fn f (a.den ρ) (b.den ρ)
 
 /-- The flags a term stands for. -/
 def FlagsT.den (ρ : Env) : FlagsT → Flags

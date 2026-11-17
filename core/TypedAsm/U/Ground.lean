@@ -17,13 +17,19 @@ open TypedAsm
 
 /-- A setting with nothing left unwritten in it: what is known but not
 written out, what an instruction computes with, and the flags before one,
-as in the empty setting. -/
+and the functions the program's author defines, as in the empty setting. -/
 def Env.bare (ρ : Env) : Env :=
-  { ρ with ty := ({} : Env).ty, slot := ({} : Env).slot, old := ({} : Env).old }
+  { ρ with
+    ty := ({} : Env).ty
+    slot := ({} : Env).slot
+    old := ({} : Env).old
+    fn := ({} : Env).fn }
 
 mutual
 
-/-- Whether a term has nothing of an instruction's own description in it. -/
+/-- Whether a term has nothing of an instruction's own description in it,
+and no function the program's author defines: nothing, that is, whose
+meaning is not the term's own. -/
 def Val.plain : Val → Bool
   | .lit _ => true
   | .var _ => true
@@ -33,6 +39,7 @@ def Val.plain : Val → Bool
   | .bin _ a b => a.plain && b.plain
   | .tri _ a b c => a.plain && b.plain && c.plain
   | .fop _ fl a b => fl.plain && a.plain && b.plain
+  | .app _ _ _ => false
 
 def FlagsT.plain : FlagsT → Bool
   | .lit _ => true
@@ -62,6 +69,7 @@ theorem Val.den_bare (ρ : Env) : (a : Val) → a.plain = true → a.den ρ.bare
   | .fop o fl a b, h => by
     simp only [Val.plain, Bool.and_eq_true] at h
     simp only [Val.den, FlagsT.den_bare ρ fl h.1.1, Val.den_bare ρ a h.1.2, Val.den_bare ρ b h.2]
+  | .app _ _ _, h => nomatch h
 
 theorem FlagsT.den_bare (ρ : Env) : (f : FlagsT) → f.plain = true → f.den ρ.bare = f.den ρ
   | .lit _, _ => rfl
@@ -196,7 +204,7 @@ def ShapeS.ground (S : ShapeS) : Bool := S.under 0 && S.closedAt 0 && S.plain
 theorem sameBelow_bare (ρ₁ ρ₂ : Env) :
     Env.SameBelow 0 { ρ₁.bare with bound := [] } { ρ₂.bare with bound := [] } :=
   ⟨fun _ h => absurd h (Nat.not_lt_zero _), fun _ h => absurd h (Nat.not_lt_zero _),
-    fun _ h => absurd h (Nat.not_lt_zero _), rfl, rfl, rfl, rfl⟩
+    fun _ h => absurd h (Nat.not_lt_zero _), rfl, rfl, rfl, rfl, rfl⟩
 
 /-- **What mentions nothing from outside stands for the same whatever
 names stand for.** -/
