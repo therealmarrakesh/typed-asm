@@ -111,4 +111,31 @@ theorem WellTyped.mapZero_held {a : BitVec 64} {size : Nat}
     exact Linux.disjoint_of_unmapped hU (by omega) (Nat.le_refl _) (h.held.size_lt c hc')
       (State.canRead_of_canWrite (h.held.perm c hc'))
 
+/-- **A call that hands back fresh memory** returns with an error number in
+`rax`, or with the address of whole pages that the context then holds, as
+plain bytes. The address is the start of a page, in the part of the address
+space a program's memory is in. -/
+theorem Steps.map {D : SysDesc} (hD : Describes sys D) {Γ : Ctx} {next : BitVec 64}
+    (hk : D.kind (Γ.val .rax) = some .map) (hdi : Γ.val .rdi = 0)
+    (hpre : ∀ n, ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, s.rip = next →
+      WellTyped fetch sys Ψ' n Γ s → D.pre s) :
+    Steps fetch sys Ψ .syscall next Γ fun t Γ' => t = next ∧ ∃ v,
+      (SysErr v ∧ Γ' = Γ.afterSys v next) ∨
+      (v.toNat % 4096 = 0 ∧ v.toNat + pages (Γ.val .rsi) ≤ addrTop ∧
+        Γ' = CtxOf.afterSys { Γ with held := (v, ⟨pages (Γ.val .rsi), []⟩) :: Γ.held } v next) := by
+  intro n Ψ' he hwf s hrip hw
+  obtain ⟨t, hst, hmaps⟩ := hD s .map (by rw [hw.val]; exact hk) (hpre n Ψ' he hwf s hrip hw)
+    (by rw [hw.val]; exact hdi)
+  rw [hw.val .rsi] at hmaps
+  rcases hmaps with ⟨v, w, hv, rfl⟩ | ⟨a, w, hal, hfit, hun, rfl⟩
+  · refine ⟨_, hst, Ψ', MemTy.Ext.refl _, hwf, Γ.afterSys v next, ⟨hrip, v, .inl ⟨hv, rfl⟩⟩, ?_⟩
+    rw [← hrip]
+    exact hw.ret v w
+  · refine ⟨_, hst, Ψ', MemTy.Ext.refl _, hwf, _, ⟨hrip, a, .inr ⟨hal, hfit, rfl⟩⟩, ?_⟩
+    have hT : addrTop = 0x7ffffffff000 := rfl
+    have h4 : pages (Γ.val .rsi) % 4096 = 0 := Nat.mul_mod_left _ _
+    have hH := hw.mapZero_held hwf hal h4 hfit (by omega) hun
+    rw [← hrip]
+    exact hH.ret a w
+
 end TypedAsm.U

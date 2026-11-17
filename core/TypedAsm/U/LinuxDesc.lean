@@ -12,8 +12,8 @@ what they ask of the state to let a call through.
 
 namespace TypedAsm.U
 
-/-- What the Linux call of each number does to the program. `mmap` and
-`munmap` change what memory there is, and are described by themselves. A
+/-- What the Linux call of each number does to the program. `munmap` takes
+memory away, and is described by itself. A
 number that is no call's is refused by the kernel, which is to do nothing. -/
 def linuxKind (nr : BitVec 64) : Option SysKind :=
   if nr = 60 ∨ nr = 231 then some .ends
@@ -21,10 +21,26 @@ def linuxKind (nr : BitVec 64) : Option SysKind :=
   else if nr = 5 then some (.fills .rsi (.inr 144))
   else if nr = 228 then some (.fills .rsi (.inr 16))
   else if nr = 318 then some (.fills .rdi (.inl .rsi))
-  else if nr = 9 ∨ nr = 11 then none
+  else if nr = 9 then some .map
+  else if nr = 11 then none
   else some .world
 
 def linuxDesc : SysDesc := { kind := linuxKind }
+
+/-- The model's `mmap` hands back an error number, or fresh pages. -/
+theorem mmap_maps (s : State) : Maps s (pages (s.getReg .rsi)) (Linux.mmap s) := by
+  unfold Linux.mmap
+  simp only
+  split
+  · exact .inl ⟨_, s.world, by decide, rfl⟩
+  · split
+    · exact .inl ⟨_, s.world, by decide, rfl⟩
+    · split
+      · exact .inl ⟨_, _, by decide, rfl⟩
+      · next a _ =>
+        split
+        · next hok => exact .inr ⟨a, _, hok.1, hok.2.2.1, hok.2.2.2, rfl⟩
+        · exact .inl ⟨_, _, by decide, rfl⟩
 
 /-- **The Linux model does what it is described to do.** -/
 theorem linux_describes : Describes linux linuxDesc := by
@@ -58,25 +74,29 @@ theorem linux_describes : Describes linux linuxDesc := by
               by simpa [roomOf] using Linux.getrandom_fills s⟩
           · next h318 =>
             split at hk
-            · cases hk
             · next h9 =>
               cases hk
-              have h60' : s.getReg .rax ≠ 60 := fun e => h60 (.inl e)
-              have h231 : s.getReg .rax ≠ 231 := fun e => h60 (.inr e)
-              have h9' : s.getReg .rax ≠ 9 := fun e => h9 (.inl e)
-              have h11 : s.getReg .rax ≠ 11 := fun e => h9 (.inr e)
-              show ∃ t, linux s = .next t ∧ Linux.OnlyWorld s t
-              unfold linux
-              simp only [h60', h231, h0, h9', h11, h5, h228, h318, ↓reduceIte]
-              repeat' split
-              all_goals first
-                | exact ⟨_, rfl, Linux.write_only s⟩
-                | exact ⟨_, rfl, Linux.close_only s⟩
-                | exact ⟨_, rfl, Linux.lseek_only s⟩
-                | exact ⟨_, rfl, Linux.openat_only s⟩
-                | exact ⟨_, rfl, Linux.fsync_only s⟩
-                | exact ⟨_, rfl, Linux.getpid_only s⟩
-                | exact ⟨_, rfl, Linux.OnlyWorld.same s _⟩
+              intro hdi
+              exact ⟨Linux.mmap s, by simp [linux, h9, hdi], mmap_maps s⟩
+            · next h9 =>
+              split at hk
+              · cases hk
+              · next h11 =>
+                cases hk
+                have h60' : s.getReg .rax ≠ 60 := fun e => h60 (.inl e)
+                have h231 : s.getReg .rax ≠ 231 := fun e => h60 (.inr e)
+                show ∃ t, linux s = .next t ∧ Linux.OnlyWorld s t
+                unfold linux
+                simp only [h60', h231, h0, h9, h11, h5, h228, h318, ↓reduceIte]
+                repeat' split
+                all_goals first
+                  | exact ⟨_, rfl, Linux.write_only s⟩
+                  | exact ⟨_, rfl, Linux.close_only s⟩
+                  | exact ⟨_, rfl, Linux.lseek_only s⟩
+                  | exact ⟨_, rfl, Linux.openat_only s⟩
+                  | exact ⟨_, rfl, Linux.fsync_only s⟩
+                  | exact ⟨_, rfl, Linux.getpid_only s⟩
+                  | exact ⟨_, rfl, Linux.OnlyWorld.same s _⟩
 
 /-- A system that lets through only exits whose status is as wanted does
 what the system under it is described to do, where the status of any exit
@@ -97,6 +117,10 @@ theorem Describes.exitsOnly {sys : Syscall} {D : SysDesc} (h : Describes sys D)
   | ends =>
     obtain ⟨c, hc⟩ := this
     exact ⟨c, Syscall.exitsOnly_exit hc (hpre.2 c hc)⟩
+  | map =>
+    intro hdi
+    obtain ⟨t, ht, hm⟩ := this hdi
+    exact ⟨t, Syscall.exitsOnly_next ht, hm⟩
 
 /-- And one that lets through only writes whose bytes are as wanted,
 likewise, where the bytes a `write` offers are. -/

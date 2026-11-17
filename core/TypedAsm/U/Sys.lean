@@ -58,6 +58,9 @@ inductive SysKind
   | fills (buf : Reg) (room : Reg ⊕ Nat)
   /-- It ends the program. -/
   | ends
+  /-- It hands back fresh memory, of as many whole pages as the length in
+  `rsi` comes to, or an error number. -/
+  | map
 
 /-- A system, described: what the call of each number does, and what the
 system asks of the state for a call to be let through. -/
@@ -75,6 +78,17 @@ def roomVal (val : Reg → BitVec 64) : Reg ⊕ Nat → Nat
   | .inl r => (val r).toNat
   | .inr n => n
 
+/-- The bytes in whole pages that a length comes to. -/
+def pages (len : BitVec 64) : Nat := (len.toNat + 4095) / 4096 * 4096
+
+/-- `t` is `s` after a call that handed back an error number and touched
+nothing of the program's, or handed back the address of `size` bytes of
+fresh memory, zero, readable and writable, where nothing was accessible. -/
+def Maps (s : State) (size : Nat) (t : State) : Prop :=
+  (∃ v w, SysErr v ∧ t = Linux.ret { s with world := w } v) ∨
+  ∃ a w, a.toNat % 4096 = 0 ∧ a.toNat + size ≤ addrTop ∧ s.unmapped a size = true ∧
+    t = Linux.ret { s.mapZero a size with world := w } a
+
 /-- `Describes sys D`: the system does what `D` says, for every call `D`
 describes that it lets through. -/
 def Describes (sys : Syscall) (D : SysDesc) : Prop :=
@@ -83,6 +97,7 @@ def Describes (sys : Syscall) (D : SysDesc) : Prop :=
     | .world => ∃ t, sys s = .next t ∧ Linux.OnlyWorld s t
     | .fills b room => ∃ t, sys s = .next t ∧ Linux.Fills s (s.getReg b) (roomOf s room) t
     | .ends => ∃ c, sys s = .exit c
+    | .map => s.getReg .rdi = 0 → ∃ t, sys s = .next t ∧ Maps s (pages (s.getReg .rsi)) t
 
 /-- **A call that does nothing to the program** returns with a value in
 `rax`, of which nothing is known. -/
