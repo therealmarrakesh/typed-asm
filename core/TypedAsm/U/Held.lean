@@ -159,4 +159,31 @@ theorem writeHeld {s' : State} {k : Nat} {a : BitVec 64} {S S' : Held} {lo cnt :
 
 end WellTyped
 
+/-! ## A store of any width -/
+
+theorem storeN_regs (s : State) (n : Nat) (a v : BitVec 64) : (storeN s n a v).regs = s.regs := by
+  unfold storeN
+  split <;> rfl
+
+theorem storeN_perm (s : State) (n : Nat) (a v : BitVec 64) : (storeN s n a v).perm = s.perm := by
+  unfold storeN
+  split <;> rfl
+
+/-- A store changes no byte outside the bytes it is of. -/
+theorem storeN_mem_out (s : State) (n : Nat) (a v x : BitVec 64) (hn : n ≤ 8)
+    (h : BitVec.ofNat 64 n ≤ x - a) : (storeN s n a v).mem x = s.mem x := by
+  unfold storeN
+  split <;>
+    simp only [State.store64, State.store32, State.store16, State.mem_store8] at * <;>
+    (repeat' split) <;> first | rfl | bv_omega
+
+/-- Nor any eight bytes apart from them. -/
+theorem storeN_load64_out (s : State) (n : Nat) (a v y : BitVec 64) (hn : n ≤ 8)
+    (h : Disjoint a n y 8) : (storeN s n a v).load64 y = s.load64 y := by
+  by_cases h0 : n = 0
+  · subst h0; rfl
+  · have hd := h.of_pos h0 (by decide)
+    refine State.load64_congr_bytes fun j hj => storeN_mem_out s n a v _ hn ?_
+    bv_omega
+
 end TypedAsm.U
