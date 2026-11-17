@@ -2,6 +2,7 @@ import TypedAsm.U.Step
 import TypedAsm.U.SysStep
 import TypedAsm.U.Guard
 import TypedAsm.U.Learn
+import TypedAsm.U.PublishS
 
 /-!
 # A block walked
@@ -21,12 +22,24 @@ open TypedAsm
 
 variable {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
 
+/-- A point of a program at which the region a register holds the address
+of becomes a block others may point into: of a shape, and of a kind if one
+is given. It is so before the instruction there is run. -/
+structure Pub where
+  addr : BitVec 64
+  base : Reg
+  shape : ShapeS
+  tag : Option Nat := none
+
 /-- A program, as the checker is given it: its instructions, each with its
 address and the address after it; and the shape of each kind of block its
-pointers by kind refer to. -/
+pointers by kind refer to; and where it publishes regions. -/
 structure Prog where
   code : List (BitVec 64 × Instr × BitVec 64)
   kinds : Nat → Option ShapeS := fun _ => none
+  /-- The points at which a region held becomes a block others may point
+  into. -/
+  pubs : List Pub := []
 
 instance : Coe (List (BitVec 64 × Instr × BitVec 64)) Prog := ⟨fun c => { code := c }⟩
 
@@ -79,6 +92,34 @@ def Walk.moved : Walk → Bool
   | .step .. | .sys .. | .sys2 .. | .ends | .branch .. | .vacuous => true
   | _ => false
 
+/-- A context may be regarded as itself after nothing is published. -/
+theorem Publishes.refl (Γ : Ctx) : Publishes fetch sys Ψ Γ Γ :=
+  fun _ Ψ' _ hwf _ hw => ⟨Ψ', MemTy.Ext.refl Ψ', hwf, hw⟩
+
+/-- The context at an address once what the program publishes there is
+published: as it was, where it publishes nothing there. Nothing where the
+region is not as the program says. -/
+def pubAt (pg : Prog) (k : Nat) (a : BitVec 64) (Γ : CtxS) : Option CtxS :=
+  match pg.pubs.find? fun p => p.addr = a with
+  | none => some Γ
+  | some p =>
+    match publishS pg.kinds Γ (Γ.regs.get p.base) p.shape p.tag with
+    | some Γ' => if Γ'.under k then some Γ' else none
+    | none => none
+
+theorem pubAt_sound {ρ : Env} {pg : Prog} (hk : KindsOk Ψ pg.kinds) {k : Nat} {a : BitVec 64}
+    {Γ Γ' : CtxS} (h : pubAt pg k a Γ = some Γ') (hu : Γ.under k = true) :
+    Γ'.under k = true ∧ Publishes fetch sys Ψ (Γ.den ρ) (Γ'.den ρ) := by
+  unfold pubAt at h
+  split at h
+  · cases h; exact ⟨hu, Publishes.refl _⟩
+  · split at h
+    · next Γp hp =>
+      split at h
+      · next hup => cases h; exact ⟨hup, publishS_sound hk hp⟩
+      · cases h
+    · cases h
+
 /-- **The checker walked from an address**, for at most so many
 instructions, `k` being a name no term yet mentions. It stops where `stops`
 says, unless that is where it starts: at the labels of a program, which are
@@ -86,8 +127,11 @@ typed each by a walk of its own. -/
 def walk (pg : Prog) (stops : BitVec 64 → Bool) :
     Bool → Nat → Nat → BitVec 64 → CtxS → Walk
   | _, 0, _, a, Γ => .stop a Γ
-  | start, fuel + 1, k, a, Γ =>
-    if !start && stops a then .stop a Γ else
+  | start, fuel + 1, k, a, Γ₀ =>
+    if !start && stops a then .stop a Γ₀ else
+    match pubAt pg k a Γ₀ with
+    | none => .stop a Γ₀
+    | some Γ =>
     if Γ.impossible then .vacuous else
     match pg.code.find? fun e => e.1 = a with
     | none => .stop a Γ
@@ -166,11 +210,18 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
     Ok fetch sys Ψ n a (Γ.den ρ) ∧
       ((walk pg stops start fuel k a Γ).moved = true → Ok fetch sys Ψ (n + 1) a (Γ.den ρ))
   | _, 0, _, _, _, _, _, h => ⟨h, fun hm => nomatch hm⟩
-  | start, fuel + 1, k, a, Γ, ρ, hu, h => by
-    generalize hW : walk pg stops start (fuel + 1) k a Γ = W at h ⊢
+  | start, fuel + 1, k, a, Γ₀, ρ, hu₀, h => by
+    generalize hW : walk pg stops start (fuel + 1) k a Γ₀ = W at h ⊢
     unfold walk at hW
     split at hW
     · subst hW; exact ⟨h, fun hm => nomatch hm⟩
+    split at hW
+    · subst hW; exact ⟨h, fun hm => nomatch hm⟩
+    rename_i Γ hpub
+    obtain ⟨hu, hP⟩ := pubAt_sound (fetch := fetch) (sys := sys) (ρ := ρ) hk hpub hu₀
+    suffices hs : Ok fetch sys Ψ n a (Γ.den ρ) ∧
+        (W.moved = true → Ok fetch sys Ψ (n + 1) a (Γ.den ρ)) from
+      ⟨Ok.publish hP hs.1, fun hm => Ok.publish hP (hs.2 hm)⟩
     split at hW
     · next himp =>
       subst hW

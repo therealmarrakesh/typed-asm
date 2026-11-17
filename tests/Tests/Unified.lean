@@ -648,6 +648,41 @@ example : checkProgram (codeLen 1) [lab 0 Ps, lab 7 Ps] 12 0 = false := by decid
 -- through a value not known to point to text: refused
 example : checkProgram (codeLen 1) [lab 0 Pw] 12 0 = false := by decide +kernel
 
+/-! ## A region published -/
+
+/-- `rbx` is the address of sixteen bytes held, the first eight holding what
+`rdi` does; with what is known besides. -/
+def Phold (known : List (Val × TyS)) : CtxS :=
+  { Pw with held := Pw.held ++ [(.bvar 0 3, ⟨16, [(0, .bvar 0 7)]⟩)], known := known }
+
+/-- `rbx` points to a list node that may be written; nothing is held there. -/
+def Pref : CtxS := { Pw with known := [(.bvar 0 3, .ref 7 true 0)] }
+
+/-- `rdi` is nought or points to a node. -/
+def rdiNode : List (Val × TyS) := [(.bvar 0 7, .nullable (.ref 7 false 0))]
+
+/-- `nop; exit`: at the `nop` the region at `rbx` becomes a list node. -/
+def codePub : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .nop, 1), (1, .mov .w32 (.rm_i (.reg .rax) 60), 5), (6, .syscall, 2)]
+
+-- the region is held whole, is a node's size, and holds at its first eight
+-- bytes a value known to be nought or a pointer to a node: it becomes a node
+example : checkProgram { code := codePub, kinds := kinds7, pubs := [⟨0, .rbx, node, some 7⟩] }
+    [lab 0 (Phold rdiNode), lab 1 Pref] 10 0 = true := by decide +kernel
+-- nothing known of what its first eight bytes hold: refused, it would not be a node
+example : checkProgram { code := codePub, kinds := kinds7, pubs := [⟨0, .rbx, node, some 7⟩] }
+    [lab 0 (Phold []), lab 1 Pref] 10 0 = false := by decide +kernel
+-- the program does not say it is published: the region is still held, and is
+-- not a node. Refused: publishing is never done unasked
+example : checkProgram { code := codePub, kinds := kinds7 }
+    [lab 0 (Phold rdiNode), lab 1 Pref] 10 0 = false := by decide +kernel
+-- as a block of another size: refused
+example : checkProgram { code := codePub, kinds := kinds7, pubs := [⟨0, .rbx, .mk 24 .nil, none⟩] }
+    [lab 0 (Phold rdiNode), lab 1 Pref] 10 0 = false := by decide +kernel
+-- as a kind the program does not give the shape of: refused
+example : checkProgram { code := codePub, pubs := [⟨0, .rbx, node, some 7⟩] }
+    [lab 0 (Phold rdiNode), lab 1 Pref] 10 0 = false := by decide +kernel
+
 /-! ## Divides -/
 
 /-- `test rcx, rcx; je out; xor edx, edx; div rcx; out: exit`: the divisor is
