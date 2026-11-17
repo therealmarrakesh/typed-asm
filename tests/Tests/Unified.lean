@@ -576,6 +576,36 @@ example : Γix.upper (.var 2) = some (2 ^ 64 - 1) := by decide +kernel
 example : ({ Γ0 with known := [(.var 1, .range (-4) 9)] } : CtxS).upper (.var 1)
     = some (2 ^ 64 - 1) := by decide +kernel
 
+/-! ## An index with a bound -/
+
+/-- `rbx` points to a table of eight values. -/
+def Pt : CtxS := { Pw with known := [(.bvar 0 3, .ptr (.mk 64 .nil) false 0)] }
+
+/-- `cmp rcx, <bound>; jae out; mov rax, [rbx + rcx*8]; out: exit`. -/
+def codeIx (bound : BitVec 32) : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .alu .cmp .w64 (.rm_i (.reg .rcx) bound), 4), (4, .jcc .ae 4, 2),
+   (6, .mov .w64 (.r_m .rax (.sib (some .rbx) (some (.rcx, .s8)) 0)), 4),
+   (10, .mov .w32 (.rm_i (.reg .rax) 60), 5), (15, .syscall, 2)]
+
+-- past the comparison the index is below eight, so the eight bytes read lie in the table
+example : checkProgram (codeIx 8) [lab 0 Pt] 10 0 = true := by decide +kernel
+-- an index that may be eight: the read may be past the end. Refused
+example : checkProgram (codeIx 9) [lab 0 Pt] 10 0 = false := by decide +kernel
+-- entered past the comparison, the index may be anything: refused
+example : checkProgram (codeIx 8) [lab 0 Pt, lab 6 Pt] 10 0 = false := by decide +kernel
+
+/-- `cmp rcx, <bound>; jae out; mov [rsp + rcx*8], rdi; out: exit`: a store
+into the stack at an index. -/
+def codeSt (bound : BitVec 32) : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .alu .cmp .w64 (.rm_i (.reg .rcx) bound), 4), (4, .jcc .ae 4, 2),
+   (6, .mov .w64 (.rm_r (.mem (.sib (some .rsp) (some (.rcx, .s8)) 0)) .rdi), 4),
+   (10, .mov .w32 (.rm_i (.reg .rax) 60), 5), (15, .syscall, 2)]
+
+-- thirty-two bytes are held above the stack pointer: four slots
+example : checkProgram (codeSt 4) [lab 0 Pw] 10 0 = true := by decide +kernel
+-- a fifth would be past what is held: refused
+example : checkProgram (codeSt 5) [lab 0 Pw] 10 0 = false := by decide +kernel
+
 /-! ## Text -/
 
 /-- `rdi` points to text. -/

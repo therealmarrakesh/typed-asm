@@ -191,6 +191,21 @@ theorem Reads.shared {Γ : Ctx} {p a : BitVec 64} {τ : Ty} {Sh : Shape} {w : Bo
     exact this
   · cases hf'
 
+/-- The bytes may be read, with nothing said of what is read: so of a read
+at an address known only to lie so far in, give or take. -/
+theorem Reads.sharedAt {Γ : Ctx} {p a : BitVec 64} {τ : Ty} {Sh : Shape} {w : Bool} {off o n : Nat}
+    (hf : (p, τ) ∈ Γ.known) (hτ : τ.pointee Ψ.kinds = some (Sh, w, off))
+    (ha : a + BitVec.ofNat 64 off = p + BitVec.ofNat 64 o) (hin : o + n ≤ Sh.size) :
+    Reads fetch sys Ψ Γ a n (fun _ Γr => Γr = Γ) := by
+  intro j Ψ' he hwf s hw
+  obtain ⟨base, l, hl, hsh, hlw, hp⟩ :=
+    hasTy_pointee hwf (by rw [he.kinds]; exact hτ) (hw.known _ hf)
+  subst hsh
+  have hab : a = base + BitVec.ofNat 64 o := by bv_omega
+  subst hab
+  have hsub : o + n ≤ l.size := by simp only [Layout.size]; omega
+  exact ⟨State.canRead_sub (hw.heapPerm base l hl).1 hsub, _, rfl, rfl, rfl, hw⟩
+
 /-- **And to be written**, if the pointer may be written through and each
 typed value of the block either keeps clear of the bytes or is the eight
 bytes written, with a value that is of its type whenever what the context

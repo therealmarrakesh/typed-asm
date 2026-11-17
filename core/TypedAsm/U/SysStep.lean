@@ -89,17 +89,6 @@ theorem sysEnds_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = lin
 
 /-! ## Calls that store bytes -/
 
-/-- A region saying nothing of the `n` bytes from `o`. -/
-def HeldS.clear (S : HeldS) (o n : Nat) : HeldS :=
-  ⟨S.size, S.slots.filter (ShapeOf.clearOf o n)⟩
-
-theorem HeldS.clear_den (ρ : Env) (S : HeldS) (o n : Nat) :
-    (S.clear o n).den ρ = (S.den ρ).clear o n := by
-  show (⟨S.size, (S.slots.filter (ShapeOf.clearOf o n)).map fun p => (p.1, p.2.den ρ)⟩ : Held)
-    = ⟨S.size, (S.slots.map fun p => (p.1, p.2.den ρ)).filter (ShapeOf.clearOf o n)⟩
-  rw [List.filter_map]
-  rfl
-
 /-- How many bytes a call may store, where that is written out. -/
 def roomS (regs : Regs Val) : Reg ⊕ Nat → Option Nat
   | .inl r => (regs.get r).lit?.map (·.toNat)
@@ -114,19 +103,6 @@ theorem roomS_den (ρ : Env) (Γ : CtxS) {room : Reg ⊕ Nat} {n : Nat} (h : roo
     obtain ⟨x, hx, rfl⟩ := h
     show ((Γ.regs.get r).den ρ).toNat = x.toNat
     rw [Val.lit?_den hx]
-
-/-- Whether no typed value of a block reaches into the `n` bytes from `o`. -/
-def ValsS.free (o n : Nat) : ValsS → Bool
-  | .nil => true
-  | .cons o' _ rest => (o' + 8 ≤ o || o + n ≤ o') && rest.free o n
-
-theorem ValsS.free_den (ρ : Env) (o n : Nat) :
-    (vs : ValsS) → (vs.den ρ).all (ShapeOf.clearOf o n) = vs.free o n
-  | .nil => rfl
-  | .cons o' τ rest => by
-    show (ShapeOf.clearOf o n (o', τ.den ρ) && (rest.den ρ).all _) = _
-    rw [ValsS.free_den ρ o n rest]
-    rfl
 
 /-- **A call that stores bytes at an address the program gives, as a step
 on terms**: where the call number and the room are written out and the

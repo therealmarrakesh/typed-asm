@@ -4,6 +4,7 @@ import TypedAsm.U.RegardS
 import TypedAsm.U.Bridge
 import TypedAsm.U.Guard
 import TypedAsm.U.Text
+import TypedAsm.U.Span
 
 /-!
 # The checker's step
@@ -363,6 +364,272 @@ theorem writeCell_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk
         · cases h
       · cases h
 
+/-- A region saying nothing of the `n` bytes from `o`. -/
+def HeldS.clear (S : HeldS) (o n : Nat) : HeldS :=
+  ⟨S.size, S.slots.filter (ShapeOf.clearOf o n)⟩
+
+theorem HeldS.clear_den (ρ : Env) (S : HeldS) (o n : Nat) :
+    (S.clear o n).den ρ = (S.den ρ).clear o n := by
+  show (⟨S.size, (S.slots.filter (ShapeOf.clearOf o n)).map fun p => (p.1, p.2.den ρ)⟩ : Held)
+    = ⟨S.size, (S.slots.map fun p => (p.1, p.2.den ρ)).filter (ShapeOf.clearOf o n)⟩
+  rw [List.filter_map]
+  rfl
+
+
+/-- Whether no typed value of a block reaches into the `n` bytes from `o`. -/
+def ValsS.free (o n : Nat) : ValsS → Bool
+  | .nil => true
+  | .cons o' _ rest => (o' + 8 ≤ o || o + n ≤ o') && rest.free o n
+
+theorem ValsS.free_den (ρ : Env) (o n : Nat) :
+    (vs : ValsS) → (vs.den ρ).all (ShapeOf.clearOf o n) = vs.free o n
+  | .nil => rfl
+  | .cons o' τ rest => by
+    show (ShapeOf.clearOf o n (o', τ.den ρ) && (rest.den ρ).all _) = _
+    rw [ValsS.free_den ρ o n rest]
+    rfl
+
+/-! ## An address known only to lie within a stretch -/
+
+/-- The region the context holds that an address lies a stretch into: so far
+in, for at most so much more, the bytes asked for inside the region
+wherever in the stretch the address is. -/
+def findHeldR (Γ : CtxS) (a : Val) (n : Nat) :
+    List (Val × HeldS) → Nat → Option (Nat × Val × HeldS × Nat × Nat)
+  | [], _ => none
+  | (b, S) :: rest, k =>
+    match Γ.spanFrom a b with
+    | some (o, M) =>
+      if o + M + n ≤ S.size then some (k, b, S, o, M) else findHeldR Γ a n rest (k + 1)
+    | none => findHeldR Γ a n rest (k + 1)
+
+theorem findHeldR_spec {Γ : CtxS} {a : Val} {n : Nat} :
+    (l : List (Val × HeldS)) → (k₀ : Nat) → {k : Nat} → {b : Val} → {S : HeldS} → {o M : Nat} →
+    findHeldR Γ a n l k₀ = some (k, b, S, o, M) →
+    ∃ j, k = k₀ + j ∧ l[j]? = some (b, S) ∧ o + M + n ≤ S.size ∧ Γ.spanFrom a b = some (o, M)
+  | [], _, _, _, _, _, _, h => by cases h
+  | (b', S') :: rest, k₀, k, b, S, o, M, h => by
+    unfold findHeldR at h
+    split at h
+    · next o' M' hsp =>
+      split at h
+      · next hin =>
+        cases h
+        exact ⟨0, rfl, rfl, hin, hsp⟩
+      · obtain ⟨j, hj, hl, hin, ha⟩ := findHeldR_spec rest (k₀ + 1) h
+        exact ⟨j + 1, by omega, hl, hin, ha⟩
+    · obtain ⟨j, hj, hl, hin, ha⟩ := findHeldR_spec rest (k₀ + 1) h
+      exact ⟨j + 1, by omega, hl, hin, ha⟩
+
+/-- The fact a context has that an address lies a stretch into a block
+others may point into. -/
+def findFactR (kinds : Nat → Option ShapeS) (Γ : CtxS) (a : Val) (n : Nat) :
+    List (Val × TyS) → Option (Val × TyS × ShapeS × Bool × Nat × Nat × Nat)
+  | [] => none
+  | (p, τ) :: rest =>
+    match τ.pointee kinds, Γ.spanFrom a p with
+    | some (Sh, w, off), some (d, M) =>
+      if d + off + M + n ≤ Sh.size then some (p, τ, Sh, w, off, d, M)
+      else findFactR kinds Γ a n rest
+    | _, _ => findFactR kinds Γ a n rest
+
+theorem findFactR_spec {kinds : Nat → Option ShapeS} {Γ : CtxS} {a : Val} {n : Nat} :
+    (l : List (Val × TyS)) → {p : Val} → {τ : TyS} → {Sh : ShapeS} → {w : Bool} →
+    {off d M : Nat} → findFactR kinds Γ a n l = some (p, τ, Sh, w, off, d, M) →
+    (p, τ) ∈ l ∧ τ.pointee kinds = some (Sh, w, off) ∧ d + off + M + n ≤ Sh.size ∧
+      Γ.spanFrom a p = some (d, M)
+  | [], _, _, _, _, _, _, _, h => by cases h
+  | (q, υ) :: rest, p, τ, Sh, w, off, d, M, h => by
+    have tail : findFactR kinds Γ a n rest = some (p, τ, Sh, w, off, d, M) →
+        (p, τ) ∈ (q, υ) :: rest ∧ τ.pointee kinds = some (Sh, w, off) ∧
+          d + off + M + n ≤ Sh.size ∧ Γ.spanFrom a p = some (d, M) := fun h' => by
+      obtain ⟨hm, h1, h2, h3⟩ := findFactR_spec rest h'
+      exact ⟨List.mem_cons_of_mem _ hm, h1, h2, h3⟩
+    unfold findFactR at h
+    split at h
+    · next Sh' w' off' d' M' hpt hsp =>
+      split at h
+      · next hin =>
+        cases h
+        exact ⟨List.mem_cons_self, hpt, hin, hsp⟩
+      · exact tail h
+    · exact tail h
+
+/-- The bytes an instruction reads at an address known only to lie within a
+stretch: the name `k`, nothing being said of what is there. -/
+def readRanged (kinds : Nat → Option ShapeS) (Γ : CtxS) (k : Nat) (next : BitVec 64) :
+    Option (Mem × Nat) → Option (Val × List (Val × TyS))
+  | none => none
+  | some (m, n) =>
+    if (findHeldR Γ (eaS Γ.regs next m) n Γ.held 0).isSome ||
+        (findFactR kinds Γ (eaS Γ.regs next m) n Γ.known).isSome then
+      some (narrow n (.var k), [])
+    else none
+
+theorem readRanged_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk Ψ kinds) {Γ : CtxS}
+    {k : Nat} {next : BitVec 64} {cell : Val} {extra : List (Val × TyS)} (hu : Γ.under k = true)
+    {m : Mem} {n : Nat} (h : readRanged kinds Γ k next (some (m, n)) = some (cell, extra)) :
+    Reads fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n
+      (fun x Γr => Γr = CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known } ∧
+        cell.den (ρ.setVal k x) = x) := by
+  simp only [readRanged] at h
+  split at h
+  · next hc =>
+    cases h
+    have core : Reads fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n
+        (fun _ Γr => Γr = Γ.den ρ) := by
+      intro j Ψ' he hwf s hw
+      rcases Bool.or_eq_true_iff.mp hc with hh | hf
+      · obtain ⟨⟨i, b, S, o, M⟩, hfind⟩ := Option.isSome_iff_exists.mp hh
+        obtain ⟨i', _, hl, hin, hsp⟩ := findHeldR_spec Γ.held 0 hfind
+        obtain ⟨o', ha, h1, h2⟩ := CtxS.spanFrom_den hsp hw.known
+        have R := Reads.held (fetch := fetch) (sys := sys) (Ψ := Ψ) (CtxS.held_den ρ Γ hl)
+          (o := o') (n := n) (by show o' + n ≤ S.size; omega) j Ψ' he hwf s hw
+        rw [← eaS_den, ha]
+        obtain ⟨hr, Γr, ⟨rfl, _⟩, hv, hfl, hw'⟩ := R
+        exact ⟨hr, _, rfl, hv, hfl, hw'⟩
+      · obtain ⟨⟨p, τ, Sh, w, off, d, M⟩, hfind⟩ := Option.isSome_iff_exists.mp hf
+        obtain ⟨hmem, hpt, hin, hsp⟩ := findFactR_spec Γ.known hfind
+        obtain ⟨o', ha, h1, h2⟩ := CtxS.spanFrom_den hsp hw.known
+        have hfm : (p.den ρ, τ.den ρ) ∈ (Γ.den ρ).known := List.mem_map.mpr ⟨(p, τ), hmem, rfl⟩
+        refine Reads.sharedAt (fetch := fetch) (sys := sys) (Ψ := Ψ) hfm (TyS.pointee_den hk ρ hpt)
+          (o := o' + off) ?_ (by rw [ShapeS.den_size]; omega) j Ψ' he hwf s hw
+        rw [← eaS_den, ha, BitVec.ofNat_add, BitVec.add_assoc]
+    refine core.narrow.mono ?_
+    rintro x Γr ⟨rfl, hcut⟩
+    exact ⟨(CtxS.den_setVal ρ k x Γ hu).symm, by
+      rw [narrow_den, show (Val.var k).den (ρ.setVal k x) = x from Env.setVal_get_self ρ k x]
+      exact hcut⟩
+  · cases h
+
+/-- What the context holds once an instruction has written its bytes at an
+address known only to lie within a stretch: the region holds no value the
+stretch reaches into; or, in a block a value is known to point into, the
+stretch holds no typed value and the block is as it was. -/
+def writeRanged (kinds : Nat → Option ShapeS) (Γ : CtxS) (next : BitVec 64) :
+    Option (Mem × Nat) → Option (List (Val × HeldS))
+  | none => none
+  | some (m, n) =>
+    if n ≤ 8 then
+      match findHeldR Γ (eaS Γ.regs next m) n Γ.held 0 with
+      | some (j, b, S, o, M) => some (Γ.held.set j (b, S.clear o (M + n)))
+      | none =>
+        match findFactR kinds Γ (eaS Γ.regs next m) n Γ.known with
+        | some (_, _, Sh, w, off, d, M) =>
+          if w && Sh.vals.free (d + off) (M + n) then some Γ.held else none
+        | none => none
+    else none
+
+theorem writeRanged_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk Ψ kinds) {Γ : CtxS}
+    {next : BitVec 64} (v : Val) {held' : List (Val × HeldS)} {m : Mem} {n : Nat}
+    (h : writeRanged kinds Γ next (some (m, n)) = some held') :
+    Writes fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n (v.den ρ)
+      (CtxS.den ρ { Γ with held := held' }) := by
+  simp only [writeRanged] at h
+  split at h
+  · next hn =>
+    split at h
+    · next j b S o M hfind =>
+      cases h
+      obtain ⟨i, hi, hl, hin, hsp⟩ := findHeldR_spec Γ.held 0 hfind
+      have hji : j = i := by omega
+      subst hji
+      have e : CtxS.den ρ { Γ with held := Γ.held.set j (b, S.clear o (M + n)) }
+          = { Γ.den ρ with
+              held := (Γ.den ρ).held.set j (b.den ρ, (S.den ρ).clear o (M + n)) } := by
+        refine ctx_ext rfl rfl ?_ rfl
+        show (Γ.held.set j (b, S.clear o (M + n))).map (fun b => (b.1.den ρ, b.2.den ρ))
+            ++ restDen ρ Γ.rest
+          = ((Γ.held.map fun b => (b.1.den ρ, b.2.den ρ)) ++ restDen ρ Γ.rest).set j _
+        have hj : j < (Γ.held.map fun b => (b.1.den ρ, b.2.den ρ)).length := by
+          rw [List.length_map]; exact (List.getElem?_eq_some_iff.mp hl).1
+        rw [List.set_append_left _ _ hj, List.map_set, HeldS.clear_den]
+      rw [e]
+      refine ⟨rfl, rfl, fun k' Ψ' he hwf s hw => ?_⟩
+      obtain ⟨o', ha, h1, h2⟩ := CtxS.spanFrom_den hsp hw.known
+      have W := Writes.heldIn (fetch := fetch) (sys := sys) (Ψ := Ψ) (v.den ρ)
+        (CtxS.held_den ρ Γ hl) (o := o) (o' := o') (L := M + n) (n := n) h1 (by omega)
+        (by show o + (M + n) ≤ S.size; omega) hn
+      rw [← eaS_den, ha]
+      exact W.2.2 k' Ψ' he hwf s hw
+    · split at h
+      · next p τ Sh w off d M hfind =>
+        split at h
+        · next hc =>
+          cases h
+          rw [Bool.and_eq_true] at hc
+          obtain ⟨hw', hfree⟩ := hc
+          subst hw'
+          obtain ⟨hmem, hpt, hin, hsp⟩ := findFactR_spec Γ.known hfind
+          have hfm : (p.den ρ, τ.den ρ) ∈ (Γ.den ρ).known :=
+            List.mem_map.mpr ⟨(p, τ), hmem, rfl⟩
+          refine ⟨rfl, rfl, fun k' Ψ' he hwf s hw => ?_⟩
+          obtain ⟨o', ha, h1, h2⟩ := CtxS.spanFrom_den hsp hw.known
+          have hall : ∀ q ∈ (Sh.den ρ).vals, ShapeOf.clearOf (d + off) (M + n) q = true := by
+            have := ValsS.free_den ρ (d + off) (M + n) Sh.vals
+            rw [hfree, ← ShapeS.den_vals, List.all_eq_true] at this
+            exact this
+          have W := Writes.shared (fetch := fetch) (sys := sys) (Ψ := Ψ) (v.den ρ) hfm
+            (TyS.pointee_den hk ρ hpt) (a := (eaS Γ.regs next m).den ρ) (o := o' + off) (n := n)
+            (by rw [ha, BitVec.ofNat_add, BitVec.add_assoc])
+            (by rw [ShapeS.den_size]; omega) hn
+            (fun q hq => .inl (by
+              have := hall q hq
+              simp only [ShapeOf.clearOf, Bool.or_eq_true, decide_eq_true_eq] at this
+              omega))
+          rw [← eaS_den]
+          exact W.2.2 k' Ψ' he hwf s hw
+        · cases h
+      · cases h
+  · cases h
+
+/-- The bytes an instruction reads: found exactly, or within a stretch. -/
+def readAny (kinds : Nat → Option ShapeS) (Γ : CtxS) (k : Nat) (next : BitVec 64)
+    (rd : Option (Mem × Nat)) : Option (Val × List (Val × TyS)) :=
+  match readCell kinds Γ k next rd with
+  | some r => some r
+  | none => readRanged kinds Γ k next rd
+
+theorem readAny_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk Ψ kinds) {Γ : CtxS}
+    {k : Nat} {next : BitVec 64} {cell : Val}
+    {extra : List (Val × TyS)} (hu : Γ.under k = true) :
+    (rd : Option (Mem × Nat)) → readAny kinds Γ k next rd = some (cell, extra) →
+    match rd with
+    | some (m, n) => Reads fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n
+        (fun x Γr => Γr = CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known } ∧
+          cell.den (ρ.setVal k x) = x)
+    | none => extra = [] ∧ cell.den (ρ.setVal k 0) = 0 := by
+  intro rd h
+  unfold readAny at h
+  split at h
+  · next r hr => cases h; exact readCell_sound hk hu rd hr
+  · cases rd with
+    | none => cases h
+    | some mn => exact readRanged_sound hk hu h
+
+/-- What is held once an instruction has written: exactly, or within a
+stretch. -/
+def writeAny (kinds : Nat → Option ShapeS) (Γ : CtxS) (next : BitVec 64) (v : Val)
+    (wr : Option (Mem × Nat)) : Option (List (Val × HeldS)) :=
+  match writeCell kinds Γ next v wr with
+  | some r => some r
+  | none => writeRanged kinds Γ next wr
+
+theorem writeAny_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk Ψ kinds) {Γ : CtxS}
+    {next : BitVec 64} {v : Val} {held' : List (Val × HeldS)} :
+    (wr : Option (Mem × Nat)) → writeAny kinds Γ next v wr = some held' →
+    match wr with
+    | some (m, n) => Writes fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n (v.den ρ)
+        (CtxS.den ρ { Γ with held := held' })
+    | none => held' = Γ.held := by
+  intro wr h
+  unfold writeAny at h
+  split at h
+  · next r hr => cases h; exact writeCell_sound hk wr hr
+  · cases wr with
+    | none => cases h
+    | some mn => exact writeRanged_sound hk v h
+
 /-- The term for the address an instruction uses as a number. -/
 def eaTerm (Γ : CtxS) (next : BitVec 64) : Option Mem → Val
   | some m => eaS Γ.regs next m
@@ -454,12 +721,12 @@ def stepHeld (kinds : Nat → Option ShapeS) (Γ : CtxS) (k : Nat) (next : BitVe
     Option (CtxS × Val) :=
   match i.sem with
   | some s =>
-    match readCell kinds Γ k next s.rd with
+    match readAny kinds Γ k next s.rd with
     | some (cell, extra) =>
       let Γ₁ : CtxS := { Γ with known := extra ++ Γ.known }
       let σ := fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell
       if !s.guard.okS Γ₁ Γ.flags (s.ga.fillN σ) (s.gb.fillN σ) (s.gc.fillN σ) then none else
-      match writeCell kinds Γ₁ next (s.store.fillN σ) s.wr with
+      match writeAny kinds Γ₁ next (s.store.fillN σ) s.wr with
       | some held' =>
         some ({ Γ₁ with
                 regs := setRegs σ s.outs Γ.regs
@@ -505,7 +772,7 @@ theorem stepHeld_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
       split at h
       · next held' hwc =>
         cases h
-        have hR := readCell_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) (ρ := ρ) hk hu s.rd hrc
+        have hR := readAny_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) (ρ := ρ) hk hu s.rd hrc
         refine Steps.mono (Steps.desc
           (R := fun x Γr => Γr = CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known } ∧
             cell.den (ρ.setVal k x) = x)
@@ -526,7 +793,7 @@ theorem stepHeld_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
           have hΓ : Γ.den (ρ.setVal k x) = Γ.den ρ := CtxS.den_setVal ρ k x Γ hu
           have hval : (CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known }).val
               = (Γ.den ρ).val := (congrArg CtxOf.val hΓ : (Γ.den (ρ.setVal k x)).val = _)
-          have hW := writeCell_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) (ρ := ρ.setVal k x) hk
+          have hW := writeAny_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) (ρ := ρ.setVal k x) hk
             (Γ := { Γ with known := extra ++ Γ.known }) s.wr hwc
           show match s.wr with
             | some (m, n) => _
