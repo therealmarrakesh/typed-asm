@@ -3,6 +3,7 @@ import TypedAsm.U.FlagsS
 import TypedAsm.U.RegardS
 import TypedAsm.U.Bridge
 import TypedAsm.U.Guard
+import TypedAsm.U.Text
 
 /-!
 # The checker's step
@@ -78,6 +79,27 @@ theorem CtxS.held_den (ρ : Env) (Γ : CtxS) {j : Nat} {b : Val} {S : HeldS}
   rw [List.getElem?_append_left hj, List.getElem?_map, h]
   rfl
 
+/-- The fact a context has that an address is a pointer to text: the first,
+of a value the address is. With what says whether there is more. -/
+def findStr (a : Val) : List (Val × TyS) → Option (Val × Val)
+  | [] => none
+  | (q, .str c) :: rest => if q.same a then some (q, c) else findStr a rest
+  | _ :: rest => findStr a rest
+
+theorem findStr_spec {a : Val} : (l : List (Val × TyS)) → {q c : Val} →
+    findStr a l = some (q, c) → (q, TyS.str c) ∈ l ∧ q.same a = true
+  | [], _, _, h => by cases h
+  | (p, τ) :: rest, q, c, h => by
+    have tail : findStr a rest = some (q, c) → (q, TyS.str c) ∈ (p, τ) :: rest ∧ q.same a = true :=
+      fun h' => ⟨List.mem_cons_of_mem _ (findStr_spec rest h').1, (findStr_spec rest h').2⟩
+    cases τ with
+    | str c' =>
+      simp only [findStr] at h
+      split at h
+      · next hs => cases h; exact ⟨List.mem_cons_self, hs⟩
+      · exact tail h
+    | _ => exact tail h
+
 /-- A term for so many bytes read: no more than so many bytes, which the
 term says by the operator at its head. -/
 def narrow (n : Nat) (x : Val) : Val :=
@@ -102,7 +124,9 @@ tells. Nothing where it reads none. In a region the context holds: the value
 held there, where one is held at those eight bytes, and otherwise the name
 `k`, for a value the context does not say. In a block a value is known to
 point into: the name `k`, of which is then known what the block's shape
-says is at those bytes. -/
+says is at those bytes. A byte of text, through a pointer to text: the name
+`k`, and of the pointer it is then known that there is more unless that
+byte is nought. -/
 def readCell (kinds : Nat → Option ShapeS) (Γ : CtxS) (k : Nat) (next : BitVec 64) :
     Option (Mem × Nat) → Option (Val × List (Val × TyS))
   | none => some (.lit 0, [])
@@ -117,7 +141,12 @@ def readCell (kinds : Nat → Option ShapeS) (Γ : CtxS) (k : Nat) (next : BitVe
     | none =>
       match findFact kinds (eaS Γ.regs next m) n Γ.known with
       | some (_, Sh, _, _, o) => some (narrow n (.var k), readFactsS Sh o n (.var k))
-      | none => none
+      | none =>
+        if n = 1 then
+          match findStr (eaS Γ.regs next m) Γ.known with
+          | some (q, _) => some (narrow 1 (.var k), [(q, .str (narrow 1 (.var k)))])
+          | none => none
+        else none
 
 theorem readCell_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk Ψ kinds) {Γ : CtxS}
     {k : Nat} {next : BitVec 64} {cell : Val}
@@ -191,7 +220,39 @@ theorem readCell_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
         · show _ = readFacts (Sh.den ρ) o n ((Val.var k).den (ρ.setVal k x))
           rw [show (Val.var k).den (ρ.setVal k x) = x from Env.setVal_get_self ρ k x]
         · exact (congrArg CtxOf.known hΓ).symm
-      · cases h
+      · split at h
+        · next h1 =>
+          subst h1
+          split at h
+          · next q c hstr =>
+            cases h
+            obtain ⟨hmem, hsame⟩ := findStr_spec Γ.known hstr
+            have hf : (q.den ρ, Ty.str (c.den ρ)) ∈ (Γ.den ρ).known :=
+              List.mem_map.mpr ⟨(q, .str c), hmem, rfl⟩
+            have haddr : eaOf (Γ.den ρ).val next m = q.den ρ := by
+              rw [← eaS_den]; exact (Val.same_den ρ hsame).symm
+            show Reads fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) 1 _
+            rw [haddr]
+            refine (Reads.text hf).narrow.mono ?_
+            rintro x Γr ⟨rfl, hcut⟩
+            have hcell : (narrow 1 (.var k)).den (ρ.setVal k x) = x := by
+              rw [narrow_den, show (Val.var k).den (ρ.setVal k x) = x from
+                Env.setVal_get_self ρ k x]
+              exact hcut
+            refine ⟨?_, hcell⟩
+            have hΓ := CtxS.den_setVal ρ k x Γ hu
+            refine ctx_ext (congrArg CtxOf.val hΓ).symm (congrArg CtxOf.flags hΓ).symm
+              (congrArg CtxOf.held hΓ).symm ?_
+            have hq : q.under k = true := by
+              have hu' := hu
+              simp only [CtxS.under, Bool.and_eq_true, List.all_eq_true] at hu'
+              exact (hu'.1.2 _ hmem).1
+            show (q.den ρ, Ty.str x) :: (Γ.den ρ).known
+              = (q.den (ρ.setVal k x), Ty.str ((narrow 1 (.var k)).den (ρ.setVal k x)))
+                :: (Γ.den (ρ.setVal k x)).known
+            rw [hcell, Val.den_setVal ρ k x _ hq, hΓ]
+          · cases h
+        · cases h
 
 /-- Whether each typed value of a block keeps clear of the `n` bytes written
 at `o`, or is the eight bytes written, with a value that is of its type:

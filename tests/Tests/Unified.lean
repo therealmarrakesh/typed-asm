@@ -534,6 +534,30 @@ example : checkProgram { code := codeList } [lab 0 Pl] 10 0 = false := by decide
 example : checkProgram { code := codeList, kinds := kinds7 } [lab 0 Pl, lab 5 Pl] 10 0 = false := by
   decide +kernel
 
+/-! ## Text -/
+
+/-- `rdi` points to text. -/
+def Ps : CtxS := { Pw with known := [(.bvar 0 7, .str (.lit 0))] }
+
+/-- `loop: movzx eax, byte [rdi]; test eax, eax; je out; add rdi, <step>;
+add rcx, 1; jmp loop; out: exit`: the length of a text, counted in `rcx`. -/
+def codeLen (step : BitVec 32) : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .movzx .w32 .rax .w8 (.mem (.sib (some .rdi) none 0)), 3),
+   (3, .test .w32 (.reg .rax) (.reg .rax), 2), (5, .jcc .e 13, 2),
+   (7, .alu .add .w64 (.rm_i (.reg .rdi) step), 4), (11, .alu .add .w64 (.rm_i (.reg .rcx) 1), 4),
+   (15, .jmp (.rel (-20)), 5),
+   (20, .mov .w32 (.rm_i (.reg .rax) 60), 5), (25, .syscall, 2)]
+
+-- the byte read is not nought past the test, so there is more text, and the
+-- address one on points to text: the label's context again, round the loop
+example : checkProgram (codeLen 1) [lab 0 Ps] 12 0 = true := by decide +kernel
+-- two bytes at a time: the second may be past the end. Refused
+example : checkProgram (codeLen 2) [lab 0 Ps] 12 0 = false := by decide +kernel
+-- entered past the test, the byte is not known not to be nought: refused
+example : checkProgram (codeLen 1) [lab 0 Ps, lab 7 Ps] 12 0 = false := by decide +kernel
+-- through a value not known to point to text: refused
+example : checkProgram (codeLen 1) [lab 0 Pw] 12 0 = false := by decide +kernel
+
 /-! ## Divides -/
 
 /-- `test rcx, rcx; je out; xor edx, edx; div rcx; out: exit`: the divisor is

@@ -1,5 +1,6 @@
 import TypedAsm.U.Range
 import TypedAsm.U.Bound
+import TypedAsm.U.Text
 import TypedAsm.U.Fresh
 import TypedAsm.U.Entail
 import TypedAsm.U.RegardS
@@ -89,14 +90,39 @@ theorem CtxS.knowsIn_has {ρ : Env} {Γ : CtxS} {v : Val} {R : Range} (h : Γ.kn
     exact Range.within_has (r := ⟨lo, hi⟩) hin (hasTy_range.mp hT)
   | _ => rw [hτ] at hin; cases hin
 
+/-- Whether a value is known to lie in a range: by the operator that gave
+it, or by what the context knows of it. -/
+def CtxS.fits (Γ : CtxS) (v : Val) (R : Range) : Bool := v.bound.within R || Γ.knowsIn v R
+
+theorem CtxS.fits_has {ρ : Env} {Γ : CtxS} {v : Val} {R : Range} (h : Γ.fits v R = true)
+    {Ψ' : MemTy} {n : Nat} (hg : ∀ g ∈ (Γ.den ρ).known, HasTy fetch sys Ψ' n g.2 g.1) :
+    R.has (v.den ρ) := by
+  unfold CtxS.fits at h
+  rcases Bool.or_eq_true_iff.mp h with h | h
+  · exact Range.within_has h (Val.bound_has ρ v)
+  · exact CtxS.knowsIn_has h hg
+
+/-- What follows of the addresses one on from pointers to text: where a
+pointer's byte is known not to be nought, the address one on is a pointer to
+text; unless that is known already. -/
+def CtxS.strNext (Γ : CtxS) : List (Val × TyS) :=
+  Γ.known.filterMap fun f =>
+    match f.2 with
+    | .str c =>
+      if Γ.fits c .nonZero &&
+          !(Γ.known.any fun g => g.1.same (.add f.1 (.lit 1)) && g.2 == .str (.lit 0)) then
+        some (.add f.1 (.lit 1), .str (.lit 0))
+      else none
+    | _ => none
+
 /-- **A context with each thing known made as sharp as the ranges it knows
 allow**: what may be null and is known to lie clear of zero, is not null;
-what may be an error number and is known to lie clear of them, is not one.
-Whenever a range comes to be known, by a comparison or of what a call hands
-back, this is done; so it does not matter in which order things were
-learnt. -/
+what may be an error number and is known to lie clear of them, is not one;
+and past a byte of text known not to be nought there is text. Whenever a
+range comes to be known, by a comparison or of what a call hands back, this
+is done; so it does not matter in which order things were learnt. -/
 def CtxS.sharpen (Γ : CtxS) : CtxS :=
-  { Γ with known := Γ.known.map fun f =>
+  { Γ with known := Γ.strNext ++ Γ.known.map fun f =>
       (f.1, f.2.strip (Γ.knowsIn f.1 .nonZero) (Γ.knowsIn f.1 .noErr)) }
 
 theorem CtxS.sharpen_regards (ρ : Env) (Γ : CtxS) :
@@ -105,10 +131,25 @@ theorem CtxS.sharpen_regards (ρ : Env) (Γ : CtxS) :
     (fun _ hx => nomatch hx) .nil (fun i b hb => by simp at hb)
   intro f hf Ψ' n hg
   obtain ⟨g, hg', rfl⟩ := List.mem_map.mp hf
-  obtain ⟨g₀, hg₀, rfl⟩ := List.mem_map.mp hg'
-  exact TyS.strip_follows ρ (fun h => Range.nonZero_has (CtxS.knowsIn_has h hg))
-    (fun h => Range.noErr_has (CtxS.knowsIn_has h hg)) g₀.2 Ψ' n
-    (hg (g₀.1.den ρ, g₀.2.den ρ) (List.mem_map.mpr ⟨g₀, hg₀, rfl⟩))
+  rcases List.mem_append.mp hg' with hn | hs
+  · obtain ⟨g₀, hg₀, hsome⟩ := List.mem_filterMap.mp hn
+    cases hτ : g₀.2 with
+    | str c =>
+      rw [hτ] at hsome
+      simp only at hsome
+      split at hsome
+      · next hc =>
+        cases hsome
+        rw [Bool.and_eq_true] at hc
+        have hsrc := hg (g₀.1.den ρ, g₀.2.den ρ) (List.mem_map.mpr ⟨g₀, hg₀, rfl⟩)
+        rw [hτ] at hsrc
+        exact hasTy_str_succ hsrc (Range.nonZero_has (CtxS.fits_has hc.1 hg))
+      · cases hsome
+    | _ => rw [hτ] at hsome; cases hsome
+  · obtain ⟨g₀, hg₀, rfl⟩ := List.mem_map.mp hs
+    exact TyS.strip_follows ρ (fun h => Range.nonZero_has (CtxS.knowsIn_has h hg))
+      (fun h => Range.noErr_has (CtxS.knowsIn_has h hg)) g₀.2 Ψ' n
+      (hg (g₀.1.den ρ, g₀.2.den ρ) (List.mem_map.mpr ⟨g₀, hg₀, rfl⟩))
 
 /-- The ranges a comparison leaves the values it compares: of each, that it
 lies in the range. -/
@@ -125,18 +166,6 @@ theorem CmpT.rangeFacts_hasTy {ρ : Env} {p : CmpT} {b : Bool} (hp : p.den ρ = 
     rw [hr] at ho
     cases ho
     exact hasTy_range.mpr (CmpT.range_sound hr hp)
-
-/-- Whether a value is known to lie in a range: by the operator that gave
-it, or by what the context knows of it. -/
-def CtxS.fits (Γ : CtxS) (v : Val) (R : Range) : Bool := v.bound.within R || Γ.knowsIn v R
-
-theorem CtxS.fits_has {ρ : Env} {Γ : CtxS} {v : Val} {R : Range} (h : Γ.fits v R = true)
-    {Ψ' : MemTy} {n : Nat} (hg : ∀ g ∈ (Γ.den ρ).known, HasTy fetch sys Ψ' n g.2 g.1) :
-    R.has (v.den ρ) := by
-  unfold CtxS.fits at h
-  rcases Bool.or_eq_true_iff.mp h with h | h
-  · exact Range.within_has h (Val.bound_has ρ v)
-  · exact CtxS.knowsIn_has h hg
 
 /-- **A comparison at 32 bits, as the comparison at 64**, where both values
 are known to fit: it says the same of them. -/
