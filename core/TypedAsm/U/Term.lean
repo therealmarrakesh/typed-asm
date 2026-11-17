@@ -30,6 +30,8 @@ inductive Val
   | lit (v : BitVec 64)
   | var (i : Nat)
   | add (a b : Val)
+  /-- A value shifted left by so many bits: an index scaled. -/
+  | shl (a : Val) (k : Nat)
   /-- The value the instruction gives the `k`th register it writes. -/
   | out (i : Instr) (k : Nat) (a b c : Val) (fl : FlagsT) (next : BitVec 64) (ea cell : Val)
   /-- The value the instruction stores to memory. -/
@@ -68,6 +70,7 @@ def Val.den (ρ : Env) : Val → BitVec 64
   | .lit v => v
   | .var i => ρ.val.getD i 0
   | .add a b => a.den ρ + b.den ρ
+  | .shl a k => a.den ρ <<< k
   | .out i k a b c fl next ea cell =>
     (((effectOf i [a.den ρ, b.den ρ, c.den ρ] (fl.den ρ) next (ea.den ρ) (cell.den ρ)).regs.getD k
       (.rax, 0)).2)
