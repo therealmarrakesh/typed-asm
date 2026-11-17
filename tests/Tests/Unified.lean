@@ -97,4 +97,23 @@ example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linux
   (walk_sound hD rfl (fun _ => trivial) codeE hcode 10 20 0 Γw ρ (by decide +kernel)
     (Walk.holds_of_auto _ _ _ ρ (by decide +kernel))).2 (by decide +kernel)
 
+/-- `test rdi, rdi; je there; mov eax, 60; syscall; there: mov eax, 231;
+syscall`: a branch on a comparison, each
+way ending the program. -/
+def codeB : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .test .w64 (.reg .rdi) (.reg .rdi), 3), (3, .jcc .e 7, 2),
+   (5, .mov .w32 (.rm_i (.reg .rax) 60), 5), (10, .syscall, 2),
+   (12, .mov .w32 (.rm_i (.reg .rax) 231), 5), (17, .syscall, 2)]
+
+/-- **Typed by the walk alone**: the comparison leaves the zero flag
+defined, so the jump is decided, and both ways end the program. -/
+example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
+    (hcode : ∀ e ∈ codeB, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (n : Nat) :
+    Ok fetch sys Ψ (n + 1) 0 (Γw.den ρ) :=
+  (walk_sound hD rfl (fun _ => trivial) codeB hcode 10 20 0 Γw ρ (by decide +kernel)
+    (Walk.holds_of_auto _ _ _ ρ (by decide +kernel))).2 (by decide +kernel)
+
+-- with no comparison before it, the jump is not decided, and nothing is concluded
+example : (walk (codeB.drop 1) 10 20 3 Γw).auto = false := by decide +kernel
+
 end Tests.Unified

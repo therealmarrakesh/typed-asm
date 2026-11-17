@@ -1,4 +1,5 @@
 import TypedAsm.U.FindFact
+import TypedAsm.U.FlagsS
 
 /-!
 # The checker's step
@@ -296,7 +297,7 @@ def stepHeld (Γ : CtxS) (k : Nat) (next : BitVec 64) (i : Instr) : Option (CtxS
       | some held' =>
         some ({ Γ₁ with
                 regs := setOuts (fun j => simpOut i j a b c Γ.flags next ea cell) i.outs 0 Γ.regs
-                flags := .out i a b c Γ.flags next ea cell
+                flags := flagsOut i a b c Γ.flags next ea cell
                 held := held' },
           targetS i next (.goes i a b c Γ.flags next ea cell))
       | none => none
@@ -381,7 +382,8 @@ theorem stepHeld_sound {ρ : Env} {Γ Γ' : CtxS} {k : Nat} {next : BitVec 64} {
                 (Reg.rax, 0)).2 = _
               rw [hx, he, Nat.zero_add, List.getD_eq_getElem?_getD, List.getElem?_eq_getElem hj]
               rfl
-            · show _ = (effectOf i _ _ next _ (cell.den (ρ.setVal k x))).flags
+            · refine Eq.trans ?_ (flagsOut_den (ρ.setVal k x) i _ _ _ _ next _ _).symm
+              show _ = (effectOf i _ _ next _ (cell.den (ρ.setVal k x))).flags
               rw [hx, he]
               rfl
       · cases h

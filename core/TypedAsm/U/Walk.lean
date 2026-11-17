@@ -228,6 +228,7 @@ def Walk.auto : Walk → Bool
   | .step i _ _ _ rest => i.noGuard && rest.auto
   | .sys _ rest => rest.auto
   | .ends => true
+  | .branch c Γ taken fall => Γ.flags.decides c && taken.auto && fall.auto
   | _ => false
 
 /-- Such a walk holds. -/
@@ -239,6 +240,10 @@ theorem Walk.holds_of_auto (P A : BitVec 64 → Ctx → Prop) :
       fun x => Walk.holds_of_auto P A rest _ h.2⟩
   | .sys k rest, ρ, h => fun x => Walk.holds_of_auto P A rest _ h
   | .ends, _, _ => trivial
+  | .branch c Γ taken fall, ρ, h => by
+    simp only [Walk.auto, Bool.and_eq_true] at h
+    exact ⟨FlagsT.decides_den ρ Γ.flags c h.1.1, fun _ => Walk.holds_of_auto P A taken ρ h.1.2,
+      fun _ => Walk.holds_of_auto P A fall ρ h.2⟩
   | .stop _ _, _, h => nomatch h
   | .arrive _ _, _, h => nomatch h
 
