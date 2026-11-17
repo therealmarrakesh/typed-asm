@@ -1,47 +1,41 @@
 import IndexProgram
-import TypedAsm.Tactic
+import TypedAsm.U.Checked
 
 /-!
 # Index: typing and safety
 
-The program is in `IndexProgram.lean`. This file types it and proves it safe.
-It is kept separate so that running the program does not link the tactics.
+The program is in `IndexProgram.lean`. This file says what its labels want
+and checks it: one check, run by Lean's kernel, that the code is typed and
+that the state the kernel loads the program into starts as its entry asks.
+Nothing is proved by hand.
+
+It is kept separate so that running the program does not link the checker.
 -/
 
-open TypedAsm
+open TypedAsm TypedAsm.U
 
 namespace Index
 
-/-! ## The typing -/
+/-! ## What the labels want -/
 
-/-- A pointer to a read-only array of `n` integers. -/
-def arr (n : Nat) : Ty := .ptr (.raw (8 * n)) false 0
+/-- Where the array is. -/
+def arr : Val := .lit (Asm.addr code base .array)
 
-/-- `get` takes the array in `rdi`, exactly its length in `rsi`, and any
-integer at all as the index in `rdx`. -/
-def getSig (n : Nat) : FnSig where
-  args := fun r =>
-    if r = .rdi then arr n else if r = .rsi then .eq (BitVec.ofNat 64 n) else .int
-  results := fun _ => .int
-  preserved := calleeSaved
-  need := 0
+/-- The program for the checker: its instructions, and that the array is in
+the segment it was written in. -/
+def pg : Prog :=
+  { code := progCode (Asm.table base code)
+    statics := staticIn (blocksOf code .start) (Asm.addr code base .array) }
 
-/-- Nothing is known about any register. -/
-def fin : Ctx := ⟨fun _ => .int, [], 8, Flags.Any, [], 0⟩
+/-- The labels. `get` takes the array in `rdi`, its length in `rsi`, and in
+`rdx` any number at all as the index: the comparison it makes is what lets
+it read. -/
+def labels : List U.Label :=
+  [⟨entry, entryOf 1⟩,
+   ⟨Asm.addr code base .get, inFunction [(.rdi, arr), (.rsi, 5)]⟩]
 
-/-- The contexts allowed at each label. -/
-inductive At : Label → Ctx → Prop
-  | start : At .start (entryCtx 1)
-  | afterCall : At .afterCall fin
-  | get (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
-    (getSig n).CallerOk saved ret rest room → n < 2 ^ 64 →
-    At .get ((getSig n).entry saved ret rest room)
+/-! ## The check, and what it shows -/
 
-asm_typing At
-
-/-! ## Safety -/
-
-asm_safety At.start
+asm_checked code start .start stack 1 program pg labels labels fuel 30
 
 end Index
-

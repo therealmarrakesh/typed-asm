@@ -1,54 +1,41 @@
 import OpsProgram
-import TypedAsm.Tactic
+import TypedAsm.U.Checked
 
 /-!
 # Ops: typing and safety
 
-The program is in `OpsProgram.lean`. This file types it and proves it safe.
-It is kept separate so that running the program does not link the tactics.
+The program is in `OpsProgram.lean`. This file says what its labels want
+and checks it: one check, run by Lean's kernel, that the code is typed and
+that the state the kernel loads the program into starts as its entry asks.
+Nothing is proved by hand.
+
+It is kept separate so that running the program does not link the checker.
 -/
 
-open TypedAsm
+open TypedAsm TypedAsm.U
 
 namespace Ops
 
-/-! ## The typing -/
+/-! ## What the labels want -/
 
-/-- A pointer to a writable record of sixteen plain bytes: two numbers. -/
-def pair : Ty := .ptr (.raw 16) true 0
+/-- The program for the checker: its instructions, and that the record is
+in the segment it was written in. -/
+def pg : Prog :=
+  { code := progCode (Asm.table base code)
+    statics := staticIn (blocksOf code .start) (Asm.addr code base .record) }
 
-/-- `compute` takes the pointer in `rdi`, uses two stack slots, and
-preserves the callee-saved registers. -/
-def computeSig : FnSig where
-  args := fun r => if r = .rdi then pair else .int
-  results := fun _ => .int
-  preserved := calleeSaved
-  need := 16
+/-- The labels. `compute` takes in `rdi` a pointer to memory it may write,
+and uses sixteen bytes of stack below its return address; it is called
+through a pointer kept on the stack. `finish` is jumped to through a
+register, the stack as the program's start has it. -/
+def labels : List U.Label :=
+  [⟨entry, entryOf 4⟩,
+   ⟨Asm.addr code base .finish, entryOf 4⟩,
+   ⟨Asm.addr code base .compute,
+     inFunction [] [(.was .rdi, .ptr (.mk 4096 .nil) true 0)] (room := 16)⟩]
 
-/-- After the call: nothing is known about any register, and the slot that
-held the function pointer is still allocated. -/
-def afterCtx : Ctx := ⟨fun _ => .int, [.raw 8], 24, Flags.Any, [], 0⟩
+/-! ## The check, and what it shows -/
 
-/-- Nothing is known about any register, and the stack is empty. -/
-def fin : Ctx := ⟨fun _ => .int, [], 32, Flags.Any, [], 0⟩
-
-/-- What the function pointer in `_start` points to: `compute`, entered by a
-caller with one slot on its stack that returns to `afterCall`. -/
-def computeCtx : Ctx := computeSig.entry (fun _ => .int) afterCtx [.raw 8] 16
-
-/-- The contexts allowed at each label. -/
-inductive At : Label → Ctx → Prop
-  | start : At .start (entryCtx 4)
-  | afterCall : At .afterCall afterCtx
-  | finish : At .finish fin
-  | compute (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
-    computeSig.CallerOk saved ret rest room → At .compute (computeSig.entry saved ret rest room)
-
-asm_typing At
-
-/-! ## Safety -/
-
-asm_safety At.start
+asm_checked code start .start stack 4 program pg labels labels fuel 60
 
 end Ops
-
