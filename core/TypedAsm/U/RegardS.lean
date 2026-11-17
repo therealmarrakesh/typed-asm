@@ -1,4 +1,5 @@
 import TypedAsm.U.Find
+import TypedAsm.U.Lin
 import TypedAsm.U.Entail
 import TypedAsm.U.Range
 
@@ -27,16 +28,16 @@ open TypedAsm
 variable {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
 
 /-- Whether two terms stand for the same value, as far as their being the
-same term, or sums of the same terms and the same number, shows. -/
+same term, or coming apart into the same multiples and the same number,
+shows. -/
 def Val.same (a b : Val) : Bool :=
-  a == b || (a.summands.1 == b.summands.1 && a.summands.2 == b.summands.2)
+  a == b || a.linSame b
 
 theorem Val.same_den (ρ : Env) {a b : Val} (h : a.same b = true) : a.den ρ = b.den ρ := by
   unfold Val.same at h
   rcases Bool.or_eq_true _ _ |>.mp h with h | h
   · rw [beq_iff_eq.mp h]
-  · rw [Bool.and_eq_true] at h
-    rw [Val.summands_den ρ a, Val.summands_den ρ b, beq_iff_eq.mp h.1, beq_iff_eq.mp h.2]
+  · exact Val.linSame_den ρ h
 
 def allRegs : List Reg :=
   [.rax, .rcx, .rdx, .rbx, .rsp, .rbp, .rsi, .rdi, .r8, .r9, .r10, .r11, .r12, .r13, .r14, .r15]
