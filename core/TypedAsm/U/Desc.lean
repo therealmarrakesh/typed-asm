@@ -167,7 +167,7 @@ def _root_.TypedAsm.Instr.desc1 : Instr → Option Desc1
         match op.eval ((vals.getD 0 0).setWidth w.bits) ((vals.getD 1 0).setWidth w.bits)
             ((rmVal src 2 vals cell).setWidth w.bits) with
         | .next (lo, hi, f) => ⟨[(.rax, wide lo), (.rdx, wide hi)], f, 0⟩
-        | _ => ⟨[], fl, 0⟩ }
+        | _ => ⟨[(.rax, vals.getD 1 0), (.rdx, vals.getD 0 0)], fl, 0⟩ }
   | .imul2 w dst src =>
     some {
       srcs := dst :: rmRegs src
