@@ -2,13 +2,15 @@ import TypedAsm.U.Regard
 import TypedAsm.Owned
 
 /-!
-# A held region regarded as two
+# Regions held, dropped, added, and taken as one
 
-Seen as it is, a region the context holds is so many bytes at an address.
-Seen as two, it is the first so many of them, and the rest. Nothing happens
-to the machine: it is only how the same bytes are regarded. Which it is to
-be is asked where part of a region is wanted by itself: to be given back,
-handed to a function, or made a block others may point into.
+A region the context holds may be dropped from what it holds, and a region
+that is writable and overlaps nothing may be added: which is how a system
+call that maps or unmaps memory is typed. And two regions that lie end to
+end may be regarded as one: nothing happens to the machine, it is only how
+the same bytes are regarded. Taking one region as several, or as part of
+itself, is a case of the one statement of what regard comes to, in
+`Entail`.
 -/
 
 namespace TypedAsm.U
