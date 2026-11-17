@@ -47,7 +47,7 @@ inductive TyS
   | ref (tag : Nat) (writable : Bool) (off : Nat)
   | nullable (τ : TyS)
   | orErr (τ : TyS)
-  | str (more : Bool)
+  | str (c : Val)
   /-- Knowledge not written out: the `i`th the names stand for. -/
   | atom (i : Nat)
   /-- It is code, safe to enter in the context these terms stand for,
@@ -83,7 +83,7 @@ def TyS.den (ρ : Env) : TyS → Ty
   | .ref tag w off => .ref tag w off
   | .nullable τ => .nullable (τ.den ρ)
   | .orErr τ => .orErr (τ.den ρ)
-  | .str more => .str more
+  | .str c => .str (c.den ρ)
   | .atom i => ρ.ty i
   | .range lo hi => .range lo hi
   | .code regs flags held known rest => .code fun z =>

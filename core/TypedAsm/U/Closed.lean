@@ -139,6 +139,7 @@ def TyS.closedAt (n : Nat) : TyS → Bool
   | .ptr S _ _ => S.closedAt n
   | .nullable τ => τ.closedAt n
   | .orErr τ => τ.closedAt n
+  | .str c => c.closedAt n
   | .code regs flags held known rest =>
     (regs.map (Val.closedAt (n + 1)) == allTrue) && flags.closedAt (n + 1) &&
       heldClosedAt (n + 1) held && known.closedAt (n + 1) && rest.closedAt (n + 1)
@@ -169,7 +170,8 @@ theorem TyS.den_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n zs 
     simp only [TyS.den, TyS.den_agree ρ n zs zs' hz τ (by simpa only [TyS.closedAt] using h)]
   | .orErr τ, h => by
     simp only [TyS.den, TyS.den_agree ρ n zs zs' hz τ (by simpa only [TyS.closedAt] using h)]
-  | .str _, _ => rfl
+  | .str c, h => by
+    simp only [TyS.den, Val.den_agree ρ n zs zs' hz c (by simpa only [TyS.closedAt] using h)]
   | .atom _, _ => rfl
   | .range _ _, _ => rfl
   | .code regs flags held known rest, h => by

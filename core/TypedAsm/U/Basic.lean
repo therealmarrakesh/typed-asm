@@ -62,9 +62,9 @@ theorem hasTy_orErr {τ : Ty} {v : BitVec 64} :
     HasTy fetch sys Ψ n (.orErr τ) v ↔ SysErr v ∨ HasTy fetch sys Ψ n τ v := by
   rw [HasTy]
 
-theorem hasTy_str {more : Bool} {v : BitVec 64} :
-    HasTy fetch sys Ψ n (.str more) v ↔
-      ∃ a l off, Ψ a = some l ∧ off + (if more then 1 else 0) < l.text ∧
+theorem hasTy_str {c : BitVec 64} {v : BitVec 64} :
+    HasTy fetch sys Ψ n (.str c) v ↔
+      ∃ a l off, Ψ a = some l ∧ off < l.text ∧ (c ≠ 0 → off + 1 < l.text) ∧
         v = a + BitVec.ofNat 64 (l.shape.size + off) := by
   simp [HasTy]
 
@@ -147,11 +147,9 @@ theorem HasTy.sub {τ υ : Ty} {v : BitVec 64} (h : Sub v τ υ) (hv : HasTy fet
   | err τ υ he => exact hasTy_orErr.mpr (.inl he)
   | noErr τ hne => exact (hasTy_orErr.mp hv).resolve_left hne
   | orErrMono _ ih => exact hasTy_orErr.mpr ((hasTy_orErr.mp hv).imp id ih)
-  | strLess v more =>
-    obtain ⟨a, l, off, hl, hoff, hva⟩ := hasTy_str.mp hv
-    exact hasTy_str.mpr ⟨a, l, off, hl, by
-      simp only [↓reduceIte] at hoff
-      cases more <;> simp only [Bool.false_eq_true, ↓reduceIte] <;> omega, hva⟩
+  | strLess v c =>
+    obtain ⟨a, l, off, hl, hoff, _, hva⟩ := hasTy_str.mp hv
+    exact hasTy_str.mpr ⟨a, l, off, hl, hoff, fun h => absurd rfl h, hva⟩
   | codeMap v pre f =>
     rw [hasTy_code] at hv ⊢
     exact fun x => hv (f x)

@@ -62,9 +62,10 @@ inductive Ty
   | nullable (τ : Ty)
   /-- It is an error number, or `τ` is known of it. -/
   | orErr (τ : Ty)
-  /-- It is the address of a byte of some block's text; with `more`, not the
-  last. -/
-  | str (more : Bool)
+  /-- It is the address of a byte of some block's text; and not of the last,
+  unless `c` is nought. So of a pointer to text and the byte read there:
+  where the byte is not nought, there is more. -/
+  | str (c : BitVec 64)
   /-- It is the address of code that is safe to enter when the machine
   matches `pre x`, whichever member `x` of the family that is. A function is
   such code: its family ranges over what it is handed, what its caller
@@ -156,7 +157,7 @@ inductive Sub : BitVec 64 → Ty → Ty → Prop
   /-- What may be an error number and is not one, is not. -/
   | noErr {v : BitVec 64} (τ : Ty) : ¬ SysErr v → Sub v (.orErr τ) τ
   | orErrMono {v : BitVec 64} {τ υ : Ty} : Sub v τ υ → Sub v (.orErr τ) (.orErr υ)
-  | strLess (v : BitVec 64) (more : Bool) : Sub v (.str true) (.str more)
+  | strLess (v : BitVec 64) (c : BitVec 64) : Sub v (.str c) (.str 0)
   /-- Code ready for every one of a family of contexts is ready for any
   part of the family, however the part is picked out. -/
   | codeMap (v : BitVec 64) (pre : Fam → Ctx) (f : Fam → Fam) :
@@ -220,8 +221,8 @@ def HasTy (fetch : Fetch) (sys : Syscall) : MemTy → Nat → Ty → BitVec 64 �
       v = a + BitVec.ofNat 64 off
   | Ψ, n, .nullable τ, v => v = 0 ∨ HasTy fetch sys Ψ n τ v
   | Ψ, n, .orErr τ, v => SysErr v ∨ HasTy fetch sys Ψ n τ v
-  | Ψ, _, .str more, v =>
-    ∃ a l off, Ψ a = some l ∧ off + (if more then 1 else 0) < l.text ∧
+  | Ψ, _, .str c, v =>
+    ∃ a l off, Ψ a = some l ∧ off < l.text ∧ (c ≠ 0 → off + 1 < l.text) ∧
       v = a + BitVec.ofNat 64 (l.shape.size + off)
   | Ψ, n, .code pre, v =>
     ∀ x : Fam, ∀ k, (hk : k < n) → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State,

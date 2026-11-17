@@ -220,7 +220,7 @@ def TyS.open (o : Opening) (n : Nat) : TyS → TyS
   | .ref tag w off => .ref tag w off
   | .nullable τ => .nullable (τ.open o n)
   | .orErr τ => .orErr (τ.open o n)
-  | .str more => .str more
+  | .str c => .str (c.open o n)
   | .atom i => .atom i
   | .range lo hi => .range lo hi
   | .code regs flags held known rest =>
@@ -251,7 +251,7 @@ theorem TyS.den_open (ρ : Env) (o : Opening) (ho : o.Closed) (pre zs : List Fam
   | .ref _ _ _ => rfl
   | .nullable τ => by simp only [TyS.open, TyS.den, TyS.den_open ρ o ho pre zs τ]
   | .orErr τ => by simp only [TyS.open, TyS.den, TyS.den_open ρ o ho pre zs τ]
-  | .str _ => rfl
+  | .str c => by simp only [TyS.open, TyS.den, Val.den_open ρ o ho pre zs c]
   | .atom _ => rfl
   | .range _ _ => rfl
   | .code regs flags held known rest => by

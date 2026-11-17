@@ -243,7 +243,12 @@ def followsS (τ : TyS) : TyS → Bool
       (match τ with
        | .orErr τ' => followsS τ' υ
        | _ => false)
-  | .str more => τ == .str more || τ == .str true
+  | .str c =>
+    τ == .str c ||
+      (c == .lit 0 &&
+        (match τ with
+         | .str _ => true
+         | _ => false))
   | .atom i => τ == .atom i
   | .code r f h k rest => τ == .code r f h k rest
   | .range lo hi =>
@@ -280,11 +285,13 @@ theorem followsS_sub (ρ : Env) (v : BitVec 64) :
     · cases τ with
       | orErr τ' => exact .orErrMono (followsS_sub ρ v υ τ' h)
       | _ => cases h
-  | .str more, τ, h => by
-    simp only [followsS, Bool.or_eq_true, beq_iff_eq] at h
-    rcases h with rfl | rfl
+  | .str c, τ, h => by
+    simp only [followsS, Bool.or_eq_true, Bool.and_eq_true, beq_iff_eq] at h
+    rcases h with rfl | ⟨rfl, hτ⟩
     · exact .refl _ _
-    · exact .strLess _ _
+    · cases τ with
+      | str c' => exact .strLess _ _
+      | _ => cases hτ
   | .atom i, τ, h => by
     simp only [followsS, beq_iff_eq] at h
     subst h

@@ -216,6 +216,7 @@ def TyS.under (k : Nat) : TyS → Bool
   | .ptr S _ _ => S.under k
   | .nullable τ => τ.under k
   | .orErr τ => τ.under k
+  | .str c => c.under k
   | .code regs flags held known rest =>
     (regs.map (·.under k) == allTrue) && flags.under k && heldUnder k held && known.under k &&
       rest.under k
@@ -246,7 +247,8 @@ theorem TyS.den_under {k : Nat} {ρ₁ ρ₂ : Env} (hs : Env.SameBelow k ρ₁ 
     simp only [TyS.den, TyS.den_under hs τ (by simpa only [TyS.under] using h)]
   | .orErr τ, h => by
     simp only [TyS.den, TyS.den_under hs τ (by simpa only [TyS.under] using h)]
-  | .str _, _ => rfl
+  | .str c, h => by
+    simp only [TyS.den, Val.den_under hs c (by simpa only [TyS.under] using h)]
   | .atom i, _ => by
     show ρ₁.ty i = ρ₂.ty i
     rw [hs.ty]
