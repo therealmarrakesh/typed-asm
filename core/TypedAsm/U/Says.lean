@@ -12,28 +12,18 @@ namespace TypedAsm.U
 
 open TypedAsm
 
-/-- An operand of a comparison: a value, of which the low bits are taken; a
-number written in the instruction; or zero. -/
-inductive OpT
-  | val (v : Val)
-  | imm (i : BitVec 32)
-  | zero
-  deriving DecidableEq
-
-def OpT.den (ρ : Env) (w : Width) : OpT → BitVec w.bits
-  | .val v => (v.den ρ).setWidth w.bits
-  | .imm i => i.signExtend w.bits
-  | .zero => 0
+/-- A value, at a width: its low bits. -/
+abbrev Val.denW (v : Val) (ρ : Env) (w : Width) : BitVec w.bits := (v.den ρ).setWidth w.bits
 
 /-- A comparison of two operands at a width. -/
 structure CmpT where
   form : Form
   w : Width
-  a : OpT
-  b : OpT
+  a : Val
+  b : Val
   deriving DecidableEq
 
-def CmpT.den (ρ : Env) (p : CmpT) : Bool := p.form.eval (p.a.den ρ p.w) (p.b.den ρ p.w)
+def CmpT.den (ρ : Env) (p : CmpT) : Bool := p.form.eval (p.a.denW ρ p.w) (p.b.denW ρ p.w)
 
 /-- What a condition comes to, for flags come by in each way. -/
 def FlagKind.cond : FlagKind → Cond → Option Form
@@ -71,19 +61,19 @@ theorem FlagKind.cond_eval {k : FlagKind} {w : Width} {x y : BitVec w.bits} {F :
 /-- A comparison of a value with itself, where a condition has a form for
 flags that say whether a result is nought and whether it is negative. -/
 def resCmp (w : Width) (r : Val) (cnd : Cond) : Option CmpT :=
-  (FlagKind.res.cond cnd).map fun f => ⟨f, w, .val r, .val r⟩
+  (FlagKind.res.cond cnd).map fun f => ⟨f, w, r, r⟩
 
 /-- **What a condition comes to, for each way flags arise**: of the values
 the flags arose from, or of the result. -/
 def FSrc.says (o : FSrc) (fl : FlagsT) (a b : Val) (cnd : Cond) : Option CmpT :=
   match o with
-  | .alu .sub w | .alu .cmp w => (condSub cnd).map fun f => ⟨f, w, .val a, .val b⟩
-  | .alu .and w | .test w => some ⟨condTst cnd, w, .val a, .val b⟩
+  | .alu .sub w | .alu .cmp w => (condSub cnd).map fun f => ⟨f, w, a, b⟩
+  | .alu .and w | .test w => some ⟨condTst cnd, w, a, b⟩
   | .alu .add w => resCmp w (mkFop (.alu .add w) fl a b) cnd
   | .alu .or w => resCmp w (mkFop (.alu .or w) fl a b) cnd
   | .alu .xor w => resCmp w (mkFop (.alu .xor w) fl a b) cnd
-  | .neg w => (condSub cnd).map fun f => ⟨f, w, .zero, .val a⟩
-  | .popcnt w => some ⟨condZero cnd, w, .val a, .val a⟩
+  | .neg w => (condSub cnd).map fun f => ⟨f, w, .lit 0, a⟩
+  | .popcnt w => some ⟨condZero cnd, w, a, a⟩
   | .shift op w =>
     match b.lit? with
     | some n =>
@@ -110,9 +100,9 @@ theorem resCmp_den {ρ : Env} {w : Width} {r : Val} {cnd : Cond} {p : CmpT} {F :
 theorem FSrc.says_den (ρ : Env) {o : FSrc} {fl : FlagsT} {a b : Val} {cnd : Cond} {p : CmpT}
     (h : o.says fl a b cnd = some p) (c : BitVec 64) :
     cnd.eval (o.eval (fl.den ρ) (a.den ρ) (b.den ρ) c) = some (p.den ρ) := by
-  have sub : ∀ {w : Width} {A B : OpT} {F : Flags},
+  have sub : ∀ {w : Width} {A B : Val} {F : Flags},
       (condSub cnd).map (fun f => (⟨f, w, A, B⟩ : CmpT)) = some p →
-      F = (subBorrow (A.den ρ w) (B.den ρ w) false).2 → cnd.eval F = some (p.den ρ) := by
+      F = (subBorrow (A.denW ρ w) (B.denW ρ w) false).2 → cnd.eval F = some (p.den ρ) := by
     intro w A B F h hF
     cases hc : condSub cnd with
     | none => rw [hc] at h; cases h
@@ -141,7 +131,7 @@ theorem FSrc.says_den (ρ : Env) {o : FSrc} {fl : FlagsT} {a b : Val} {cnd : Con
     | xor => exact res (.inr (.inr rfl)) h
     | _ => cases h
   | test w => cases h; exact condTst_eval _ _ cnd
-  | neg w => exact sub h rfl
+  | neg w => cases w <;> exact sub h rfl
   | popcnt w => cases h; exact condZero_eval _ cnd
   | shift op w =>
     simp only [FSrc.says] at h

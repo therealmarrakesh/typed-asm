@@ -112,26 +112,18 @@ theorem CtxS.sharpen_regards (ρ : Env) (Γ : CtxS) :
 /-- The ranges a comparison leaves the values it compares: of each, that it
 lies in the range. -/
 def CmpT.rangeFacts (p : CmpT) (b : Bool) : List (Val × TyS) :=
-  [p.a, p.b].filterMap fun o =>
-    match o with
-    | .val v => (p.range b v).map fun R => (v, .range R.lo R.hi)
-    | _ => none
+  [p.a, p.b].filterMap fun v => (p.range b v).map fun R => (v, .range R.lo R.hi)
 
 theorem CmpT.rangeFacts_hasTy {ρ : Env} {p : CmpT} {b : Bool} (hp : p.den ρ = b)
     {f : Val × TyS} (hf : f ∈ p.rangeFacts b) (Ψ' : MemTy) (n : Nat) :
     HasTy fetch sys Ψ' n (f.2.den ρ) (f.1.den ρ) := by
-  obtain ⟨o, _, ho⟩ := List.mem_filterMap.mp hf
-  cases o with
-  | val v =>
-    simp only at ho
-    cases hr : p.range b v with
-    | none => rw [hr] at ho; cases ho
-    | some R =>
-      rw [hr] at ho
-      cases ho
-      exact hasTy_range.mpr (CmpT.range_sound hr hp)
-  | imm i => cases ho
-  | zero => cases ho
+  obtain ⟨v, _, ho⟩ := List.mem_filterMap.mp hf
+  cases hr : p.range b v with
+  | none => rw [hr] at ho; cases ho
+  | some R =>
+    rw [hr] at ho
+    cases ho
+    exact hasTy_range.mpr (CmpT.range_sound hr hp)
 
 /-- **A context, knowing what a comparison teaches**: the range each value
 compared is left in, and everything known made as sharp as that allows. -/
