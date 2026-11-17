@@ -280,12 +280,6 @@ inductive Finish
   /-- This instruction needs information the tactic does not have. -/
   | needsHelp (msg : MessageData)
 
-/-- Types a direct `call` that ends a block, to a function whose signature
-is read from the context declared at the label it calls. -/
-syntax "ty_call_auto" : tactic
-syntax "ty_call_with " term : tactic
-syntax "ty_call_returning " term:max term:max : tactic
-
 /-- Whether a jump goes forward: to the instruction after it or beyond. -/
 def jumpsForward : Instr → Bool
   | .jmp (.rel d) | .jcc _ d => !d.msb
@@ -703,53 +697,7 @@ def tryInto (labels : Array Nat) : TacticM Bool := do
     return true
   atStart.restore
   refusal.set none
-  let saved ← saveState
-  try
-    let gs ← runOn goal (do evalTactic (← `(tactic|
-      refine BlockOk.last (by ty_fetch) (HasType.straight (Γ' := ?_) ?st ?acc))))
-    let st ← goalNamed gs `st
-    let acc ← goalNamed gs `acc
-    unless (← runOn st (do evalTactic (← `(tactic| ty_straight)))).isEmpty do
-      throwError "left over"
-    unless (← proveAccepts acc).isEmpty do throwError "left over"
-    trace[TypedAsm.fast] "run into a label the long way: {i.toAsm}"
-    setGoals others
-    return true
-  catch _ =>
-    saved.restore
-    return false
-
-/-- The signature of the function an operand points to, where the operand's
-type says it is a pointer to a function. -/
-def pointerSig (goal : MVarId) (rm : RM) : TacticM (Option Expr) := goal.withContext do
-  let ty := (← instantiateMVars (← goal.getType)).consumeMData
-  unless ty.isAppOfArity ``BlockOk 6 do return none
-  let args := ty.getAppArgs
-  let τ0 ← match rm with
-    | .reg r => instantiateMVars (← whnfR (← mkAppM ``CtxOf.regs #[args[5]!, toExpr r]))
-    | .mem _ =>
-      let a := args[4]!
-      unless isAddrLit a do return none
-      let some n := a.appArg!.nat? | return none
-      let some m ← instrsOf args[1]! | return none
-      let some (_, len) := m[n]? | return none
-      let next := toExpr (BitVec.ofNat 64 (n + len.toNat))
-      let τ ← mkFreshExprMVar (mkConst ``Ty)
-      let g ← mkFreshExprSyntheticOpaqueMVar
-        (mkAppN (mkConst ``Holds) #[args[3]!, next, args[5]!, toExpr rm, τ])
-      let saved ← saveState
-      let ok ← try
-          pure (← runOn g.mvarId! (do evalTactic (← `(tactic| ty_operand)))).isEmpty
-        catch _ => pure false
-      let τ ← instantiateMVars τ
-      saved.restore
-      unless ok do return none
-      pure τ
-  if τ0.isAppOfArity ``FnSig.ty 1 then return some τ0.appArg!
-  let τ ← whnf τ0
-  if τ.isAppOfArity ``FnSig.ty 1 then return some τ.appArg!
-  if τ.isAppOfArity ``Ty.fn 6 then return some (mkAppN (mkConst ``FnSig.mk) τ.getAppArgs)
-  return none
+  return false
 
 /-- What a block or a call left to be shown, tried as arithmetic: a
 comparison, or two exactly known values that are to be the same; and then,
@@ -799,60 +747,6 @@ def closeArith (left : List MVarId) : TacticM (List MVarId) := do
       catch _ => pure [g]
     kept := kept ++ after
   return kept
-
-/-- A direct call to a function whose results depend on a value it chooses,
-typed from the labels alone: the context declared at the function's label is
-`sig.entry …` for a signature `sig` with nothing left open, and the label
-after the call has one context for each value. Nothing is done unless both
-are so and the call then types. -/
-def autoCallEx (goal : MVarId) : TacticM (Option (List MVarId)) := goal.withContext do
-  let before ← saveState
-  try
-    let ty := (← instantiateMVars (← goal.getType)).consumeMData
-    unless ty.isAppOfArity ``BlockOk 6 do return none
-    let Φ := ty.getAppArgs[0]!
-    let some n ← addrNat ty.getAppArgs[4]! | return none
-    let some m ← instrsOf ty.getAppArgs[1]! | return none
-    let some (.call (.rel d), len) := m[n]? | return none
-    let t := (BitVec.ofNat 64 n + len + d.signExtend 64).toNat
-    let next := n + len.toNat
-    let some (_, _, T, labels) ← labelInfo Φ | return none
-    let some (_, lFn) := labels.find? (·.1 == t) | return none
-    let some (_, lRet) := labels.find? (·.1 == next) | return none
-    let .const tn _ := T.getAppFn | return none
-    let some (.inductInfo info) := (← getEnv).find? tn | return none
-    let mut sig? : Option Expr := none
-    let mut rets : Array Expr := #[]
-    for k in info.ctors do
-      let kTy ← inferType (mkConst k)
-      let (s?, r?) ← forallTelescope kTy fun xs body => do
-        let args := body.getAppArgs
-        if args.size < 2 then return (none, none)
-        let l := args[args.size - 2]!
-        let ctx := args[args.size - 1]!
-        if l.isConstOf lFn && ctx.isAppOf ``FnSigEx.entry && ctx.getAppNumArgs ≥ 7 then
-          let sig := ctx.getAppArgs[ctx.getAppNumArgs - 7]!
-          return (if sig.hasFVar then none else some sig, none)
-        if l.isConstOf lRet && xs.size == 1 then
-          unless ← isProp (← inferType xs[0]!) do
-            return (none, some (← mkLambdaFVars xs ctx))
-        return ((none : Option Expr), (none : Option Expr))
-      if let some sg := s? then sig? := some sg
-      if let some r := r? then rets := rets.push r
-    let some sig := sig?
-      | do trace[TypedAsm.fast] "a call: the function's label does not say a signature"; return none
-    unless rets.size == 1 do
-      trace[TypedAsm.fast] "a call: {rets.size} families of contexts at the return point"
-      return none
-    setGoals [goal]
-    let s ← Term.exprToSyntax sig
-    let r ← Term.exprToSyntax rets[0]!
-    Tactic.withoutRecover do evalTactic (← `(tactic| ty_call_returning $s $r))
-    return some (← getGoals)
-  catch e =>
-    trace[TypedAsm.fast] "a call to a function that chooses a value: {e.toMessageData}"
-    before.restore
-    return none
 
 /-- Types a whole block of a labelled program: the straight-line
 instructions, then the control transfer that ends it. Jump targets are found
@@ -1176,10 +1070,6 @@ elab "ty_call " sig:term : tactic => do
       left := left ++ after
   setGoals ((← closeArith left) ++ others)
 
-macro_rules
-  | `(tactic| ty_call_auto) => `(tactic| ty_call ?_)
-  | `(tactic| ty_call_with $s) => `(tactic| ty_call $s)
-
 /-- `ty_call sig returning ret` types a `call` that ends a block, direct or
 through a pointer, to
 a function whose signature `sig : FnSigEx` has results that depend on a
@@ -1233,9 +1123,6 @@ elab "ty_call " sig:term " returning " ret:term : tactic => do
   left := left ++ (← runOn (← goalNamed gs `back) (do evalTactic (← `(tactic| (intro x; ctx_sub)))))
   left := left ++ (← runOn (← goalNamed gs `need) (do evalTactic (← `(tactic| first | decide | omega))))
   setGoals (left ++ others)
-
-macro_rules
-  | `(tactic| ty_call_returning $s $r) => `(tactic| ty_call $s returning $r)
 
 /-- `ty_return_as x`: the function's return address is ready for a family of
 contexts, and the function has decided it returns into the one for `x`. From
