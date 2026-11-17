@@ -4577,6 +4577,9 @@ theorem subParts_length {Γ Δ : CtxS} {cs : List CondS} {ps : List Part}
 
 /-- Why two contexts do not compare at all: where `subCtx` has no answer. -/
 inductive NoCompare
+  /-- Different amounts are detached from the two stacks, which are then
+  not the same stack. -/
+  | detached
   /-- The two stacks go on as different things past what is written out. -/
   | stackRest
   /-- One stack has more pieces written out than the other: how many each. -/
@@ -4595,7 +4598,9 @@ def stackWhy : Nat → List ShapeS → List ShapeS → Option NoCompare
 
 /-- Why `subCtx` has no answer, where it has none. -/
 def subWhy (Γ Δ : CtxS) : Option NoCompare :=
-  if Γ.stackRest = Δ.stackRest then stackWhy 0 Γ.stack Δ.stack else some .stackRest
+  if (subCtx Γ Δ).isSome then none
+  else if Γ.above ≠ Δ.above then some .detached
+  else if Γ.stackRest = Δ.stackRest then stackWhy 0 Γ.stack Δ.stack else some .stackRest
 
 /-! ## A walk through a block
 

@@ -1106,12 +1106,26 @@ def explainPart (atoms : Sym.Atoms) (p : Sym.Part) (c : Sym.CondS) : MetaM Messa
 
 /-- Says why two contexts do not compare at all. -/
 def explainNoCompare (atoms : Sym.Atoms) : Sym.NoCompare → MetaM MessageData
+  | .detached => return m!"pieces of the stack are detached here that are not where control goes"
   | .stackRest => return m!"the stack does not go on as the one required does"
   | .stackPieces got want =>
     return m!"the stack has {got} pieces written out where {want} are required"
   | .stackPiece k got want => do
     return m!"the piece of the stack {k} from the top is `{← ppShape (← Sym.denShape atoms got)}`, \
       but `{← ppShape (← Sym.denShape atoms want)}` is required"
+
+/-- The same of a return: what the function returns with against what the
+code returned to requires. -/
+def explainRet (atoms : Sym.Atoms) (p : Sym.Part) (c : Sym.CondS) : MetaM MessageData := do
+  match p with
+  | .detached =>
+    return m!"`ret`: pieces of the stack are still detached; a function must attach them \
+      again (`ty_stack_attach`) and leave the stack as it found it"
+  | .owned =>
+    return m!"`ret`: the blocks owned here are not the ones the function gives back, \
+      followed by the caller's own; a function must hand back what its signature says and \
+      dispose of anything else it took"
+  | p => return m!"`ret`: {← explainPart atoms p c}, where the function returns"
 
 /-- Whether a context is declared for a label. -/
 def ctorIsFor (kName lName : Name) : MetaM Bool := do
@@ -1838,6 +1852,56 @@ def labelProof (Φ : Expr) (lName kName : Name) (params : Array Expr) (t : Nat)
     throwError "the context chosen is not the one compared"
   return (← mkExpectedTypeHint tabled (mkApp P ΔE), prems)
 
+/-- Shows the conditions a comparison of contexts left: each by `special`
+where that has a way of its own for it, and otherwise as anything the
+checker leaves is shown. A condition not shown is reported as the part of
+the contexts it is about, where the parts are given. Returns the conditions
+as one statement, and its proof. -/
+def showConds (atoms : Sym.Atoms) (cs : List Sym.CondS) (parts : List Sym.Part)
+    (explain : Sym.Part → Sym.CondS → MetaM MessageData)
+    (special : Sym.CondS → Expr → TacticM (Option Expr) := fun _ _ => pure none) :
+    TacticM (Expr × Expr) := do
+  let env ← getEnv
+  let lctx ← getLCtx
+  let kwhnf (e : Expr) : MetaM Expr := ofExceptKernelException (Kernel.whnf env lctx e)
+  let mut hn := mkConst ``True.intro
+  let mut allE := mkConst ``True
+  arithLeft.set #[]
+  let partOf (i : Nat) : Option Sym.Part := if parts.length == cs.length then parts[i]? else none
+  let mut i := cs.length
+  for c in cs.reverse do
+    i := i - 1
+    let leaf ← Sym.denCond atoms c
+    let h ← try
+        match ← special c leaf with
+        | some h => pure h
+        | none => closeNeeds env lctx kwhnf pure #[] leaf
+      catch e =>
+        trace[TypedAsm.fast] "a comparison leaves: {leaf}"
+        match partOf i with
+        | some p => throwError (← explain p c)
+        | none => throw e
+    hn := mkApp4 (mkConst ``And.intro) leaf allE h hn
+    allE := mkApp2 (mkConst ``And) leaf allE
+  try closeArithLeft
+  catch e =>
+    trace[TypedAsm.fast] "a comparison leaves arithmetic: {(← arithLeft.get).map mkMVar}"
+    -- the first comparison of numbers the arithmetic does not settle
+    let mut j := 0
+    for c in cs do
+      if (c matches .eqN .. | .le .. | .lt ..) then
+        if let some p := partOf j then
+          let g ← mkFreshExprSyntheticOpaqueMVar (← Sym.denCond atoms c)
+          let ok ← try
+              let l ← runOn g.mvarId! (do
+                evalTactic (← `(tactic| first | omega | bv_omega | ty_side)))
+              pure l.isEmpty
+            catch _ => pure false
+          unless ok do throwError (← explain p c)
+      j := j + 1
+    throw e
+  return (allE, ← instantiateMVars hn)
+
 /-- Shows what `leafType` states: the label's context at the parameters
 found is allowed there, with what it demands shown from what is known; and
 each thing the comparison left is shown. Fails if anything is left over. -/
@@ -1861,40 +1925,8 @@ def solveLeaf (g : MVarId) (Φ : Expr) (lName kName : Name) (params : Array Expr
       throwError "what the context demands is not known here: \
         `{← ppClean (← instantiateMVars (← m.getType))}`"
   -- what the comparison left, each with the part of the contexts it is about
-  let mut hn := mkConst ``True.intro
-  let mut allE := mkConst ``True
-  arithLeft.set #[]
-  let partOf (i : Nat) : Option Sym.Part := if parts.length == cs.length then parts[i]? else none
-  let mut i := cs.length
-  for c in cs.reverse do
-    i := i - 1
-    let leaf ← Sym.denCond atoms c
-    let h ← try closeNeeds env lctx kwhnf pure #[] leaf
-      catch e =>
-        trace[TypedAsm.fast] "handing over to `{kName}` leaves: {leaf}"
-        match partOf i with
-        | some p => throwError (← explainPart atoms p c)
-        | none => throw e
-    hn := mkApp4 (mkConst ``And.intro) leaf allE h hn
-    allE := mkApp2 (mkConst ``And) leaf allE
-  try closeArithLeft
-  catch e =>
-    trace[TypedAsm.fast] "handing over to `{kName}` leaves arithmetic: {(← arithLeft.get).map mkMVar}"
-    -- the first comparison of numbers the arithmetic did not settle
-    let mut j := 0
-    for c in cs do
-      if (c matches .eqN .. | .le .. | .lt ..) then
-        if let some p := partOf j then
-          let leaf ← Sym.denCond atoms c
-          let g ← mkFreshExprSyntheticOpaqueMVar leaf
-          let ok ← try
-              let l ← runOn g.mvarId! (do evalTactic (← `(tactic| first | omega | bv_omega | ty_side)))
-              pure l.isEmpty
-            catch _ => pure false
-          unless ok do throwError (← explainPart atoms p c)
-      j := j + 1
-    throw e
-  g.assign (mkApp4 (mkConst ``And.intro) (mkApp P ΔE) allE pf2 (← instantiateMVars hn))
+  let (allE, hn) ← showConds atoms cs parts (explainPart atoms)
+  g.assign (mkApp4 (mkConst ``And.intro) (mkApp P ΔE) allE pf2 hn)
   setGoals goals
 
 /-- Shows what `sideType` states: on a side of a conditional jump, what its
@@ -2025,7 +2057,8 @@ def leaveType (atoms : Sym.Atoms) (i : Nat) (Δ : Sym.CtxS) (cs : List Sym.CondS
 wants, `mid` the context compared as it is written, and `hmid` that `mid`
 stands for `Δ0`. -/
 def solveLeave (g : MVarId) (i : Nat) (Δ0 mid hmid : Expr) (Δ : Sym.CtxS)
-    (cs : List Sym.CondS) (atoms : Sym.Atoms) (hsub? : Option Expr := none) : TacticM Unit :=
+    (cs : List Sym.CondS) (atoms : Sym.Atoms) (hsub? : Option Expr := none)
+    (parts : List Sym.Part := []) : TacticM Unit :=
     g.withContext do
   let env ← getEnv
   let lctx ← getLCtx
@@ -2053,40 +2086,32 @@ def solveLeave (g : MVarId) (i : Nat) (Δ0 mid hmid : Expr) (Δ : Sym.CtxS)
   let ex := mkApp2 (mkConst ``Exists [Level.one]) (mkConst ``Ctx) p
   let pf := mkApp4 (mkConst ``Exists.intro [Level.one]) (mkConst ``Ctx) p Δ0
     (mkApp4 (mkConst ``And.intro) A B hA hB)
-  let mut hn := mkConst ``True.intro
-  let mut allE := mkConst ``True
-  arithLeft.set #[]
-  for c in cs.reverse do
-    let leaf ← Sym.denCond atoms c
-    let h ← (do
-      if let .ownedEq .. := c then
-        -- the blocks owned are the ones the function gives back, then the
-        -- caller's own: that is the caller's requirement
-        let m ← mkFreshExprSyntheticOpaqueMVar leaf
-        let left ← runOn m.mvarId! do
-          evalTactic (← `(tactic| first
-            | rfl
-            | exact FnSig.CallerOk.owned_back (by assumption) rfl
-            | exact FnSigEx.CallerOk.owned_back (by assumption) _ rfl))
-        unless left.isEmpty do throwError "left over"
-        pure m
-      else if (leaf.find? (·.isConstOf ``CtxOf.above)).isSome then
-        -- how much is detached from the stack is the same whichever value a
-        -- function with a chosen result returns with: its caller's requirement
-        let m ← mkFreshExprSyntheticOpaqueMVar leaf
-        let left ← try
-            runOn m.mvarId! do
-              evalTactic (← `(tactic| first
-                | rfl
-                | exact (FnSigEx.CallerOk.detached (by assumption) _).symm
-                | exact FnSigEx.CallerOk.detached (by assumption) _))
-          catch _ => pure [m.mvarId!]
-        if left.isEmpty then pure m else closeNeeds env lctx kwhnf pure #[] leaf
-      else closeNeeds env lctx kwhnf pure #[] leaf)
-    hn := mkApp4 (mkConst ``And.intro) leaf allE h hn
-    allE := mkApp2 (mkConst ``And) leaf allE
-  closeArithLeft
-  g.assign (mkApp4 (mkConst ``And.intro) ex allE pf (← instantiateMVars hn))
+  let (allE, hn) ← showConds atoms cs parts (explainRet atoms) fun c leaf => do
+    if let .ownedEq .. := c then
+      -- the blocks owned are the ones the function gives back, then the
+      -- caller's own: that is the caller's requirement
+      let m ← mkFreshExprSyntheticOpaqueMVar leaf
+      let left ← runOn m.mvarId! do
+        evalTactic (← `(tactic| first
+          | rfl
+          | exact FnSig.CallerOk.owned_back (by assumption) rfl
+          | exact FnSigEx.CallerOk.owned_back (by assumption) _ rfl))
+      unless left.isEmpty do throwError "left over"
+      return some m
+    if (leaf.find? (·.isConstOf ``CtxOf.above)).isSome then
+      -- how much is detached from the stack is the same whichever value a
+      -- function with a chosen result returns with: its caller's requirement
+      let m ← mkFreshExprSyntheticOpaqueMVar leaf
+      let left ← try
+          runOn m.mvarId! do
+            evalTactic (← `(tactic| first
+              | rfl
+              | exact (FnSigEx.CallerOk.detached (by assumption) _).symm
+              | exact FnSigEx.CallerOk.detached (by assumption) _))
+        catch _ => pure [m.mvarId!]
+      if left.isEmpty then return some m
+    return none
+  g.assign (mkApp4 (mkConst ``And.intro) ex allE pf hn)
   setGoals goals
 
 /-- A return found typed within a walk: at which instruction, the context
@@ -2111,14 +2136,26 @@ the function's signature says it returns with, which the requirement makes
 stand for the caller's. Everything that takes is shown here first, with the
 values the walk names standing as variables. -/
 def findLeave (atoms : Sym.Atoms) (named : Array (Nat × Reg)) (cur : Sym.CtxS)
-    (at' : Nat) : TacticM (Option (LeaveInfo × Sym.Atoms)) := do
+    (at' : Nat) (why? : Option (IO.Ref (Option MessageData)) := none) :
+    TacticM (Option (LeaveInfo × Sym.Atoms)) := do
   if ← enterOff.get then return none
+  -- why the return is refused, where it is
+  let note (m : MessageData) : TacticM Unit := do
+    if let some r := why? then r.set (some m)
+  let noAddress : MessageData := m!"`ret` needs a return address on top of the stack, but the \
+    context does not have one there. Control would go to whatever number is there: a \
+    general-protection fault where the processor has no such address, a page fault where \
+    there is no code"
+  let isFamily : MessageData := m!"`ret`: the return address here is ready for a family of \
+    contexts, one for each value the function may hand back; say which the function returns \
+    into with `ty_return_as`"
   let some (i, after) := Sym.afterRet cur
-    | do trace[TypedAsm.fast] "return: the top of the stack is not seen to be a return address: {toExpr cur.stack}, rsp {toExpr (cur.regs.get .rsp)}"; return none
-  let some tyE := atoms.ty[i]? | return none
+    | do trace[TypedAsm.fast] "return: the top of the stack is not seen to be a return address: {toExpr cur.stack}, rsp {toExpr (cur.regs.get .rsp)}"; note noAddress; return none
+  let some tyE := atoms.ty[i]? | do note noAddress; return none
   let tyW ← whnf tyE
   unless tyW.isAppOfArity ``Ty.code 1 || tyW.isAppOfArity ``Ty.codeAll 1 do
     trace[TypedAsm.fast] "return: the type on top of the stack is not code's: {tyW}"
+    note noAddress
     return none
   let family := tyW.isAppOfArity ``Ty.codeAll 1
   let Δ0 := tyW.appArg!
@@ -2157,6 +2194,7 @@ def findLeave (atoms : Sym.Atoms) (named : Array (Nat × Reg)) (cur : Sym.CtxS)
       return none : TacticM (Option (Expr × Expr)))
   unless family || via.isSome do
     trace[TypedAsm.fast] "return: nothing says what the code returned to accepts"
+    note m!"`ret` needs the caller's requirement (`sig.CallerOk …`) among the hypotheses"
     return none
   let bv := mkApp (mkConst ``BitVec) (mkNatLit 64)
   let decls := named.map fun (_, r) => (Name.mkSimple s!"{r.name64}₀", bv)
@@ -2210,6 +2248,7 @@ def findLeave (atoms : Sym.Atoms) (named : Array (Nat × Reg)) (cur : Sym.CtxS)
           | none, some (mid, hmid) => if family then none else some (Δ0, mid, hmid, none)
           | none, none => none)
         | do trace[TypedAsm.fast] "return: nothing says which context the function returns into"
+             note isFamily
              return none
       let some ΔN ← normalCtx mid
         | do trace[TypedAsm.fast] "return: the context is not written out: {mid}"; return none
@@ -2231,9 +2270,15 @@ def findLeave (atoms : Sym.Atoms) (named : Array (Nat × Reg)) (cur : Sym.CtxS)
           pure (((Sym.afterRet c).map (·.2)).getD after)
         | none => pure after)
       let some cs := Sym.subCtx after Δ
-        | do trace[TypedAsm.fast] "return: the contexts do not compare"; return none
+        | do
+          trace[TypedAsm.fast] "return: the contexts do not compare"
+          match Sym.subWhy after Δ with
+          | some .detached => note (← explainRet atoms'' .detached (.eqN after.above Δ.above))
+          | some w => note m!"`ret`: {← explainNoCompare atoms'' w}, where the function returns"
+          | none => pure ()
+          return none
       let g ← mkFreshExprSyntheticOpaqueMVar (← leaveType atoms'' i Δ cs)
-      solveLeave g.mvarId! i Δ0 mid hmid Δ cs atoms'' hsub?
+      solveLeave g.mvarId! i Δ0 mid hmid Δ cs atoms'' hsub? ((Sym.subParts after Δ).getD [])
       keepLeaf named g
       let mut vals := atoms''.val
       for (k, _) in named do
@@ -2242,6 +2287,7 @@ def findLeave (atoms : Sym.Atoms) (named : Array (Nat × Reg)) (cur : Sym.CtxS)
         { atoms'' with val := vals })
     catch e =>
       trace[TypedAsm.fast] "return: {e.toMessageData}"
+      note e.toMessageData
       pure none
   s.restore
   return r
@@ -3815,7 +3861,10 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         | .name k r => some (k, r)
         | _ => none
       castRef.set (some ready)
-      let found ← try findLeave atoms named cur at' finally castRef.set none
+      let why ← IO.mkRef none
+      let found ← try findLeave atoms named cur at' (some why) finally castRef.set none
+      if found.isNone then
+        if let some m ← why.get then refusal.set (some m)
       let some (info, atoms') := found | return none
       return some (info, atoms', .jump at' i len')
     -- A call to a labelled function, returning to a label.

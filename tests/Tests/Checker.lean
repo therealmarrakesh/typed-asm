@@ -503,6 +503,29 @@ example : (unmapSplit (twoPages (v 0) 8192) .syscall).isNone = true := by decide
 example : ((unmapSplit (twoPages (.add (v 0) (.lit 4096)) 4096) .syscall).bind
     (stepSys ·)).map (·.1.owned.length) = some 1 := by decide
 
+/-! ## Which part of a context a comparison is about -/
+
+-- a register that does not compare is the part named, and there is a part
+-- for each condition
+example : subParts (reg base .rdi .int) (reg base .rdi (.eq (v 0))) = some [.reg .rdi] := by decide
+example : (subCtx (reg base .rdi .int) (reg base .rdi (.eq (v 0)))).map (·.length) = some 1 := by
+  decide
+-- room that differs is the room
+example : subParts { base with room := .lit 8 } { base with room := .lit 16 } = some [.room] := by
+  decide
+-- the same context: nothing to show, and nothing to say
+example : subParts base base = some [] := by decide
+example : (subWhy base base).isNone = true := by decide
+-- a stack with a piece too many does not compare, and that is why
+example : (subCtx { base with stack := [.mk (.lit 8) .nil] } base).isNone = true := by decide
+example : (match subWhy { base with stack := [.mk (.lit 8) .nil] } base with
+    | some (.stackPieces 1 0) => true
+    | _ => false) = true := by decide
+-- bytes detached on one side only: that is the reason given, before the stack
+example : (match subWhy { base with above := .lit 16, stackRest := some 1 } base with
+    | some .detached => true
+    | _ => false) = true := by decide
+
 /-! ## Why an instruction is refused -/
 
 def isReason (Γ : CtxS) (i : Instr) (p : Reject → Bool) : Bool :=

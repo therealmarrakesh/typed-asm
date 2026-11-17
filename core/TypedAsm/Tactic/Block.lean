@@ -631,12 +631,12 @@ def finishBlockCore (goal : MVarId) (instr : Instr) : TacticM Finish := do
 speaks of got what they have, and carrying that record on to wherever the
 block goes on from here. -/
 def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
-  trace[TypedAsm.fast] "block ending the long way: {instr.toAsm}"
   let before ← try trailKey goal catch _ => pure none
   let r ← try
       -- where the checker's walk looked for this ending and found why it is
       -- refused, that is the reason given
       if let some msg ← refusal.modifyGet fun r => (r, none) then throwError msg
+      trace[TypedAsm.fast] "block ending the long way: {instr.toAsm}"
       finishBlockCore goal instr
     catch e =>
       match before with
