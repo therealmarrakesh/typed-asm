@@ -1,92 +1,38 @@
 import FactProgram
-import TypedAsm.Tactic
+import TypedAsm.U.Checked
 
 /-!
-# Fact: typing, safety, and what it computes
+# Fact: typing and safety
 
-The program is in `FactProgram.lean`. This file types it and proves it safe,
-and proves that it ends with the factorial of five as its status: the
-function's signature says its result is exactly the factorial of its
-argument, and the typing against a system that lets the program end only
-with status 120 is the proof. It is kept separate so that running the
-program does not link the tactics.
+The program is in `FactProgram.lean`. This file says what its labels want
+and checks it: one check, run by Lean's kernel, that the code is typed and
+that the state the kernel loads the program into starts as its entry asks.
+Nothing is proved by hand.
+
+Only the start is a label. The checker follows the program from there, into
+its functions and back: they are checked as this program calls them, not
+for every caller. A function given a label of its own is checked for every
+caller that label allows; see `Swap` and `Frame`.
+
+It is kept separate so that running the program does not link the checker.
 -/
 
-open TypedAsm
+open TypedAsm TypedAsm.U
 
 namespace Fact
 
-/-! ## The typing -/
+/-! ## What the labels want -/
 
-/-- The number `n` as a machine value. -/
-def num (n : Nat) : BitVec 64 := BitVec.ofNat 64 n
+/-- The program for the checker: its instructions; and that it is to end with status 120, the factorial of five. -/
+def pg : Prog :=
+  { code := progCode (Asm.table base code)
+    pre := preExits (· == 120) }
 
-/-- The factorial of `n`. -/
-def fac : Nat → Nat
-  | 0 => 1
-  | n + 1 => (n + 1) * fac n
+/-- One label: the start, with nothing known. -/
+def labels (n : Nat) : List U.Label := [⟨entry, entryOf n⟩]
 
-/-- `fact` called with exactly `n` in `rdi` uses two stack slots for each of
-the `n` calls it makes to itself, and returns with exactly the factorial of
-`n` in `rax`, as far as it fits in 64 bits. -/
-def factSig (n : Nat) : FnSig where
-  args := fun r => if r = .rdi then .eq (num n) else .int
-  results := fun r => if r = .rax then .eq (num (fac n)) else .int
-  preserved := calleeSaved
-  need := 16 * n
+/-! ## The check, and what it shows -/
 
-/-- After the call: `rax` holds exactly the factorial of five. -/
-def fin : Ctx := ⟨fun r => if r = .rax then .eq (num (fac 5)) else .int, [], 88, Flags.Any, [], 0⟩
-
-/-- The contexts allowed at each label. -/
-inductive At : Label → Ctx → Prop
-  | start : At .start (entryCtx 11)
-  | afterCall : At .afterCall fin
-  /-- The argument is a number a register holds: below `2 ^ 64`. -/
-  | fact (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
-    (factSig n).CallerOk saved ret rest room → n < 2 ^ 64 →
-    At .fact ((factSig n).entry saved ret rest room)
-  /-- Reached only with an argument that is not zero. -/
-  | again (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
-    (factSig n).CallerOk saved ret rest room → 0 < n → n < 2 ^ 64 →
-    At .again ((factSig n).entry saved ret rest room)
-  /-- Back from the inner call: `rax` holds the factorial of one less, and the
-  argument is on the stack, above this call's own return address. -/
-  | afterAgain (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (m : Nat) :
-    (factSig n).CallerOk saved ret rest (m + 16) → 0 < n →
-    At .afterAgain ⟨fun r => if r = .rax then .eq (num (fac (n - 1)))
-        else if calleeSaved r then saved r else .int,
-      .slot (.eq (num n)) :: .slot (.code ret) :: rest, m + 8, Flags.Any, ret.owned, ret.above⟩
-
-asm_typing At
-
-/-! ## What the program computes
-
-Three facts of arithmetic are all the checker is given. -/
-
-/-- What the multiply at the end of a call computes: the argument times the
-factorial of one less is the factorial of the argument. -/
-@[asm_fact] theorem fac_step {n : Nat} (hn : 0 < n) : num (fac (n - 1)) * num n = num (fac n) := by
-  obtain ⟨k, rfl⟩ : ∃ k, n = k + 1 := ⟨n - 1, by omega⟩
-  simp [fac, num, BitVec.ofNat_mul, BitVec.mul_comm]
-
-/-- What the function returns for zero: the test found the argument's value
-zero, the argument is below `2 ^ 64`, and the factorial of zero is 1. -/
-@[asm_fact] theorem fac_zero {n : Nat} (h64 : n < 2 ^ 64) (hz : num n = 0) : num (fac n) = 1 := by
-  obtain rfl : n = 0 := by simp only [num] at hz; bv_omega
-  rfl
-
-/-- One less than a number that is not zero, as a machine value: what the
-function calls itself with. -/
-@[asm_fact] theorem num_pred {n : Nat} (hn : 0 < n) : num n - 1 = num (n - 1) := by
-  obtain ⟨k, rfl⟩ : ∃ k, n = k + 1 := ⟨n - 1, by omega⟩
-  simp only [num, Nat.add_sub_cancel, BitVec.ofNat_add]
-  exact BitVec.add_sub_cancel _ _
-
-/-! ## Safety, and the result -/
-
--- Safe, and it ends only with status 120, the factorial of five.
-asm_safety At.start exits (· = 120)
+asm_checked code start .start stack 11 program pg labels (labels 11) fuel 80 exits (· == 120)
 
 end Fact
-

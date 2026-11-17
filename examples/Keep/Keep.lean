@@ -1,48 +1,38 @@
 import KeepProgram
-import TypedAsm.Tactic
+import TypedAsm.U.Checked
 
 /-!
 # Keep: typing and safety
 
-The program is in `KeepProgram.lean`. This file types it and proves it safe.
-It is kept separate so that running the program does not link the tactics.
+The program is in `KeepProgram.lean`. This file says what its labels want
+and checks it: one check, run by Lean's kernel, that the code is typed and
+that the state the kernel loads the program into starts as its entry asks.
+Nothing is proved by hand.
+
+Only the start is a label. The checker follows the program from there, into
+its functions and back: they are checked as this program calls them, not
+for every caller. A function given a label of its own is checked for every
+caller that label allows; see `Swap` and `Frame`.
+
+It is kept separate so that running the program does not link the checker.
 -/
 
-open TypedAsm
+open TypedAsm TypedAsm.U
 
 namespace Keep
 
-/-! ## The typing -/
+/-! ## What the labels want -/
 
-/-- `pause` preserves the callee-saved registers and also the stack pointer:
-when it has returned, `rsp` is where it was before the call. -/
-def pauseSig : FnSig where
-  args := fun _ => .int
-  results := fun _ => .int
-  preserved := fun r => calleeSaved r || r == .rsp
-  need := 0
+/-- The program for the checker: its instructions; and that it is to end with status nought. -/
+def pg : Prog :=
+  { code := progCode (Asm.table base code)
+    pre := preExits (· == 0) }
 
-/-- Back from the call: the stack pointer is exactly `sp`, as before it,
-and `rbx` holds the address of the buffer, which is where `rsp` points. -/
-def kept (sp : BitVec 64) : Ctx :=
-  ⟨fun r => if r = .rsp then .eq sp else if r = .rbx then .eq sp else .int, [.raw 16], 8, Flags.Any, [], 0⟩
+/-- One label: the start, with nothing known. -/
+def labels (n : Nat) : List U.Label := [⟨entry, entryOf n⟩]
 
-/-- Nothing is known about any register; the buffer is still allocated. -/
-def ending : Ctx := ⟨fun _ => .int, [.raw 16], 8, Flags.Any, [], 0⟩
+/-! ## The check, and what it shows -/
 
-/-- The contexts allowed at each label. -/
-inductive At : Label → Ctx → Prop
-  | start : At .start (entryCtx 3)
-  | back (sp : BitVec 64) : At .back (kept sp)
-  | pause (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
-    pauseSig.CallerOk saved ret rest room → At .pause (pauseSig.entry saved ret rest room)
-
-asm_typing At
-
-/-! ## Safety -/
-
--- And it ends only with status 0.
-asm_safety At.start exits (· = 0)
+asm_checked code start .start stack 3 program pg labels (labels 3) fuel 80 exits (· == 0)
 
 end Keep
-

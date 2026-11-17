@@ -1,83 +1,37 @@
-import TypedAsm.Tactic
 import LendProgram
+import TypedAsm.U.Checked
 
 /-!
-# The typing of the program that hands a function a pointer to a local
+# Lend: typing and safety
 
-See `LendProgram.lean` for the program. Its safety theorem is at the end.
+The program is in `LendProgram.lean`. This file says what its labels want
+and checks it: one check, run by Lean's kernel, that the code is typed and
+that the state the kernel loads the program into starts as its entry asks.
+Nothing is proved by hand.
+
+Only the start is a label. The checker follows the program from there, into
+its functions and back: they are checked as this program calls them, not
+for every caller. A function given a label of its own is checked for every
+caller that label allows; see `Swap` and `Frame`.
+
+It is kept separate so that running the program does not link the checker.
 -/
 
-open TypedAsm
+open TypedAsm TypedAsm.U
 
 namespace Lend
 
-/-! ## Signatures and contexts -/
+/-! ## What the labels want -/
 
-/-- `fill` called with exactly `p` in `rdi` takes the sixteen bytes at `p`
-and gives them back. It uses no stack, and leaves the stack pointer where it
-found it. -/
-def fillSig (p : BitVec 64) : FnSig where
-  args := fun r => if r = .rdi then .eq p else .int
-  results := fun _ => .int
-  preserved := fun r => calleeSaved r || r == .rsp
-  need := 0
-  takes := [(p, .raw 16)]
-  gives := [(p, .raw 16)]
+/-- The program for the checker: its instructions. -/
+def pg : Prog :=
+  { code := progCode (Asm.table base code) }
 
-/-- `work` uses twenty-four bytes of stack below its return address: its
-local, and the return address of its call. It leaves a number in `rax`. -/
-def workSig : FnSig where
-  args := fun _ => .int
-  results := fun _ => .int
-  preserved := calleeSaved
-  need := 24
+/-- One label: the start, with nothing known. -/
+def labels (n : Nat) : List U.Label := [⟨entry, entryOf n⟩]
 
-/-- Back from `work`. -/
-def fin : Ctx := ⟨fun _ => .int, [], 32, Flags.Any, [], 0⟩
+/-! ## The check, and what it shows -/
 
-/-- In `work` with its local allocated and the stack pointer's value known
-to be `sp`: sixteen bytes, then the return address, then the caller's part
-of the stack. -/
-def framed (sp : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (m : Nat) : Ctx :=
-  ⟨fun r => if r = .rsp then .eq sp else if calleeSaved r then saved r else .int,
-    .raw 16 :: .slot (.code ret) :: rest, m + 8, Flags.Any, ret.owned, ret.above⟩
-
-/-- The contexts allowed at each label. -/
-inductive At : Label → Ctx → Prop
-  | start : At .start (entryCtx 4)
-  | done : At .done fin
-  | work (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
-    workSig.CallerOk saved ret rest room → At .work (workSig.entry saved ret rest room)
-  /-- Back from `fill`: the whole stack is still detached, the local first. -/
-  | filled (sp : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (m : Nat) :
-    workSig.CallerOk saved ret rest (m + 24) → At .filled ((framed sp saved ret rest m).detach sp 0)
-  | fill (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
-    (fillSig p).CallerOk saved ret rest room → At .fill ((fillSig p).entry saved ret rest room)
-
-asm_typing At
-
-/-! ## The program is well typed -/
-
-theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  ty_program
-  case work saved ret rest room hK =>
-    -- make the room the signature guarantees visible, so the local can be allocated
-    obtain ⟨m, rfl⟩ := hK.room_split
-    -- sub rsp, 16
-    ty_step
-    -- the stack pointer's value is called `sp`; `lea rdi, [rsp]` is then the local's address
-    ty_name .rsp as sp
-    -- the local, and everything above it, become blocks: the local is handed to `fill`
-    ty_stack_detach at 0
-    ty_call (fillSig (sp + 0))
-  case filled sp saved ret rest m hK =>
-    -- everything is attached again: the local is a piece of the stack as before
-    ty_stack_attach
-    ty_block
-
-/-! ## Safety -/
-
-asm_safety At.start
+asm_checked code start .start stack 4 program pg labels (labels 4) fuel 80
 
 end Lend
-
