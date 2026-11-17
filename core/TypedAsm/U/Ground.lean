@@ -105,6 +105,7 @@ def TyS.plain : TyS → Bool
   | .orErr τ => τ.plain
   | .str c => c.plain
   | .arr c τ => c.plain && τ.plain
+  | .upTo t _ => t.plain
   | .atom _ => false
   | .code regs flags held known _ =>
     (regs.map (·.plain) == allTrue) && flags.plain && heldPlain held && known.plain
@@ -141,6 +142,8 @@ theorem TyS.den_bare (ρ : Env) : (τ : TyS) → τ.plain = true → τ.den ρ.b
   | .arr c τ, h => by
     simp only [TyS.plain, Bool.and_eq_true] at h
     simp only [TyS.den, Val.den_bare ρ c h.1, TyS.den_bare ρ τ h.2]
+  | .upTo t _, h => by
+    simp only [TyS.den, Val.den_bare ρ t (by simpa only [TyS.plain] using h)]
   | .code regs flags held known rest, h => by
     simp only [TyS.plain, Bool.and_eq_true] at h
     obtain ⟨⟨⟨hr, hf⟩, hh⟩, hkn⟩ := h

@@ -59,6 +59,8 @@ inductive TyS
   /-- It is the address of so many values in a row, of each of which `τ` is
   known: how many being what a term stands for. -/
   | arr (count : Val) (τ : TyS)
+  /-- It is at most what a term stands for, or less than it. -/
+  | upTo (t : Val) (strict : Bool)
 
 /-- The shape of a block others may point into, as data. -/
 inductive ShapeS
@@ -90,6 +92,7 @@ def TyS.den (ρ : Env) : TyS → Ty
   | .atom i => ρ.ty i
   | .range lo hi => .range lo hi
   | .arr count τ => .arr (count.den ρ) (τ.den ρ)
+  | .upTo t strict => .upTo (t.den ρ) strict
   | .code regs flags held known rest => .code fun z =>
     { val := fun r => (regs.get r).den { ρ with bound := z :: ρ.bound }
       flags := flags.den { ρ with bound := z :: ρ.bound }

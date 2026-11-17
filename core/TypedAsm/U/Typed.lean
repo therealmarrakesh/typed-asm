@@ -112,6 +112,8 @@ theorem tyHolds_hasTy {j : BitVec 64 → CtxS → Bool} {bs : List (BitVec 64 ×
   | .orErr _, _, h => nomatch h
   | .str _, _, h => nomatch h
   | .atom _, _, h => nomatch h
+  | .arr .., _, h => nomatch h
+  | .upTo .., _, h => nomatch h
   | .code regs flags held known rest, v, h => by
     rw [code_den, hasTy_code]
     intro x k hk Ψ' he hwf s hs hw

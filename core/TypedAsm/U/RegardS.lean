@@ -270,6 +270,7 @@ def followsS (τ : TyS) : TyS → Bool
   | .atom i => τ == .atom i
   | .code r f h k rest => τ == .code r f h k rest
   | .arr c υ => τ == .arr c υ
+  | .upTo t strict => τ == .upTo t strict
   | .range lo hi =>
     match τ with
     | .range lo' hi' => Range.within ⟨lo', hi'⟩ ⟨lo, hi⟩
@@ -323,6 +324,10 @@ theorem followsS_sub (ρ : Env) (v : BitVec 64) :
     simp only [followsS, beq_iff_eq] at h
     subst h
     exact .refl _ _
+  | .upTo t strict, τ, h => by
+    simp only [followsS, beq_iff_eq] at h
+    subst h
+    exact .refl _ _
   | .range lo hi, τ, h => by
     cases τ with
     | range lo' hi' =>
@@ -371,6 +376,7 @@ theorem outright_hasTy (ρ : Env) (Ψ' : MemTy) (n : Nat) (v : Val) :
   | .atom _, h => nomatch h
   | .code .., h => nomatch h
   | .arr .., h => nomatch h
+  | .upTo .., h => nomatch h
   | .range lo hi, h => by
     simp only [outright] at h
     cases hl : v.lit? with

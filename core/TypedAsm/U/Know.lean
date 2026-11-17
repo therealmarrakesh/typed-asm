@@ -139,10 +139,44 @@ theorem addFact_le {ρ : Env} {fuel : Nat} {u : Val} {lo hi : BitVec 64} {cs : L
         · exact hall c hc
   · exact ⟨cs, List.mem_singleton.mpr rfl, hall⟩
 
-/-- Each way things may be, with what the things known of ranges say. -/
+/-- The things known, and with them what one term's being at most another,
+or less, says: where neither is seen to wrap, that of their whole numbers. -/
+def addUpTo (fuel : Nat) (u t : Val) (strict : Bool) (cs : List (Lin Int)) : List (Lin Int) :=
+  match noWrap fuel cs u, noWrap fuel cs t with
+  | some Pu, some Pt => Lin.addMul (-1) Pt ⟨Pu.ms, Pu.k + (if strict then 1 else 0)⟩ :: cs
+  | _, _ => cs
+
+theorem addUpTo_le {ρ : Env} {fuel : Nat} {u t : Val} {strict : Bool} {cs : List (Lin Int)}
+    (hall : AllLe (natOf ρ) cs)
+    (hu : if strict then u.den ρ < t.den ρ else u.den ρ ≤ t.den ρ) :
+    AllLe (natOf ρ) (addUpTo fuel u t strict cs) := by
+  unfold addUpTo
+  split
+  · next Pu Pt hPu hPt =>
+    have eu := noWrap_eq hPu hall
+    have et := noWrap_eq hPt hall
+    have e1 : natOf ρ u = ((u.den ρ).toNat : Int) := rfl
+    have e2 : natOf ρ t = ((t.den ρ).toNat : Int) := rfl
+    intro c hc
+    rcases List.mem_cons.mp hc with rfl | hc
+    · rw [Lin.addMul_den]
+      simp only [Lin.den] at eu et ⊢
+      cases strict
+      · simp only [Bool.false_eq_true, ↓reduceIte] at hu ⊢
+        have := BitVec.le_def.mp hu
+        omega
+      · simp only [↓reduceIte] at hu ⊢
+        have := BitVec.lt_def.mp hu
+        omega
+    · exact hall c hc
+  · exact hall
+
+/-- Each way things may be, with what the things known of ranges say, and
+of one term's being at most another. -/
 def addFacts (fuel : Nat) : List (Val × TyS) → List (List (Lin Int)) → List (List (Lin Int))
   | [], K => K
   | (u, .range lo hi) :: G, K => addFacts fuel G (K.flatMap (addFact fuel u lo hi))
+  | (u, .upTo t strict) :: G, K => addFacts fuel G (K.map (addUpTo fuel u t strict))
   | _ :: G, K => addFacts fuel G K
 
 theorem addFacts_le {ρ : Env} {Ψ' : MemTy} {n : Nat} {fuel : Nat} :
@@ -158,12 +192,17 @@ theorem addFacts_le {ρ : Env} {Ψ' : MemTy} {n : Nat} {fuel : Nat} :
       have hu : Range.has ⟨lo, hi⟩ (u.den ρ) := hasTy_range.mp (hg (u, .range lo hi) List.mem_cons_self)
       obtain ⟨cs', hcs', hall'⟩ := addFact_le (fuel := fuel) hall hu
       exact addFacts_le G _ hrest ⟨cs', List.mem_flatMap.mpr ⟨cs, hcs, hcs'⟩, hall'⟩
+    | upTo t strict =>
+      have hu := hasTy_upTo.mp (hg (u, .upTo t strict) List.mem_cons_self)
+      exact addFacts_le G _ hrest
+        ⟨_, List.mem_map.mpr ⟨cs, hcs, rfl⟩, addUpTo_le (fuel := fuel) hall hu⟩
     | _ => exact addFacts_le G K hrest ⟨cs, hcs, hall⟩
 
 /-- The terms the ranges known are of are made of. -/
 def factAtoms : List (Val × TyS) → List Val
   | [] => []
   | (u, .range _ _) :: G => u.lin.ms.map (·.2) ++ factAtoms G
+  | (u, .upTo t _) :: G => u.lin.ms.map (·.2) ++ t.lin.ms.map (·.2) ++ factAtoms G
   | _ :: G => factAtoms G
 
 /-- **Each way things may be, by the ranges known**: what is so of each

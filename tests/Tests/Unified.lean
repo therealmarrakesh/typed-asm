@@ -1016,6 +1016,32 @@ example : checkProgram { pgSum with code := codeSum.map fun e =>
       if e.1 = 5 then (5, .mov .w32 (.rm_i (.reg .rsi) 6), 5) else e }
     [⟨0, Pw⟩, ⟨12, Ploop⟩] 12 0 = false := by decide +kernel
 
+/-! ## A row of values, as many as a value says
+
+How many there are is a value a register holds, not a number written out.
+An index is known to be below it by the program's own comparison of the two
+registers. -/
+
+/-- `rbx` is the address of as many values in a row as `rdx` says. -/
+def Parr : CtxS := { Pw with known := [(.bvar 0 3, .arr (.bvar 0 2) .any)] }
+
+/-- `cmp rcx, <reg>; <jcc> out; mov rax, [rbx + rcx*8 + disp]; out: exit`. -/
+def codeArr (other : Reg) (c : Cond) (disp : BitVec 32) : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .alu .cmp .w64 (.rm_r (.reg .rcx) other), 3), (3, .jcc c 5, 2),
+   (5, .mov .w64 (.r_m .rax (.sib (some .rbx) (some (.rcx, .s8)) disp)), 5),
+   (10, .mov .w32 (.rm_i (.reg .rax) 60), 5), (15, .syscall, 2)]
+
+-- past the comparison the index is below the count: the value there may be read
+example : checkProgram (codeArr .rdx .ae 0) [lab 0 Parr] 10 0 = true := by decide +kernel
+-- an index that may equal the count: refused
+example : checkProgram (codeArr .rdx .a 0) [lab 0 Parr] 10 0 = false := by decide +kernel
+-- an index below some other value: refused
+example : checkProgram (codeArr .rsi .ae 0) [lab 0 Parr] 10 0 = false := by decide +kernel
+-- the value one further along: it may be past the last. Refused
+example : checkProgram (codeArr .rdx .ae 8) [lab 0 Parr] 10 0 = false := by decide +kernel
+-- eight bytes that are not one of the values: refused
+example : checkProgram (codeArr .rdx .ae 4) [lab 0 Parr] 10 0 = false := by decide +kernel
+
 /-! ## All the memory a first state has -/
 
 /-- Two pages that may be written, and one of code. -/

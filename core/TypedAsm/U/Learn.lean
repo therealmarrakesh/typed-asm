@@ -68,6 +68,7 @@ theorem TyS.strip_follows (ρ : Env) {nz ne : Bool} {v : BitVec 64} (hnz : nz = 
   | .code .. => Follows.refl _ _
   | .range _ _ => Follows.refl _ _
   | .arr _ _ => Follows.refl _ _
+  | .upTo _ _ => Follows.refl _ _
 
 /-- Whether a context knows of a value a range that lies within a given
 one. -/
@@ -168,6 +169,41 @@ theorem CmpT.rangeFacts_hasTy {ρ : Env} {p : CmpT} {b : Bool} (hp : p.den ρ = 
     cases ho
     exact hasTy_range.mpr (CmpT.range_sound hr hp)
 
+/-- What a comparison of two values for which is below teaches of the one
+against the other: that the one is less, or that the other is at most it. -/
+def CmpT.orderFacts (p : CmpT) (b : Bool) : List (Val × TyS) :=
+  match p.w, p.form.rel with
+  | .w64, .ult =>
+    if b != p.form.neg then
+      [(if p.form.swap then p.b else p.a, .upTo (if p.form.swap then p.a else p.b) true)]
+    else
+      [(if p.form.swap then p.a else p.b, .upTo (if p.form.swap then p.b else p.a) false)]
+  | _, _ => []
+
+theorem CmpT.orderFacts_hasTy {ρ : Env} {p : CmpT} {b : Bool} (hp : p.den ρ = b)
+    {f : Val × TyS} (hf : f ∈ p.orderFacts b) (Ψ' : MemTy) (n : Nat) :
+    HasTy fetch sys Ψ' n (f.2.den ρ) (f.1.den ρ) := by
+  obtain ⟨⟨neg, rel, swap⟩, w, x, y⟩ := p
+  cases w with
+  | w32 => cases hf
+  | w64 =>
+    cases rel with
+    | ult =>
+      simp only [CmpT.den, Form.eval, Rel.eval, Val.denW, Width.bits, BitVec.setWidth_eq] at hp
+      simp only [CmpT.orderFacts] at hf
+      cases neg <;> cases swap <;> cases b <;>
+        simp only [bne_iff_ne, ne_eq, Bool.false_eq_true, not_false_eq_true, not_true_eq_false,
+          ↓reduceIte, List.mem_singleton, Bool.true_eq_false, Bool.not_eq_true',
+          Bool.not_eq_false'] at hf hp <;>
+        subst hf <;>
+        refine hasTy_upTo.mpr ?_ <;>
+        simp only [Bool.false_eq_true, ↓reduceIte, BitVec.ult_eq_decide, decide_eq_true_eq,
+          decide_eq_false_iff_not] at hp ⊢ <;>
+        first
+          | exact hp
+          | exact BitVec.le_def.mpr (Nat.le_of_not_lt hp)
+    | _ => cases hf
+
 /-- **A comparison at 32 bits, as the comparison at 64**, where both values
 are known to fit: it says the same of them. -/
 def CmpT.widen (Γ : CtxS) (p : CmpT) : CmpT :=
@@ -195,9 +231,10 @@ theorem CmpT.widen_den {ρ : Env} {Γ : CtxS} (p : CmpT) {Ψ' : MemTy} {n : Nat}
     · rfl
 
 /-- **A context, knowing what a comparison teaches**: the range each value
-compared is left in, and everything known made as sharp as that allows. -/
+compared is left in, which of the two is the less where that is what was
+asked, and everything known made as sharp as that allows. -/
 def CtxS.learn (p : CmpT) (b : Bool) (Γ : CtxS) : CtxS :=
-  (Γ.addKnown ((p.widen Γ).rangeFacts b)).sharpen
+  (Γ.addKnown ((p.widen Γ).rangeFacts b ++ (p.widen Γ).orderFacts b)).sharpen
 
 /-- **Where the comparison is as said, the context may be regarded as the
 one that has learnt it.** -/
@@ -209,7 +246,9 @@ theorem CtxS.learn_regards {ρ : Env} {p : CmpT} {b : Bool} (Γ : CtxS) (hp : p.
   intro f hf Ψ' n hg
   obtain ⟨g, hg', rfl⟩ := List.mem_map.mp hf
   rcases List.mem_append.mp hg' with hr | hs
-  · exact CmpT.rangeFacts_hasTy ((CmpT.widen_den p hg).trans hp) hr Ψ' n
+  · rcases List.mem_append.mp hr with hr | hr
+    · exact CmpT.rangeFacts_hasTy ((CmpT.widen_den p hg).trans hp) hr Ψ' n
+    · exact CmpT.orderFacts_hasTy ((CmpT.widen_den p hg).trans hp) hr Ψ' n
   · exact hg _ (List.mem_map.mpr ⟨g, hs, rfl⟩)
 
 /-- **The context on one side of a choice made on a condition**: knowing

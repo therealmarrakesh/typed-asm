@@ -78,6 +78,9 @@ inductive Ty
   block others may point into; and of each of them `τ` is known. How many
   is a value: the count a program is handed with its arguments, say. -/
   | arr (count : BitVec 64) (τ : Ty)
+  /-- It is at most a value, or less than it where that is said: as numbers
+  without sign. So an index is said to be below a count. -/
+  | upTo (w : BitVec 64) (strict : Bool)
 
 abbrev Ctx := CtxOf Ty
 
@@ -236,6 +239,7 @@ def HasTy (fetch : Fetch) (sys : Syscall) : MemTy → Nat → Ty → BitVec 64 �
   | Ψ, _, .arr count τ, v =>
     ∃ a l off, Ψ a = some l ∧ v = a + BitVec.ofNat 64 off ∧
       ∀ i, i < count.toNat → (off + 8 * i, τ) ∈ l.shape.vals
+  | _, _, .upTo w strict, v => if strict then v < w else v ≤ w
 termination_by _ n τ => (n, τ)
 
 /-- `WellTyped fetch sys Ψ n Γ s`: the state `s` matches the context `Γ`, at
