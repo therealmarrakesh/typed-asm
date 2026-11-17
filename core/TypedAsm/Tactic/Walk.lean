@@ -1557,9 +1557,12 @@ its first instruction: if it cannot, it does nothing, and the instruction is
 not stepped over. -/
 initialize intoOnly : IO.Ref Bool ← IO.mkRef false
 
-/-- Set when handing a block over within a walk failed where it was thought
-to succeed: it is then left to be done the long way for the rest of the block. -/
-initialize enterOff : IO.Ref Bool ← IO.mkRef false
+/-- What is said where the walk the kernel is asked to confirm is not the
+one its driver found: a fault in the tactics, said as one, and never passed
+over by typing the block some other way. -/
+def disagreement : MessageData :=
+  m!"the checker's walk did not come to what was found for this block's ending. This is a \
+    fault in the tactics, not in the program"
 
 def labelInfo (Φ : Expr) : MetaM (Option (Expr × Expr × Expr × Array (Nat × Name))) := do
   if let some (_, p, b, T, ls) := (← labelCache.get).find? (·.1 == Φ) then return some (p, b, T, ls)
@@ -1998,7 +2001,6 @@ def findEnter (Φ : Expr) (atoms : Sym.Atoms) (named : Array (Nat × Reg))
     (cur : Sym.CtxS) (at' t : Nat) (branch? : Option (Sym.FlagsS × Cond × Bool) := none)
     (why? : Option (IO.Ref (Array MessageData)) := none) :
     TacticM (Option (EnterInfo × Sym.Atoms)) := do
-  if ← enterOff.get then return none
   -- why a context declared at the label is not one to hand over to
   let note (k : Name) (m : MessageData) : TacticM Unit := do
     if let some r := why? then r.modify (·.push m!"{k.components.getLast!}: {m}")
@@ -2184,7 +2186,6 @@ values the walk names standing as variables. -/
 def findLeave (atoms : Sym.Atoms) (named : Array (Nat × Reg)) (cur : Sym.CtxS)
     (at' : Nat) (why? : Option (IO.Ref (Option MessageData)) := none) :
     TacticM (Option (LeaveInfo × Sym.Atoms)) := do
-  if ← enterOff.get then return none
   -- why the return is refused, where it is
   let note (m : MessageData) : TacticM Unit := do
     if let some r := why? then r.set (some m)
@@ -2506,7 +2507,6 @@ returns with may stand for. The comparison of the context the call makes
 with the function's is then the checker's. -/
 def findCall (Φ : Expr) (atoms : Sym.Atoms) (named : Array (Nat × Reg))
     (cur : Sym.CtxS) (at' t next : Nat) : TacticM (Option (CallInfo × Sym.Atoms)) := do
-  if ← enterOff.get then return none
   let some (_, _, T, labels) ← labelInfo Φ | return none
   let some (_, lFn) := labels.find? (·.1 == t) | return none
   let some (_, lRet) := labels.find? (·.1 == next) | return none
@@ -2749,7 +2749,6 @@ function preserves, the caller's stack, its room and what it owns besides
 are the caller's own. -/
 def findCallAll (Φ : Expr) (atoms : Sym.Atoms) (named : Array (Nat × Reg))
     (cur : Sym.CtxS) (at' t next : Nat) : TacticM (Option (CallAll × Sym.Atoms)) := do
-  if ← enterOff.get then return none
   let some (_, _, T, labels) ← labelInfo Φ | return none
   let some (_, lFn) := labels.find? (·.1 == t) | return none
   let some (_, lRet) := labels.find? (·.1 == next) | return none
@@ -2977,7 +2976,6 @@ function returns with may stand for. -/
 def findCallVia (Φ : Expr) (atoms : Sym.Atoms) (named : Array (Nat × Reg))
     (cur : Sym.CtxS) (at' next : Nat) (τ : Sym.TyS) (hc : List Sym.CondS) :
     TacticM (Option (ViaCall × Sym.Atoms)) := do
-  if ← enterOff.get then return none
   let some (_, _, T, labels) ← labelInfo Φ | return none
   let some (_, lRet) := labels.find? (·.1 == next) | return none
   let .const tn _ := T.getAppFn | return none
@@ -3177,7 +3175,6 @@ and the label after the call has one context for each value. -/
 def findCallViaAll (Φ : Expr) (atoms : Sym.Atoms) (named : Array (Nat × Reg))
     (cur : Sym.CtxS) (at' next : Nat) (τ : Sym.TyS) (hc : List Sym.CondS) :
     TacticM (Option (ViaCallAll × Sym.Atoms)) := do
-  if ← enterOff.get then return none
   let some (_, _, T, labels) ← labelInfo Φ | return none
   let some (_, lRet) := labels.find? (·.1 == next) | return none
   let .const tn _ := T.getAppFn | return none
@@ -3308,7 +3305,6 @@ context the code wants is the one the context reached is compared with. -/
 def findJumpVia (atoms : Sym.Atoms) (named : Array (Nat × Reg)) (cur : Sym.CtxS) (at' : Nat)
     (τ : Sym.TyS) (hc : List Sym.CondS) (notCode? : Option (IO.Ref Bool) := none) :
     TacticM (Option (ViaJump × Sym.Atoms)) := do
-  if ← enterOff.get then return none
   let bv := mkApp (mkConst ``BitVec) (mkNatLit 64)
   let decls := named.map fun (_, r) => (Name.mkSimple s!"{r.name64}₀", bv)
   let s ← saveState
@@ -3802,7 +3798,7 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         if let .lea .w64 d (.rip disp) := i then
           let v := BitVec.ofNat 64 at' + len' + disp.signExtend 64
           if (Sym.blockAt P.blocks v).isNone then
-            if d == .rsp || (← enterOff.get) then break
+            if d == .rsp then break
             let some τE ← codeTypeAt Φ v.toNat | break
             let st ← get
             let h ← match st.ty.findIdx? (· == τE) with
@@ -4049,7 +4045,6 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     -- is to be as wanted and is not exactly known, the call is refused.
     let exitEnd (at' : Nat) (cur : Sym.CtxS) : TacticM (Option WalkMove) := do
       unless endsKnown do return none
-      if ← enterOff.get then return none
       let some (i, len') := instrs[at']? | return none
       let some (.exit v) := Sym.exitAt cur i | return none
       if wantQ?.isSome && v.isNone then
@@ -4265,7 +4260,7 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         callAll?.isSome || viaAll?.isSome) &&
         !enters? W then
       trace[TypedAsm.fast] "the checker did not hand the block over as found"
-      enterOff.set true
+      refusal.set (some disagreement)
       throwError "the block was not handed over as found"
     let rec exits? : Sym.Walk → Bool
       | .exit _ => true
@@ -4357,7 +4352,7 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       try solveSide m.mvarId! branch? Φ info.lName info.kName params t.toNat Δ cs atoms
       catch e =>
         trace[TypedAsm.fast] "handing over failed where it was found to succeed: {e.toMessageData}"
-        enterOff.set true
+        refusal.set (some disagreement)
         throw e
       trace[TypedAsm.fast] "handed over within the walk at `{info.lName.components.getLast!}`"
       instantiateMVars m
@@ -4471,7 +4466,7 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
             (info.paramsFn.map inst) cs atoms
         catch e =>
           trace[TypedAsm.fast] "calling failed where it was found to succeed: {e.toMessageData}"
-          enterOff.set true
+          refusal.set (some disagreement)
           throw e
         trace[TypedAsm.fast] "called within the walk"
         instantiateMVars m
@@ -4499,10 +4494,10 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         let left ← try runOn m.mvarId! (do evalTactic (← `(tactic| ty_code_at)))
           catch e =>
             trace[TypedAsm.fast] "the address {v} is not shown to be that of the code: {e.toMessageData}"
-            enterOff.set true
+            refusal.set (some disagreement)
             throw e
         unless left.isEmpty do
-          enterOff.set true
+          refusal.set (some disagreement)
           throwError "the address is not shown to be that of the code"
         mkAppM ``And.intro #[← instantiateMVars m, ← down rest atoms vs names]
       | .offer fd o rest =>
@@ -4586,7 +4581,7 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         try solveCallViaAll m.mvarId! Φ info (inst info.Δ0) cs atoms
         catch e =>
           trace[TypedAsm.fast] "calling failed where it was found to succeed: {e.toMessageData}"
-          enterOff.set true
+          refusal.set (some disagreement)
           throw e
         trace[TypedAsm.fast] "called a function that chooses through a value, within the walk"
         instantiateMVars m
@@ -4601,7 +4596,7 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         try solveCallAll m.mvarId! Φ info (info.paramsFn.map inst) cs atoms
         catch e =>
           trace[TypedAsm.fast] "calling failed where it was found to succeed: {e.toMessageData}"
-          enterOff.set true
+          refusal.set (some disagreement)
           throw e
         trace[TypedAsm.fast] "called a function that chooses within the walk"
         instantiateMVars m
@@ -4613,7 +4608,7 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         try solveJumpVia m.mvarId! info cs atoms
         catch e =>
           trace[TypedAsm.fast] "jumping failed where it was found to succeed: {e.toMessageData}"
-          enterOff.set true
+          refusal.set (some disagreement)
           throw e
         trace[TypedAsm.fast] "jumped through a value within the walk"
         instantiateMVars m
@@ -4630,7 +4625,7 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
             atoms
         catch e =>
           trace[TypedAsm.fast] "calling failed where it was found to succeed: {e.toMessageData}"
-          enterOff.set true
+          refusal.set (some disagreement)
           throw e
         trace[TypedAsm.fast] "called through a value within the walk"
         instantiateMVars m
@@ -4672,7 +4667,7 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
             (info.hsub.map inst)
         catch e =>
           trace[TypedAsm.fast] "returning failed where it was found to succeed: {e.toMessageData}"
-          enterOff.set true
+          refusal.set (some disagreement)
           throw e
         trace[TypedAsm.fast] "returned within the walk"
         instantiateMVars m

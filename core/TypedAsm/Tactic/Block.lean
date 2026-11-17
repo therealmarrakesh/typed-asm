@@ -771,7 +771,6 @@ elab "ty_block_core" : tactic => do
     let mut endInstr? : Option Instr := none
     let mut endWhy : Option MessageData := none
     let mut entered := false
-    enterOff.set false
     repeat
       -- A side of a conditional jump the walk left: what the flags say of the
       -- condition is brought in, and a side they rule out needs nothing more.
