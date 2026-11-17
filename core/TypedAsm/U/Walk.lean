@@ -35,6 +35,11 @@ inductive Walk
   /-- A system call that returns was stepped over, the name `k` standing for
   what it hands back: the rest holds whatever that is. -/
   | sys (k : Nat) (rest : Walk)
+  /-- A system call that returns in one of two ways was stepped over, the
+  name `k` standing for what it hands back: each way holds, whatever that
+  is. Each way's context says what range the value handed back lies in, so
+  that a program's own test of it tells the two apart. -/
+  | sys2 (k : Nat) (a b : Walk)
   /-- A system call ends the program: nothing is left. -/
   | ends
   /-- A conditional jump, from a context: the flags decide the condition,
@@ -57,6 +62,7 @@ def Walk.holds (P A : BitVec 64 → Ctx → Prop) : Walk → Env → Prop
   | .arrive t Γ, ρ => A (t.den ρ) (Γ.den ρ)
   | .step i Γ next k rest, ρ => GuardOk ρ Γ next i ∧ ∀ x, rest.holds P A (ρ.setVal k x)
   | .sys k rest, ρ => ∀ x, rest.holds P A (ρ.setVal k x)
+  | .sys2 k a b, ρ => ∀ x, a.holds P A (ρ.setVal k x) ∧ b.holds P A (ρ.setVal k x)
   | .ends, _ => True
   | .branch c Γ taken fall, ρ =>
     (∃ b, c.eval (Γ.flags.den ρ) = some b) ∧
@@ -67,7 +73,7 @@ def Walk.holds (P A : BitVec 64 → Ctx → Prop) : Walk → Env → Prop
 /-- Whether the walk got anywhere: it stepped over an instruction or a call,
 or the program ended. -/
 def Walk.moved : Walk → Bool
-  | .step .. | .sys .. | .ends | .branch .. | .vacuous => true
+  | .step .. | .sys .. | .sys2 .. | .ends | .branch .. | .vacuous => true
   | _ => false
 
 /-- **The checker walked from an address**, for at most so many
@@ -89,7 +95,29 @@ def walk (code : List (BitVec 64 × Instr × BitVec 64)) (stops : BitVec 64 → 
           match sysWorld Γ k (a + len) with
           | some Γ' =>
             if Γ'.under (k + 1) then .sys k (walk code stops false fuel (k + 1) (a + len) Γ') else .stop a Γ
-          | none => .stop a Γ
+          | none =>
+            match sysMap Γ k (a + len) with
+            | some (Γe, Γo, sz) =>
+              if (Γe.addKnown [(.var k, .range (-4095) (-1))]).under (k + 1) &&
+                  (Γo.addKnown [(.var k, .range 0 (BitVec.ofNat 64 (addrTop - sz)))]).under (k + 1)
+                  && decide (sz ≤ addrTop) then
+                .sys2 k
+                  (walk code stops false fuel (k + 1) (a + len)
+                    (Γe.addKnown [(.var k, .range (-4095) (-1))]))
+                  (walk code stops false fuel (k + 1) (a + len)
+                    (Γo.addKnown [(.var k, .range 0 (BitVec.ofNat 64 (addrTop - sz)))]))
+              else .stop a Γ
+            | none =>
+              match sysUnmap Γ k (a + len) with
+              | some (Γe, Γo) =>
+                if (Γe.addKnown [(.var k, .range (-4095) (-1))]).under (k + 1) && Γo.under k &&
+                    Γo.under (k + 1) then
+                  .sys2 k
+                    (walk code stops false fuel (k + 1) (a + len)
+                      (Γe.addKnown [(.var k, .range (-4095) (-1))]))
+                    (walk code stops false fuel (k + 1) (a + len) Γo)
+                else .stop a Γ
+              | none => .stop a Γ
       else if let .jcc c d := i then
         if (Γ.side c true).under k && (Γ.side c false).under k then
           .branch c Γ (walk code stops false fuel k (a + len + d.signExtend 64) (Γ.side c true))
@@ -199,7 +227,68 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
                 exact ((ih x).mono hm).arrives
               exact ⟨hb.1, fun _ => hb.2⟩
             · subst hW; exact ⟨h, fun hm => nomatch hm⟩
-          · subst hW; exact ⟨h, fun hm => nomatch hm⟩
+          · split at hW
+            · next Γe Γo sz hmap =>
+              split at hW
+              · next hchk =>
+                subst hW
+                simp only [Bool.and_eq_true, decide_eq_true_eq] at hchk
+                obtain ⟨⟨hue, huo⟩, hsz⟩ := hchk
+                have ihe := fun x => (walk_sound hD hkind hpre code stops hcode false fuel (k + 1)
+                  (e + len) _ (ρ.setVal k x) hue (h x).1).1
+                have iho := fun x => (walk_sound hD hkind hpre code stops hcode false fuel (k + 1)
+                  (e + len) _ (ρ.setVal k x) huo (h x).2).1
+                have hb := both fun m hm => by
+                  refine Ok.step hf (sysMap_sound hD hkind hpre hmap hu) ?_
+                  rintro t Δ ⟨x, rfl, ⟨hx, rfl⟩ | ⟨hfit, rfl⟩⟩
+                  · refine Arrives.learn [((Val.var k).den (ρ.setVal k x), Ty.range (-4095) (-1))]
+                      ?_ (((ihe x).mono hm).arrives)
+                    intro f hf' k' _ Ψ' _ _
+                    rw [List.mem_singleton.mp hf']
+                    refine hasTy_range.mpr ?_
+                    show (ρ.setVal k x).val k - (-4095) ≤ (-1 : BitVec 64) - (-4095)
+                    rw [Env.setVal_get_self]
+                    unfold SysErr at hx
+                    bv_omega
+                  · refine Arrives.learn [((Val.var k).den (ρ.setVal k x),
+                        Ty.range 0 (BitVec.ofNat 64 (addrTop - sz)))] ?_ (((iho x).mono hm).arrives)
+                    intro f hf' k' _ Ψ' _ _
+                    rw [List.mem_singleton.mp hf']
+                    refine hasTy_range.mpr ?_
+                    show (ρ.setVal k x).val k - 0 ≤ BitVec.ofNat 64 (addrTop - sz) - 0
+                    rw [Env.setVal_get_self]
+                    have hT : addrTop = 0x7ffffffff000 := rfl
+                    bv_omega
+                exact ⟨hb.1, fun _ => hb.2⟩
+              · subst hW; exact ⟨h, fun hm => nomatch hm⟩
+            · split at hW
+              · next Γe Γo hun =>
+                split at hW
+                · next hchk =>
+                  subst hW
+                  simp only [Bool.and_eq_true] at hchk
+                  obtain ⟨⟨hue, huo⟩, huo'⟩ := hchk
+                  have ihe := fun x => (walk_sound hD hkind hpre code stops hcode false fuel (k + 1)
+                    (e + len) _ (ρ.setVal k x) hue (h x).1).1
+                  have iho := (walk_sound hD hkind hpre code stops hcode false fuel (k + 1)
+                    (e + len) _ (ρ.setVal k 0) huo' (h 0).2).1
+                  rw [CtxS.den_setVal ρ k 0 Γo huo] at iho
+                  have hb := both fun m hm => by
+                    refine Ok.step hf (sysUnmap_sound hD hkind hpre hun hu) ?_
+                    rintro t Δ ⟨rfl, ⟨x, hx, rfl⟩ | rfl⟩
+                    · refine Arrives.learn [((Val.var k).den (ρ.setVal k x), Ty.range (-4095) (-1))]
+                        ?_ (((ihe x).mono hm).arrives)
+                      intro f hf' k' _ Ψ' _ _
+                      rw [List.mem_singleton.mp hf']
+                      refine hasTy_range.mpr ?_
+                      show (ρ.setVal k x).val k - (-4095) ≤ (-1 : BitVec 64) - (-4095)
+                      rw [Env.setVal_get_self]
+                      unfold SysErr at hx
+                      bv_omega
+                    · exact (iho.mono hm).arrives
+                  exact ⟨hb.1, fun _ => hb.2⟩
+                · subst hW; exact ⟨h, fun hm => nomatch hm⟩
+              · subst hW; exact ⟨h, fun hm => nomatch hm⟩
       · split at hW
         · next =>
           split at hW

@@ -430,4 +430,51 @@ example : checkProgram codeR [lab 0 Pw] 10 0 = true := by decide +kernel
 -- entered past the first comparison, the second jump may be taken, to nowhere: refused
 example : checkProgram codeR [lab 6 Pw] 10 0 = false := by decide +kernel
 
+/-! ## Memory mapped, used and given back
+
+`mmap` hands back an error number or the address of fresh memory; `munmap`
+hands back zero, or an error number with the memory held still. The
+program's own tests of what is handed back tell the cases apart. -/
+
+/-- `top: mmap(0, 4096); if error goto out; store rdi there;` then `tail`;
+`out: exit`. -/
+def codeM (tail : List (BitVec 64 × Instr × BitVec 64)) : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .mov .w32 (.rm_i (.reg .rax) 9), 5), (5, .mov .w32 (.rm_i (.reg .rdi) 0), 5),
+   (10, .mov .w32 (.rm_i (.reg .rsi) 4096), 5), (15, .syscall, 2),
+   (17, .alu .cmp .w64 (.rm_i (.reg .rax) (-4095)), 6), (23, .jcc .ae 75, 2),
+   (25, .mov .w64 (.rm_r (.mem (.sib (some .rax) none 0)) .rdi), 3)] ++ tail ++
+  [(100, .mov .w32 (.rm_i (.reg .rax) 60), 5), (105, .syscall, 2)]
+
+/-- `munmap(rax, 4096)`. -/
+def unmapIt : List (BitVec 64 × Instr × BitVec 64) :=
+  [(28, .mov .w64 (.rm_r (.reg .rdi) .rax), 3), (31, .mov .w32 (.rm_i (.reg .rax) 11), 5),
+   (36, .syscall, 2)]
+
+-- mapped, used, given back, and the program ends: typed
+example : checkProgram (codeM (unmapIt ++ [(38, .jmp (.rel 57), 5)])) [lab 0 Pw] 20 0 = true := by
+  decide +kernel
+-- mapped, used, and the program ends holding it: typed. A program may end
+-- holding memory
+example : checkProgram (codeM [(28, .jmp (.rel 67), 5)]) [lab 0 Pw] 20 0 = true := by
+  decide +kernel
+-- mapped, used, and round again without giving it back: refused. The label
+-- at the top holds no such memory
+example : checkProgram (codeM [(28, .jmp (.rel (-33)), 5)]) [lab 0 Pw] 20 0 = false := by
+  decide +kernel
+-- given back, and round again without asking whether it was: refused. If
+-- `munmap` refused, the memory is held still
+example : checkProgram (codeM (unmapIt ++ [(38, .jmp (.rel (-43)), 5)])) [lab 0 Pw] 20 0
+    = false := by decide +kernel
+-- given back, the result tested, and round again only if it was: typed
+example : checkProgram (codeM (unmapIt ++
+    [(38, .test .w64 (.reg .rax) (.reg .rax), 3), (41, .jcc .ne 57, 2),
+     (43, .jmp (.rel (-48)), 5)])) [lab 0 Pw] 20 0 = true := by decide +kernel
+-- the store made without asking whether memory was handed back: refused
+example : checkProgram
+    ([(0, .mov .w32 (.rm_i (.reg .rax) 9), 5), (5, .mov .w32 (.rm_i (.reg .rdi) 0), 5),
+      (10, .mov .w32 (.rm_i (.reg .rsi) 4096), 5), (15, .syscall, 2),
+      (17, .mov .w64 (.rm_r (.mem (.sib (some .rax) none 0)) .rdi), 3),
+      (20, .mov .w32 (.rm_i (.reg .rax) 60), 5), (25, .syscall, 2)])
+    [lab 0 Pw] 20 0 = false := by decide +kernel
+
 end Tests.Unified

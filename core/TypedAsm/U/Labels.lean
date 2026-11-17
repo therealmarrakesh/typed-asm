@@ -304,9 +304,6 @@ def learnedFacts (justify : Nat → BitVec 64 → CtxS → Bool) (kj : Nat) (Γ 
     List (Val × TyS) :=
   ((askedCode Γ Δ).filter fun x => justify kj x.1 x.2.1).map fun x => x.2.2
 
-/-- A context knowing more. -/
-def CtxS.addKnown (Γ : CtxS) (fs : List (Val × TyS)) : CtxS := { Γ with known := fs ++ Γ.known }
-
 /-- **The context reached, made ready to be regarded as a member of a
 family**: its regions that lie end to end taken as one; the values the
 family names and it does not, named; and the addresses the member knows to
@@ -490,6 +487,7 @@ def Walk.closes (cc : CtxS → CtxS → Nat → Option (CtxS × OpenL)) (labels 
     | _ => false
   | _, .step i Γ _ k rest => guardS i Γ.flags && rest.closes cc labels (k + 1)
   | _, .sys k rest => rest.closes cc labels (k + 1)
+  | _, .sys2 k a b => a.closes cc labels (k + 1) && b.closes cc labels (k + 1)
   | _, .ends => true
   | _, .vacuous => true
   | k, .branch c Γ taken fall =>
@@ -552,6 +550,9 @@ theorem Walk.holds_of_closes {n : Nat} {labels : List Label}
     exact ⟨fun d hd x => guardS_den ρ h.1 hd _ _ _ _,
       fun x => Walk.holds_of_closes hcc H rest _ _ h.2⟩
   | .sys k rest, _, ρ, h => fun x => Walk.holds_of_closes hcc H rest _ _ h
+  | .sys2 k a b, _, ρ, h => by
+    simp only [Walk.closes, Bool.and_eq_true] at h
+    exact fun x => ⟨Walk.holds_of_closes hcc H a _ _ h.1, Walk.holds_of_closes hcc H b _ _ h.2⟩
   | .ends, _, _, _ => trivial
   | .vacuous, _, _, _ => trivial
   | .branch c Γ taken fall, k, ρ, h => by

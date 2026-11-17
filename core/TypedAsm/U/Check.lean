@@ -34,6 +34,9 @@ def CtxS.den (ρ : Env) (Γ : CtxS) : Ctx where
   held := (Γ.held.map fun b => (b.1.den ρ, b.2.den ρ)) ++ restDen ρ Γ.rest
   known := Γ.known.map fun f => (f.1.den ρ, f.2.den ρ)
 
+/-- A context knowing more. -/
+def CtxS.addKnown (Γ : CtxS) (fs : List (Val × TyS)) : CtxS := { Γ with known := fs ++ Γ.known }
+
 /-- The address a memory operand names, as a term. -/
 def eaS (regs : Regs Val) (next : BitVec 64) : Mem → Val
   | .sib base index disp =>
