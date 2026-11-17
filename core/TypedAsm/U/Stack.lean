@@ -39,7 +39,7 @@ theorem starts_stack {s : State} {blocks : List (BitVec 64 × Layout)} {kinds : 
     (hb : blocksPerm s blocks = true)
     (hsaid : ∀ x ∈ blocks, ∀ bs : List (BitVec 8), x.2.said = some bs →
       ∀ k (hk : k < bs.length), s.mem (x.1 + BitVec.ofNat 64 k) = bs[k])
-    (htext : ∀ x ∈ blocks, x.2.text = 0)
+    (htext : ∀ x ∈ blocks, x.2.text ≠ 0 → s.mem (x.1 + BitVec.ofNat 64 (x.2.size - 1)) = 0)
     (hw : s.canWrite base size = true) (hsz : size < 18446744073709551616)
     (hrsp : s.getReg .rsp = base + BitVec.ofNat 64 size)
     (hapart : (blocks.all fun x => decide (Disjoint base size x.1 x.2.size)) = true)
@@ -57,7 +57,7 @@ theorem starts_stack {s : State} {blocks : List (BitVec 64 × Layout)} {kinds : 
     rcases this.2 with hn | hcw
     · rw [hw] at hn; cases hn
     · exact hcw
-  text := fun x hx ht => absurd (htext x hx) ht
+  text := htext
   said := hsaid
   held := by
     have hheld : ((entryPatStack size).den { ρ with bound := Fam.ofStack s base :: ρ.bound }).held

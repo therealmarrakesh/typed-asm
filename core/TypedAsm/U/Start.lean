@@ -89,12 +89,12 @@ def Fam.ofState (s : State) : Fam where
 /-- **A state checked so starts as the entry context asks**, where each block
 that says its bytes holds them, every
 byte it can touch is on a page of a stretch that lies within a block, and
-no block has a text of its own. -/
+the text of each block that has some ends in a byte of nought. -/
 theorem starts_entry {s : State} {blocks : List (BitVec 64 × Layout)} {kinds : Nat → Option Shape}
     (ρ : Env) (hb : blocksPerm s blocks = true)
     (hsaid : ∀ x ∈ blocks, ∀ bs : List (BitVec 8), x.2.said = some bs →
       ∀ k (hk : k < bs.length), s.mem (x.1 + BitVec.ofNat 64 k) = bs[k])
-    (htext : ∀ x ∈ blocks, x.2.text = 0)
+    (htext : ∀ x ∈ blocks, x.2.text ≠ 0 → s.mem (x.1 + BitVec.ofNat 64 (x.2.size - 1)) = 0)
     {rs : List (BitVec 64 × BitVec 64)} (hp : PermsWithin s rs)
     (hc : rs.all (stretchIn (blocks.map fun x => (x.1, x.2.size))) = true) :
     Starts blocks kinds (entryPat.den { ρ with bound := Fam.ofState s :: ρ.bound }) s where
@@ -107,7 +107,7 @@ theorem starts_entry {s : State} {blocks : List (BitVec 64 × Layout)} {kinds : 
     rcases this.2 with hn | hcw
     · rw [hw] at hn; cases hn
     · exact hcw
-  text := fun x hx ht => absurd (htext x hx) ht
+  text := htext
   said := hsaid
   held := HeldOk.nil rfl
   complete := fun a ha => by
