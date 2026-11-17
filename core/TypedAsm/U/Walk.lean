@@ -36,6 +36,9 @@ inductive Walk
   | sys (k : Nat) (rest : Walk)
   /-- A system call ends the program: nothing is left. -/
   | ends
+  /-- A conditional jump, from a context: the flags decide the condition,
+  and each way holds where the flags send control that way. -/
+  | branch (c : Cond) (Γ : CtxS) (taken fall : Walk)
 
 /-- That an instruction does not fault for a reason of its own, in a
 context, whatever it reads. -/
@@ -52,11 +55,15 @@ def Walk.holds (P A : BitVec 64 → Ctx → Prop) : Walk → Env → Prop
   | .step i Γ next k rest, ρ => GuardOk ρ Γ next i ∧ ∀ x, rest.holds P A (ρ.setVal k x)
   | .sys k rest, ρ => ∀ x, rest.holds P A (ρ.setVal k x)
   | .ends, _ => True
+  | .branch c Γ taken fall, ρ =>
+    (∃ b, c.eval (Γ.flags.den ρ) = some b) ∧
+    (c.eval (Γ.flags.den ρ) = some true → taken.holds P A ρ) ∧
+    (c.eval (Γ.flags.den ρ) = some false → fall.holds P A ρ)
 
 /-- Whether the walk got anywhere: it stepped over an instruction or a call,
 or the program ended. -/
 def Walk.moved : Walk → Bool
-  | .step .. | .sys .. | .ends => true
+  | .step .. | .sys .. | .ends | .branch .. => true
   | _ => false
 
 /-- **The checker walked from an address**, for at most so many
@@ -74,6 +81,9 @@ def walk (code : List (BitVec 64 × Instr × BitVec 64)) : Nat → Nat → BitVe
           | some Γ' =>
             if Γ'.under (k + 1) then .sys k (walk code fuel (k + 1) (a + len) Γ') else .stop a Γ
           | none => .stop a Γ
+      else if let .jcc c d := i then
+        .branch c Γ (walk code fuel k (a + len + d.signExtend 64) Γ)
+          (walk code fuel k (a + len) Γ)
       else
         match stepHeld Γ k (a + len) i with
         | none => .stop a Γ
@@ -83,6 +93,33 @@ def walk (code : List (BitVec 64 × Instr × BitVec 64)) : Nat → Nat → BitVe
             | some t' => .step i Γ (a + len) k (walk code fuel (k + 1) t' Γ')
             | none => .step i Γ (a + len) k (.arrive t Γ')
           else .stop a Γ
+
+theorem CtxOf.apply_none (Γ : Ctx) : Γ.apply ⟨[], Γ.flags, 0⟩ = Γ := by
+  cases Γ; rfl
+
+/-- **A conditional jump**, where the flags decide the condition: control
+goes to the target if it holds and to the next instruction if not, and the
+context is as it was. -/
+theorem jcc_steps {Γ : Ctx} {next : BitVec 64} {c : Cond} {d : BitVec 32}
+    (hb : ∃ b, c.eval Γ.flags = some b) :
+    Steps fetch sys Ψ (.jcc c d) next Γ fun t Δ => Δ = Γ ∧
+      ((c.eval Γ.flags = some true ∧ t = next + d.signExtend 64) ∨
+        (c.eval Γ.flags = some false ∧ t = next)) := by
+  obtain ⟨b, hb⟩ := hb
+  refine Steps.mono (Steps.desc (i := .jcc c d) (R := fun x Γr => x = 0 ∧ Γr = Γ)
+    (W := fun _ Γr Γw => Γw = Γr) rfl ⟨rfl, rfl⟩ (fun x Γr _ => ⟨Γr, rfl, rfl⟩) ?_) ?_
+  · intro x Γr _
+    show (c.eval Γ.flags).isSome = true
+    rw [hb]; rfl
+  · rintro t Δ ⟨x, Γr, Γw, ⟨rfl, rfl⟩, rfl, rfl, rfl⟩
+    refine ⟨CtxOf.apply_none _, ?_⟩
+    cases b
+    · refine .inr ⟨hb, ?_⟩
+      show (some (if (c.eval _).getD false = true then _ else _)).getD next = next
+      rw [hb]; rfl
+    · refine .inl ⟨hb, ?_⟩
+      show (some (if (c.eval _).getD false = true then _ else _)).getD next = _
+      rw [hb]; rfl
 
 theorem Ok.zero (a : BitVec 64) (Γ : Ctx) : Ok fetch sys Ψ 0 a Γ := by
   intro k hk Ψ' _ _ s _ _
@@ -145,33 +182,45 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
             · subst hW; exact ⟨h, fun hm => nomatch hm⟩
           · subst hW; exact ⟨h, fun hm => nomatch hm⟩
       · split at hW
-        · subst hW; exact ⟨h, fun hm => nomatch hm⟩
-        · next Γ' t hstep =>
-          split at hW
-          · next hu' =>
-            have key : ∀ (rest : Walk),
-                (GuardOk ρ Γ (e + len) i ∧ ∀ x, rest.holds (Ok fetch sys Ψ n)
-                  (Arrives fetch sys Ψ n) (ρ.setVal k x)) →
-                (∀ x, rest.holds (Ok fetch sys Ψ n) (Arrives fetch sys Ψ n) (ρ.setVal k x) →
-                  Arrives fetch sys Ψ n (t.den (ρ.setVal k x)) (Γ'.den (ρ.setVal k x))) →
-                Ok fetch sys Ψ n e (Γ.den ρ) ∧ Ok fetch sys Ψ (n + 1) e (Γ.den ρ) := by
-              intro rest ⟨hg, hrest⟩ harr
-              refine both fun m hm => ?_
-              refine Ok.step hf (stepHeld_sound hstep hu hg) ?_
-              rintro t' Δ ⟨x, rfl, rfl⟩
-              exact (harr x (hrest x)).mono hm
-            split at hW
-            · next t' ht =>
-              subst hW
-              have hb := key _ h (fun x hx => by
-                rw [Val.lit?_den ht]
-                exact (walk_sound hD hkind hpre code hcode fuel (k + 1) t' Γ' (ρ.setVal k x) hu'
-                  hx).1.arrives)
-              exact ⟨hb.1, fun _ => hb.2⟩
-            · subst hW
-              have hb := key _ h (fun x hx => hx)
-              exact ⟨hb.1, fun _ => hb.2⟩
+        · next c d =>
+          subst hW
+          obtain ⟨hdec, htk, hfl⟩ := h
+          have hb := both fun m hm => by
+            refine Ok.step hf (jcc_steps (Γ := Γ.den ρ) hdec) ?_
+            rintro t Δ ⟨rfl, ⟨hc, rfl⟩ | ⟨hc, rfl⟩⟩
+            · exact (((walk_sound hD hkind hpre code hcode fuel k _ Γ ρ hu (htk hc)).1).mono
+                hm).arrives
+            · exact (((walk_sound hD hkind hpre code hcode fuel k _ Γ ρ hu (hfl hc)).1).mono
+                hm).arrives
+          exact ⟨hb.1, fun _ => hb.2⟩
+        · split at hW
           · subst hW; exact ⟨h, fun hm => nomatch hm⟩
+          · next Γ' t hstep =>
+            split at hW
+            · next hu' =>
+              have key : ∀ (rest : Walk),
+                  (GuardOk ρ Γ (e + len) i ∧ ∀ x, rest.holds (Ok fetch sys Ψ n)
+                    (Arrives fetch sys Ψ n) (ρ.setVal k x)) →
+                  (∀ x, rest.holds (Ok fetch sys Ψ n) (Arrives fetch sys Ψ n) (ρ.setVal k x) →
+                    Arrives fetch sys Ψ n (t.den (ρ.setVal k x)) (Γ'.den (ρ.setVal k x))) →
+                  Ok fetch sys Ψ n e (Γ.den ρ) ∧ Ok fetch sys Ψ (n + 1) e (Γ.den ρ) := by
+                intro rest ⟨hg, hrest⟩ harr
+                refine both fun m hm => ?_
+                refine Ok.step hf (stepHeld_sound hstep hu hg) ?_
+                rintro t' Δ ⟨x, rfl, rfl⟩
+                exact (harr x (hrest x)).mono hm
+              split at hW
+              · next t' ht =>
+                subst hW
+                have hb := key _ h (fun x hx => by
+                  rw [Val.lit?_den ht]
+                  exact (walk_sound hD hkind hpre code hcode fuel (k + 1) t' Γ' (ρ.setVal k x) hu'
+                    hx).1.arrives)
+                exact ⟨hb.1, fun _ => hb.2⟩
+              · subst hW
+                have hb := key _ h (fun x hx => hx)
+                exact ⟨hb.1, fun _ => hb.2⟩
+            · subst hW; exact ⟨h, fun hm => nomatch hm⟩
 
 /-- Whether a walk leaves nothing to be shown: every instruction it stepped
 over cannot fault of itself, and every way through it ends the program. -/
