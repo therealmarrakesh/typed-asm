@@ -4,8 +4,9 @@ import TypedAsm
 # The lengths of the arguments, by a function, proved safe
 
 Exits with how many bytes its arguments have, all told. Each argument's
-length is found by a function, which finds where the argument's text ends
-by another; the total is kept on the stack across the calls.
+length is found by a function, which keeps where the text starts in a
+register it saves on the stack and goes along the text in a loop; the
+total is kept on the stack across the calls.
 
 ```asm
 _start:
@@ -28,28 +29,25 @@ done:
      syscall
 len:                              ; rdi = text; its length in rax
      push  r12                    ; the caller's, given back at the end
-     mov   r12, rdi               ; where the text starts, kept across the call
-     call  stop
+     mov   r12, rdi               ; where the text starts
+scan:
+     movzx eax, byte ptr [rdi]
+     test  rax, rax
+     jz    found                  ; a zero ends the text
+     add   rdi, 1
+     jmp   scan
+found:
      sub   rdi, r12               ; how far the end is from the start
      mov   rax, rdi
      pop   r12
      ret
-stop:                             ; rdi = text; rdi at the zero that ends it
-     movzx eax, byte ptr [rdi]
-     test  rax, rax
-     jz    stopped                ; a zero ends the text
-     add   rdi, 1
-     jmp   stop
-stopped:
-     ret
 ```
 
 The program uses its stack three ways: it keeps its total there, below
-the arguments; each call pushes the address it returns to; and `len` pushes
+the arguments; the call pushes the address it returns to; and `len` pushes
 a register it must give back as it found it, so that it can use that
-register to keep where the text starts while it calls `stop`. At the
-deepest, in `stop`, four slots are in use, so the program asks for four
-below its arguments.
+register to keep where the text starts. At the deepest, in the loop, three
+slots are in use; the program asks for four below its arguments.
 
 `lake exe lengths -- ARG...` runs it in the model; `lake exe lengths --elf
 FILE` writes an executable that Linux can run.
@@ -63,7 +61,7 @@ namespace Lengths
 
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive Label
-  | start | arg | back | done | len | stop | stopped
+  | start | arg | back | done | len | scan | found
   deriving DecidableEq
 
 def code : List (Asm Label) := [
@@ -88,18 +86,16 @@ def code : List (Asm Label) := [
   .label .len,
   .ins (.push .r12),
   .ins (.mov .w64 (.rm_r (.reg .r12) .rdi)),
-  .call .stop,
+  .label .scan,
+  .ins (.movzx .w32 .rax .w8 (.mem (.sib (some .rdi) none 0))),
+  .ins (.test .w64 (.reg .rax) (.reg .rax)),
+  .jcc .e .found,
+  .ins (.alu .add .w64 (.rm_i (.reg .rdi) 1)),
+  .jmp .scan,
+  .label .found,
   .ins (.alu .sub .w64 (.rm_r (.reg .rdi) .r12)),
   .ins (.mov .w64 (.rm_r (.reg .rax) .rdi)),
   .ins (.pop .r12),
-  .ins .ret,
-  .label .stop,
-  .ins (.movzx .w32 .rax .w8 (.mem (.sib (some .rdi) none 0))),
-  .ins (.test .w64 (.reg .rax) (.reg .rax)),
-  .jcc .e .stopped,
-  .ins (.alu .add .w64 (.rm_i (.reg .rdi) 1)),
-  .jmp .stop,
-  .label .stopped,
   .ins .ret]
 
 -- Where the program is loaded, what it puts in memory, where it starts,

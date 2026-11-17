@@ -22,7 +22,11 @@ def anyRegs : Regs Val :=
 def Val.was (r : Reg) : Val := anyRegs.get r
 
 /-- A value the label's family ranges over besides: the `k`th. -/
-def Val.named (k : Nat) : Val := .bvar 0 (17 + k)
+def Val.named (k : Nat) : Val := .bvar 0 (64 + k)
+
+/-- What a register held when the function was entered, where the function
+has pushed it since and may have changed it. -/
+def Val.entered (r : Reg) : Val := .bvar 0 (32 + allRegs.idxOf r)
 
 instance : Coe (BitVec 64) Val := ⟨.lit⟩
 instance : Add Val := ⟨.add⟩
@@ -68,47 +72,68 @@ def Val.lessBy (a n : Val) : Val :=
   | .lit k => .add a (.lit (-k))
   | n => a.less n
 
-/-- **What a function returns with**, written one family in from its
-entry: the registers it keeps as they were at entry, the stack pointer past
-the return address, the bytes it was given below the stack pointer and the
-eight that held the return address held still, the regions it took given
-back, the regions it hands its caller, each at the address a register holds
-at return, and whatever else was held, held. The other registers hold
-whatever they hold, but for those said. How many bytes are terms, said as
-at the function's entry: a number, or what a value there comes to. A
+/-- A term and so many more: the term itself where that is none. -/
+def Val.upBy (a : Val) (n : Nat) : Val := if n = 0 then a else a.plus (litNat n)
+
+/-- **What a function returns with**, written one family in from a label
+of the function: the registers it keeps as they were at entry, the stack
+pointer past the return address, the bytes it was given below the stack
+pointer and the eight that held the return address held still, the regions
+it took given back, the regions it hands its caller, each at the address a
+register holds at return, and whatever else was held, held. The other
+registers hold whatever they hold, but for those said. How many bytes are
+terms, said as at the label: a number, or what a value there comes to. A
 region taken may be said to hold values when it is given back (`leaves`):
-by the register it was taken at, how far in each value is, and the value. -/
+by the register it was taken at, how far in each value is, and the value.
+Where the function has pushed since it was entered: `below` is how many
+bytes the stack pointer is below where it was, and `saved` the registers
+it keeps that it has pushed, which are given back as they were pushed. -/
 def returnsWith (results : List (Reg × Val) := []) (room : Val := 0)
     (takes : List (Reg × Val) := []) (gives : List (Reg × Val) := [])
-    (leaves : List (Reg × List (Val × Val)) := []) : TyS :=
+    (leaves : List (Reg × List (Val × Val)) := []) (saved : List Reg := []) (below : Nat := 0) :
+    TyS :=
   .code
     (regsWith
-      (regsWith anyRegs (keptRegs.map fun r => (r, .bvar 1 (allRegs.idxOf r))))
-      ((.rsp, .add (.bvar 1 4) (.lit 8)) :: results))
+      (regsWith anyRegs (keptRegs.map fun r =>
+        (r, if saved.contains r then (Val.entered r).lift else .bvar 1 (allRegs.idxOf r))))
+      ((.rsp, .add (.bvar 1 4) (.lit (BitVec.ofNat 64 (8 + below)))) :: results))
     (.bvar 0)
-    (((Val.bvar 1 4).lessBy room.lift, ⟨room.lift.plus 8, []⟩) ::
+    ((((Val.bvar 1 4).upBy below).lessBy room.lift, ⟨room.lift.plus 8, []⟩) ::
       (takes.map fun t => (.bvar 1 (allRegs.idxOf t.1),
         ⟨t.2.lift, ((leaves.lookup t.1).getD []).map fun p => (p.1.lift, p.2.lift)⟩)) ++
       gives.map fun t => (.bvar 0 (allRegs.idxOf t.1), ⟨t.2.lift, []⟩))
     .nil (.bvar 1)
 
-/-- **A label where a function is entered, or inside it with nothing
-pushed**: the return address at the stack pointer, known to be code wanting
-what the function returns with; so many bytes below the stack pointer the
-function's to use; the regions it takes from its caller and gives back,
-each at the address a register holds at entry and so many bytes; the
-regions it hands its caller when it returns; whatever else its caller
-holds; and the registers and facts said. How many bytes are terms: a
-number, or what a value at entry comes to. `leaves` says what values a
-region taken holds when the function gives it back. -/
+/-- Where in a function's bytes each register it has pushed is: the first
+just below the return address, each next eight bytes lower. -/
+def savedSlots (room : Val) : Nat → List Reg → List (Val × Val)
+  | _, [] => []
+  | i, r :: rs => (room.lessBy (litNat (8 * (i + 1))), Val.entered r) :: savedSlots room (i + 1) rs
+
+/-- **A label where a function is entered, or inside it**: the return
+address known to be code wanting what the function returns with; so many
+bytes below it the function's to use; the regions it takes from its caller
+and gives back, each at the address a register holds at the label and so
+many bytes; the regions it hands its caller when it returns; whatever else
+its caller holds; and the registers and facts said. How many bytes are
+terms: a number, or what a value at the label comes to. `leaves` says what
+values a region taken holds when the function gives it back.
+
+Inside the function, where it has pushed: `saved` lists the registers it
+keeps for its caller that it pushed on entry, in the order pushed, each
+held in the stack as it was (`Val.entered r`) and given back so at the
+return; `pushed` is how many bytes more it has pushed since. -/
 def inFunction (regs : List (Reg × Val) := []) (known : List (Val × TyS) := [])
     (room : Val := 0) (results : List (Reg × Val) := []) (takes : List (Reg × Val) := [])
-    (gives : List (Reg × Val) := []) (leaves : List (Reg × List (Val × Val)) := []) : CtxS where
+    (gives : List (Reg × Val) := []) (leaves : List (Reg × List (Val × Val)) := [])
+    (saved : List Reg := []) (pushed : Nat := 0) : CtxS where
   regs := regsWith anyRegs regs
   flags := .bvar 0
-  held := ((Val.bvar 0 4).lessBy room, ⟨room.plus 8, [(room, .bvar 0 16)]⟩) ::
+  held := (((Val.bvar 0 4).upBy (8 * saved.length + pushed)).lessBy room,
+      ⟨room.plus 8, (room, .bvar 0 16) :: savedSlots room 0 saved⟩) ::
     takes.map fun t => (.bvar 0 (allRegs.idxOf t.1), ⟨t.2, []⟩)
-  known := (.bvar 0 16, returnsWith results room takes gives leaves) :: known
+  known := (.bvar 0 16,
+    returnsWith results room takes gives leaves saved (8 * saved.length + pushed)) :: known
   rest := .bvar 0
 
 /-- **A label in the program's own code, outside any function**: the stack
