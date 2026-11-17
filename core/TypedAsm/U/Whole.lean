@@ -164,8 +164,8 @@ theorem whole_safe {code : List (Asm L)} {l : L} {n : Nat} {pg : Prog} {labels :
     ∀ w, SafeMem linux (startIn code l n w) := fun w =>
   have f := wholeOk_facts h
   SafeMem.of_safe linux_frame (f.loaded w)
-    (safe_of_checked linux_describes rfl (PreSound.all (fun _ => trivial) _) f.hcode hk (f.statics _ _) f.wf
-      f.check f.entry rfl {} (entryFam code l n) (f.wellTyped _ _ w))
+    (safe_of_checked linux_describes rfl (PreSound.all (fun _ => trivial) _) f.hcode hk
+      (f.statics _ _) f.wf f.check f.entry rfl {} (entryFam code l n) (f.wellTyped _ _ w))
 
 /-- **And where it checks against the wanted status, ends only with it.** -/
 theorem whole_exits {code : List (Asm L)} {l : L} {n : Nat} {pg : Prog} {labels : List Label}

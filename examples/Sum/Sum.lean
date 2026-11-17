@@ -1,61 +1,66 @@
 import SumProgram
-import TypedAsm.Tactic
+import TypedAsm.U.Say
 
 /-!
 # Sum: typing and safety
 
-The program is in `SumProgram.lean`. This file types it and proves it safe.
-It is kept separate so that running the program does not link the tactics.
+The program is in `SumProgram.lean`. This file says what its labels want
+and checks it: one check, run by Lean's kernel, that the code is typed and
+that the state the kernel loads the program into starts as its entry asks.
+Nothing is proved by hand.
+
+It is kept separate so that running the program does not link the checker.
 -/
 
-open TypedAsm
+open TypedAsm TypedAsm.U
 
 namespace Sum
 
-/-! ## The typing -/
+/-! ## What the labels want -/
 
-/-- A pointer to element `i` of a read-only array of `n` integers. -/
-def elem (n i : Nat) : Ty := .ptr (.raw (8 * n)) false (8 * i)
+/-- Where the array is. -/
+def arr : Val := .lit (Asm.addr code base .array)
 
-/-- The counter after `i` of `n` elements have been consumed. -/
-def left (n i : Nat) : BitVec 64 := BitVec.ofNat 64 (n - i)
+/-- How many elements the loop has taken. -/
+def i : Val := .named 0
 
-/-- Register types inside `sum` after `i` elements: the pointer is at element
-`i`, the counter is exactly `n - i`, and the callee-saved registers have
-whatever types the caller gave them. -/
-def sumRegs (n i : Nat) (saved : Reg → Ty) : Reg → Ty :=
-  fun r => if calleeSaved r then saved r
-    else if r = .rdi then elem n i else if r = .rsi then .eq (left n i) else .int
+/-- The program for the checker: its instructions, and that the array is in
+the segment it was written in. -/
+def pg : Prog :=
+  { code := progCode (Asm.table base code)
+    statics := staticIn (blocksOf code .start) (Asm.addr code base .array) }
 
-/-- `sum` takes a pointer to `n` integers in `rdi` and exactly `n` in `rsi`,
-and preserves the callee-saved registers. -/
-def sumSig (n : Nat) : FnSig where
-  args := sumRegs n 0 (fun _ => .int)
-  results := fun _ => .int
-  preserved := calleeSaved
-  need := 0
+/-- The labels. `sum` is entered with the array in `rdi` and its length in
+`rsi`; going round the loop, `rdi` is at element `i` and `rsi` is what is
+left, for `i` at most four. A function gives back the registers it must as
+it found them: that is checked, not said here. -/
+def labels : List U.Label :=
+  [⟨entry, entryOf 1⟩,
+   ⟨Asm.addr code base .sum, inFunction [(.rdi, arr), (.rsi, 5)]⟩,
+   ⟨Asm.addr code base .loop,
+     inFunction [(.rdi, arr + (i <<< 3)), (.rsi, 5 - i)] [(i, .range 0 4)]⟩]
 
-/-- After the call: nothing is known about any register. -/
-def fin : Ctx := ⟨fun _ => .int, [], 8, Flags.Any, [], 0⟩
+/-! ## The check -/
 
-/-- The contexts allowed at each label. -/
-inductive At : Label → Ctx → Prop
-  | start : At .start (entryCtx 1)
-  | afterCall : At .afterCall fin
-  | sum (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
-    (sumSig n).CallerOk saved ret rest room → At .sum ((sumSig n).entry saved ret rest room)
-  /-- The loop invariant, for `i < n` elements consumed. -/
-  | loop (n i : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
-    (sumSig n).CallerOk saved ret rest room → i < n →
-    At .loop ⟨sumRegs n i saved, .slot (.code ret) :: rest, room, Flags.Any, ret.owned, ret.above⟩
-  | done (n : Nat) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
-    (sumSig n).CallerOk saved ret rest room → At .done ((sumSig n).exit saved ret rest room)
+theorem checked : wholeOk code .start 1 pg labels 14 = true := by decide +kernel
 
-asm_typing At
+/-! ## What it shows -/
 
-/-! ## Safety -/
+/-- The state `SumProgram` starts the program in is the one the check is
+of, in the world it has. -/
+theorem start_eq : start = startIn code .start 1 start.world := by
+  have e : start = startOf code .start 1 := by
+    unfold start prepared startOf entry base stackStretch
+    rfl
+  rw [e]
+  rfl
 
-asm_safety At.start
+/-- **Sum is safe, on the machine that decodes its instructions from
+memory, whatever the world outside it holds.** -/
+theorem safe_in (w : World) : SafeMem linux (startIn code .start 1 w) :=
+  whole_safe checked (KindsOk.none _) w
+
+/-- So the program as `lake exe sum` runs it is safe. -/
+theorem safe : SafeMem linux start := start_eq ▸ safe_in start.world
 
 end Sum
-
