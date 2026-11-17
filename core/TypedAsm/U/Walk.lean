@@ -167,7 +167,7 @@ def walk (pg : Prog) (stops : BitVec 64 → Bool) :
               | none =>
                 match sysFills pg.kinds Γ k (a + len) with
                 | some (Γe, Γh) =>
-                  if Γh.under (k + 1) && regardS Γe Γh then
+                  if Γh.under (k + 1) && regardS noEnt Γe Γh then
                     .sys k (walk pg stops false fuel (k + 1) (a + len) Γh)
                   else .stop a Γ
                 | none => .stop a Γ
@@ -336,7 +336,7 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
                     have hb := both fun m hm => by
                       refine Ok.step hf (sysFills_sound hD hkind hpre hk hfill hu) ?_
                       rintro t Δ ⟨x, rfl, rfl | rfl⟩
-                      · exact Arrives.regard (regardS_sound (ρ.setVal k x) hchk.2)
+                      · exact Arrives.regard (regardS_sound noEnt_sound (ρ.setVal k x) hchk.2)
                           ((ih x).mono hm).arrives
                       · exact ((ih x).mono hm).arrives
                     exact ⟨hb.1, fun _ => hb.2⟩

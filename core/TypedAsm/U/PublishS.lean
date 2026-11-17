@@ -39,7 +39,7 @@ def valsPub (Γ : CtxS) (S : HeldS) : ValsS → Bool
   | .cons o τ rest =>
     (τ == .any ||
       (match S.slotAt o with
-       | some v => factFrom Γ.known (v, τ)
+       | some v => factFrom noEnt Γ.known (v, τ)
        | none => false)) && valsPub Γ S rest
 
 theorem valsPub_sound (ρ : Env) {Γ : CtxS} {S : HeldS} :
@@ -56,7 +56,7 @@ theorem valsPub_sound (ρ : Env) {Γ : CtxS} {S : HeldS} :
         | none => rw [hv] at hs; cases hs
         | some v =>
           rw [hv] at hs
-          refine .inr ⟨v.den ρ, ?_, fun Ψ' n hg => factFrom_hasTy ρ hs Ψ' n hg⟩
+          refine .inr ⟨v.den ρ, ?_, fun Ψ' n hg => factFrom_hasTy noEnt_sound ρ hs Ψ' n hg⟩
           show (o, v.den ρ) ∈ S.slots.map _
           exact List.mem_map.mpr ⟨(o, v), HeldS.slotAt_mem hv, rfl⟩
     · exact valsPub_sound ρ rest h.2 q hq

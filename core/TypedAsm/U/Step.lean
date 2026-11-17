@@ -262,7 +262,7 @@ def valsOkS (Γ : CtxS) (v : Val) (o n : Nat) : ValsS → Bool
   | .nil => true
   | .cons q τ rest =>
     (decide (q + 8 ≤ o) || decide (o + n ≤ q) ||
-      (n == 8 && q == o && factFrom Γ.known (v, τ))) &&
+      (n == 8 && q == o && factFrom noEnt Γ.known (v, τ))) &&
     valsOkS Γ v o n rest
 
 theorem valsOkS_sound (ρ : Env) {Γ : CtxS} {v : Val} {o n : Nat} :
@@ -280,7 +280,7 @@ theorem valsOkS_sound (ρ : Env) {Γ : CtxS} {v : Val} {o n : Nat} :
       rcases h1 with (h1 | h1) | ⟨⟨h8, hqo⟩, hty⟩
       · exact .inl (.inl h1)
       · exact .inl (.inr h1)
-      · exact .inr ⟨h8, hqo, fun Ψ' k hg => factFrom_hasTy ρ hty Ψ' k hg⟩
+      · exact .inr ⟨h8, hqo, fun Ψ' k hg => factFrom_hasTy noEnt_sound ρ hty Ψ' k hg⟩
     · exact valsOkS_sound ρ rest h.2 q hq
 
 /-- What the context holds once an instruction has written its bytes. In a

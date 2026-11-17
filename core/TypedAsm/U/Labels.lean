@@ -316,7 +316,7 @@ def closeCtx (justify : Nat → BitVec 64 → CtxS → Bool) (P Γ : CtxS) (k : 
     match nameSlots (joinAll Γ.held.length Γ) (wantedCode P (joinAll Γ.held.length Γ)) k with
     | some Γ' =>
       if (matchOpen P Γ').closed &&
-          regardS
+          regardS noEnt
             (Γ'.addKnown (learnedFacts justify
               (k + (wantedCode P (joinAll Γ.held.length Γ)).length) Γ'
               (P.open (matchOpen P Γ').opening)))
@@ -392,7 +392,7 @@ theorem closeCtx_sound {n : Nat} {justify : Nat → BitVec 64 → CtxS → Bool}
           rw [← e]
           refine hQ ρ' hag ?_
           rw [← CtxS.den_open ρ' _ (OpenL.closed_opening hc.1)]
-          exact regardS_sound ρ' hc.2
+          exact regardS_sound noEnt_sound ρ' hc.2
       · cases h
   · cases h
 

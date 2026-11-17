@@ -46,7 +46,7 @@ def joinStep (Γ : CtxS) : Option CtxS :=
     match Γ.held[i]?, Γ.held[j]? with
     | some gi, some gj =>
       let rest := (Γ.held.eraseIdx (max i j)).eraseIdx (min i j)
-      if regardS Γ { Γ with held := gi :: gj :: rest } &&
+      if regardS noEnt Γ { Γ with held := gi :: gj :: rest } &&
           offsetFrom gj.1 gi.1 == some gi.2.size && decide (gi.2.size + gj.2.size < 2 ^ 64) then
         some { Γ with held := (gi.1, gi.2.append gj.2) :: rest }
       else none
@@ -66,7 +66,7 @@ theorem joinStep_regards (ρ : Env) {Γ Γ' : CtxS} (h : joinStep Γ = some Γ')
         cases h
         simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at hc
         obtain ⟨⟨hreg, hoff⟩, hsz⟩ := hc
-        refine (regardS_sound ρ hreg).trans ?_
+        refine (regardS_sound noEnt_sound ρ hreg).trans ?_
         have hj := Regards.join (fetch := fetch) (sys := sys) (Ψ := Ψ)
           (Γ := CtxS.den ρ { Γ with held := gi :: gj ::
             (Γ.held.eraseIdx (max i j)).eraseIdx (min i j) })

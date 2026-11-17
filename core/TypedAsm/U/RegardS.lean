@@ -356,15 +356,28 @@ theorem outright_hasTy (ρ : Env) (Ψ' : MemTy) (n : Nat) (v : Val) :
       rw [Val.lit?_den hl]
       exact hasTy_range.mpr (of_decide_eq_true h)
 
+/-- `EntSound ent`: wherever `ent` says one thing known gives another, it
+does, of any value: at every step count, under every memory typing. -/
+def EntSound (fetch : Fetch) (sys : Syscall) (ent : TyS → TyS → Bool) : Prop :=
+  ∀ (ρ : Env) (v : BitVec 64) (τ υ : TyS), ent τ υ = true →
+    Follows fetch sys v (τ.den ρ) (υ.den ρ)
+
+/-- Nothing gives anything. -/
+def noEnt : TyS → TyS → Bool := fun _ _ => false
+
+theorem noEnt_sound : EntSound fetch sys noEnt := fun _ _ _ _ h => nomatch h
+
 /-- Whether a thing known is so of itself, or follows from one of a list, of
-the same value. -/
-def factFrom (G : List (Val × TyS)) (f : Val × TyS) : Bool :=
-  outright f.1 f.2 || G.any fun g => g.1.same f.1 && followsS g.2 f.2
+the same value: read off the two, or by `ent`, which is asked what reading
+off does not show. -/
+def factFrom (ent : TyS → TyS → Bool) (G : List (Val × TyS)) (f : Val × TyS) : Bool :=
+  outright f.1 f.2 || G.any fun g => g.1.same f.1 && (followsS g.2 f.2 || ent g.2 f.2)
 
 /-- **What is so of itself, or follows from something known of the same
 value, is so wherever what is known is.** -/
-theorem factFrom_hasTy (ρ : Env) {G : List (Val × TyS)} {f : Val × TyS}
-    (h : factFrom G f = true) (Ψ' : MemTy) (n : Nat)
+theorem factFrom_hasTy {ent : TyS → TyS → Bool} (he : EntSound fetch sys ent) (ρ : Env)
+    {G : List (Val × TyS)} {f : Val × TyS}
+    (h : factFrom ent G f = true) (Ψ' : MemTy) (n : Nat)
     (hg : ∀ g ∈ G.map (fun g => (g.1.den ρ, g.2.den ρ)), HasTy fetch sys Ψ' n g.2 g.1) :
     HasTy fetch sys Ψ' n (f.2.den ρ) (f.1.den ρ) := by
   simp only [factFrom, Bool.or_eq_true, List.any_eq_true, Bool.and_eq_true] at h
@@ -372,19 +385,22 @@ theorem factFrom_hasTy (ρ : Env) {G : List (Val × TyS)} {f : Val × TyS}
   · exact outright_hasTy ρ Ψ' n f.1 f.2 hout
   · have hsrc := hg (g₀.1.den ρ, g₀.2.den ρ) (List.mem_map.mpr ⟨g₀, hg₀, rfl⟩)
     rw [← Val.same_den ρ hs]
-    exact hsrc.sub (followsS_sub ρ _ _ _ hfo)
+    rcases hfo with hfo | hen
+    · exact hsrc.sub (followsS_sub ρ _ _ _ hfo)
+    · exact he ρ _ _ _ hen Ψ' n hsrc
 
 /-! ## The whole -/
 
 /-- **Whether the first context may be regarded as the second.** -/
-def regardS (Γ Δ : CtxS) : Bool :=
+def regardS (ent : TyS → TyS → Bool) (Γ Δ : CtxS) : Bool :=
   (allRegs.all fun r => (Γ.regs.get r).same (Δ.regs.get r)) && Γ.flags == Δ.flags &&
     (match partsS Γ.held Δ.held with
      | some P => apartS P && coverS Γ.held P
      | none => false) &&
-    Δ.known.all (factFrom Γ.known) && Δ.rest == Γ.rest
+    Δ.known.all (factFrom ent Γ.known) && Δ.rest == Γ.rest
 
-theorem regardS_sound (ρ : Env) {Γ Δ : CtxS} (h : regardS Γ Δ = true) :
+theorem regardS_sound {ent : TyS → TyS → Bool} (he : EntSound fetch sys ent) (ρ : Env)
+    {Γ Δ : CtxS} (h : regardS ent Γ Δ = true) :
     Regards fetch sys Ψ (Γ.den ρ) (Δ.den ρ) := by
   simp only [regardS, Bool.and_eq_true, List.all_eq_true, beq_iff_eq] at h
   obtain ⟨⟨⟨⟨hr, hf⟩, hh⟩, hk⟩, hrest⟩ := h
@@ -403,7 +419,7 @@ theorem regardS_sound (ρ : Env) {Γ Δ : CtxS} (h : regardS Γ Δ = true) :
       rw [hf]
     · intro f hf' Ψ' n hg
       obtain ⟨g, hg', rfl⟩ := List.mem_map.mp hf'
-      exact factFrom_hasTy ρ (hk g hg') Ψ' n hg
+      exact factFrom_hasTy he ρ (hk g hg') Ψ' n hg
     · show Δ.held.map (regionDen ρ) ++ restDen ρ Δ.rest = _
       rw [hmap, hrest]
 
