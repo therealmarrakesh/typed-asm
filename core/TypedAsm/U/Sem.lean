@@ -43,12 +43,14 @@ theorem hasTy_code_iff {n : Nat} {pre : Seq → Ctx} {v : BitVec 64} :
   · exact fun h x k hk Ψ' he hwf s hs hw => h x k (by omega) Ψ' he hwf s hs hw
   · exact fun h x k hk Ψ' he hwf s hs hw => h x k (by omega) Ψ' he hwf s hs hw
 
-/-- `Steps fetch sys Ψ i Γ Q`: the instruction `i` takes every state that
-matches `Γ` to a state that matches some context of `Q`, at the same place,
-the memory typing having perhaps grown. -/
-def Steps (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (i : Instr) (Γ : Ctx) (Q : Ctx → Prop) :
-    Prop :=
-  ∀ n, ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, WellTyped fetch sys Ψ' n Γ s →
+/-- `Steps fetch sys Ψ i next Γ Q`: the instruction `i`, with the instruction
+pointer already at `next` past it, takes every state that matches `Γ` to a
+state that matches some context of `Q`, still at `next`, the memory typing
+having perhaps grown. -/
+def Steps (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (i : Instr) (next : BitVec 64) (Γ : Ctx)
+    (Q : Ctx → Prop) : Prop :=
+  ∀ n, ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, s.rip = next →
+    WellTyped fetch sys Ψ' n Γ s →
     ∃ s', exec sys i s = .next s' ∧ s'.rip = s.rip ∧
       ∃ Ψ'' : MemTy, Ψ'.Ext Ψ'' ∧ Ψ''.WF ∧ ∃ Γ', Q Γ' ∧ WellTyped fetch sys Ψ'' n Γ' s'
 
@@ -72,14 +74,14 @@ theorem WellTyped.setRip {n : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch s
 
 /-- **An instruction typed, and what follows it typed, is typed.** -/
 theorem Ok.step {a len : BitVec 64} {i : Instr} {n : Nat} {Γ : Ctx} {Q : Ctx → Prop}
-    (hf : fetch a = some (i, len)) (hs : Steps fetch sys Ψ i Γ Q)
+    (hf : fetch a = some (i, len)) (hs : Steps fetch sys Ψ i (a + len) Γ Q)
     (hrest : ∀ Γ', Q Γ' → Ok fetch sys Ψ n (a + len) Γ') : Ok fetch sys Ψ (n + 1) a Γ := by
   intro k hk Ψ' he hwf s hrip hw
   cases k with
   | zero => trivial
   | succ k =>
     obtain ⟨s', hex, hrip', Ψ'', he', hwf', Γ', hQ, hw'⟩ :=
-      hs (k + 1) Ψ' he hwf _ (hw.setRip (s.rip + len))
+      hs (k + 1) Ψ' he hwf _ (by show s.rip + len = a + len; rw [hrip]) (hw.setRip (s.rip + len))
     have hstep : TypedAsm.step fetch sys s = .next s' := by
       unfold TypedAsm.step
       rw [hrip, hf]
