@@ -6,7 +6,8 @@ import TypedAsm.U.Regard
 
 Two contexts over the same names: the second asks no more than the first
 gives if each register holds the same value, the flags are the same, the
-regions held are the same in some order, and each thing the second knows
+regions held are the same in some order, each saying no more of what it
+holds, and each thing the second knows
 follows from something the first knows of the same value. This is decided
 on the terms; that it is right is proved once.
 -/
@@ -35,60 +36,57 @@ def allRegs : List Reg :=
 theorem mem_allRegs (r : Reg) : r ∈ allRegs := by
   cases r <;> decide
 
-def slotsSame : List (Nat × Val) → List (Nat × Val) → Bool
-  | [], [] => true
-  | p :: ps, q :: qs => p.1 == q.1 && p.2.same q.2 && slotsSame ps qs
-  | _, _ => false
+/-- Whether each value the second list says is there, the first says too. -/
+def slotsLess (gs ds : List (Nat × Val)) : Bool :=
+  ds.all fun d => gs.any fun g => g.1 == d.1 && g.2.same d.2
 
-theorem slotsSame_den (ρ : Env) : (ps qs : List (Nat × Val)) → slotsSame ps qs = true →
-    (ps.map fun p => (p.1, p.2.den ρ)) = qs.map fun p => (p.1, p.2.den ρ)
-  | [], [], _ => rfl
-  | p :: ps, q :: qs, h => by
-    simp only [slotsSame, Bool.and_eq_true, beq_iff_eq] at h
-    simp only [List.map_cons, h.1.1, Val.same_den ρ h.1.2, slotsSame_den ρ ps qs h.2]
-  | [], _ :: _, h => nomatch h
-  | _ :: _, [], h => nomatch h
-
-/-- Whether two regions are the same: at the same address, of the same
-size, holding the same values. -/
-def regionSame (g d : Val × HeldS) : Bool :=
-  g.1.same d.1 && g.2.size == d.2.size && slotsSame g.2.slots d.2.slots
+/-- Whether the second region says no more than the first: at the same
+address, of the same size, each value it says is there said by the first. -/
+def regionLess (g d : Val × HeldS) : Bool :=
+  g.1.same d.1 && g.2.size == d.2.size && slotsLess g.2.slots d.2.slots
 
 def regionDen (ρ : Env) (b : Val × HeldS) : Region := (b.1.den ρ, b.2.den ρ)
 
-theorem regionSame_den (ρ : Env) {g d : Val × HeldS} (h : regionSame g d = true) :
-    regionDen ρ g = regionDen ρ d := by
-  simp only [regionSame, Bool.and_eq_true, beq_iff_eq] at h
+theorem regionLess_den (ρ : Env) {g d : Val × HeldS} (h : regionLess g d = true) :
+    Region.Less (regionDen ρ d) (regionDen ρ g) := by
+  simp only [regionLess, slotsLess, Bool.and_eq_true, beq_iff_eq, List.all_eq_true,
+    List.any_eq_true] at h
   obtain ⟨⟨h1, h2⟩, h3⟩ := h
-  show (g.1.den ρ, (⟨g.2.size, g.2.slots.map fun p => (p.1, p.2.den ρ)⟩ : Held))
-    = (d.1.den ρ, ⟨d.2.size, d.2.slots.map fun p => (p.1, p.2.den ρ)⟩)
-  rw [Val.same_den ρ h1, h2, slotsSame_den ρ _ _ h3]
+  refine ⟨(Val.same_den ρ h1).symm, h2.symm, ?_⟩
+  intro p hp
+  obtain ⟨q, hq, rfl⟩ := List.mem_map.mp hp
+  obtain ⟨q', hq', ho, hv⟩ := h3 q hq
+  refine List.mem_map.mpr ⟨q', hq', ?_⟩
+  show (q'.1, q'.2.den ρ) = (q.1, q.2.den ρ)
+  rw [ho, Val.same_den ρ hv]
 
-/-- A list of regions less one that is the same as a given one. -/
+/-- A list of regions less one that says no less than a given one. -/
 def takeRegion (d : Val × HeldS) : List (Val × HeldS) → Option (List (Val × HeldS))
   | [] => none
-  | g :: gs => if regionSame g d then some gs else (takeRegion d gs).map (g :: ·)
+  | g :: gs => if regionLess g d then some gs else (takeRegion d gs).map (g :: ·)
 
 theorem takeRegion_perm (ρ : Env) (d : Val × HeldS) :
     (G G' : List (Val × HeldS)) → takeRegion d G = some G' →
-    (regionDen ρ d :: G'.map (regionDen ρ)).Perm (G.map (regionDen ρ))
+    ∃ g, Region.Less (regionDen ρ d) g ∧ (g :: G'.map (regionDen ρ)).Perm (G.map (regionDen ρ))
   | [], _, h => nomatch h
   | g :: gs, G', h => by
     unfold takeRegion at h
     split at h
     · next hs =>
       cases h
-      rw [List.map_cons, regionSame_den ρ hs]
+      exact ⟨_, regionLess_den ρ hs, .refl _⟩
     · cases ht : takeRegion d gs with
       | none => rw [ht] at h; cases h
       | some G'' =>
         rw [ht] at h
         cases h
-        have ih := takeRegion_perm ρ d gs G'' ht
+        obtain ⟨g', hl, ih⟩ := takeRegion_perm ρ d gs G'' ht
+        refine ⟨g', hl, ?_⟩
         rw [List.map_cons, List.map_cons]
         exact (List.Perm.swap _ _ _).trans (ih.cons _)
 
-/-- Whether two lists of regions are the same in some order. -/
+/-- Whether the first list of regions is the second in some order, each
+saying no more. -/
 def heldPerm : List (Val × HeldS) → List (Val × HeldS) → Bool
   | [], G => G.isEmpty
   | d :: ds, G =>
@@ -97,10 +95,10 @@ def heldPerm : List (Val × HeldS) → List (Val × HeldS) → Bool
     | none => false
 
 theorem heldPerm_den (ρ : Env) : (D G : List (Val × HeldS)) → heldPerm D G = true →
-    (D.map (regionDen ρ)).Perm (G.map (regionDen ρ))
+    ∃ M, M.Perm (G.map (regionDen ρ)) ∧ LessAll (D.map (regionDen ρ)) M
   | [], G, h => by
     cases G with
-    | nil => exact .nil
+    | nil => exact ⟨[], .nil, .nil⟩
     | cons _ _ => cases h
   | d :: ds, G, h => by
     unfold heldPerm at h
@@ -108,8 +106,9 @@ theorem heldPerm_den (ρ : Env) : (D G : List (Val × HeldS)) → heldPerm D G =
     | none => rw [ht] at h; cases h
     | some G' =>
       rw [ht] at h
-      rw [List.map_cons]
-      exact ((heldPerm_den ρ ds G' h).cons _).trans (takeRegion_perm ρ d G G' ht)
+      obtain ⟨g, hl, hp⟩ := takeRegion_perm ρ d G G' ht
+      obtain ⟨M, hM, hF⟩ := heldPerm_den ρ ds G' h
+      exact ⟨g :: M, (hM.cons g).trans hp, .cons hl hF⟩
 
 /-- Whether what is known one way is known another, read off the two. -/
 def followsS (τ : TyS) : TyS → Bool
@@ -181,24 +180,25 @@ theorem regardS_sound (ρ : Env) {Γ Δ : CtxS} (h : regardS Γ Δ = true) :
     Regards fetch sys Ψ (Γ.den ρ) (Δ.den ρ) := by
   simp only [regardS, Bool.and_eq_true, List.all_eq_true, beq_iff_eq] at h
   obtain ⟨⟨⟨hr, hf⟩, hh⟩, hk⟩ := h
+  obtain ⟨M, hM, hF⟩ := heldPerm_den ρ Δ.held Γ.held hh
   have e : Δ.den ρ
-      = { ({ Γ.den ρ with known := (Δ.den ρ).known } : Ctx) with held := (Δ.den ρ).held } := by
+      = { ({ ({ Γ.den ρ with known := (Δ.den ρ).known } : Ctx) with held := M } : Ctx)
+          with held := (Δ.den ρ).held } := by
     refine ctx_ext ?_ ?_ rfl rfl
     · funext r
       exact (Val.same_den ρ (hr r (mem_allRegs r))).symm
     · show Δ.flags.den ρ = Γ.flags.den ρ
       rw [hf]
   rw [e]
-  refine (Regards.follows _ ?_).trans (Regards.perm ?_)
-  · intro f hf'
-    obtain ⟨g, hg, rfl⟩ := List.mem_map.mp hf'
-    have := hk g hg
-    simp only [factFrom, List.any_eq_true, Bool.and_eq_true] at this
-    obtain ⟨g₀, hg₀, hs, hfo⟩ := this
-    refine ⟨g₀.2.den ρ, ?_, (followsS_sub ρ _ _ _ hfo).follows⟩
-    show (g.1.den ρ, g₀.2.den ρ) ∈ Γ.known.map fun f => (f.1.den ρ, f.2.den ρ)
-    rw [← Val.same_den ρ hs]
-    exact List.mem_map.mpr ⟨g₀, hg₀, rfl⟩
-  · exact heldPerm_den ρ Δ.held Γ.held hh
+  refine ((Regards.follows _ ?_).trans (Regards.perm hM)).trans (Regards.forget hF)
+  intro f hf'
+  obtain ⟨g, hg, rfl⟩ := List.mem_map.mp hf'
+  have := hk g hg
+  simp only [factFrom, List.any_eq_true, Bool.and_eq_true] at this
+  obtain ⟨g₀, hg₀, hs, hfo⟩ := this
+  refine ⟨g₀.2.den ρ, ?_, (followsS_sub ρ _ _ _ hfo).follows⟩
+  show (g.1.den ρ, g₀.2.den ρ) ∈ Γ.known.map fun f => (f.1.den ρ, f.2.den ρ)
+  rw [← Val.same_den ρ hs]
+  exact List.mem_map.mpr ⟨g₀, hg₀, rfl⟩
 
 end TypedAsm.U

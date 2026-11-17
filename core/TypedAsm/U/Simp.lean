@@ -73,6 +73,10 @@ def simpOut (i : Instr) (k : Nat) (a b c : Val) (fl : FlagsT) (next : BitVec 64)
   | .pop _, 1 => cell
   | .call _, 0 => .add a (.lit (-8))
   | .ret, 0 => .add a (.lit 8)
+  | .alu .add .w64 (.rm_r (.reg _) _), 0 => .add a b
+  | .alu .add .w64 (.r_m _ _), 0 => .add a cell
+  | .alu .add .w64 (.rm_i (.reg _) imm), 0 => .add a (.lit (imm.signExtend 64))
+  | .alu .sub .w64 (.rm_i (.reg _) imm), 0 => .add a (.lit (-(imm.signExtend 64)))
   | _, _ => foldOut i k a b c fl next ea cell
 
 /-! What each of those instructions gives, on any inputs. -/
@@ -130,6 +134,48 @@ theorem effectOf_call (t : Target) (va vb vc : BitVec 64) (fl : Flags) (next ea 
 theorem effectOf_ret (va vb vc : BitVec 64) (fl : Flags) (next ea cell : BitVec 64) :
     ((effectOf .ret [va, vb, vc] fl next ea cell).regs.getD 0 (.rax, 0)).2 = va + 8 := rfl
 
+theorem add_res64 (a b : BitVec 64) : (addCarry a b false).1 = a + b := by
+  apply BitVec.eq_of_toNat_eq
+  have := a.isLt; have := b.isLt
+  simp [addCarry, BitVec.toNat_add, BitVec.toNat_setWidth]
+
+theorem sub_res64 (a b : BitVec 64) : (subBorrow a b false).1 = a - b := by
+  apply BitVec.eq_of_toNat_eq
+  have := a.isLt; have := b.isLt
+  simp [subBorrow, BitVec.toNat_sub, BitVec.toNat_setWidth]
+  omega
+
+theorem effectOf_addRR (d s : Reg) (va vb vc : BitVec 64) (fl : Flags) (next ea cell : BitVec 64) :
+    ((effectOf (.alu .add .w64 (.rm_r (.reg d) s)) [va, vb, vc] fl next ea cell).regs.getD 0
+      (.rax, 0)).2 = va + vb := by
+  show BitVec.setWidth 64 (addCarry (BitVec.setWidth 64 va) (BitVec.setWidth 64 vb) false).1 = _
+  rw [add_res64]
+  simp
+
+theorem effectOf_addRM (d : Reg) (m : Mem) (va vb vc : BitVec 64) (fl : Flags)
+    (next ea cell : BitVec 64) :
+    ((effectOf (.alu .add .w64 (.r_m d m)) [va, vb, vc] fl next ea cell).regs.getD 0
+      (.rax, 0)).2 = va + cell := by
+  show BitVec.setWidth 64 (addCarry (BitVec.setWidth 64 va) (BitVec.setWidth 64 cell) false).1 = _
+  rw [add_res64]
+  simp
+
+theorem effectOf_addRI (d : Reg) (imm : BitVec 32) (va vb vc : BitVec 64) (fl : Flags)
+    (next ea cell : BitVec 64) :
+    ((effectOf (.alu .add .w64 (.rm_i (.reg d) imm)) [va, vb, vc] fl next ea cell).regs.getD 0
+      (.rax, 0)).2 = va + imm.signExtend 64 := by
+  show BitVec.setWidth 64 (addCarry (BitVec.setWidth 64 va) (imm.signExtend 64) false).1 = _
+  rw [add_res64]
+  simp
+
+theorem effectOf_subRI (d : Reg) (imm : BitVec 32) (va vb vc : BitVec 64) (fl : Flags)
+    (next ea cell : BitVec 64) :
+    ((effectOf (.alu .sub .w64 (.rm_i (.reg d) imm)) [va, vb, vc] fl next ea cell).regs.getD 0
+      (.rax, 0)).2 = va + -(imm.signExtend 64) := by
+  show BitVec.setWidth 64 (subBorrow (BitVec.setWidth 64 va) (imm.signExtend 64) false).1 = _
+  rw [sub_res64]
+  simp only [BitVec.setWidth_eq, BitVec.sub_eq_add_neg]
+
 theorem simpOut_den (ρ : Env) (i : Instr) (k : Nat) (a b c : Val) (fl : FlagsT) (next : BitVec 64)
     (ea cell : Val) :
     (simpOut i k a b c fl next ea cell).den ρ = (Val.out i k a b c fl next ea cell).den ρ := by
@@ -146,6 +192,10 @@ theorem simpOut_den (ρ : Env) (i : Instr) (k : Nat) (a b c : Val) (fl : FlagsT)
   · exact (effectOf_pop1 _ _ _ _ _ _ _ _).symm
   · exact (effectOf_call _ _ _ _ _ _ _ _).symm
   · exact (effectOf_ret _ _ _ _ _ _ _).symm
+  · exact (effectOf_addRR _ _ _ _ _ _ _ _ _).symm
+  · exact (effectOf_addRM _ _ _ _ _ _ _ _ _).symm
+  · exact (effectOf_addRI _ _ _ _ _ _ _ _ _).symm
+  · exact (effectOf_subRI _ _ _ _ _ _ _ _ _).symm
   · exact foldOut_den ρ i k a b c fl next ea cell
 
 end TypedAsm.U

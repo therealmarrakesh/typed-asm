@@ -168,4 +168,22 @@ def labelsBad : List (BitVec 64 × CtxS) :=
 
 example : checkProgram codeL labelsBad 10 20 = false := by decide +kernel
 
+/-! ## Arithmetic on the stack pointer -/
+
+/-- `sub rsp, 16; mov [rsp], rdi; mov rax, [rsp]; add rsp, 16; jmp 0`: a
+frame made, used and given back, and then round again. -/
+def codeF : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .alu .sub .w64 (.rm_i (.reg .rsp) 16), 4),
+   (4, .mov .w64 (.rm_r (.mem (.sib (some .rsp) none 0)) .rdi), 4),
+   (8, .mov .w64 (.r_m .rax (.sib (some .rsp) none 0)), 4),
+   (12, .alu .add .w64 (.rm_i (.reg .rsp) 16), 4), (16, .jmp (.rel (-21)), 5)]
+
+/-- **Typed as a loop on one label**: the stack pointer is back where it
+was, as the sums show, so the context reached is the label's again. -/
+example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
+    (hcode : ∀ e ∈ codeF, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (n : Nat) :
+    Ok fetch sys Ψ n 0 (Γw.den ρ) :=
+  program_ok hD rfl (fun _ => trivial) hcode (labels := [(0, Γw)]) (fuel := 10) (k := 20)
+    (by decide +kernel) n (0, Γw) (List.mem_cons_self ..) ρ
+
 end Tests.Unified

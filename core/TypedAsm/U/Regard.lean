@@ -112,4 +112,72 @@ theorem Regards.perm {Γ : Ctx} {L : List Region} (h : L.Perm Γ.held) :
           apart := (h.pairwise_iff (fun {x y}
             (hxy : Disjoint x.1 x.2.size y.1 y.2.size) => Disjoint.symm hxy)).mpr hw.held.apart } }
 
+/-- One region says no more than another: it is at the same address, of
+the same size, and each value it says is there the other says too. -/
+def Region.Less (b' b : Region) : Prop :=
+  b'.1 = b.1 ∧ b'.2.size = b.2.size ∧ ∀ p ∈ b'.2.vals, p ∈ b.2.vals
+
+/-- Each region of one list saying no more than the one in its place in
+another. -/
+inductive LessAll : List Region → List Region → Prop
+  | nil : LessAll [] []
+  | cons {a b : Region} {l m : List Region} : Region.Less a b → LessAll l m →
+    LessAll (a :: l) (b :: m)
+
+/-- **The regions held, each saying no more of what it holds.** What a
+region holds may be forgotten. -/
+theorem Regards.forget {Γ : Ctx} {L : List Region} (h : LessAll L Γ.held) :
+    Regards fetch sys Ψ Γ { Γ with held := L } := by
+  intro k Ψ' he hwf s hw
+  refine ⟨Ψ', MemTy.Ext.refl _, hwf, ?_⟩
+  have hex : ∀ {L M : List Region}, LessAll L M →
+      ∀ b' ∈ L, ∃ b ∈ M, Region.Less b' b := by
+    intro L M hLM
+    induction hLM with
+    | nil => exact fun _ hb => nomatch hb
+    | cons hab _ ih =>
+      intro b' hb'
+      rcases List.mem_cons.mp hb' with rfl | hb'
+      · exact ⟨_, List.mem_cons_self .., hab⟩
+      · obtain ⟨b, hb, hl⟩ := ih b' hb'
+        exact ⟨b, List.mem_cons_of_mem _ hb, hl⟩
+  have hap : ∀ {L M : List Region}, LessAll L M →
+      M.Pairwise (fun b c => Disjoint b.1 b.2.size c.1 c.2.size) →
+      L.Pairwise (fun b c => Disjoint b.1 b.2.size c.1 c.2.size) := by
+    intro L M hLM
+    induction hLM with
+    | nil => exact fun _ => .nil
+    | @cons a b l m hab hlm ih =>
+      intro hM
+      rw [List.pairwise_cons] at hM ⊢
+      refine ⟨fun c' hc' => ?_, ih hM.2⟩
+      obtain ⟨c, hc, hl⟩ := hex hlm c' hc'
+      rw [hab.1, hab.2.1, hl.1, hl.2.1]
+      exact hM.1 c hc
+  exact
+    { val := hw.val
+      known := hw.known
+      flags := hw.flags
+      heapPerm := hw.heapPerm
+      heap := hw.heap
+      text := hw.text
+      said := hw.said
+      held :=
+        { perm := fun b' hb' => by
+            obtain ⟨b, hb, hl⟩ := hex h b' hb'
+            rw [hl.1, hl.2.1]; exact hw.held.perm b hb
+          size_lt := fun b' hb' => by
+            obtain ⟨b, hb, hl⟩ := hex h b' hb'
+            rw [hl.2.1]; exact hw.held.size_lt b hb
+          fits := fun b' hb' p hp => by
+            obtain ⟨b, hb, hl⟩ := hex h b' hb'
+            rw [hl.2.1]; exact hw.held.fits b hb p (hl.2.2 p hp)
+          vals := fun b' hb' p hp => by
+            obtain ⟨b, hb, hl⟩ := hex h b' hb'
+            rw [hl.1]; exact hw.held.vals b hb p (hl.2.2 p hp)
+          heap := fun b' hb' a l hl' => by
+            obtain ⟨b, hb, hl⟩ := hex h b' hb'
+            rw [hl.1, hl.2.1]; exact hw.held.heap b hb a l hl'
+          apart := hap h hw.held.apart } }
+
 end TypedAsm.U
