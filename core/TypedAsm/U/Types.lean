@@ -3,11 +3,13 @@ import TypedAsm.Types
 /-!
 # Types, on one model of values and one of memory
 
-A context says, of each register, the value it holds and what is known of
-that value. A value of which nothing is known is still a value: it has a
-name, and anything computed from it is a term in that name. So there is no
-type of "exactly this value" beside the others, and no rule for giving a
-value a name.
+A context says the value each register holds. A value of which nothing is
+known is still a value: it has a name, and anything computed from it is a
+term in that name. What is known is known of values, not of the places that
+hold them: a context lists facts, each saying something of a value. So a
+value moved, saved and brought back is the value it was, with all that was
+known of it; there is no type of "exactly this value", no rule for giving a
+value a name, and nothing to say of a register a function leaves alone.
 
 Memory is of two standings. Memory the code holds alone is a list of
 regions in its context: where each is, how long, and which values it holds.
@@ -30,14 +32,14 @@ known of a value. -/
 structure CtxOf (τ : Type) where
   /-- The value each register holds. -/
   val : Reg → BitVec 64
-  /-- What is known of it. -/
-  ty : Reg → τ
   /-- What is known about the flags. -/
   flags : Flags → Prop
   /-- The regions of memory this code holds alone: where each is, how many
-  bytes long, and at which of its bytes it holds a value, with the value and
-  what is known of it. Bytes that hold no such value are plain. -/
-  held : List (BitVec 64 × ShapeOf (BitVec 64 × τ)) := []
+  bytes long, and at which of its bytes it holds a value, and which. Bytes
+  that hold no such value are plain. -/
+  held : List (BitVec 64 × ShapeOf (BitVec 64)) := []
+  /-- What is known of values: each entry says something of one. -/
+  known : List (BitVec 64 × τ) := []
 
 /-- What a function asks and gives, for each choice of its parameters `p`;
 and, as it returns, of the values `y` it chooses. -/
@@ -47,13 +49,17 @@ structure SigOf (τ : Type) where
   /-- How many bytes of stack the function may use below its return address. -/
   need : Nat
   /-- What the other registers hold on entry. -/
-  args : Seq → Reg → BitVec 64 × τ
+  args : Seq → Reg → BitVec 64
   /-- The regions the function is handed. -/
-  takes : Seq → List (BitVec 64 × ShapeOf (BitVec 64 × τ))
+  takes : Seq → List (BitVec 64 × ShapeOf (BitVec 64))
+  /-- What it is to be known of values, for the function to be entered. -/
+  knows : Seq → List (BitVec 64 × τ)
   /-- What the other registers hold as it returns. -/
-  results : Seq → Seq → Reg → BitVec 64 × τ
+  results : Seq → Seq → Reg → BitVec 64
   /-- The regions it hands back. -/
-  gives : Seq → Seq → List (BitVec 64 × ShapeOf (BitVec 64 × τ))
+  gives : Seq → Seq → List (BitVec 64 × ShapeOf (BitVec 64))
+  /-- What is known of values as it returns. -/
+  learns : Seq → Seq → List (BitVec 64 × τ)
 
 /-- What may be known of a 64-bit value. -/
 inductive Ty
@@ -83,8 +89,11 @@ abbrev Ctx := CtxOf Ty
 /-- What a block of memory others may point into holds, byte for byte. -/
 abbrev Shape := ShapeOf Ty
 
-/-- What a region held alone holds: values, each with what is known of it. -/
-abbrev Held := ShapeOf (BitVec 64 × Ty)
+/-- What a region held alone holds: values at some of its bytes. -/
+abbrev Held := ShapeOf (BitVec 64)
+
+/-- Something known of a value. -/
+abbrev Fact := BitVec 64 × Ty
 
 /-- A region held alone. -/
 abbrev Region := BitVec 64 × Held
@@ -151,9 +160,13 @@ inductive Sub : BitVec 64 → Ty → Ty → Prop
     Sub v (.ref tag true off) (.ref tag writable off)
   | nullable {v : BitVec 64} {τ υ : Ty} : Sub v τ υ → Sub v τ (.nullable υ)
   | null (τ υ : Ty) : Sub 0 τ (.nullable υ)
+  /-- What may be null and is not zero, is not null. -/
+  | nonNull {v : BitVec 64} (τ : Ty) : v ≠ 0 → Sub v (.nullable τ) τ
   | nullableMono {v : BitVec 64} {τ υ : Ty} : Sub v τ υ → Sub v (.nullable τ) (.nullable υ)
   | orErr {v : BitVec 64} {τ υ : Ty} : Sub v τ υ → Sub v τ (.orErr υ)
   | err {v : BitVec 64} (τ υ : Ty) : SysErr v → Sub v τ (.orErr υ)
+  /-- What may be an error number and is not one, is not. -/
+  | noErr {v : BitVec 64} (τ : Ty) : ¬ SysErr v → Sub v (.orErr τ) τ
   | orErrMono {v : BitVec 64} {τ υ : Ty} : Sub v τ υ → Sub v (.orErr τ) (.orErr υ)
   | strLess (v : BitVec 64) (more : Bool) : Sub v (.str true) (.str more)
   /-- Code ready for every one of a family of contexts is ready for any
@@ -167,45 +180,42 @@ namespace SigOf
 
 /-- What a function returns with: the stack pointer above the return
 address, the preserved registers as they were, the others as the signature
-says for the values chosen; and held, the stack region it was entered with,
-now plain, the regions it gives, and whatever its caller held besides. -/
-def exit (sig : Sig) (p : Seq) (saved : Reg → BitVec 64 × Ty) (lo : BitVec 64) (m : Nat)
+says for the values chosen; held, the stack region it was entered with, now
+plain, the regions it gives, and whatever its caller held besides; and
+known, what the signature says is learnt. -/
+def exit (sig : Sig) (p : Seq) (saved : Reg → BitVec 64) (lo : BitVec 64) (m : Nat)
     (frame : List Region) (y : Seq) : Ctx where
   val r := if r = .rsp then lo + BitVec.ofNat 64 (m + sig.need + 8)
-    else if sig.preserved r then (saved r).1 else (sig.results p y r).1
-  ty r := if r = .rsp then .any
-    else if sig.preserved r then (saved r).2 else (sig.results p y r).2
+    else if sig.preserved r then saved r else sig.results p y r
   flags := Flags.Any
   held := (lo, ⟨m + sig.need + 8, []⟩) :: (sig.gives p y ++ frame)
+  known := sig.learns p y
 
 /-- What a function is entered with, from a caller that keeps `saved` in the
 preserved registers, holds `frame` besides, and has a stack region at `lo`
 with `m` bytes more than the function needs: the return address `ra` is the
-value at the top of that region, known to be code wanting what the function
-returns with. -/
-def entry (sig : Sig) (p : Seq) (saved : Reg → BitVec 64 × Ty) (lo : BitVec 64) (m : Nat)
+value at the top of that region, and is known to be code wanting what the
+function returns with. -/
+def entry (sig : Sig) (p : Seq) (saved : Reg → BitVec 64) (lo : BitVec 64) (m : Nat)
     (ra : BitVec 64) (frame : List Region) : Ctx where
   val r := if r = .rsp then lo + BitVec.ofNat 64 (m + sig.need)
-    else if sig.preserved r then (saved r).1 else (sig.args p r).1
-  ty r := if r = .rsp then .any
-    else if sig.preserved r then (saved r).2 else (sig.args p r).2
+    else if sig.preserved r then saved r else sig.args p r
   flags := Flags.Any
-  held := (lo, ⟨m + sig.need + 8, [(m + sig.need, (ra, .code (sig.exit p saved lo m frame)))]⟩) ::
-    (sig.takes p ++ frame)
+  held := (lo, ⟨m + sig.need + 8, [(m + sig.need, ra)]⟩) :: (sig.takes p ++ frame)
+  known := (ra, .code (sig.exit p saved lo m frame)) :: sig.knows p
 
 end SigOf
 
 /-! ## What a context asks of a state -/
 
 /-- What a context's held regions ask of a state: each is writable, each
-value in it is there and is as known, and the regions overlap neither any
-block of the memory typing nor one another. -/
-structure HeldOk (H : Ty → BitVec 64 → Prop) (Ψ : MemTy) (Γ : Ctx) (s : State) : Prop where
+value in it is there, and the regions overlap neither any block of the
+memory typing nor one another. -/
+structure HeldOk (Ψ : MemTy) (Γ : Ctx) (s : State) : Prop where
   perm : ∀ b ∈ Γ.held, s.canWrite b.1 b.2.size = true
   size_lt : ∀ b ∈ Γ.held, b.2.size < 2 ^ 64
   fits : ∀ b ∈ Γ.held, ∀ p ∈ b.2.vals, p.1 + 8 ≤ b.2.size
-  vals : ∀ b ∈ Γ.held, ∀ p ∈ b.2.vals,
-    s.load64 (b.1 + BitVec.ofNat 64 p.1) = p.2.1 ∧ H p.2.2 p.2.1
+  vals : ∀ b ∈ Γ.held, ∀ p ∈ b.2.vals, s.load64 (b.1 + BitVec.ofNat 64 p.1) = p.2
   heap : ∀ b ∈ Γ.held, ∀ a l, Ψ a = some l → Disjoint b.1 b.2.size a l.size
   apart : Γ.held.Pairwise fun b c => Disjoint b.1 b.2.size c.1 c.2.size
 
@@ -214,8 +224,8 @@ says what it means for `τ` to be known of the value `v`. -/
 structure Matches (H : Ty → BitVec 64 → Prop) (Ψ : MemTy) (Γ : Ctx) (s : State) : Prop where
   /-- Each register holds the value the context says. -/
   val : ∀ r, s.getReg r = Γ.val r
-  /-- And what the context says is known of it, is so. -/
-  regs : ∀ r, H (Γ.ty r) (Γ.val r)
+  /-- What the context says is known of values, is so. -/
+  known : ∀ f ∈ Γ.known, H f.2 f.1
   flags : Γ.flags s.flags
   /-- Each memory block is readable, and writable if its layout says so. -/
   heapPerm : ∀ a l, Ψ a = some l →
@@ -229,7 +239,7 @@ structure Matches (H : Ty → BitVec 64 → Prop) (Ψ : MemTy) (Γ : Ctx) (s : S
   said : ∀ a l (bs : List (BitVec 8)), Ψ a = some l → l.said = some bs →
     ∀ k (hk : k < bs.length), s.mem (a + BitVec.ofNat 64 k) = bs[k]
   /-- The held regions are there and hold what the context says. -/
-  held : HeldOk H Ψ Γ s
+  held : HeldOk Ψ Γ s
 
 /-- `HasTy fetch sys Ψ n τ v`: `τ` is so of the value `v`, at step count `n`. -/
 def HasTy (fetch : Fetch) (sys : Syscall) : MemTy → Nat → Ty → BitVec 64 → Prop
@@ -251,7 +261,7 @@ def HasTy (fetch : Fetch) (sys : Syscall) : MemTy → Nat → Ty → BitVec 64 �
       SafeN fetch sys k s
   | Ψ, n, .fn sig, v =>
     ∀ k, (hk : k < n) → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF →
-      ∀ (p : Seq) (saved : Reg → BitVec 64 × Ty) (lo : BitVec 64) (m : Nat) (ra : BitVec 64)
+      ∀ (p : Seq) (saved : Reg → BitVec 64) (lo : BitVec 64) (m : Nat) (ra : BitVec 64)
         (frame : List Region) (s : State), s.rip = v →
       Matches (fun τ w => HasTy fetch sys Ψ' k τ w) Ψ' (SigOf.entry sig p saved lo m ra frame) s →
       SafeN fetch sys k s
