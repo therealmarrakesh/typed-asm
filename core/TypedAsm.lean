@@ -9,39 +9,33 @@ import TypedAsm.Memory
 import TypedAsm.Bytes
 import TypedAsm.Step
 import TypedAsm.Safety
-import TypedAsm.Types
-import TypedAsm.Typing
-import TypedAsm.Soundness
-import TypedAsm.Fn
-import TypedAsm.Program
+import TypedAsm.Shape
+import TypedAsm.Ranges
+import TypedAsm.Divide
 import TypedAsm.Asm
 import TypedAsm.Frame
 import TypedAsm.Machine
 import TypedAsm.Image
 import TypedAsm.Elf
-import TypedAsm.Entry
+import TypedAsm.Data
+import TypedAsm.ArgWords
 import TypedAsm.Segments
 import TypedAsm.Linux
-import TypedAsm.Blocks
-import TypedAsm.Run
-import TypedAsm.ArgText
-import TypedAsm.Owned
-import TypedAsm.RegMap
 import TypedAsm.Output
-import TypedAsm.Written
-import TypedAsm.EndToEnd
+import TypedAsm.Runs
+import TypedAsm.Run
 import TypedAsm.Lookup
-import TypedAsm.FnEx
 import TypedAsm.Declare
-import TypedAsm.Addr
-import TypedAsm.Facts
 
 /-!
 # TypedAsm
 
-Root module of the core library. Submodules go in `core/TypedAsm/` and are imported here.
+Root module of the core library: the machine, its instructions and their
+encoding, the Linux model, programs as written and as loaded, and running
+them. Submodules go in `core/TypedAsm/` and are imported here.
 
-`TypedAsm.Tactic` is deliberately not imported here. It depends on Lean's
-metaprogramming library, which a program that only runs the model should not
-have to link. Files that type programs import it themselves.
+The type system and its checker are in `core/TypedAsm/U/` and are
+deliberately not imported here: a program that only runs the model should
+not have to link them. Files that check programs import
+`TypedAsm.U.Checked` themselves.
 -/

@@ -1,6 +1,6 @@
 import HelloProgram
 import TypedAsm.U.Whole
-import TypedAsm.EndToEnd
+import TypedAsm.Runs
 
 /-!
 # Hello: typing, safety, and what it writes

@@ -1,10 +1,11 @@
 name = "typed-assembly"
 version = "0.1.0"
-defaultTargets = ["TypedAsm", "Sum", "Swap", "Frame", "Ops", "Index", "Echo", "Table", "Dispatch", "List", "Fact", "Buffer", "Keep", "Alloc", "Cat", "Stat", "Args", "Own", "Double", "Fresh", "Pair", "Lend", "Random", "Pick", "Hello", "Rejected", "sum", "swap", "frame", "ops", "index", "echo", "table", "dispatch", "list", "fact", "buffer", "keep", "alloc", "cat", "stat", "args", "own", "double", "fresh", "pair", "lend", "random", "pick", "hello"]
+defaultTargets = ["TypedAsm", "Sum", "Swap", "Frame", "Ops", "Index", "Echo", "Table", "Dispatch", "List", "Fact", "Buffer", "Keep", "Alloc", "Cat", "Stat", "Args", "Own", "Double", "Fresh", "Pair", "Lend", "Random", "Pick", "Hello", "sum", "swap", "frame", "ops", "index", "echo", "table", "dispatch", "list", "fact", "buffer", "keep", "alloc", "cat", "stat", "args", "own", "double", "fresh", "pair", "lend", "random", "pick", "hello"]
 testDriver = "tests"
 
 # The core library: machine model, instruction set, semantics, type system.
-# The glob includes TypedAsm.Tactic, which the root module does not import.
+# The glob includes the type system and its checker (TypedAsm.U.*), which the
+# root module does not import.
 [[lean_lib]]
 name = "TypedAsm"
 srcDir = "core"
@@ -13,11 +14,11 @@ globs = ["TypedAsm.*"]
 # Examples live in examples/<Name>/, one folder each:
 #
 #   <Name>Program.lean   the program and how to run it in the model
-#   <Name>.lean          its typing and the proof that it is safe
+#   <Name>.lean          what its labels want, and the check that it is safe
 #   <Name>Main.lean      the command line of its executable
 #
 # The executable is built from the program file alone, so it does not link
-# the tactics. Run one with `lake exe <name>`.
+# the checker. Run one with `lake exe <name>`.
 
 [[lean_lib]]
 name = "Sum"
@@ -260,10 +261,6 @@ roots = ["Pick", "PickProgram"]
 name = "pick"
 root = "PickMain"
 srcDir = "examples/Pick"
-
-[[lean_lib]]
-name = "Rejected"
-srcDir = "examples/Rejected"
 
 # Tests: `lake test` checks the model against results recorded from the GNU
 # assembler and from a real processor: single instructions, and the example
