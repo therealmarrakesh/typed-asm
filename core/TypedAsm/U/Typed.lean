@@ -22,9 +22,9 @@ variable {fetch : Fetch} {sys : Syscall}
 def wordAt (d : List Byte) (j : Nat) : BitVec 64 := ofBytes ((d.drop j).take 8)
 
 /-- **A value loaded from a segment's pages is the one its bytes make.** -/
-theorem load64_pageData {segs : List (Nat × Perm × List Byte)} (hok : segsOk segs = true)
+theorem load64_pageData {segs : List (Nat × Perm × List Byte)}
     {g : Nat × Perm × List Byte} (hg : g ∈ segs) {t : State}
-    (hmem : t.mem = (State.init.loadSegs segs).mem) {j : Nat} (hj : j + 8 ≤ (pageData g).length) :
+    (hmem : MemOn segs t) {j : Nat} (hj : j + 8 ≤ (pageData g).length) :
     t.load64 (BitVec.ofNat 64 g.1 + BitVec.ofNat 64 j) = wordAt (pageData g) j := by
   rw [State.load64_ofBytes, wordAt]
   congr 1
@@ -42,7 +42,7 @@ theorem load64_pageData {segs : List (Nat × Perm × List Byte)} (hok : segsOk s
         = BitVec.ofNat 64 g.1 + BitVec.ofNat 64 (j + i) := by
       rw [BitVec.add_assoc, ← BitVec.ofNat_add]
     rw [e]
-    exact mem_pageData hok hg hmem (by omega)
+    exact hmem g hg _ (by omega)
 
 /-- The typed values of a shape, as a list. -/
 def ValsS.toList : ValsS → List (Nat × TyS)
@@ -159,8 +159,8 @@ def valsHold (j : BitVec 64 → CtxS → Bool) (segs : List (Nat × Perm × List
 
 /-- **Each block holds what its shape says**, in a state whose memory is
 that of the segments placed. -/
-theorem heap_of_check {segs : List (Nat × Perm × List Byte)} (hok : segsOk segs = true)
-    {t : State} (hmem : t.mem = (State.init.loadSegs segs).mem)
+theorem heap_of_check {segs : List (Nat × Perm × List Byte)}
+    {t : State} (hmem : MemOn segs t)
     {j : BitVec 64 → CtxS → Bool} {bs : List (BitVec 64 × LayoutS)} {kinds : Nat → Option Shape}
     (hnd : (denBlocks bs).Pairwise fun x y => x.1 ≠ y.1) (h : valsHold j segs bs = true) (n : Nat)
     (hj : ∀ a E, j a E = true → ∀ (ρ : Env) (fam : Fam),
@@ -193,7 +193,7 @@ theorem heap_of_check {segs : List (Nat × Perm × List Byte)} (hok : segsOk seg
     have h1 : g.1 ≤ y.1.toNat := hb.1.1.1.1
     rw [Bool.and_eq_true, decide_eq_true_eq] at hc
     show HasTy fetch sys _ n (q.2.den {}) (t.load64 (y.1 + BitVec.ofNat 64 q.1))
-    rw [block_addr (g := g) (x := (y.1, y.2.den)) h1 q.1, load64_pageData hok hg hmem hc.1]
+    rw [block_addr (g := g) (x := (y.1, y.2.den)) h1 q.1, load64_pageData hg hmem hc.1]
     exact tyHolds_hasTy hnd n hj q.2 _ hc.2
   · cases hc
 

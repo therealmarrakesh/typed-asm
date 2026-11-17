@@ -140,7 +140,8 @@ theorem wholeOk_facts {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat ×
       (Asm.prepared_holds State.init (Asm.base code) code l (stackStretch n).1 (stackStretch n).2
         0x80000000 hholds hhead hoffp g hg).congr rfl rfl
   refine ⟨?_, blocksWf_wf hwf (tags_of_check hkc), hnd,
-    fun _ _ w k hj => heap_of_check (t := startIn code l n w) hsegs rfl hnd hplain k hj,
+    fun _ _ w k hj =>
+      heap_of_check (t := startIn code l n w) (MemOn.of_load hsegs rfl) hnd hplain k hj,
     kindsOk_of_check hkc _, hchk, ?_,
     fun _ _ => staticsOk_of_holds hnd hstat,
     fun w => Asm.loaded (hparts w), fun w ρ => ?_⟩
@@ -153,7 +154,8 @@ theorem wholeOk_facts {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat ×
   · by_cases hn : n = 0
     · subst hn
       simp only [↓reduceIte] at hlast
-      exact loaded_starts (t := startIn code l 0 w) hsegs hfull hoff rfl rfl hin ρ hlast
+      exact loaded_starts (t := startIn code l 0 w) hsegs hfull hoff (MemOn.of_load hsegs rfl) rfl
+        hin ρ hlast
     · simp only [hn, ↓reduceIte, Bool.and_eq_true, decide_eq_true_eq] at hlast
       obtain ⟨⟨⟨⟨hb, htop⟩, hrsp⟩, hapart⟩, hc⟩ := hlast
       have e1 : entryOf n = entryPatStack (stackSize n) := by simp only [entryOf, hn, ↓reduceIte]
@@ -164,8 +166,8 @@ theorem wholeOk_facts {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat ×
         State.getReg_setReg_same
           ((Asm.load State.init (Asm.base code) code l).setPerm (stackStretch n).1
             (stackStretch n).2 .rw) .rsp 0x80000000
-      exact loaded_starts_stack (t := startIn code l n w) hsegs hfull hoff rfl rfl hin ρ hb rfl
-        htop (hsp.trans hrsp) hapart hc
+      exact loaded_starts_stack (t := startIn code l n w) hsegs hfull hoff
+        (MemOn.of_load hsegs rfl) rfl hin ρ hb rfl htop (hsp.trans hrsp) hapart hc
 
 /-- A state that starts as the entry asks matches it, at every step count:
 the entry knows nothing of any value, and each block holds what its shape

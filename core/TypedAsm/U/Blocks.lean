@@ -37,6 +37,17 @@ theorem mem_pageData {segs : List (Nat × Perm × List Byte)} (hok : segsOk segs
   · rw [mem_segTail hok hg _ (Nat.le_of_not_lt h) (by rw [← pageData_length]; exact hj), mem_init]
     simp only [pageData, List.getElem_append_right (Nat.le_of_not_lt h), List.getElem_replicate]
 
+/-- A state's memory is the segments' on their pages: each byte of each is
+there. What lies elsewhere, a program's arguments say, is not asked of. -/
+def MemOn (segs : List (Nat × Perm × List Byte)) (t : State) : Prop :=
+  ∀ g ∈ segs, ∀ j (hj : j < (pageData g).length),
+    t.mem (BitVec.ofNat 64 g.1 + BitVec.ofNat 64 j) = (pageData g)[j]
+
+/-- It is so of a state whose memory is that of the segments placed. -/
+theorem MemOn.of_load {segs : List (Nat × Perm × List Byte)} (hok : segsOk segs = true)
+    {t : State} (hmem : t.mem = (State.init.loadSegs segs).mem) : MemOn segs t :=
+  fun _ hg _ hj => mem_pageData hok hg hmem hj
+
 /-- Whether a block is some bytes of a segment's pages: it lies in them; it
 may be written only if the segment may; what it says of its bytes, which it
 may only of a segment that is not written, is what they are; and its text,
@@ -67,7 +78,7 @@ section
 variable {segs : List (Nat × Perm × List Byte)} (hok : segsOk segs = true)
   (hfull : segsFull segs = true) {sb len : BitVec 64}
   (hoff : segs.all (offStack sb.toNat len.toNat) = true) {t : State}
-  (hmem : t.mem = (State.init.loadSegs segs).mem)
+  (hmem : MemOn segs t)
   (hperm : t.perm = ((State.init.loadSegs segs).setPerm sb len .rw).perm)
   {blocks : List (BitVec 64 × Layout)} (hin : blocksIn segs blocks = true)
 
@@ -111,7 +122,7 @@ theorem said_in : ∀ x ∈ blocks, ∀ bs : List (BitVec 8), x.2.said = some bs
   have hlen := hpre.length_le
   rw [List.length_drop] at hlen
   have hj : x.1.toNat - g.1 + k < (pageData g).length := by omega
-  rw [block_addr h1 k, mem_pageData hok' hg hmem hj, hpre.getElem hk, List.getElem_drop]
+  rw [block_addr h1 k, hmem g hg _ hj, hpre.getElem hk, List.getElem_drop]
 
 include hok hmem hin in
 /-- **The text of each block that has some ends in a byte of nought.** -/
@@ -133,7 +144,7 @@ theorem text_in : ∀ x ∈ blocks, x.2.text ≠ 0 →
       unfold Layout.size
       omega
     have hj : x.1.toNat - g.1 + (x.2.size - 1) < (pageData g).length := by omega
-    rw [block_addr h1 _, mem_pageData hok' hg hmem hj]
+    rw [block_addr h1 _, hmem g hg _ hj]
     rw [List.getElem?_eq_getElem hj] at hz
     exact Option.some.inj hz
 
