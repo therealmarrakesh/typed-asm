@@ -1003,7 +1003,7 @@ theorem hello (w : World) :
         s'.getReg .rax = 1 → s'.getReg .rdi = 1 ∧ s'.offered = message) :=
   whole_outputs checked (Q := fun c => c = 0) (q := fun c => c == 0) (fun c h => by simpa using h)
     (R := fun fd bs => fd = 1 ∧ bs = message) (r := fun fd b => fd == 1 && b == message)
-    (fun fd bs h => by simpa using h) saidOk rfl (KindsOk.none _) StaticsOk.nil w
+    (fun fd bs h => by simpa using h) saidOk rfl (KindsOk.none _) w
 end HelloU
 
 /-! ## A program end to end, with a stack
@@ -1041,7 +1041,7 @@ theorem pushPop (w : World) :
         ∀ len c, Asm.fetch (Asm.base code) code s'.rip = some (.syscall, len) →
         linux { s' with rip := s'.rip + len } = .exit c → c = 0 :=
   whole_exits checked (Q := fun c => c = 0) (q := fun c => c == 0) (fun c h => by simpa using h)
-    rfl (KindsOk.none _) StaticsOk.nil w
+    rfl (KindsOk.none _) w
 
 end PushU
 

@@ -159,4 +159,36 @@ theorem saidOk_of_check {blocks : List (BitVec 64 × Layout)} {kinds : Nat → O
   obtain ⟨b, hb, h1, h2⟩ := this
   exact ⟨b.2, h1 ▸ MemTy.ofList_of_mem blocks hnd b hb, h2⟩
 
+/-- Whether something a program says of its static data is seen in a list
+of blocks: that an address written out is that of a byte of one of them, a
+block of plain bytes. -/
+def staticOk (blocks : List (BitVec 64 × Layout)) : Val × TyS → Bool
+  | (.lit v, .ptr (.mk size .nil) w off) => blocks.any fun b =>
+      decide (b.2.shape.size = size) && b.2.shape.vals.isEmpty && (!w || b.2.writable) &&
+        decide (v = b.1 + BitVec.ofNat 64 off)
+  | _ => false
+
+/-- **What is seen so is so**, under the typing of those blocks and every
+one it grows to. -/
+theorem staticsOk_of_check {fetch : Fetch} {sys : Syscall} {blocks : List (BitVec 64 × Layout)}
+    {kinds : Nat → Option Shape} {st : List (Val × TyS)}
+    (hnd : blocks.Pairwise fun x y => x.1 ≠ y.1) (h : st.all (staticOk blocks) = true) :
+    StaticsOk fetch sys (MemTy.ofList blocks kinds) st := by
+  intro ρ f hf n Ψ' hext _
+  have hc := List.all_eq_true.mp h f hf
+  match f, hc with
+  | (.lit v, .ptr (.mk size .nil) w off), hc =>
+    simp only [staticOk, List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq, Bool.or_eq_true,
+      Bool.not_eq_true', List.isEmpty_iff] at hc
+    obtain ⟨b, hb, ⟨⟨hsz, hvals⟩, hw⟩, hv⟩ := hc
+    simp only [TyS.den, ShapeS.den, ValsS.den, Val.den, HasTy]
+    refine ⟨b.1, b.2, hext.blocks _ _ (MemTy.ofList_of_mem blocks hnd b hb), ?_, fun hw' => ?_, hv⟩
+    · obtain ⟨_, ⟨sz, vals⟩, _⟩ := b
+      simp only at hsz hvals
+      subst hsz hvals
+      rfl
+    · rcases hw with hw | hw
+      · rw [hw] at hw'; cases hw'
+      · exact hw
+
 end TypedAsm.U

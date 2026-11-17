@@ -59,7 +59,8 @@ def blocksOf (code : List (Asm L)) (l : L) : List (BitVec 64 × Layout) :=
 The checker's program is the assembled table; the entry label is among the
 labels, with the entry context; the labels' code is typed; and the state
 the program is loaded into is seen, by where its segments and its stack
-are, to start as the entry asks. -/
+are, to start as the entry asks; and what the program says of its static
+data is seen in its segments. -/
 def wholeOk (code : List (Asm L)) (l : L) (n : Nat) (pg : Prog) (labels : List Label)
     (fuel : Nat) : Bool :=
   let base := Asm.base code
@@ -81,7 +82,8 @@ def wholeOk (code : List (Asm L)) (l : L) (n : Nat) (pg : Prog) (labels : List L
     decide ((0x80000000 : BitVec 64) = stackBase n + BitVec.ofNat 64 (stackSize n)) &&
     (blocks.all fun x => decide (Disjoint (stackBase n) (stackSize n) x.1 x.2.size)) &&
     (st :: segStretches segs []).all
-      (stretchIn ((stackBase n, stackSize n) :: blocks.map fun x => (x.1, x.2.size))))
+      (stretchIn ((stackBase n, stackSize n) :: blocks.map fun x => (x.1, x.2.size)))) &&
+  pg.statics.all (staticOk blocks)
 
 /-- What the check establishes, of the machine that looks instructions up
 in the program and of the state the program starts in. -/
@@ -92,6 +94,8 @@ structure WholeFacts (code : List (Asm L)) (l : L) (n : Nat) (pg : Prog) (labels
   nd : (blocksOf code l).Pairwise fun x y => x.1 ≠ y.1
   check : checkProgram pg labels fuel 0 = true
   entry : (⟨Asm.addr code (Asm.base code) l, entryOf n⟩ : Label) ∈ labels
+  statics : ∀ (fetch : Fetch) (sys : Syscall),
+    StaticsOk fetch sys (MemTy.ofList (blocksOf code l) fun _ => none) pg.statics
   loaded : ∀ w, Loaded (Asm.fetch (Asm.base code) code) (startIn code l n w)
   starts : ∀ (w : World) (ρ : Env), Starts (blocksOf code l) (fun _ => none)
     ((entryOf n).den { ρ with bound := entryFam code l n :: ρ.bound }) (startIn code l n w)
@@ -100,13 +104,14 @@ theorem wholeOk_facts {code : List (Asm L)} {l : L} {n : Nat} {pg : Prog} {label
     {fuel : Nat} (h : wholeOk code l n pg labels fuel = true) :
     WholeFacts code l n pg labels fuel := by
   simp only [wholeOk, Bool.and_eq_true, decide_eq_true_eq, List.any_eq_true] at h
-  obtain ⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨hpc, x, hx, hxa, hxp⟩, hchk⟩, htab⟩, hwf⟩, hnd⟩, hsegs⟩, hfull⟩, hoff⟩,
-    hholds⟩, hhead⟩, hoffp⟩, hlast⟩ := h
+  obtain ⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨hpc, x, hx, hxa, hxp⟩, hchk⟩, htab⟩, hwf⟩, hnd⟩, hsegs⟩, hfull⟩, hoff⟩,
+    hholds⟩, hhead⟩, hoffp⟩, hlast⟩, hstat⟩ := h
   have hparts : ∀ w, ∀ g ∈ Asm.parts (Asm.base code) code, (startIn code l n w).Holds g :=
     fun w g hg =>
       (Asm.prepared_holds State.init (Asm.base code) code l (stackStretch n).1 (stackStretch n).2
         0x80000000 hholds hhead hoffp g hg).congr rfl rfl
-  refine ⟨?_, blocksWf_wf hwf, hnd, hchk, ?_, fun w => Asm.loaded (hparts w), fun w ρ => ?_⟩
+  refine ⟨?_, blocksWf_wf hwf, hnd, hchk, ?_, fun _ _ => staticsOk_of_check hnd hstat,
+    fun w => Asm.loaded (hparts w), fun w ρ => ?_⟩
   · rw [hpc]
     exact hcode_of_tableOk htab
   · obtain ⟨xa, xp⟩ := x
@@ -155,27 +160,24 @@ theorem WholeFacts.wellTyped {code : List (Asm L)} {l : L} {n : Nat} {pg : Prog}
 instructions from memory.** -/
 theorem whole_safe {code : List (Asm L)} {l : L} {n : Nat} {pg : Prog} {labels : List Label}
     {fuel : Nat} (h : wholeOk code l n pg labels fuel = true)
-    (hk : KindsOk (psi0 code l) pg.kinds)
-    (hst : StaticsOk (Asm.fetch (Asm.base code) code) linux (psi0 code l) pg.statics) :
+    (hk : KindsOk (psi0 code l) pg.kinds) :
     ∀ w, SafeMem linux (startIn code l n w) := fun w =>
   have f := wholeOk_facts h
   SafeMem.of_safe linux_frame (f.loaded w)
-    (safe_of_checked linux_describes rfl (PreSound.all (fun _ => trivial) _) f.hcode hk hst f.wf
+    (safe_of_checked linux_describes rfl (PreSound.all (fun _ => trivial) _) f.hcode hk (f.statics _ _) f.wf
       f.check f.entry rfl {} (entryFam code l n) (f.wellTyped _ _ w))
 
 /-- **And where it checks against the wanted status, ends only with it.** -/
 theorem whole_exits {code : List (Asm L)} {l : L} {n : Nat} {pg : Prog} {labels : List Label}
     {fuel : Nat} (h : wholeOk code l n pg labels fuel = true)
     {Q : BitVec 32 → Prop} {q : BitVec 32 → Bool} (hq : ∀ c, q c = true → Q c)
-    (hpg : pg.pre = preExits q) (hk : KindsOk (psi0 code l) pg.kinds)
-    (hst : StaticsOk (Asm.fetch (Asm.base code) code) (linux.exitsOnly Q) (psi0 code l)
-      pg.statics) :
+    (hpg : pg.pre = preExits q) (hk : KindsOk (psi0 code l) pg.kinds) :
     ∀ w, SafeMem linux (startIn code l n w) ∧
       ∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startIn code l n w) s' →
         ∀ len c, Asm.fetch (Asm.base code) code s'.rip = some (.syscall, len) →
         linux { s' with rip := s'.rip + len } = .exit c → Q c := fun w =>
   have f := wholeOk_facts h
-  have r := exits_of_checked hq hpg f.hcode hk hst f.wf f.check f.entry rfl {} (entryFam code l n)
+  have r := exits_of_checked hq hpg f.hcode hk (f.statics _ _) f.wf f.check f.entry rfl {} (entryFam code l n)
     (f.wellTyped _ _ w)
   ⟨SafeMem.of_safe linux_frame (f.loaded w) r.1, r.2⟩
 
@@ -186,9 +188,7 @@ theorem whole_outputs {code : List (Asm L)} {l : L} {n : Nat} {pg : Prog} {label
     {R : BitVec 64 → List (BitVec 8) → Prop} {r : BitVec 64 → List (BitVec 8) → Bool}
     (hr : ∀ fd bs, r fd bs = true → R fd bs) {said : List (BitVec 64 × List (BitVec 8))}
     (hsaid : saidCheck (blocksOf code l) said = true) (hpg : pg.pre = preOut said q r)
-    (hk : KindsOk (psi0 code l) pg.kinds)
-    (hst : StaticsOk (Asm.fetch (Asm.base code) code) ((linux.exitsOnly Q).writesOnly R)
-      (psi0 code l) pg.statics) :
+    (hk : KindsOk (psi0 code l) pg.kinds) :
     ∀ w, SafeMem linux (startIn code l n w) ∧
       (∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startIn code l n w) s' →
         ∀ len c, Asm.fetch (Asm.base code) code s'.rip = some (.syscall, len) →
@@ -197,7 +197,7 @@ theorem whole_outputs {code : List (Asm L)} {l : L} {n : Nat} {pg : Prog} {label
         ∀ len, Asm.fetch (Asm.base code) code s'.rip = some (.syscall, len) →
         s'.getReg .rax = 1 → R (s'.getReg .rdi) s'.offered) := fun w =>
   have f := wholeOk_facts h
-  have o := outputs_of_checked hq hr (saidOk_of_check f.nd hsaid) hpg f.hcode hk hst f.wf f.check
+  have o := outputs_of_checked hq hr (saidOk_of_check f.nd hsaid) hpg f.hcode hk (f.statics _ _) f.wf f.check
     f.entry rfl {} (entryFam code l n) (f.wellTyped _ _ w)
   ⟨SafeMem.of_safe linux_frame (f.loaded w) o.1, o.2.1, o.2.2⟩
 
