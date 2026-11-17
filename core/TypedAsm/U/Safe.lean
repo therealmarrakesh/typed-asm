@@ -22,7 +22,7 @@ the label's family, is safe**: on any machine that fetches its instructions
 at their addresses, under any system that does what Linux is described to
 do. -/
 theorem safe_of_checked {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
-    (hpre : ∀ s, D.pre s) {pg : Prog} {labels : List Label} {fuel k : Nat}
+    {pg : Prog} (hpre : PreSound fetch sys Ψ D pg.pre) {labels : List Label} {fuel k : Nat}
     (hcode : ∀ e ∈ pg.code, fetch e.1 = some (e.2.1, e.2.2)) (hk : KindsOk Ψ pg.kinds)
     (hst : StaticsOk fetch sys Ψ pg.statics) (hwf : Ψ.WF)
     (h : checkProgram pg labels fuel k = true)
@@ -37,7 +37,7 @@ theorem safe_of_checked {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = l
 where the program is loaded and the system changes nothing a program's
 instructions are read from. -/
 theorem safeMem_of_checked {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
-    (hpre : ∀ s, D.pre s) {pg : Prog} {labels : List Label} {fuel k : Nat}
+    {pg : Prog} (hpre : PreSound fetch sys Ψ D pg.pre) {labels : List Label} {fuel k : Nat}
     (hcode : ∀ e ∈ pg.code, fetch e.1 = some (e.2.1, e.2.2)) (hk : KindsOk Ψ pg.kinds)
     (hst : StaticsOk fetch sys Ψ pg.statics) (hwf : Ψ.WF)
     (h : checkProgram pg labels fuel k = true)

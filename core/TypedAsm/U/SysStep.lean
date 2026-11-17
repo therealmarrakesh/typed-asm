@@ -17,6 +17,11 @@ open TypedAsm
 
 variable {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
 
+/-- What the system asks for a call to be let through holds in every state
+that matches a context. -/
+def PreAt (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (D : SysDesc) (Γ : Ctx) : Prop :=
+  ∀ n, ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, WellTyped fetch sys Ψ' n Γ s → D.pre s
+
 /-- The context a call returns in, as terms: `rax` holds the term for what
 was handed back, `rcx` the address after the call, `r11` zero; and the flags
 are undefined. -/
@@ -43,8 +48,9 @@ def sysWorld (Γ : CtxS) (k : Nat) (next : BitVec 64) : Option CtxS :=
   | none => none
 
 theorem sysWorld_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
-    (hpre : ∀ s, D.pre s) {ρ : Env} {Γ Γ' : CtxS} {k : Nat} {next : BitVec 64}
-    (h : sysWorld Γ k next = some Γ') (hu : Γ.under k = true) :
+    {ρ : Env} {Γ Γ' : CtxS} {k : Nat} {next : BitVec 64}
+    (h : sysWorld Γ k next = some Γ') (hu : Γ.under k = true)
+    (hpre : PreAt fetch sys Ψ D (Γ.den ρ)) :
     Steps fetch sys Ψ .syscall next (Γ.den ρ) fun t Δ =>
       ∃ x, t = next ∧ Δ = Γ'.den (ρ.setVal k x) := by
   unfold sysWorld at h
@@ -55,7 +61,7 @@ theorem sysWorld_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
       cases h
       have hrax : (Γ.den ρ).val .rax = nr := Val.lit?_den hnr
       refine Steps.mono (Steps.world hD (by rw [hkind, hrax]; exact hk)
-        (fun _ _ _ _ s _ _ => hpre s)) ?_
+        (fun n Ψ' he hwf s _ hw => hpre n Ψ' he hwf s hw)) ?_
       rintro t Δ ⟨rfl, x, rfl⟩
       refine ⟨x, rfl, ?_⟩
       rw [CtxS.afterSys_den, CtxS.den_setVal ρ k x Γ hu]
@@ -75,15 +81,15 @@ def sysEnds (Γ : CtxS) : Bool :=
   | none => false
 
 theorem sysEnds_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
-    (hpre : ∀ s, D.pre s) {ρ : Env} {Γ : CtxS} (h : sysEnds Γ = true) {a len : BitVec 64}
-    (hf : fetch a = some (.syscall, len)) (n : Nat) : Ok fetch sys Ψ n a (Γ.den ρ) := by
+    {ρ : Env} {Γ : CtxS} (h : sysEnds Γ = true) {a len : BitVec 64}
+    (hf : fetch a = some (.syscall, len)) (hpre : PreAt fetch sys Ψ D (Γ.den ρ)) (n : Nat) : Ok fetch sys Ψ n a (Γ.den ρ) := by
   unfold sysEnds at h
   split at h
   · next nr hnr =>
     split at h
     · next hk =>
       have hrax : (Γ.den ρ).val .rax = nr := Val.lit?_den hnr
-      exact Ok.ends hD hf (by rw [hkind, hrax]; exact hk) (fun _ _ _ _ s _ _ => hpre s)
+      exact Ok.ends hD hf (by rw [hkind, hrax]; exact hk) (fun n Ψ' he hwf s _ hw => hpre n Ψ' he hwf s hw)
     · cases h
   · cases h
 
@@ -134,9 +140,10 @@ def sysFills (kinds : Nat → Option ShapeS) (Γ : CtxS) (k : Nat) (next : BitVe
   | none => none
 
 theorem sysFills_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
-    (hpre : ∀ s, D.pre s) {ρ : Env} {kinds : Nat → Option ShapeS} (hkd : KindsOk Ψ kinds)
+    {ρ : Env} {kinds : Nat → Option ShapeS} (hkd : KindsOk Ψ kinds)
     {Γ Γe Γh : CtxS} {k : Nat} {next : BitVec 64}
-    (h : sysFills kinds Γ k next = some (Γe, Γh)) (hu : Γ.under k = true) :
+    (h : sysFills kinds Γ k next = some (Γe, Γh)) (hu : Γ.under k = true)
+    (hpre : PreAt fetch sys Ψ D (Γ.den ρ)) :
     Steps fetch sys Ψ .syscall next (Γ.den ρ) fun t Δ =>
       ∃ x, t = next ∧ (Δ = Γe.den (ρ.setVal k x) ∨ Δ = Γh.den (ρ.setVal k x)) := by
   unfold sysFills at h
@@ -168,7 +175,7 @@ theorem sysFills_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
             rw [ha'] at hcw ⊢
             exact H.2.2 k' Ψ' he hwf s hw data (by omega) hcw
           refine Steps.mono (Steps.fills hD (by rw [hkind, hrax]; exact hk)
-            (fun _ _ _ _ s _ _ => hpre s) hH) ?_
+            (fun n Ψ' he hwf s _ hw => hpre n Ψ' he hwf s hw) hH) ?_
           rintro t Δ ⟨rfl, x, hcase⟩
           have hΓ : Γ.den (ρ.setVal k x) = Γ.den ρ := CtxS.den_setVal ρ k x Γ hu
           refine ⟨x, rfl, ?_⟩
@@ -240,7 +247,7 @@ theorem sysFills_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
                     omega)
                 exact H.2.2 k' Ψ' he hwf s hw data (by omega) hcw
               refine Steps.mono (Steps.fills hD (by rw [hkind, hrax]; exact hk)
-                (fun _ _ _ _ s _ _ => hpre s) hH) ?_
+                (fun n Ψ' he hwf s _ hw => hpre n Ψ' he hwf s hw) hH) ?_
               rintro t Δ ⟨rfl, x, hcase⟩
               have hΓ : Γ.den (ρ.setVal k x) = Γ.den ρ := CtxS.den_setVal ρ k x Γ hu
               have e : (Γ.afterSys (.var k) t).den (ρ.setVal k x) = (Γ.den ρ).afterSys x t := by
@@ -276,8 +283,9 @@ def sysMap (Γ : CtxS) (k : Nat) (next : BitVec 64) : Option (CtxS × CtxS × Na
   | _, _, _ => none
 
 theorem sysMap_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
-    (hpre : ∀ s, D.pre s) {ρ : Env} {Γ Γe Γo : CtxS} {sz k : Nat} {next : BitVec 64}
-    (h : sysMap Γ k next = some (Γe, Γo, sz)) (hu : Γ.under k = true) :
+    {ρ : Env} {Γ Γe Γo : CtxS} {sz k : Nat} {next : BitVec 64}
+    (h : sysMap Γ k next = some (Γe, Γo, sz)) (hu : Γ.under k = true)
+    (hpre : PreAt fetch sys Ψ D (Γ.den ρ)) :
     Steps fetch sys Ψ .syscall next (Γ.den ρ) fun t Δ =>
       ∃ x, t = next ∧ ((SysErr x ∧ Δ = Γe.den (ρ.setVal k x)) ∨
         (x.toNat + sz ≤ addrTop ∧ Δ = Γo.den (ρ.setVal k x))) := by
@@ -293,7 +301,7 @@ theorem sysMap_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linu
         have hrdi : (Γ.den ρ).val .rdi = 0 := by rw [← hd0]; exact Val.lit?_den hdi
         have hrsi : (Γ.den ρ).val .rsi = len := Val.lit?_den hlen
         refine Steps.mono (Steps.map hD (by rw [hkind, hrax]; exact hk) hrdi
-          (fun _ _ _ _ s _ _ => hpre s)) ?_
+          (fun n Ψ' he hwf s _ hw => hpre n Ψ' he hwf s hw)) ?_
         rintro t Δ ⟨rfl, x, hcase⟩
         have hΓ : Γ.den (ρ.setVal k x) = Γ.den ρ := CtxS.den_setVal ρ k x Γ hu
         refine ⟨x, rfl, ?_⟩
@@ -369,8 +377,9 @@ def sysUnmap (Γ : CtxS) (k : Nat) (next : BitVec 64) : Option (CtxS × CtxS) :=
   | _, _ => none
 
 theorem sysUnmap_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
-    (hpre : ∀ s, D.pre s) {ρ : Env} {Γ Γe Γo : CtxS} {k : Nat} {next : BitVec 64}
-    (h : sysUnmap Γ k next = some (Γe, Γo)) (hu : Γ.under k = true) :
+    {ρ : Env} {Γ Γe Γo : CtxS} {k : Nat} {next : BitVec 64}
+    (h : sysUnmap Γ k next = some (Γe, Γo)) (hu : Γ.under k = true)
+    (hpre : PreAt fetch sys Ψ D (Γ.den ρ)) :
     Steps fetch sys Ψ .syscall next (Γ.den ρ) fun t Δ =>
       t = next ∧ ((∃ x, SysErr x ∧ Δ = Γe.den (ρ.setVal k x)) ∨ Δ = Γo.den ρ) := by
   unfold sysUnmap at h
@@ -391,7 +400,7 @@ theorem sysUnmap_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
           rw [Val.same_den ρ hsame]
           rfl
         refine Steps.mono (Steps.unmap hD (by rw [hkind, hrax]; exact hk) hheld
-          (by rw [hrsi]; exact hsize) (fun _ _ _ _ s _ _ => hpre s)) ?_
+          (by rw [hrsi]; exact hsize) (fun n Ψ' he hwf s _ hw => hpre n Ψ' he hwf s hw)) ?_
         rintro t Δ ⟨rfl, hcase⟩
         refine ⟨rfl, ?_⟩
         rcases hcase with ⟨x, hx, rfl⟩ | rfl

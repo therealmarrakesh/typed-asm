@@ -108,8 +108,9 @@ theorem Starts.matches {blocks : List (BitVec 64 × Layout)} {kinds : Nat → Op
 state that starts as a member of the label's family asks, under the memory
 typing of its blocks. -/
 theorem Starts.safe {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
-    (hpre : ∀ s, D.pre s) {pg : Prog} {labels : List Label} {fuel k : Nat}
+    {pg : Prog} {labels : List Label} {fuel k : Nat}
     {blocks : List (BitVec 64 × Layout)} {kinds : Nat → Option Shape}
+    (hpre : PreSound fetch sys (MemTy.ofList blocks kinds) D pg.pre)
     (hcode : ∀ e ∈ pg.code, fetch e.1 = some (e.2.1, e.2.2))
     (hk : KindsOk (MemTy.ofList blocks kinds) pg.kinds)
     (hst : StaticsOk fetch sys (MemTy.ofList blocks kinds) pg.statics)

@@ -725,7 +725,7 @@ def justifyF (pg : Prog) (labels : List Label)
           (closeCtx (entF fuelW) (justifyF pg labels stops fuelW f)) labels (k + E.width))
 
 theorem justifyF_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
-    (hpre : ∀ s, D.pre s) {n : Nat} {pg : Prog}
+    {n : Nat} {pg : Prog} (hpre : PreSound fetch sys Ψ D pg.pre)
     {labels : List Label} {stops : BitVec 64 → Bool} {fuelW : Nat}
     (hcode : ∀ e ∈ pg.code, fetch e.1 = some (e.2.1, e.2.2)) (hk : KindsOk Ψ pg.kinds)
     (hst : StaticsOk fetch sys Ψ pg.statics)
@@ -756,7 +756,7 @@ theorem justifyF_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
         refine Ok.regard hreg ?_
         rw [← ha]
         exact H l hmem ρ'' _
-    · exact (walk_sound hD hkind hpre pg stops hcode hk true fuelW (k + E.width) a
+    · exact (walk_sound hD hkind pg hpre stops hcode hk true fuelW (k + E.width) a
         ((E.open (freshOpening k)).addKnown pg.statics) ρ' hΔ (Walk.holds_of_closes hcc H _ (k + E.width) ρ' hw)).1
 
 /-! ## A program -/
@@ -779,7 +779,7 @@ the label's family, for any number of steps**: on any machine that fetches
 its instructions at their addresses, under any system that does what Linux
 is described to do. -/
 theorem program_ok {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
-    (hpre : ∀ s, D.pre s) {pg : Prog}
+    {pg : Prog} (hpre : PreSound fetch sys Ψ D pg.pre)
     {labels : List Label} {fuel k : Nat}
     (hcode : ∀ e ∈ pg.code, fetch e.1 = some (e.2.1, e.2.2)) (hk : KindsOk Ψ pg.kinds)
     (hst : StaticsOk fetch sys Ψ pg.statics)
@@ -798,7 +798,7 @@ theorem program_ok {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
     have hcc := closeCtx_sound (entF_sound fuel) (justifyF_sound hD hkind hpre
       (stops := fun a => labels.any fun l' => l'.addr == a) (fuelW := fuel) hcode hk hst ih fuel)
     refine ok_of_open (k := k) hfree (fun ρ' => ok_statics hst ρ' ?_) ρ fam
-    exact (walk_sound hD hkind hpre pg _ hcode hk true fuel (k + l.pat.width) l.addr
+    exact (walk_sound hD hkind pg hpre _ hcode hk true fuel (k + l.pat.width) l.addr
       ((l.start k).addKnown pg.statics) ρ' hu
       (Walk.holds_of_closes hcc ih _ (k + l.pat.width) ρ' hc)).2 hm
 

@@ -1,5 +1,6 @@
 import TypedAsm.U.Upper
 import TypedAsm.U.Loader
+import TypedAsm.U.Exits
 import TypedAsm.U.Labels
 import TypedAsm.U.Open
 
@@ -142,7 +143,7 @@ what Linux is described to do: by the walk alone, which the kernel runs. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
     (hcode : ∀ e ∈ codeE, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (n : Nat) :
     Ok fetch sys Ψ (n + 1) 0 (Γw.den ρ) :=
-  (walk_sound hD rfl (fun _ => trivial) (pg := ↑codeE) (fun _ => false) hcode
+  (walk_sound hD rfl (PreSound.all (fun _ => trivial) _) (pg := ↑codeE) (fun _ => false) hcode
     (KindsOk.none _) true 10 20 0 Γw ρ (by decide +kernel)
     (Walk.holds_of_auto _ ρ (by decide +kernel))).2 (by decide +kernel)
 
@@ -159,7 +160,7 @@ defined, so the jump is decided, and both ways end the program. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
     (hcode : ∀ e ∈ codeB, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (n : Nat) :
     Ok fetch sys Ψ (n + 1) 0 (Γw.den ρ) :=
-  (walk_sound hD rfl (fun _ => trivial) (pg := ↑codeB) (fun _ => false) hcode
+  (walk_sound hD rfl (PreSound.all (fun _ => trivial) _) (pg := ↑codeB) (fun _ => false) hcode
     (KindsOk.none _) true 10 20 0 Γw ρ (by decide +kernel)
     (Walk.holds_of_auto _ ρ (by decide +kernel))).2 (by decide +kernel)
 
@@ -185,7 +186,8 @@ jump the pointer is known not to be null, by the walk alone. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
     (hcode : ∀ e ∈ codeN .e, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (n : Nat) :
     Ok fetch sys Ψ (n + 1) 0 (Γn.den ρ) :=
-  (walk_sound hD rfl (fun _ => trivial) (codeN .e) (fun _ => false) hcode (KindsOk.none _) true 10 20 0 Γn ρ (by decide +kernel)
+  (walk_sound hD rfl (codeN .e) (PreSound.all (fun _ => trivial) _) (fun _ => false) hcode
+    (KindsOk.none _) true 10 20 0 Γn ρ (by decide +kernel)
     (Walk.holds_of_auto _ ρ (by decide +kernel))).2 (by decide +kernel)
 
 -- jumping away when it is not null, the load is of a pointer that is null: refused
@@ -225,7 +227,7 @@ asks. The kernel runs the whole check. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
     (hcode : ∀ e ∈ codeL, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (fam : Fam) (n : Nat) :
     Ok fetch sys Ψ n 0 (Pw.den { ρ with bound := fam :: ρ.bound }) :=
-  program_ok hD rfl (fun _ => trivial) (pg := ↑codeL) hcode (KindsOk.none _) StaticsOk.nil
+  program_ok hD rfl (PreSound.all (fun _ => trivial) _) (pg := ↑codeL) hcode (KindsOk.none _) StaticsOk.nil
     (labels := labelsL) (fuel := 10) (k := 0)
     (by decide +kernel) n (lab 0 Pw) (List.mem_cons_self ..) ρ fam
 
@@ -250,7 +252,7 @@ was, as the sums show, so the context reached is the label's again. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
     (hcode : ∀ e ∈ codeF, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (fam : Fam) (n : Nat) :
     Ok fetch sys Ψ n 0 (Pw.den { ρ with bound := fam :: ρ.bound }) :=
-  program_ok hD rfl (fun _ => trivial) (pg := ↑codeF) hcode (KindsOk.none _) StaticsOk.nil
+  program_ok hD rfl (PreSound.all (fun _ => trivial) _) (pg := ↑codeF) hcode (KindsOk.none _) StaticsOk.nil
     (labels := [lab 0 Pw]) (fuel := 10) (k := 0)
     (by decide +kernel) n (lab 0 Pw) (List.mem_cons_self ..) ρ fam
 
@@ -477,7 +479,8 @@ example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linux
     (n : Nat) :
     Ok fetch sys Ψ n 100
       ((fEntry (fExit (.bvar 1 7) (.bvar 1))).den { ρ with bound := fam :: ρ.bound }) :=
-  program_ok hD rfl (fun _ => trivial) (pg := ↑(codeCall movRaxRdi)) hcode (KindsOk.none _) StaticsOk.nil
+  program_ok hD rfl (PreSound.all (fun _ => trivial) _) (pg := ↑(codeCall movRaxRdi)) hcode
+    (KindsOk.none _) StaticsOk.nil
     (labels := [lab 0 Pw, lab 100 (fEntry (fExit (.bvar 1 7) (.bvar 1)))]) (fuel := 10) (k := 0)
     (by decide +kernel) n _ (List.mem_cons_of_mem _ (List.mem_cons_self ..)) ρ fam
 
@@ -873,6 +876,27 @@ def afterRead (keeps : Bool) : Bool :=
 -- what the bytes held is no longer known after the call: a label saying it is, refused
 example : afterRead true = false := by decide +kernel
 example : afterRead false = true := by decide +kernel
+
+/-! ## How a program ends -/
+
+/-- `mov eax, 60; <set edi>; syscall`. -/
+def codeX (setEdi : Instr) : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .mov .w32 (.rm_i (.reg .rax) 60), 5), (5, setEdi, 2), (7, .syscall, 2)]
+
+/-- `xor edi, edi`. -/
+def zeroEdi : Instr := .alu .xor .w32 (.rm_r (.reg .rdi) .rdi)
+
+-- the status is nought, which is what is wanted
+example : checkProgram { code := codeX zeroEdi, pre := preExits (· == 0) } [lab 0 Pw] 10 0
+    = true := by decide +kernel
+-- one is wanted, and the status is nought: refused
+example : checkProgram { code := codeX zeroEdi, pre := preExits (· == 1) } [lab 0 Pw] 10 0
+    = false := by decide +kernel
+-- the status is whatever `rdi` held: refused
+example : checkProgram { code := codeX .nop, pre := preExits (· == 0) } [lab 0 Pw] 10 0
+    = false := by decide +kernel
+-- with nothing asked of how it ends, the same program is typed: it is safe
+example : checkProgram (codeX .nop) [lab 0 Pw] 10 0 = true := by decide +kernel
 
 /-! ## All the memory a first state has -/
 
