@@ -293,7 +293,7 @@ def stepHeld (Γ : CtxS) (k : Nat) (next : BitVec 64) (i : Instr) : Option (CtxS
       let b := argAt Γ.regs d.srcs 1
       let c := argAt Γ.regs d.srcs 2
       let ea := eaTerm Γ next d.ea
-      match writeCell Γ₁ next (.stored i a b c Γ.flags next ea cell) d.wr with
+      match writeCell Γ₁ next (simpStored i a b c Γ.flags next ea cell) d.wr with
       | some held' =>
         some ({ Γ₁ with
                 regs := setOuts (fun j => simpOut i j a b c Γ.flags next ea cell) i.outs 0 Γ.regs
@@ -356,7 +356,7 @@ theorem stepHeld_sound {ρ : Env} {Γ Γ' : CtxS} {k : Nat} {next : BitVec 64} {
                   ((d.ea.map (eaOf (Γ.den ρ).val next)).getD 0) x).store := by
               show (effectOf i _ _ next _ (cell.den (ρ.setVal k x))).store = _
               rw [effect_den (ρ.setVal k x) Γ next hd, hΓ, hx]
-            rw [hst, hval] at hW
+            rw [simpStored_den, hst, hval] at hW
             exact hW
         · intro x Γr _
           exact hg d hd x

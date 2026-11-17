@@ -1,6 +1,6 @@
 import TypedAsm.U.Range
 import TypedAsm.U.Fresh
-import TypedAsm.U.Regard
+import TypedAsm.U.Entail
 
 /-!
 # What a comparison teaches

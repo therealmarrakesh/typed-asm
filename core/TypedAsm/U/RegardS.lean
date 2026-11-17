@@ -1,15 +1,22 @@
 import TypedAsm.U.Find
-import TypedAsm.U.Regard
+import TypedAsm.U.Entail
 
 /-!
 # Whether one context may be regarded as another, computed
 
-Two contexts over the same names: the second asks no more than the first
-gives if each register holds the same value, the flags are the same, the
-regions held are the same in some order, each saying no more of what it
-holds, and each thing the second knows
-follows from something the first knows of the same value. This is decided
-on the terms; that it is right is proved once.
+What it comes to for one context to be regarded as another is one statement
+(`Regards.parts`): the same registers and flags; each thing known a
+consequence of what was known; each region held a part of one that was,
+parts of one region not overlapping. Here that is decided on terms: whether
+two terms stand for the same value; where a region lies in another; whether
+a thing known follows. What is decided is exactly the statement's
+conditions, and that deciding them is right is proved once.
+
+It does not decide everything that is so. Two terms are found to be the
+same value only as the same term, or sums of the same terms and the same
+number; a region is found in another only where its address is a number of
+bytes past the other's, in that sense; and a thing known is found to follow
+only from one thing known of the same value, or of itself.
 -/
 
 namespace TypedAsm.U
@@ -36,79 +43,131 @@ def allRegs : List Reg :=
 theorem mem_allRegs (r : Reg) : r ∈ allRegs := by
   cases r <;> decide
 
-/-- Whether each value the second list says is there, the first says too. -/
-def slotsLess (gs ds : List (Nat × Val)) : Bool :=
-  ds.all fun d => gs.any fun g => g.1 == d.1 && g.2.same d.2
-
-/-- Whether the second region says no more than the first: at the same
-address, of the same size, each value it says is there said by the first. -/
-def regionLess (g d : Val × HeldS) : Bool :=
-  g.1.same d.1 && g.2.size == d.2.size && slotsLess g.2.slots d.2.slots
-
 def regionDen (ρ : Env) (b : Val × HeldS) : Region := (b.1.den ρ, b.2.den ρ)
 
-theorem regionLess_den (ρ : Env) {g d : Val × HeldS} (h : regionLess g d = true) :
-    Region.Less (regionDen ρ d) (regionDen ρ g) := by
-  simp only [regionLess, slotsLess, Bool.and_eq_true, beq_iff_eq, List.all_eq_true,
-    List.any_eq_true] at h
-  obtain ⟨⟨h1, h2⟩, h3⟩ := h
-  refine ⟨(Val.same_den ρ h1).symm, h2.symm, ?_⟩
-  intro p hp
-  obtain ⟨q, hq, rfl⟩ := List.mem_map.mp hp
-  obtain ⟨q', hq', ho, hv⟩ := h3 q hq
-  refine List.mem_map.mpr ⟨q', hq', ?_⟩
-  show (q'.1, q'.2.den ρ) = (q.1, q.2.den ρ)
-  rw [ho, Val.same_den ρ hv]
+/-! ## Regions as parts of regions -/
 
-/-- A list of regions less one that says no less than a given one. -/
-def takeRegion (d : Val × HeldS) : List (Val × HeldS) → Option (List (Val × HeldS))
-  | [] => none
-  | g :: gs => if regionLess g d then some gs else (takeRegion d gs).map (g :: ·)
+/-- Whether each value the part says is there lies within it, and is said
+by the region to be there, the part starting `o` bytes into the region. -/
+def slotsIn (o size : Nat) (gs ds : List (Nat × Val)) : Bool :=
+  ds.all fun d => d.1 + 8 ≤ size && gs.any fun g => g.1 == o + d.1 && g.2.same d.2
 
-theorem takeRegion_perm (ρ : Env) (d : Val × HeldS) :
-    (G G' : List (Val × HeldS)) → takeRegion d G = some G' →
-    ∃ g, Region.Less (regionDen ρ d) g ∧ (g :: G'.map (regionDen ρ)).Perm (G.map (regionDen ρ))
-  | [], _, h => nomatch h
-  | g :: gs, G', h => by
-    unfold takeRegion at h
-    split at h
-    · next hs =>
-      cases h
-      exact ⟨_, regionLess_den ρ hs, .refl _⟩
-    · cases ht : takeRegion d gs with
-      | none => rw [ht] at h; cases h
-      | some G'' =>
-        rw [ht] at h
+/-- The first region of a list that a given region is a part of: its place,
+counted from `i`, and how far into it the part starts. -/
+def hostOf (d : Val × HeldS) : List (Val × HeldS) → Nat → Option (Nat × Nat)
+  | [], _ => none
+  | g :: gs, i =>
+    match offsetFrom d.1 g.1 with
+    | some o =>
+      if o + d.2.size ≤ g.2.size && slotsIn o d.2.size g.2.slots d.2.slots then some (i, o)
+      else hostOf d gs (i + 1)
+    | none => hostOf d gs (i + 1)
+
+theorem hostOf_spec (d : Val × HeldS) : (G : List (Val × HeldS)) → (i₀ i o : Nat) →
+    hostOf d G i₀ = some (i, o) →
+    ∃ g, G[i - i₀]? = some g ∧ i₀ ≤ i ∧ offsetFrom d.1 g.1 = some o ∧
+      o + d.2.size ≤ g.2.size ∧ slotsIn o d.2.size g.2.slots d.2.slots = true
+  | [], _, _, _, h => nomatch h
+  | g :: gs, i₀, i, o, h => by
+    have later : hostOf d gs (i₀ + 1) = some (i, o) →
+        ∃ g', (g :: gs)[i - i₀]? = some g' ∧ i₀ ≤ i ∧ offsetFrom d.1 g'.1 = some o ∧
+          o + d.2.size ≤ g'.2.size ∧ slotsIn o d.2.size g'.2.slots d.2.slots = true := by
+      intro h'
+      obtain ⟨g', hg', hle, rest⟩ := hostOf_spec d gs (i₀ + 1) i o h'
+      refine ⟨g', ?_, by omega, rest⟩
+      have e : i - i₀ = (i - (i₀ + 1)) + 1 := by omega
+      rw [e, List.getElem?_cons_succ]
+      exact hg'
+    unfold hostOf at h
+    cases hoff : offsetFrom d.1 g.1 with
+    | none => rw [hoff] at h; exact later h
+    | some o' =>
+      rw [hoff] at h
+      simp only at h
+      split at h
+      · next hc =>
         cases h
-        obtain ⟨g', hl, ih⟩ := takeRegion_perm ρ d gs G'' ht
-        refine ⟨g', hl, ?_⟩
-        rw [List.map_cons, List.map_cons]
-        exact (List.Perm.swap _ _ _).trans (ih.cons _)
+        simp only [Bool.and_eq_true, decide_eq_true_eq] at hc
+        exact ⟨g, by simp, Nat.le_refl _, hoff, hc.1, hc.2⟩
+      · exact later h
 
-/-- Whether the first list of regions is the second in some order, each
-saying no more. -/
-def heldPerm : List (Val × HeldS) → List (Val × HeldS) → Bool
-  | [], G => G.isEmpty
-  | d :: ds, G =>
-    match takeRegion d G with
-    | some G' => heldPerm ds G'
-    | none => false
+/-- Each region of a list as a part of one of another: which, and how far
+in. Nothing if one is a part of none. -/
+def partsS (G : List (Val × HeldS)) : List (Val × HeldS) → Option (List (Nat × Nat × HeldS))
+  | [] => some []
+  | d :: ds =>
+    match hostOf d G 0, partsS G ds with
+    | some (i, o), some ps => some ((i, o, d.2) :: ps)
+    | _, _ => none
 
-theorem heldPerm_den (ρ : Env) : (D G : List (Val × HeldS)) → heldPerm D G = true →
-    ∃ M, M.Perm (G.map (regionDen ρ)) ∧ LessAll (D.map (regionDen ρ)) M
-  | [], G, h => by
-    cases G with
-    | nil => exact ⟨[], .nil, .nil⟩
-    | cons _ _ => cases h
-  | d :: ds, G, h => by
-    unfold heldPerm at h
-    cases ht : takeRegion d G with
-    | none => rw [ht] at h; cases h
-    | some G' =>
-      rw [ht] at h
-      obtain ⟨g, hl, hp⟩ := takeRegion_perm ρ d G G' ht
-      obtain ⟨M, hM, hF⟩ := heldPerm_den ρ ds G' h
-      exact ⟨g :: M, (hM.cons g).trans hp, .cons hl hF⟩
+def partDen (ρ : Env) (x : Nat × Nat × HeldS) : Part := (x.1, x.2.1, x.2.2.den ρ)
+
+theorem partsS_den (ρ : Env) (G : List (Val × HeldS)) :
+    (D : List (Val × HeldS)) → (P : List (Nat × Nat × HeldS)) → partsS G D = some P →
+    D.map (regionDen ρ) = (P.map (partDen ρ)).map (partRegion (G.map (regionDen ρ))) ∧
+      ∀ x ∈ P.map (partDen ρ), PartOk (G.map (regionDen ρ)) x
+  | [], P, h => by cases h; exact ⟨rfl, fun _ hx => nomatch hx⟩
+  | d :: ds, P, h => by
+    unfold partsS at h
+    cases hh : hostOf d G 0 with
+    | none => rw [hh] at h; cases h
+    | some io =>
+      obtain ⟨i, o⟩ := io
+      cases hp : partsS G ds with
+      | none => rw [hh, hp] at h; cases h
+      | some ps =>
+        rw [hh, hp] at h
+        cases h
+        obtain ⟨g, hg, _, hoff, hle, hsl⟩ := hostOf_spec d G 0 i o hh
+        rw [Nat.sub_zero] at hg
+        obtain ⟨ih₁, ih₂⟩ := partsS_den ρ G ds ps hp
+        have hE : (G.map (regionDen ρ))[i]? = some (regionDen ρ g) := by
+          rw [List.getElem?_map, hg]; rfl
+        have hok : PartOk (G.map (regionDen ρ)) (partDen ρ (i, o, d.2)) := by
+          refine ⟨regionDen ρ g, hE, hle, ?_⟩
+          intro p hp'
+          obtain ⟨q, hq, rfl⟩ := List.mem_map.mp hp'
+          simp only [slotsIn, List.all_eq_true, Bool.and_eq_true, decide_eq_true_eq,
+            List.any_eq_true, beq_iff_eq] at hsl
+          obtain ⟨hfit, q', hq', ho, hv⟩ := hsl q hq
+          refine ⟨hfit, List.mem_map.mpr ⟨q', hq', ?_⟩⟩
+          show (q'.1, q'.2.den ρ) = (o + q.1, q.2.den ρ)
+          rw [ho, Val.same_den ρ hv]
+        refine ⟨?_, ?_⟩
+        · rw [List.map_cons, List.map_cons, List.map_cons, ih₁]
+          congr 1
+          rw [partRegion_eq (x := partDen ρ (i, o, d.2)) hE]
+          show (d.1.den ρ, d.2.den ρ) = (g.1.den ρ + BitVec.ofNat 64 o, d.2.den ρ)
+          rw [offsetFrom_den hoff]
+        · intro x hx
+          rw [List.map_cons] at hx
+          rcases List.mem_cons.mp hx with rfl | hx
+          · exact hok
+          · exact ih₂ x hx
+
+/-- Whether no two parts overlap: of different regions, or one ending
+before the other begins. -/
+def apartS : List (Nat × Nat × HeldS) → Bool
+  | [] => true
+  | x :: xs =>
+    (xs.all fun y => x.1 != y.1 || decide (x.2.1 + x.2.2.size ≤ y.2.1) ||
+      decide (y.2.1 + y.2.2.size ≤ x.2.1)) && apartS xs
+
+theorem apartS_den (ρ : Env) : (P : List (Nat × Nat × HeldS)) → apartS P = true →
+    (P.map (partDen ρ)).Pairwise PartsApart
+  | [], _ => .nil
+  | x :: xs, h => by
+    simp only [apartS, Bool.and_eq_true, List.all_eq_true, Bool.or_eq_true, bne_iff_ne, ne_eq,
+      decide_eq_true_eq] at h
+    rw [List.map_cons, List.pairwise_cons]
+    refine ⟨fun y hy => ?_, apartS_den ρ xs h.2⟩
+    obtain ⟨y', hy', rfl⟩ := List.mem_map.mp hy
+    rcases h.1 y' hy' with (h1 | h1) | h1
+    · exact .inl h1
+    · exact .inr (.inl h1)
+    · exact .inr (.inr h1)
+
+/-! ## What is known -/
 
 /-- Whether what is known one way is known another, read off the two. -/
 def followsS (τ : TyS) : TyS → Bool
@@ -167,38 +226,83 @@ theorem followsS_sub (ρ : Env) (v : BitVec 64) :
     subst h
     exact .refl _ _
 
-/-- Whether a thing known follows from one of a list, of the same value. -/
+/-- Whether a thing is so of a value whatever else is known: that nothing
+is; that zero may be null; that an error number may be one. -/
+def outright (v : Val) : TyS → Bool
+  | .any => true
+  | .nullable τ => v.lit? == some 0 || outright v τ
+  | .orErr τ =>
+    (match v.lit? with
+     | some k => decide (SysErr k)
+     | none => false) || outright v τ
+  | _ => false
+
+theorem outright_hasTy (ρ : Env) (Ψ' : MemTy) (n : Nat) (v : Val) :
+    (τ : TyS) → outright v τ = true → HasTy fetch sys Ψ' n (τ.den ρ) (v.den ρ)
+  | .any, _ => HasTy.any _
+  | .nullable τ, h => by
+    simp only [outright, Bool.or_eq_true, beq_iff_eq] at h
+    refine (hasTy_nullable (τ := τ.den ρ)).mpr ?_
+    rcases h with h | h
+    · exact .inl (Val.lit?_den h)
+    · exact .inr (outright_hasTy ρ Ψ' n v τ h)
+  | .orErr τ, h => by
+    simp only [outright, Bool.or_eq_true] at h
+    refine (hasTy_orErr (τ := τ.den ρ)).mpr ?_
+    rcases h with h | h
+    · cases hl : v.lit? with
+      | none => rw [hl] at h; cases h
+      | some k =>
+        rw [hl] at h
+        rw [Val.lit?_den hl]
+        exact .inl (of_decide_eq_true h)
+    · exact .inr (outright_hasTy ρ Ψ' n v τ h)
+  | .ptr _ _ _, h => nomatch h
+  | .ref _ _ _, h => nomatch h
+  | .str _, h => nomatch h
+  | .atom _, h => nomatch h
+
+/-- Whether a thing known is so of itself, or follows from one of a list, of
+the same value. -/
 def factFrom (G : List (Val × TyS)) (f : Val × TyS) : Bool :=
-  G.any fun g => g.1.same f.1 && followsS g.2 f.2
+  outright f.1 f.2 || G.any fun g => g.1.same f.1 && followsS g.2 f.2
+
+/-! ## The whole -/
 
 /-- **Whether the first context may be regarded as the second.** -/
 def regardS (Γ Δ : CtxS) : Bool :=
   (allRegs.all fun r => (Γ.regs.get r).same (Δ.regs.get r)) && Γ.flags == Δ.flags &&
-    heldPerm Δ.held Γ.held && Δ.known.all (factFrom Γ.known)
+    (match partsS Γ.held Δ.held with
+     | some P => apartS P
+     | none => false) &&
+    Δ.known.all (factFrom Γ.known)
 
 theorem regardS_sound (ρ : Env) {Γ Δ : CtxS} (h : regardS Γ Δ = true) :
     Regards fetch sys Ψ (Γ.den ρ) (Δ.den ρ) := by
   simp only [regardS, Bool.and_eq_true, List.all_eq_true, beq_iff_eq] at h
   obtain ⟨⟨⟨hr, hf⟩, hh⟩, hk⟩ := h
-  obtain ⟨M, hM, hF⟩ := heldPerm_den ρ Δ.held Γ.held hh
-  have e : Δ.den ρ
-      = { ({ ({ Γ.den ρ with known := (Δ.den ρ).known } : Ctx) with held := M } : Ctx)
-          with held := (Δ.den ρ).held } := by
-    refine ctx_ext ?_ ?_ rfl rfl
+  cases hP : partsS Γ.held Δ.held with
+  | none => rw [hP] at hh; cases hh
+  | some P =>
+    rw [hP] at hh
+    obtain ⟨hmap, hok⟩ := partsS_den ρ Γ.held Δ.held P hP
+    refine Regards.parts (E := Γ.held.map (regionDen ρ)) (F := []) (L := P.map (partDen ρ))
+      ?_ ?_ ?_ (List.append_nil _).symm ?_ hok (apartS_den ρ P hh)
     · funext r
       exact (Val.same_den ρ (hr r (mem_allRegs r))).symm
     · show Δ.flags.den ρ = Γ.flags.den ρ
       rw [hf]
-  rw [e]
-  refine ((Regards.follows _ ?_).trans (Regards.perm hM)).trans (Regards.forget hF)
-  intro f hf'
-  obtain ⟨g, hg, rfl⟩ := List.mem_map.mp hf'
-  have := hk g hg
-  simp only [factFrom, List.any_eq_true, Bool.and_eq_true] at this
-  obtain ⟨g₀, hg₀, hs, hfo⟩ := this
-  refine ⟨g₀.2.den ρ, ?_, (followsS_sub ρ _ _ _ hfo).follows⟩
-  show (g.1.den ρ, g₀.2.den ρ) ∈ Γ.known.map fun f => (f.1.den ρ, f.2.den ρ)
-  rw [← Val.same_den ρ hs]
-  exact List.mem_map.mpr ⟨g₀, hg₀, rfl⟩
+    · intro f hf' Ψ' n hg
+      obtain ⟨g, hg', rfl⟩ := List.mem_map.mp hf'
+      have := hk g hg'
+      simp only [factFrom, Bool.or_eq_true, List.any_eq_true, Bool.and_eq_true] at this
+      rcases this with hout | ⟨g₀, hg₀, hs, hfo⟩
+      · exact outright_hasTy ρ Ψ' n g.1 g.2 hout
+      · have hsrc := hg (g₀.1.den ρ, g₀.2.den ρ) (List.mem_map.mpr ⟨g₀, hg₀, rfl⟩)
+        show HasTy fetch sys Ψ' n (g.2.den ρ) (g.1.den ρ)
+        rw [← Val.same_den ρ hs]
+        exact hsrc.sub (followsS_sub ρ _ _ _ hfo)
+    · rw [List.append_nil]
+      exact hmap
 
 end TypedAsm.U

@@ -198,4 +198,30 @@ theorem simpOut_den (ρ : Env) (i : Instr) (k : Nat) (a b c : Val) (fl : FlagsT)
   · exact (effectOf_subRI _ _ _ _ _ _ _ _ _).symm
   · exact foldOut_den ρ i k a b c fl next ea cell
 
+/-- **What an instruction gives the bytes it writes, as plainly as it can
+be said**: the value moved or pushed, the number written in the
+instruction, the address a call returns to; and otherwise the term for what
+the instruction stores. -/
+def simpStored (i : Instr) (a b c : Val) (fl : FlagsT) (next : BitVec 64) (ea cell : Val) : Val :=
+  match i with
+  | .mov .w64 (.rm_r (.mem _) _) => a
+  | .mov .w64 (.rm_i (.mem _) imm) => .lit (imm.signExtend 64)
+  | .push _ => a
+  | .call _ => .lit next
+  | _ => .stored i a b c fl next ea cell
+
+theorem simpStored_den (ρ : Env) (i : Instr) (a b c : Val) (fl : FlagsT) (next : BitVec 64)
+    (ea cell : Val) :
+    (simpStored i a b c fl next ea cell).den ρ = (Val.stored i a b c fl next ea cell).den ρ := by
+  unfold simpStored
+  split
+  · show a.den ρ = BitVec.setWidth 64 (BitVec.setWidth 64 (a.den ρ))
+    simp
+  · next m imm =>
+    show imm.signExtend 64 = BitVec.setWidth 64 (imm.signExtend 64)
+    simp
+  · rfl
+  · next t => rcases t with rel | (r | m) <;> rfl
+  · rfl
+
 end TypedAsm.U

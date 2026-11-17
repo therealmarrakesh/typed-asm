@@ -24,15 +24,13 @@ def Γ0 : CtxS where
   flags := .var 0
   held := [(.var 16, ⟨64, []⟩)]
 
--- push rbx: the stack pointer is 24 bytes in, and the region holds a value there
+-- push rbx: the stack pointer is 24 bytes in, and the region holds there what rbx holds
 example : ((stepHeld Γ0 20 100 (.push .rbx)).map fun r => r.1.regs.rsp)
     = some (.add (.add (.var 16) (.lit 32)) (.lit (-8))) := by decide +kernel
 example : ((stepHeld Γ0 20 100 (.push .rbx)).map fun r => r.1.held.map fun b => b.2.slots.map (·.1))
     = some [[24]] := by decide +kernel
 example : ((stepHeld Γ0 20 100 (.push .rbx)).map fun r => r.1.held.map fun b => b.2.slots.map (·.2))
-    = some [[.stored (.push .rbx) (.var 3) (.add (.var 16) (.lit 32)) (.lit 0)
-          (.var 0) 100 (.add (.add (.add (.var 16) (.lit 32)) (.lit 0)) (.lit (-8))) (.lit 0)]] := by
-  decide +kernel
+    = some [[.var 3]] := by decide +kernel
 
 -- a store outside the region is refused
 example : (stepHeld Γ0 20 100 (.mov .w64 (.rm_r (.mem (.sib (some .rsp) none 64)) .rbx))).isNone
@@ -185,5 +183,59 @@ example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linux
     Ok fetch sys Ψ n 0 (Γw.den ρ) :=
   program_ok hD rfl (fun _ => trivial) hcode (labels := [(0, Γw)]) (fuel := 10) (k := 20)
     (by decide +kernel) n (0, Γw) (List.mem_cons_self ..) ρ
+
+/-! ## What one context being regarded as another comes to
+
+Each consequence of the one statement, and each thing it does not allow,
+at a label reached from a context that holds one stack region of sixty-four
+bytes and says nothing of what is in it. -/
+
+/-- `start: jmp there; there: jmp there`. -/
+def codeJ : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .jmp (.rel 0), 5), (5, .jmp (.rel (-5)), 5)]
+
+/-- Whether the label `there` may ask to hold these regions. -/
+def mayHold (h : List (Val × HeldS)) : Bool :=
+  checkProgram codeJ [(0, Γw), (5, { Γw with held := h })] 10 20
+
+-- the same region
+example : mayHold [(.var 16, ⟨64, []⟩)] = true := by decide +kernel
+-- nothing: what is held may be given up
+example : mayHold [] = true := by decide +kernel
+-- the region as two that lie end to end, and as one part of it alone
+example : mayHold [(.var 16, ⟨32, []⟩), (.add (.var 16) (.lit 32), ⟨32, []⟩)] = true := by
+  decide +kernel
+example : mayHold [(.add (.var 16) (.lit 8), ⟨16, []⟩)] = true := by decide +kernel
+-- two parts that overlap: refused
+example : mayHold [(.var 16, ⟨40, []⟩), (.add (.var 16) (.lit 32), ⟨32, []⟩)] = false := by
+  decide +kernel
+-- a part that runs past the end of the region: refused
+example : mayHold [(.add (.var 16) (.lit 32), ⟨40, []⟩)] = false := by decide +kernel
+-- a region somewhere else: refused
+example : mayHold [(.var 15, ⟨8, []⟩)] = false := by decide +kernel
+-- the region, with a name for the value in eight of its bytes, of which
+-- the context reached says nothing: whatever is there is given the name
+example : mayHold [(.var 16, ⟨64, [(24, .var 17)]⟩)] = true := by decide +kernel
+-- the region said to hold there what `rdi` holds, which nothing shows: refused
+example : mayHold [(.var 16, ⟨64, [(24, .var 7)]⟩)] = false := by decide +kernel
+-- a value said to lie across the end of the region: refused
+example : mayHold [(.var 16, ⟨64, [(60, .var 17)]⟩)] = false := by decide +kernel
+
+-- the frame loop again: the label may say the slot holds what `rdi` holds,
+-- which the body puts there, and may not say it holds what `rsi` holds
+example : checkProgram codeF [(0, { Γw with held := [(.var 16, ⟨64, [(16, .var 7)]⟩)] })] 10 20
+    = true := by decide +kernel
+example : checkProgram codeF [(0, { Γw with held := [(.var 16, ⟨64, [(16, .var 6)]⟩)] })] 10 20
+    = false := by decide +kernel
+
+/-- `start: mov ecx, <n>; there: jmp there`, the label `there` asking that
+`rcx` may be null and is otherwise a pointer. -/
+def checkZ (n : BitVec 32) : Bool :=
+  checkProgram [(0, .mov .w32 (.rm_i (.reg .rcx) n), 5), (5, .jmp (.rel (-5)), 5)]
+    [(0, Γw), (5, { Γw with known := [(.var 1, .nullable (.ptr (.mk 16 .nil) true 0))] })] 10 20
+
+-- zero may be null, whatever else is known; one may not
+example : checkZ 0 = true := by decide +kernel
+example : checkZ 1 = false := by decide +kernel
 
 end Tests.Unified
