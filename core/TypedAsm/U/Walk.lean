@@ -21,6 +21,15 @@ open TypedAsm
 
 variable {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
 
+/-- A program, as the checker is given it: its instructions, each with its
+address and the address after it; and the shape of each kind of block its
+pointers by kind refer to. -/
+structure Prog where
+  code : List (BitVec 64 × Instr × BitVec 64)
+  kinds : Nat → Option ShapeS := fun _ => none
+
+instance : Coe (List (BitVec 64 × Instr × BitVec 64)) Prog := ⟨fun c => { code := c }⟩
+
 /-- What a walk through a block leaves to be shown. -/
 inductive Walk
   /-- The walk stopped at an address, in a context: the code there is to be
@@ -74,13 +83,13 @@ def Walk.moved : Walk → Bool
 instructions, `k` being a name no term yet mentions. It stops where `stops`
 says, unless that is where it starts: at the labels of a program, which are
 typed each by a walk of its own. -/
-def walk (code : List (BitVec 64 × Instr × BitVec 64)) (stops : BitVec 64 → Bool) :
+def walk (pg : Prog) (stops : BitVec 64 → Bool) :
     Bool → Nat → Nat → BitVec 64 → CtxS → Walk
   | _, 0, _, a, Γ => .stop a Γ
   | start, fuel + 1, k, a, Γ =>
     if !start && stops a then .stop a Γ else
     if Γ.impossible then .vacuous else
-    match code.find? fun e => e.1 = a with
+    match pg.code.find? fun e => e.1 = a with
     | none => .stop a Γ
     | some (_, i, len) =>
       if i = .syscall then
@@ -88,7 +97,7 @@ def walk (code : List (BitVec 64 × Instr × BitVec 64)) (stops : BitVec 64 → 
         else
           match sysWorld Γ k (a + len) with
           | some Γ' =>
-            if Γ'.under (k + 1) then .sys k (walk code stops false fuel (k + 1) (a + len) Γ') else .stop a Γ
+            if Γ'.under (k + 1) then .sys k (walk pg stops false fuel (k + 1) (a + len) Γ') else .stop a Γ
           | none =>
             match sysMap Γ k (a + len) with
             | some (Γe, Γo, sz) =>
@@ -96,9 +105,9 @@ def walk (code : List (BitVec 64 × Instr × BitVec 64)) (stops : BitVec 64 → 
                   (Γo.addKnown [(.var k, .range 0 (BitVec.ofNat 64 (addrTop - sz)))]).sharpen.under (k + 1)
                   && decide (sz ≤ addrTop) then
                 .sys2 k
-                  (walk code stops false fuel (k + 1) (a + len)
+                  (walk pg stops false fuel (k + 1) (a + len)
                     (Γe.addKnown [(.var k, .range (-4095) (-1))]).sharpen)
-                  (walk code stops false fuel (k + 1) (a + len)
+                  (walk pg stops false fuel (k + 1) (a + len)
                     (Γo.addKnown [(.var k, .range 0 (BitVec.ofNat 64 (addrTop - sz)))]).sharpen)
               else .stop a Γ
             | none =>
@@ -107,29 +116,29 @@ def walk (code : List (BitVec 64 × Instr × BitVec 64)) (stops : BitVec 64 → 
                 if (Γe.addKnown [(.var k, .range (-4095) (-1))]).sharpen.under (k + 1) && Γo.under k &&
                     Γo.under (k + 1) then
                   .sys2 k
-                    (walk code stops false fuel (k + 1) (a + len)
+                    (walk pg stops false fuel (k + 1) (a + len)
                       (Γe.addKnown [(.var k, .range (-4095) (-1))]).sharpen)
-                    (walk code stops false fuel (k + 1) (a + len) Γo)
+                    (walk pg stops false fuel (k + 1) (a + len) Γo)
                 else .stop a Γ
               | none =>
                 match sysFills Γ k (a + len) with
                 | some (Γe, Γh) =>
                   if Γh.under (k + 1) && regardS Γe Γh then
-                    .sys k (walk code stops false fuel (k + 1) (a + len) Γh)
+                    .sys k (walk pg stops false fuel (k + 1) (a + len) Γh)
                   else .stop a Γ
                 | none => .stop a Γ
       else
-        match stepHeld Γ k (a + len) i with
+        match stepHeld pg.kinds Γ k (a + len) i with
         | none => .stop a Γ
         | some (Γ', t) =>
           if Γ'.under (k + 1) then
             match t with
-            | .lit t' => .step i Γ (a + len) k (walk code stops false fuel (k + 1) t' Γ')
+            | .lit t' => .step i Γ (a + len) k (walk pg stops false fuel (k + 1) t' Γ')
             | .fop (.cmov c .w64) fl (.lit n) (.lit tk) =>
               if (Γ'.side fl c true).under (k + 1) && (Γ'.side fl c false).under (k + 1) then
                 .step i Γ (a + len) k
-                  (.branch c fl (walk code stops false fuel (k + 1) tk (Γ'.side fl c true))
-                    (walk code stops false fuel (k + 1) n (Γ'.side fl c false)))
+                  (.branch c fl (walk pg stops false fuel (k + 1) tk (Γ'.side fl c true))
+                    (walk pg stops false fuel (k + 1) n (Γ'.side fl c false)))
               else .stop a Γ
             | t => .step i Γ (a + len) k (.arrive t Γ')
           else .stop a Γ
@@ -149,16 +158,16 @@ steps as the code where it stopped is typed for; and for one step more
 where the walk got anywhere, which is what a program's labels are typed by,
 each for one step more than all are assumed typed for. -/
 theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
-    (hpre : ∀ s, D.pre s) {n : Nat} (code : List (BitVec 64 × Instr × BitVec 64))
+    (hpre : ∀ s, D.pre s) {n : Nat} (pg : Prog)
     (stops : BitVec 64 → Bool)
-    (hcode : ∀ e ∈ code, fetch e.1 = some (e.2.1, e.2.2)) :
+    (hcode : ∀ e ∈ pg.code, fetch e.1 = some (e.2.1, e.2.2)) (hk : KindsOk Ψ pg.kinds) :
     (start : Bool) → (fuel k : Nat) → (a : BitVec 64) → (Γ : CtxS) → (ρ : Env) → Γ.under k = true →
-    (walk code stops start fuel k a Γ).holds (Ok fetch sys Ψ n) (Arrives fetch sys Ψ n) ρ →
+    (walk pg stops start fuel k a Γ).holds (Ok fetch sys Ψ n) (Arrives fetch sys Ψ n) ρ →
     Ok fetch sys Ψ n a (Γ.den ρ) ∧
-      ((walk code stops start fuel k a Γ).moved = true → Ok fetch sys Ψ (n + 1) a (Γ.den ρ))
+      ((walk pg stops start fuel k a Γ).moved = true → Ok fetch sys Ψ (n + 1) a (Γ.den ρ))
   | _, 0, _, _, _, _, _, h => ⟨h, fun hm => nomatch hm⟩
   | start, fuel + 1, k, a, Γ, ρ, hu, h => by
-    generalize hW : walk code stops start (fuel + 1) k a Γ = W at h ⊢
+    generalize hW : walk pg stops start (fuel + 1) k a Γ = W at h ⊢
     unfold walk at hW
     split at hW
     · subst hW; exact ⟨h, fun hm => nomatch hm⟩
@@ -193,7 +202,7 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
             split at hW
             · next hu' =>
               subst hW
-              have ih := fun x => (walk_sound hD hkind hpre code stops hcode false fuel (k + 1) (e + len) Γ'
+              have ih := fun x => (walk_sound hD hkind hpre pg stops hcode hk false fuel (k + 1) (e + len) Γ'
                 (ρ.setVal k x) hu' (h x)).1
               have hb := both fun m hm => by
                 refine Ok.step hf (sysWorld_sound hD hkind hpre hw hu) ?_
@@ -209,10 +218,10 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
                 simp only [Bool.and_eq_true, decide_eq_true_eq] at hchk
                 obtain ⟨⟨hue, huo⟩, hsz⟩ := hchk
                 have ihe := fun x => Ok.regard (CtxS.sharpen_regards (ρ.setVal k x) _)
-                  (walk_sound hD hkind hpre code stops hcode false fuel (k + 1)
+                  (walk_sound hD hkind hpre pg stops hcode hk false fuel (k + 1)
                     (e + len) _ (ρ.setVal k x) hue (h x).1).1
                 have iho := fun x => Ok.regard (CtxS.sharpen_regards (ρ.setVal k x) _)
-                  (walk_sound hD hkind hpre code stops hcode false fuel (k + 1)
+                  (walk_sound hD hkind hpre pg stops hcode hk false fuel (k + 1)
                     (e + len) _ (ρ.setVal k x) huo (h x).2).1
                 have hb := both fun m hm => by
                   refine Ok.step hf (sysMap_sound hD hkind hpre hmap hu) ?_
@@ -245,9 +254,9 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
                   simp only [Bool.and_eq_true] at hchk
                   obtain ⟨⟨hue, huo⟩, huo'⟩ := hchk
                   have ihe := fun x => Ok.regard (CtxS.sharpen_regards (ρ.setVal k x) _)
-                    (walk_sound hD hkind hpre code stops hcode false fuel (k + 1)
+                    (walk_sound hD hkind hpre pg stops hcode hk false fuel (k + 1)
                       (e + len) _ (ρ.setVal k x) hue (h x).1).1
-                  have iho := (walk_sound hD hkind hpre code stops hcode false fuel (k + 1)
+                  have iho := (walk_sound hD hkind hpre pg stops hcode hk false fuel (k + 1)
                     (e + len) _ (ρ.setVal k 0) huo' (h 0).2).1
                   rw [CtxS.den_setVal ρ k 0 Γo huo] at iho
                   have hb := both fun m hm => by
@@ -271,7 +280,7 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
                   · next hchk =>
                     subst hW
                     rw [Bool.and_eq_true] at hchk
-                    have ih := fun x => (walk_sound hD hkind hpre code stops hcode false fuel
+                    have ih := fun x => (walk_sound hD hkind hpre pg stops hcode hk false fuel
                       (k + 1) (e + len) Γh (ρ.setVal k x) hchk.1 (h x)).1
                     have hb := both fun m hm => by
                       refine Ok.step hf (sysFills_sound hD hkind hpre hfill hu) ?_
@@ -294,14 +303,14 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
                 Ok fetch sys Ψ n e (Γ.den ρ) ∧ Ok fetch sys Ψ (n + 1) e (Γ.den ρ) := by
               intro rest hrest harr
               refine both fun m hm => ?_
-              refine Ok.step hf (stepHeld_sound hstep hu) ?_
+              refine Ok.step hf (stepHeld_sound hk hstep hu) ?_
               rintro t' Δ ⟨x, rfl, rfl⟩
               exact (harr x (hrest x)).mono hm
             split at hW
             · next t' =>
               subst hW
               have hb := key _ h (fun x hx =>
-                (walk_sound hD hkind hpre code stops hcode false fuel (k + 1) t' Γ' (ρ.setVal k x) hu'
+                (walk_sound hD hkind hpre pg stops hcode hk false fuel (k + 1) t' Γ' (ρ.setVal k x) hu'
                   hx).1.arrives)
               exact ⟨hb.1, fun _ => hb.2⟩
             · next c fl nx tk =>
@@ -314,10 +323,10 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
                     (FOp.eval (.cmov c .w64) (fl.den (ρ.setVal k x)) nx tk) _
                   rw [cmov64, hc]
                   cases b
-                  · exact (Ok.regard (Γ'.side_regards hc) (walk_sound hD hkind hpre code stops
-                      hcode false fuel (k + 1) nx _ (ρ.setVal k x) hus.2 (hfl hc)).1).arrives
-                  · exact (Ok.regard (Γ'.side_regards hc) (walk_sound hD hkind hpre code stops
-                      hcode false fuel (k + 1) tk _ (ρ.setVal k x) hus.1 (htk hc)).1).arrives)
+                  · exact (Ok.regard (Γ'.side_regards hc) (walk_sound hD hkind hpre pg stops
+                      hcode hk false fuel (k + 1) nx _ (ρ.setVal k x) hus.2 (hfl hc)).1).arrives
+                  · exact (Ok.regard (Γ'.side_regards hc) (walk_sound hD hkind hpre pg stops
+                      hcode hk false fuel (k + 1) tk _ (ρ.setVal k x) hus.1 (htk hc)).1).arrives)
                 exact ⟨hb.1, fun _ => hb.2⟩
               · subst hW; exact ⟨h, fun hm => nomatch hm⟩
             · subst hW

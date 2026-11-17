@@ -15,40 +15,99 @@ namespace TypedAsm.U
 
 open TypedAsm
 
+/-- The block a value is known to point into, by what is known of it, as
+terms: its shape, whether it may be written through the value, and how far
+in. A pointer says the shape; a pointer by kind says the kind, whose shape
+the program's table of kinds has. -/
+def TyS.pointee (kinds : Nat → Option ShapeS) : TyS → Option (ShapeS × Bool × Nat)
+  | .ptr Sh w off => some (Sh, w, off)
+  | .ref tag w off => (kinds tag).map fun Sh => (Sh, w, off)
+  | _ => none
+
+/-- Each kind in a program's table is a kind of the memory typing, of that
+shape. The shapes of kinds mention no names: they stand for the same
+whatever names stand for. -/
+def KindsOk (Ψ : MemTy) (kinds : Nat → Option ShapeS) : Prop :=
+  ∀ (ρ : Env) (t : Nat) (Sh : ShapeS), kinds t = some Sh → Ψ.kinds t = some (Sh.den ρ)
+
+/-- A program with no kinds asks nothing of the memory typing's. -/
+theorem KindsOk.none (Ψ : MemTy) : KindsOk Ψ fun _ => none := fun _ _ _ h => nomatch h
+
+theorem TyS.pointee_den {Ψ : MemTy} {kinds : Nat → Option ShapeS} (hk : KindsOk Ψ kinds) (ρ : Env)
+    {τ : TyS} {Sh : ShapeS} {w : Bool} {off : Nat} (h : τ.pointee kinds = some (Sh, w, off)) :
+    (τ.den ρ).pointee Ψ.kinds = some (Sh.den ρ, w, off) := by
+  cases τ with
+  | ptr Sh' w' off' => cases h; rfl
+  | ref tag w' off' =>
+    simp only [TyS.pointee] at h
+    cases hkt : kinds tag with
+    | none => rw [hkt] at h; cases h
+    | some Sh' =>
+      rw [hkt] at h
+      cases h
+      show (Ψ.kinds tag).map _ = _
+      rw [hk ρ tag _ hkt]
+      rfl
+  | _ => cases h
+
+/-- The shape found stands for the same, whatever a name the fact does not
+mention stands for. -/
+theorem TyS.pointee_setVal {Ψ : MemTy} {kinds : Nat → Option ShapeS} (hk : KindsOk Ψ kinds)
+    (ρ : Env) (k : Nat) (x : BitVec 64) {τ : TyS} {Sh : ShapeS} {w : Bool} {off : Nat}
+    (hu : τ.under k = true) (h : τ.pointee kinds = some (Sh, w, off)) :
+    Sh.den (ρ.setVal k x) = Sh.den ρ := by
+  cases τ with
+  | ptr Sh' w' off' =>
+    cases h
+    exact ShapeS.den_setVal ρ k x Sh (by simpa only [TyS.under] using hu)
+  | ref tag w' off' =>
+    simp only [TyS.pointee] at h
+    cases hkt : kinds tag with
+    | none => rw [hkt] at h; cases h
+    | some Sh' =>
+      rw [hkt] at h
+      cases h
+      exact Option.some.inj ((hk (ρ.setVal k x) tag _ hkt).symm.trans (hk ρ tag _ hkt))
+  | _ => cases h
+
 /-- The fact a context has that an address is so far into a block others
 may point into: the first, of a pointer the address is a number past, with
 the bytes asked for inside the block. With the block's shape, whether it
 may be written through that pointer, and how far in. -/
-def findFact (a : Val) (n : Nat) : List (Val × TyS) → Option (Val × ShapeS × Bool × Nat × Nat)
+def findFact (kinds : Nat → Option ShapeS) (a : Val) (n : Nat) :
+    List (Val × TyS) → Option (Val × ShapeS × Bool × Nat × Nat)
   | [] => none
-  | (p, .ptr Sh w off) :: rest =>
-    if a.summands.1 = p.summands.1 then
-      let o := (a.summands.2 - p.summands.2 + BitVec.ofNat 64 off).toNat
-      if o + n ≤ Sh.size then some (p, Sh, w, off, o) else findFact a n rest
-    else findFact a n rest
-  | _ :: rest => findFact a n rest
+  | (p, τ) :: rest =>
+    match τ.pointee kinds with
+    | some (Sh, w, off) =>
+      if a.summands.1 = p.summands.1 then
+        if (a.summands.2 - p.summands.2 + BitVec.ofNat 64 off).toNat + n ≤ Sh.size then
+          some (p, Sh, w, off, (a.summands.2 - p.summands.2 + BitVec.ofNat 64 off).toNat)
+        else findFact kinds a n rest
+      else findFact kinds a n rest
+    | none => findFact kinds a n rest
 
-theorem findFact_spec {ρ : Env} {a : Val} {n : Nat} :
+theorem findFact_spec {ρ : Env} {kinds : Nat → Option ShapeS} {a : Val} {n : Nat} :
     (l : List (Val × TyS)) → {p : Val} → {Sh : ShapeS} → {w : Bool} → {off o : Nat} →
-    findFact a n l = some (p, Sh, w, off, o) →
-    (p, TyS.ptr Sh w off) ∈ l ∧ o + n ≤ Sh.size ∧
+    findFact kinds a n l = some (p, Sh, w, off, o) →
+    ∃ τ, (p, τ) ∈ l ∧ τ.pointee kinds = some (Sh, w, off) ∧ o + n ≤ Sh.size ∧
       a.den ρ + BitVec.ofNat 64 off = p.den ρ + BitVec.ofNat 64 o
   | [], _, _, _, _, _, h => by cases h
   | (q, τ) :: rest, p, Sh, w, off, o, h => by
-    have tail : findFact a n rest = some (p, Sh, w, off, o) →
-        (p, TyS.ptr Sh w off) ∈ (q, τ) :: rest ∧ o + n ≤ Sh.size ∧
+    have tail : findFact kinds a n rest = some (p, Sh, w, off, o) →
+        ∃ τ', (p, τ') ∈ (q, τ) :: rest ∧ τ'.pointee kinds = some (Sh, w, off) ∧ o + n ≤ Sh.size ∧
           a.den ρ + BitVec.ofNat 64 off = p.den ρ + BitVec.ofNat 64 o := fun h' => by
-      obtain ⟨hm, hin, ha⟩ := findFact_spec rest h'
-      exact ⟨List.mem_cons_of_mem _ hm, hin, ha⟩
-    cases τ with
-    | ptr Sh' w' off' =>
-      simp only [findFact] at h
+      obtain ⟨τ', hm, hpt, hin, ha⟩ := findFact_spec rest h'
+      exact ⟨τ', List.mem_cons_of_mem _ hm, hpt, hin, ha⟩
+    simp only [findFact] at h
+    split at h
+    · next Sh' w' off' hpt =>
       split at h
       · next hsum =>
         split at h
         · next hin =>
           cases h
-          refine ⟨List.mem_cons_self, hin, ?_⟩
+          refine ⟨τ, List.mem_cons_self, hpt, hin, ?_⟩
           rw [Val.summands_den ρ a, Val.summands_den ρ q, hsum, BitVec.ofNat_toNat,
             BitVec.setWidth_eq]
           rw [BitVec.add_assoc, BitVec.add_assoc]
@@ -56,14 +115,7 @@ theorem findFact_spec {ρ : Env} {a : Val} {n : Nat} :
           rw [← BitVec.add_assoc, BitVec.add_comm q.summands.2, BitVec.sub_add_cancel]
         · exact tail h
       · exact tail h
-    | any => exact tail h
-    | ref _ _ _ => exact tail h
-    | nullable _ => exact tail h
-    | orErr _ => exact tail h
-    | str _ => exact tail h
-    | atom _ => exact tail h
-    | code _ _ _ _ _ => exact tail h
-    | range _ _ => exact tail h
+    · exact tail h
 
 /-- What a shape says is at a byte. -/
 def ValsS.at (o : Nat) : ValsS → List TyS

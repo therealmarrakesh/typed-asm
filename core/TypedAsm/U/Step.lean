@@ -84,7 +84,7 @@ held there, where one is held at those eight bytes, and otherwise the name
 `k`, for a value the context does not say. In a block a value is known to
 point into: the name `k`, of which is then known what the block's shape
 says is at those bytes. -/
-def readCell (Γ : CtxS) (k : Nat) (next : BitVec 64) :
+def readCell (kinds : Nat → Option ShapeS) (Γ : CtxS) (k : Nat) (next : BitVec 64) :
     Option (Mem × Nat) → Option (Val × List (Val × TyS))
   | none => some (.lit 0, [])
   | some (m, n) =>
@@ -96,13 +96,14 @@ def readCell (Γ : CtxS) (k : Nat) (next : BitVec 64) :
         | none => some (.var k, [])
       else some (.var k, [])
     | none =>
-      match findFact (eaS Γ.regs next m) n Γ.known with
+      match findFact kinds (eaS Γ.regs next m) n Γ.known with
       | some (_, Sh, _, _, o) => some (.var k, readFactsS Sh o n (.var k))
       | none => none
 
-theorem readCell_sound {ρ : Env} {Γ : CtxS} {k : Nat} {next : BitVec 64} {cell : Val}
+theorem readCell_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk Ψ kinds) {Γ : CtxS}
+    {k : Nat} {next : BitVec 64} {cell : Val}
     {extra : List (Val × TyS)} (hu : Γ.under k = true) :
-    (rd : Option (Mem × Nat)) → readCell Γ k next rd = some (cell, extra) →
+    (rd : Option (Mem × Nat)) → readCell kinds Γ k next rd = some (cell, extra) →
     match rd with
     | some (m, n) => Reads fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n
         (fun x Γr => Γr = CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known } ∧
@@ -145,13 +146,13 @@ theorem readCell_sound {ρ : Env} {Γ : CtxS} {k : Nat} {next : BitVec 64} {cell
     · split at h
       · next p Sh w off o hfind =>
         cases h
-        obtain ⟨hmem, hin, ha⟩ := findFact_spec (ρ := ρ) Γ.known hfind
-        have hf : (p.den ρ, Ty.ptr (Sh.den ρ) w off) ∈ (Γ.den ρ).known :=
-          List.mem_map.mpr ⟨(p, .ptr Sh w off), hmem, rfl⟩
+        obtain ⟨τ, hmem, hpt, hin, ha⟩ := findFact_spec (ρ := ρ) Γ.known hfind
+        have hf : (p.den ρ, τ.den ρ) ∈ (Γ.den ρ).known :=
+          List.mem_map.mpr ⟨(p, τ), hmem, rfl⟩
         have haddr : eaOf (Γ.den ρ).val next m + BitVec.ofNat 64 off
             = p.den ρ + BitVec.ofNat 64 o := by
           rw [← eaS_den]; exact ha
-        refine (Reads.shared hf rfl haddr (by rw [ShapeS.den_size]; exact hin)).mono ?_
+        refine (Reads.shared hf (TyS.pointee_den hk ρ hpt) haddr (by rw [ShapeS.den_size]; exact hin)).mono ?_
         rintro x Γr rfl
         refine ⟨?_, Env.setVal_get_self ρ k x⟩
         have hΓ := CtxS.den_setVal ρ k x Γ hu
@@ -159,11 +160,11 @@ theorem readCell_sound {ρ : Env} {Γ : CtxS} {k : Nat} {next : BitVec 64} {cell
           (congrArg CtxOf.held hΓ).symm ?_
         show readFacts (Sh.den ρ) o n x ++ (Γ.den ρ).known
           = (readFactsS Sh o n (.var k) ++ Γ.known).map _
-        have hSh : Sh.under k = true := by
+        have hSh : Sh.den (ρ.setVal k x) = Sh.den ρ := by
           have hu' := hu
           simp only [CtxS.under, Bool.and_eq_true, List.all_eq_true] at hu'
-          simpa only [TyS.under] using (hu'.1.2 _ hmem).2
-        rw [List.map_append, readFactsS_den, ShapeS.den_setVal ρ k x Sh hSh]
+          exact TyS.pointee_setVal hk ρ k x (hu'.1.2 _ hmem).2 hpt
+        rw [List.map_append, readFactsS_den, hSh]
         congr 1
         · show _ = readFacts (Sh.den ρ) o n ((Val.var k).den (ρ.setVal k x))
           rw [show (Val.var k).den (ρ.setVal k x) = x from Env.setVal_get_self ρ k x]
@@ -210,21 +211,21 @@ theorem valsOkS_sound (ρ : Env) {Γ : CtxS} {v : Val} {o n : Nat} :
 region held: the region holds the value written there. In a block a value
 is known to point into, through a pointer that may be written through: what
 is held is as it was, the block still holding what its shape says. -/
-def writeCell (Γ : CtxS) (next : BitVec 64) (v : Val) :
+def writeCell (kinds : Nat → Option ShapeS) (Γ : CtxS) (next : BitVec 64) (v : Val) :
     Option (Mem × Nat) → Option (List (Val × HeldS))
   | none => some Γ.held
   | some (m, n) =>
     match findHeld (eaS Γ.regs next m) n Γ.held 0 with
     | some (j, b, S, o) => if n ≤ 8 then some (Γ.held.set j (b, S.put o n v)) else none
     | none =>
-      match findFact (eaS Γ.regs next m) n Γ.known with
+      match findFact kinds (eaS Γ.regs next m) n Γ.known with
       | some (_, Sh, w, _, o) =>
         if w && decide (n ≤ 8) && valsOkS Γ v o n Sh.vals then some Γ.held else none
       | none => none
 
-theorem writeCell_sound {ρ : Env} {Γ : CtxS} {next : BitVec 64} {v : Val}
-    {held' : List (Val × HeldS)} :
-    (wr : Option (Mem × Nat)) → writeCell Γ next v wr = some held' →
+theorem writeCell_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk Ψ kinds) {Γ : CtxS}
+    {next : BitVec 64} {v : Val} {held' : List (Val × HeldS)} :
+    (wr : Option (Mem × Nat)) → writeCell kinds Γ next v wr = some held' →
     match wr with
     | some (m, n) => Writes fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n (v.den ρ)
         (CtxS.den ρ { Γ with held := held' })
@@ -267,14 +268,14 @@ theorem writeCell_sound {ρ : Env} {Γ : CtxS} {next : BitVec 64} {v : Val}
           simp only [Bool.and_eq_true, decide_eq_true_eq] at hc
           obtain ⟨⟨hw, hn⟩, hvals⟩ := hc
           subst hw
-          obtain ⟨hmem, hin, ha⟩ := findFact_spec (ρ := ρ) Γ.known hfind
-          have hf : (p.den ρ, Ty.ptr (Sh.den ρ) true off) ∈ (Γ.den ρ).known :=
-            List.mem_map.mpr ⟨(p, .ptr Sh true off), hmem, rfl⟩
+          obtain ⟨τ, hmem, hpt, hin, ha⟩ := findFact_spec (ρ := ρ) Γ.known hfind
+          have hf : (p.den ρ, τ.den ρ) ∈ (Γ.den ρ).known :=
+            List.mem_map.mpr ⟨(p, τ), hmem, rfl⟩
           have haddr : eaOf (Γ.den ρ).val next m + BitVec.ofNat 64 off
               = p.den ρ + BitVec.ofNat 64 o := by
             rw [← eaS_den]; exact ha
           show Writes fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n (v.den ρ) (Γ.den ρ)
-          exact Writes.shared (v.den ρ) hf rfl haddr (by rw [ShapeS.den_size]; exact hin) hn
+          exact Writes.shared (v.den ρ) hf (TyS.pointee_den hk ρ hpt) haddr (by rw [ShapeS.den_size]; exact hin) hn
             (by rw [ShapeS.den_vals]; exact valsOkS_sound ρ Sh.vals hvals)
         · cases h
       · cases h
@@ -366,15 +367,16 @@ theorem setRegs_den (ρ : Env) (σ : Filling) :
 /-- **The checker's step.** The context after an instruction, and the term
 for where control goes. `k` is a name no term yet mentions, for what is
 read where the context does not say. -/
-def stepHeld (Γ : CtxS) (k : Nat) (next : BitVec 64) (i : Instr) : Option (CtxS × Val) :=
+def stepHeld (kinds : Nat → Option ShapeS) (Γ : CtxS) (k : Nat) (next : BitVec 64) (i : Instr) :
+    Option (CtxS × Val) :=
   match i.sem with
   | some s =>
-    match readCell Γ k next s.rd with
+    match readCell kinds Γ k next s.rd with
     | some (cell, extra) =>
       let Γ₁ : CtxS := { Γ with known := extra ++ Γ.known }
       let σ := fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell
       if !s.guard.okS Γ₁ Γ.flags (s.ga.fillN σ) (s.gb.fillN σ) (s.gc.fillN σ) then none else
-      match writeCell Γ₁ next (s.store.fillN σ) s.wr with
+      match writeCell kinds Γ₁ next (s.store.fillN σ) s.wr with
       | some held' =>
         some ({ Γ₁ with
                 regs := setRegs σ s.outs Γ.regs
@@ -387,8 +389,9 @@ def stepHeld (Γ : CtxS) (k : Nat) (next : BitVec 64) (i : Instr) : Option (CtxS
     | none => none
   | none => none
 
-theorem stepHeld_sound {ρ : Env} {Γ Γ' : CtxS} {k : Nat} {next : BitVec 64} {i : Instr} {t : Val}
-    (h : stepHeld Γ k next i = some (Γ', t)) (hu : Γ.under k = true) :
+theorem stepHeld_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk Ψ kinds)
+    {Γ Γ' : CtxS} {k : Nat} {next : BitVec 64} {i : Instr} {t : Val}
+    (h : stepHeld kinds Γ k next i = some (Γ', t)) (hu : Γ.under k = true) :
     Steps fetch sys Ψ i next (Γ.den ρ) fun t' Δ =>
       ∃ x, t' = t.den (ρ.setVal k x) ∧ Δ = Γ'.den (ρ.setVal k x) := by
   unfold stepHeld at h
@@ -419,7 +422,7 @@ theorem stepHeld_sound {ρ : Env} {Γ Γ' : CtxS} {k : Nat} {next : BitVec 64} {
       split at h
       · next held' hwc =>
         cases h
-        have hR := readCell_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) (ρ := ρ) hu s.rd hrc
+        have hR := readCell_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) (ρ := ρ) hk hu s.rd hrc
         refine Steps.mono (Steps.desc
           (R := fun x Γr => Γr = CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known } ∧
             cell.den (ρ.setVal k x) = x)
@@ -440,7 +443,7 @@ theorem stepHeld_sound {ρ : Env} {Γ Γ' : CtxS} {k : Nat} {next : BitVec 64} {
           have hΓ : Γ.den (ρ.setVal k x) = Γ.den ρ := CtxS.den_setVal ρ k x Γ hu
           have hval : (CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known }).val
               = (Γ.den ρ).val := (congrArg CtxOf.val hΓ : (Γ.den (ρ.setVal k x)).val = _)
-          have hW := writeCell_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) (ρ := ρ.setVal k x)
+          have hW := writeCell_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) (ρ := ρ.setVal k x) hk
             (Γ := { Γ with known := extra ++ Γ.known }) s.wr hwc
           show match s.wr with
             | some (m, n) => _

@@ -15,6 +15,12 @@ open TypedAsm TypedAsm.U
 
 namespace Tests.Unified
 
+/-- A program of these instructions, with no kinds of block. -/
+abbrev prog (c : List (BitVec 64 × Instr × BitVec 64)) : Prog := { code := c }
+
+/-- No kinds of block. -/
+def noKinds : Nat → Option ShapeS := fun _ => none
+
 /-! ## One instruction -/
 
 /-- Registers each holding a name of its own; the stack pointer 32 bytes
@@ -26,15 +32,15 @@ def Γ0 : CtxS where
   held := [(.var 16, ⟨64, []⟩)]
 
 -- push rbx: the stack pointer is 24 bytes in, and the region holds there what rbx holds
-example : ((stepHeld Γ0 20 100 (.push .rbx)).map fun r => r.1.regs.rsp)
+example : ((stepHeld noKinds Γ0 20 100 (.push .rbx)).map fun r => r.1.regs.rsp)
     = some (.add (.add (.var 16) (.lit 32)) (.lit (-8))) := by decide +kernel
-example : ((stepHeld Γ0 20 100 (.push .rbx)).map fun r => r.1.held.map fun b => b.2.slots.map (·.1))
+example : ((stepHeld noKinds Γ0 20 100 (.push .rbx)).map fun r => r.1.held.map fun b => b.2.slots.map (·.1))
     = some [[24]] := by decide +kernel
-example : ((stepHeld Γ0 20 100 (.push .rbx)).map fun r => r.1.held.map fun b => b.2.slots.map (·.2))
+example : ((stepHeld noKinds Γ0 20 100 (.push .rbx)).map fun r => r.1.held.map fun b => b.2.slots.map (·.2))
     = some [[.var 3]] := by decide +kernel
 
 -- a store outside the region is refused
-example : (stepHeld Γ0 20 100 (.mov .w64 (.rm_r (.mem (.sib (some .rsp) none 64)) .rbx))).isNone
+example : (stepHeld noKinds Γ0 20 100 (.mov .w64 (.rm_r (.mem (.sib (some .rsp) none 64)) .rbx))).isNone
     = true := by decide +kernel
 
 /-- The same registers, with `rdi` known to point at the start of a writable
@@ -42,26 +48,26 @@ block of sixteen bytes whose second eight hold a value that may be null. -/
 def Γ1 : CtxS := { Γ0 with known := [(.var 7, .ptr (.mk 16 (.cons 8 (.nullable (.atom 0)) .nil)) true 0)] }
 
 -- mov rax, [rdi+8]: rax holds a new name, of which is known what the block says
-example : ((stepHeld Γ1 20 100 (.mov .w64 (.r_m .rax (.sib (some .rdi) none 8)))).map
+example : ((stepHeld noKinds Γ1 20 100 (.mov .w64 (.r_m .rax (.sib (some .rdi) none 8)))).map
     fun r => (r.1.regs.rax, r.1.known.head?))
     = some (.var 20, some (.var 20, .nullable (.atom 0))) := by decide +kernel
 
 -- eight bytes past the end of the block: refused
-example : (stepHeld Γ1 20 100 (.mov .w64 (.r_m .rax (.sib (some .rdi) none 16)))).isNone = true := by
+example : (stepHeld noKinds Γ1 20 100 (.mov .w64 (.r_m .rax (.sib (some .rdi) none 16)))).isNone = true := by
   decide +kernel
 
 /-! ## Results read plainly -/
 
 -- `xor eax, eax` and `sub rax, rax`: nought, whatever the register held
-example : ((stepHeld Γ0 20 100 (.alu .xor .w32 (.rm_r (.reg .rax) .rax))).map fun r => r.1.regs.rax)
+example : ((stepHeld noKinds Γ0 20 100 (.alu .xor .w32 (.rm_r (.reg .rax) .rax))).map fun r => r.1.regs.rax)
     = some (.lit 0) := by decide +kernel
-example : ((stepHeld Γ0 20 100 (.alu .sub .w64 (.rm_r (.reg .rax) .rax))).map fun r => r.1.regs.rax)
+example : ((stepHeld noKinds Γ0 20 100 (.alu .sub .w64 (.rm_r (.reg .rax) .rax))).map fun r => r.1.regs.rax)
     = some (.lit 0) := by decide +kernel
 -- `xor eax, ebx`: not nought
-example : ((stepHeld Γ0 20 100 (.alu .xor .w32 (.rm_r (.reg .rax) .rbx))).map fun r =>
+example : ((stepHeld noKinds Γ0 20 100 (.alu .xor .w32 (.rm_r (.reg .rax) .rbx))).map fun r =>
     r.1.regs.rax == .lit 0) = some false := by decide +kernel
 -- `shl rdi, 3`: what `rdi` held, eight times over
-example : ((stepHeld Γ0 20 100 (.shift .shl .w64 (.reg .rdi) (.imm 3))).map fun r => r.1.regs.rdi)
+example : ((stepHeld noKinds Γ0 20 100 (.shift .shl .w64 (.reg .rdi) (.imm 3))).map fun r => r.1.regs.rdi)
     = some (.shl (.var 7) 3) := by decide +kernel
 
 /-! ## Writing through a pointer -/
@@ -69,7 +75,7 @@ example : ((stepHeld Γ0 20 100 (.shift .shl .w64 (.reg .rdi) (.imm 3))).map fun
 /-- Whether a store through `rdi` is typed, `rdi` pointing at the start of
 a block of sixteen bytes whose second eight hold a value that may be null. -/
 def mayStore (writable : Bool) (i : Instr) : Bool :=
-  (stepHeld { Γ0 with known := [(.var 7, .ptr (.mk 16 (.cons 8 (.nullable (.atom 0)) .nil))
+  (stepHeld noKinds { Γ0 with known := [(.var 7, .ptr (.mk 16 (.cons 8 (.nullable (.atom 0)) .nil))
     writable 0)] } 20 100 i).isSome
 
 -- eight plain bytes written: typed
@@ -134,7 +140,7 @@ what Linux is described to do: by the walk alone, which the kernel runs. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
     (hcode : ∀ e ∈ codeE, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (n : Nat) :
     Ok fetch sys Ψ (n + 1) 0 (Γw.den ρ) :=
-  (walk_sound hD rfl (fun _ => trivial) codeE (fun _ => false) hcode true 10 20 0 Γw ρ (by decide +kernel)
+  (walk_sound hD rfl (fun _ => trivial) (pg := ↑codeE) (fun _ => false) hcode (KindsOk.none _) true 10 20 0 Γw ρ (by decide +kernel)
     (Walk.holds_of_auto _ ρ (by decide +kernel))).2 (by decide +kernel)
 
 /-- `test rdi, rdi; je there; mov eax, 60; syscall; there: mov eax, 231;
@@ -150,7 +156,7 @@ defined, so the jump is decided, and both ways end the program. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
     (hcode : ∀ e ∈ codeB, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (n : Nat) :
     Ok fetch sys Ψ (n + 1) 0 (Γw.den ρ) :=
-  (walk_sound hD rfl (fun _ => trivial) codeB (fun _ => false) hcode true 10 20 0 Γw ρ (by decide +kernel)
+  (walk_sound hD rfl (fun _ => trivial) (pg := ↑codeB) (fun _ => false) hcode (KindsOk.none _) true 10 20 0 Γw ρ (by decide +kernel)
     (Walk.holds_of_auto _ ρ (by decide +kernel))).2 (by decide +kernel)
 
 -- with no comparison before it, the jump is not decided, and nothing is concluded
@@ -175,7 +181,7 @@ jump the pointer is known not to be null, by the walk alone. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
     (hcode : ∀ e ∈ codeN .e, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (n : Nat) :
     Ok fetch sys Ψ (n + 1) 0 (Γn.den ρ) :=
-  (walk_sound hD rfl (fun _ => trivial) (codeN .e) (fun _ => false) hcode true 10 20 0 Γn ρ (by decide +kernel)
+  (walk_sound hD rfl (fun _ => trivial) (codeN .e) (fun _ => false) hcode (KindsOk.none _) true 10 20 0 Γn ρ (by decide +kernel)
     (Walk.holds_of_auto _ ρ (by decide +kernel))).2 (by decide +kernel)
 
 -- jumping away when it is not null, the load is of a pointer that is null: refused
@@ -215,7 +221,7 @@ asks. The kernel runs the whole check. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
     (hcode : ∀ e ∈ codeL, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (fam : Fam) (n : Nat) :
     Ok fetch sys Ψ n 0 (Pw.den { ρ with bound := fam :: ρ.bound }) :=
-  program_ok hD rfl (fun _ => trivial) hcode (labels := labelsL) (fuel := 10) (k := 0)
+  program_ok hD rfl (fun _ => trivial) (pg := ↑codeL) hcode (KindsOk.none _) (labels := labelsL) (fuel := 10) (k := 0)
     (by decide +kernel) n (lab 0 Pw) (List.mem_cons_self ..) ρ fam
 
 /-- A label asking that `rcx` be five is not one the loop comes back to. -/
@@ -239,7 +245,7 @@ was, as the sums show, so the context reached is the label's again. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
     (hcode : ∀ e ∈ codeF, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (fam : Fam) (n : Nat) :
     Ok fetch sys Ψ n 0 (Pw.den { ρ with bound := fam :: ρ.bound }) :=
-  program_ok hD rfl (fun _ => trivial) hcode (labels := [lab 0 Pw]) (fuel := 10) (k := 0)
+  program_ok hD rfl (fun _ => trivial) (pg := ↑codeF) hcode (KindsOk.none _) (labels := [lab 0 Pw]) (fuel := 10) (k := 0)
     (by decide +kernel) n (lab 0 Pw) (List.mem_cons_self ..) ρ fam
 
 /-! ## What one context being regarded as another comes to
@@ -318,7 +324,7 @@ example : checkProgram codeF [lab 0 { Pw with held := [(.bvar 0 16, ⟨64, [(16,
 /-- `start: mov ecx, <n>; there: jmp there`, the label `there` asking that
 `rcx` may be null and is otherwise a pointer. -/
 def checkZ (n : BitVec 32) : Bool :=
-  checkProgram [(0, .mov .w32 (.rm_i (.reg .rcx) n), 5), (5, .jmp (.rel (-5)), 5)]
+  checkProgram (prog [(0, .mov .w32 (.rm_i (.reg .rcx) n), 5), (5, .jmp (.rel (-5)), 5)])
     [lab 0 Pw, lab 5 { Pw with known := [(.bvar 0 1, .nullable (.ptr (.mk 16 .nil) true 0))] }] 10 0
 
 -- zero may be null, whatever else is known; one may not
@@ -361,7 +367,7 @@ these registers and regions, the label's family holding the stack of `Pw`.
 The code's family is one further in: its own values are the nearest, and
 the label's are one out. -/
 def mayJump (regs : Regs Val) (held : List (Val × HeldS)) : Bool :=
-  checkProgram [(0, .jmp (.ind (.reg .rax)), 2)]
+  checkProgram (prog [(0, .jmp (.ind (.reg .rax)), 2)])
     [lab 0 { Pw with known := [(.bvar 0 0, .code regs (.bvar 0) held .nil .none)] }] 10 0
 
 -- code wanting any registers and the stack: the jump is typed
@@ -380,7 +386,7 @@ example : mayJump anyRegs [] = false := by decide +kernel
 /-- `ret`, the stack holding at its top a return address known to be code
 wanting the stack pointer eight bytes on and the stack held. -/
 def mayReturn (rsp' : Val) : Bool :=
-  checkProgram [(0, .ret, 1)]
+  checkProgram (prog [(0, .ret, 1)])
     [lab 0 { Pw with
               held := [(.bvar 0 16, ⟨64, [(32, .bvar 0 17)]⟩)]
               known := [(.bvar 0 17, .code (anyRegs.set .rsp rsp') (.bvar 0)
@@ -440,7 +446,7 @@ example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linux
     (n : Nat) :
     Ok fetch sys Ψ n 100
       ((fEntry (fExit (.bvar 1 7) (.bvar 1))).den { ρ with bound := fam :: ρ.bound }) :=
-  program_ok hD rfl (fun _ => trivial) hcode
+  program_ok hD rfl (fun _ => trivial) (pg := ↑(codeCall movRaxRdi)) hcode (KindsOk.none _)
     (labels := [lab 0 Pw, lab 100 (fEntry (fExit (.bvar 1 7) (.bvar 1)))]) (fuel := 10) (k := 0)
     (by decide +kernel) n _ (List.mem_cons_of_mem _ (List.mem_cons_self ..)) ρ fam
 
@@ -489,6 +495,34 @@ example : checkProgram codeR32 [lab 2 Pw] 10 0 = false := by decide +kernel
 example : (Val.un (.trunc .w32) (.var 3)).bound = ⟨0, 0xffffffff⟩ := by decide +kernel
 example : (Val.un .low8 (.var 3)).bound = ⟨0, 0xff⟩ := by decide +kernel
 example : (Val.fop (.condByte .e) (.var 0) (.lit 0) (.lit 0)).bound = ⟨0, 1⟩ := by decide +kernel
+
+/-! ## Pointers by kind -/
+
+/-- A list node: sixteen bytes, the first eight nought or a pointer to
+another node. The kind is number 7. -/
+def node : ShapeS := .mk 16 (.cons 0 (.nullable (.ref 7 false 0)) .nil)
+
+def kinds7 : Nat → Option ShapeS := fun t => if t = 7 then some node else none
+
+/-- `rdi` is nought or points to a node. -/
+def Pl : CtxS := { Pw with known := [(.bvar 0 7, .nullable (.ref 7 false 0))] }
+
+/-- `loop: test rdi, rdi; je out; mov rdi, [rdi]; jmp loop; out: exit`: a
+walk down a list to its end. -/
+def codeList : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .test .w64 (.reg .rdi) (.reg .rdi), 3), (3, .jcc .e 8, 2),
+   (5, .mov .w64 (.r_m .rdi (.sib (some .rdi) none 0)), 3), (8, .jmp (.rel (-13)), 5),
+   (13, .mov .w32 (.rm_i (.reg .rax) 60), 5), (18, .syscall, 2)]
+
+-- past the test `rdi` is not nought, so it points to a node; what is read
+-- there is nought or points to a node again: the label's context, round the loop
+example : checkProgram { code := codeList, kinds := kinds7 } [lab 0 Pl] 10 0 = true := by
+  decide +kernel
+-- the same program, the kind's shape not said: nothing is known to be at the pointer. Refused
+example : checkProgram { code := codeList } [lab 0 Pl] 10 0 = false := by decide +kernel
+-- entered at the load, `rdi` may be nought: refused
+example : checkProgram { code := codeList, kinds := kinds7 } [lab 0 Pl, lab 5 Pl] 10 0 = false := by
+  decide +kernel
 
 /-! ## Divides -/
 
@@ -594,7 +628,7 @@ example : checkProgram (codeM (unmapIt ++
      (43, .jmp (.rel (-48)), 5)])) [lab 0 Pw] 20 0 = true := by decide +kernel
 -- the store made without asking whether memory was handed back: refused
 example : checkProgram
-    ([(0, .mov .w32 (.rm_i (.reg .rax) 9), 5), (5, .mov .w32 (.rm_i (.reg .rdi) 0), 5),
+    (prog [(0, .mov .w32 (.rm_i (.reg .rax) 9), 5), (5, .mov .w32 (.rm_i (.reg .rdi) 0), 5),
       (10, .mov .w32 (.rm_i (.reg .rsi) 4096), 5), (15, .syscall, 2),
       (17, .mov .w64 (.rm_r (.mem (.sib (some .rax) none 0)) .rdi), 3),
       (20, .mov .w32 (.rm_i (.reg .rax) 60), 5), (25, .syscall, 2)])
@@ -620,10 +654,10 @@ still holds at its thirty-second byte what `rdi` held: which the call may
 have written over. -/
 def afterRead (keeps : Bool) : Bool :=
   checkProgram
-    [(0, .mov .w64 (.rm_r (.mem (.sib (some .rsp) none 0)) .rdi), 4),
+    (prog [(0, .mov .w64 (.rm_r (.mem (.sib (some .rsp) none 0)) .rdi), 4),
      (4, .mov .w32 (.rm_i (.reg .rax) 0), 5), (9, .mov .w64 (.rm_r (.reg .rsi) .rsp), 3),
      (12, .mov .w32 (.rm_i (.reg .rdx) 8), 5), (17, .syscall, 2), (19, .jmp (.rel 76), 5),
-     (100, .jmp (.rel (-5)), 5)]
+     (100, .jmp (.rel (-5)), 5)])
     [lab 0 Pw,
      lab 100 { Pw with
        regs := anyRegs.set .rsp (.add (.bvar 0 16) (.lit 32))

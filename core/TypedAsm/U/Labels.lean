@@ -634,31 +634,31 @@ def CtxS.width (Γ : CtxS) : Nat := max Γ.bmax 1
 goes: it is a label, and each member of the family may be regarded as a
 member of the label's; or the code there, walked from a member of the
 family at names of its own, leaves nothing to be shown. -/
-def justifyF (code : List (BitVec 64 × Instr × BitVec 64)) (labels : List Label)
+def justifyF (pg : Prog) (labels : List Label)
     (stops : BitVec 64 → Bool) (fuelW : Nat) : Nat → Nat → BitVec 64 → CtxS → Bool
   | 0, _, _, _ => false
   | f + 1, k, a, E =>
     E.under k && (E.open (freshOpening k)).under (k + E.width) &&
       ((match labels.find? fun l => l.addr == a with
         | some l =>
-          (closeCtx (justifyF code labels stops fuelW f) l.pat (E.open (freshOpening k))
+          (closeCtx (justifyF pg labels stops fuelW f) l.pat (E.open (freshOpening k))
             (k + E.width)).isSome
         | none => false) ||
-       (walk code stops true fuelW (k + E.width) a (E.open (freshOpening k))).closes
-          (closeCtx (justifyF code labels stops fuelW f)) labels (k + E.width))
+       (walk pg stops true fuelW (k + E.width) a (E.open (freshOpening k))).closes
+          (closeCtx (justifyF pg labels stops fuelW f)) labels (k + E.width))
 
 theorem justifyF_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
-    (hpre : ∀ s, D.pre s) {n : Nat} {code : List (BitVec 64 × Instr × BitVec 64)}
+    (hpre : ∀ s, D.pre s) {n : Nat} {pg : Prog}
     {labels : List Label} {stops : BitVec 64 → Bool} {fuelW : Nat}
-    (hcode : ∀ e ∈ code, fetch e.1 = some (e.2.1, e.2.2))
+    (hcode : ∀ e ∈ pg.code, fetch e.1 = some (e.2.1, e.2.2)) (hk : KindsOk Ψ pg.kinds)
     (H : ∀ l ∈ labels, ∀ (ρ' : Env) (fam : Fam),
       Ok fetch sys Ψ n l.addr (l.pat.den { ρ' with bound := fam :: ρ'.bound })) :
-    (f : Nat) → JustSound fetch sys Ψ n (justifyF code labels stops fuelW f)
+    (f : Nat) → JustSound fetch sys Ψ n (justifyF pg labels stops fuelW f)
   | 0 => fun _ _ _ hj => nomatch hj
   | f + 1 => by
     intro k a E hj ρ fam
     have hcc := closeCtx_sound
-      (justifyF_sound hD hkind hpre (stops := stops) (fuelW := fuelW) hcode H f)
+      (justifyF_sound hD hkind hpre (stops := stops) (fuelW := fuelW) hcode hk H f)
     unfold justifyF at hj
     simp only [Bool.and_eq_true, Bool.or_eq_true] at hj
     obtain ⟨⟨hE, hΔ⟩, hor⟩ := hj
@@ -678,7 +678,7 @@ theorem justifyF_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
         refine Ok.regard hreg ?_
         rw [← ha]
         exact H l hmem ρ'' _
-    · exact (walk_sound hD hkind hpre code stops hcode true fuelW (k + E.width) a
+    · exact (walk_sound hD hkind hpre pg stops hcode hk true fuelW (k + E.width) a
         (E.open (freshOpening k)) ρ' hΔ (Walk.holds_of_closes hcc H _ (k + E.width) ρ' hw)).1
 
 /-! ## A program -/
@@ -686,14 +686,14 @@ theorem justifyF_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
 /-- **Whether a program is typed**: each label's family mentions no name
 from the `k`th on, and from each label, started at names from the `k`th on,
 the walk gets somewhere and leaves nothing to be shown. -/
-def checkProgram (code : List (BitVec 64 × Instr × BitVec 64)) (labels : List Label)
+def checkProgram (pg : Prog) (labels : List Label)
     (fuel k : Nat) : Bool :=
   labels.all fun l =>
     l.pat.under k && (l.start k).under (k + l.pat.width) &&
-      (let W := walk code (fun a => labels.any fun l' => l'.addr == a) true fuel (k + l.pat.width) l.addr
+      (let W := walk pg (fun a => labels.any fun l' => l'.addr == a) true fuel (k + l.pat.width) l.addr
         (l.start k)
        W.moved &&
-        W.closes (closeCtx (justifyF code labels (fun a => labels.any fun l' => l'.addr == a)
+        W.closes (closeCtx (justifyF pg labels (fun a => labels.any fun l' => l'.addr == a)
           fuel fuel)) labels (k + l.pat.width))
 
 /-- **A program that checks is typed at every label, for every member of
@@ -701,10 +701,10 @@ the label's family, for any number of steps**: on any machine that fetches
 its instructions at their addresses, under any system that does what Linux
 is described to do. -/
 theorem program_ok {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
-    (hpre : ∀ s, D.pre s) {code : List (BitVec 64 × Instr × BitVec 64)}
+    (hpre : ∀ s, D.pre s) {pg : Prog}
     {labels : List Label} {fuel k : Nat}
-    (hcode : ∀ e ∈ code, fetch e.1 = some (e.2.1, e.2.2))
-    (h : checkProgram code labels fuel k = true) :
+    (hcode : ∀ e ∈ pg.code, fetch e.1 = some (e.2.1, e.2.2)) (hk : KindsOk Ψ pg.kinds)
+    (h : checkProgram pg labels fuel k = true) :
     ∀ n, ∀ l ∈ labels, ∀ (ρ : Env) (fam : Fam),
       Ok fetch sys Ψ n l.addr (l.pat.den { ρ with bound := fam :: ρ.bound }) := by
   intro n
@@ -717,9 +717,9 @@ theorem program_ok {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
     simp only [Bool.and_eq_true] at this
     obtain ⟨⟨hfree, hu⟩, hm, hc⟩ := this
     have hcc := closeCtx_sound (justifyF_sound hD hkind hpre
-      (stops := fun a => labels.any fun l' => l'.addr == a) (fuelW := fuel) hcode ih fuel)
+      (stops := fun a => labels.any fun l' => l'.addr == a) (fuelW := fuel) hcode hk ih fuel)
     refine ok_of_open (k := k) hfree (fun ρ' => ?_) ρ fam
-    exact (walk_sound hD hkind hpre code _ hcode true fuel (k + l.pat.width) l.addr (l.start k) ρ' hu
+    exact (walk_sound hD hkind hpre pg _ hcode hk true fuel (k + l.pat.width) l.addr (l.start k) ρ' hu
       (Walk.holds_of_closes hcc ih _ (k + l.pat.width) ρ' hc)).2 hm
 
 end TypedAsm.U
