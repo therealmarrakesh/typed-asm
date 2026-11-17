@@ -210,7 +210,8 @@ def wholeArgsOk (code : List (Asm L)) (l : L) (ks : List (Nat × ShapeS))
   (Asm.partsExt base code).all (fun g => decide (g.1 + g.2.2 ≤ 0x7ffe0000)) &&
   segs.all (fun g => decide (g.1 + pageBytes g.2.2.length ≤ 0x7ffe0000)) &&
   (segStretches segs []).all (stretchIn (blocks.map fun x => (x.1, x.2.size))) &&
-  pg.statics.all (staticS bs) && blocksIn segs blocks && valsHold (fun _ _ => false) segs bs &&
+  pg.statics.all (staticS bs) && blocksIn segs blocks &&
+  valsHold (codeJ pg labels fuel) segs bs &&
   kindsCheck ks bs
 
 /-- The memory typing a program started with these arguments starts
@@ -225,12 +226,19 @@ structure ArgsFacts (code : List (Asm L)) (l : L) (ks : List (Nat × ShapeS))
     (args : List (List Byte)) (w : World) : Prop where
   hcode : ∀ e ∈ pg.code, Asm.fetch (Asm.base code) code e.1 = some (e.2.1, e.2.2)
   wf : (psiArgs ks bs args).WF
-  kindsOk : KindsOk (psiArgs ks bs args) (kindsOf ks)
-  statics : ∀ (fetch : Fetch) (sys : Syscall), StaticsOk fetch sys (psiArgs ks bs args) pg.statics
+  /-- The typing the program starts under has the blocks the program says,
+  and the stack's besides. -/
+  ext : (MemTy.ofList (denBlocks bs) (kindsDen ks)).Ext (psiArgs ks bs args)
+  kindsOk : KindsOk (MemTy.ofList (denBlocks bs) (kindsDen ks)) (kindsOf ks)
+  statics : ∀ (fetch : Fetch) (sys : Syscall),
+    StaticsOk fetch sys (MemTy.ofList (denBlocks bs) (kindsDen ks)) pg.statics
   check : checkProgram pg labels fuel 0 = true
   entry : (⟨Asm.addr code (Asm.base code) l, entryArgs⟩ : Label) ∈ labels
   loaded : Loaded (Asm.fetch (Asm.base code) code) (startArgs code l args w)
   typed : ∀ (fetch : Fetch) (sys : Syscall) (k : Nat),
+    (∀ a E, codeJ pg labels fuel a E = true → ∀ (ρ : Env) (fam : Fam), ρ.fn = pg.fns →
+      Ok fetch sys (MemTy.ofList (denBlocks bs) (kindsDen ks)) k a
+        (E.den { ρ with bound := fam :: ρ.bound })) →
     WellTyped fetch sys (psiArgs ks bs args) k
       (entryArgs.den { ({ fn := pg.fns } : Env) with
         bound := Fam.ofArgs (startArgs code l args w) (argCount args) :: [] })
@@ -313,12 +321,11 @@ theorem wholeArgs_facts {code : List (Asm L)} {l : L} {ks : List (Nat × ShapeS)
   have hst := starts_argsState (Asm.load State.init (Asm.base code) code l)
     (Asm.addr code (Asm.base code) l) args w ({ fn := pg.fns } : Env) (kinds := kindsDen ks) hB
     (said_in hsegs hmemOn hin) (text_in hsegs hmemOn hin) hBbelow hcov
-  refine ⟨by rw [hpc]; exact hcode_of_tableOk htab, wf_args args hwfBs hndB hBbelow,
+  refine ⟨by rw [hpc]; exact hcode_of_tableOk htab, wf_args args hwfBs hndB hBbelow, hext,
     kindsOk_of_check hkc _,
-    fun fetch sys ρ f hf n Ψ' he' hwf' =>
-      staticsOk_of_holds (fetch := fetch) (sys := sys) (kinds := kindsDen ks) hndB hstat ρ f hf n Ψ'
-        (hext.trans he') hwf',
-    hchk, ?_, Asm.loaded (args_holds hholds hhead hpbelow args w), fun fetch sys k => ?_⟩
+    fun fetch sys => staticsOk_of_holds (fetch := fetch) (sys := sys) (kinds := kindsDen ks)
+      hndB hstat,
+    hchk, ?_, Asm.loaded (args_holds hholds hhead hpbelow args w), fun fetch sys k hj => ?_⟩
   · obtain ⟨xa, xp⟩ := x
     simp only at hxa hxp
     subst hxa hxp
@@ -329,9 +336,7 @@ theorem wholeArgs_facts {code : List (Asm L)} {l : L} {ks : List (Nat × ShapeS)
     rw [e, show (startArgs code l args w).getReg .rsp = argBase from argsState_rsp _ _ _ _]
     exact argv_known args k hΨv
   · rcases List.mem_append.mp hy with hy | hy
-    · exact (heap_of_check (fns := fun _ _ _ => 0) hmemOn hndB hvals k
-        (fun _ _ hh => Bool.noConfusion hh) y hy q hq).ext
-        hext
+    · exact (heap_of_check hmemOn hndB hvals k hj y hy q hq).ext hext
     · rcases argBlocks_mem args hy with rfl | rfl
       · exact argv_heap _ _ args w k hΨv q hq
       · cases hq
@@ -346,9 +351,12 @@ theorem whole_args_safe {code : List (Asm L)} {l : L} {ks : List (Nat × ShapeS)
     ∀ args w, SafeMem linux (startArgs code l args w) := fun args w =>
   have f := wholeArgs_facts h args w
   SafeMem.of_safe linux_frame f.loaded
-    (safe_of_checked linux_describes rfl (PreSound.all (fun _ => trivial) _) f.hcode
-      (hpk ▸ f.kindsOk) (f.statics _ _) f.wf hlaws f.check f.entry rfl { fn := pg.fns }
-      (Fam.ofArgs (startArgs code l args w) (argCount args)) rfl fun k _ => f.typed _ _ k)
+    (safe_of_checked_ext linux_describes rfl (PreSound.all (fun _ => trivial) _) f.hcode
+      (hpk ▸ f.kindsOk) (f.statics _ _) f.ext f.wf hlaws f.check f.entry rfl { fn := pg.fns }
+      (Fam.ofArgs (startArgs code l args w) (argCount args)) rfl fun k H =>
+        f.typed _ _ k fun a E hj ρ fam hfn =>
+          justifyF_sound linux_describes rfl (PreSound.all (fun _ => trivial) _) f.hcode
+            (hpk ▸ f.kindsOk) (f.statics _ _) hlaws H fuel 0 a E hj ρ fam hfn)
 
 /-- **And where it checks against the wanted status, ends only with it.** -/
 theorem whole_args_exits {code : List (Asm L)} {l : L} {ks : List (Nat × ShapeS)}
@@ -361,9 +369,13 @@ theorem whole_args_exits {code : List (Asm L)} {l : L} {ks : List (Nat × ShapeS
         ∀ len c, Asm.fetch (Asm.base code) code s'.rip = some (.syscall, len) →
         linux { s' with rip := s'.rip + len } = .exit c → Q c := fun args w =>
   have f := wholeArgs_facts h args w
-  have r := exits_of_checked hq hpg f.hcode (hpk ▸ f.kindsOk) (f.statics _ _) f.wf f.check f.entry
-    rfl { fn := pg.fns } (Fam.ofArgs (startArgs code l args w) (argCount args)) rfl hlaws
-    fun k _ => f.typed _ _ k
+  have r := exits_of_checked_ext hq hpg f.hcode (hpk ▸ f.kindsOk) (f.statics _ _) f.ext f.wf
+    f.check f.entry rfl { fn := pg.fns } (Fam.ofArgs (startArgs code l args w) (argCount args))
+    rfl hlaws fun k H =>
+      f.typed _ _ k fun a E hj ρ fam hfn =>
+        justifyF_sound (D := exitsDesc Q) (linux_describes.exitsOnly Q) rfl
+          (by rw [hpg]; exact preExits_sound hq) f.hcode (hpk ▸ f.kindsOk) (f.statics _ _) hlaws H
+          fuel 0 a E hj ρ fam hfn
   ⟨SafeMem.of_safe linux_frame f.loaded r.1, r.2⟩
 
 end TypedAsm.U

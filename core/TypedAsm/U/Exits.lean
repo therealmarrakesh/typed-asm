@@ -77,7 +77,31 @@ theorem preExits_sound {Q : BitVec 32 → Prop} {q : BitVec 32 → Bool} (hq : �
   · cases h
 
 /-- **A program that checks against that requirement is safe under Linux,
-and ends only with a status as wanted.** -/
+and ends only with a status as wanted.** The state may match under a memory
+typing that has more blocks than the one the program is checked under. -/
+theorem exits_of_checked_ext {Q : BitVec 32 → Prop} {q : BitVec 32 → Bool}
+    (hq : ∀ c, q c = true → Q c) {pg : Prog} {labels : List Label} {fuel k : Nat}
+    (hpg : pg.pre = preExits q)
+    (hcode : ∀ e ∈ pg.code, fetch e.1 = some (e.2.1, e.2.2)) (hk : KindsOk Ψ pg.kinds)
+    (hst : StaticsOk fetch (linux.exitsOnly Q) Ψ pg.statics) {Ψ₂ : MemTy} (hext : Ψ.Ext Ψ₂)
+    (hwf : Ψ₂.WF)
+    (h : checkProgram pg labels fuel k = true)
+    {l : Label} (hl : l ∈ labels) {s : State} (hrip : s.rip = l.addr) (ρ : Env) (fam : Fam)
+    (hfn : ρ.fn = pg.fns) (hlaws : LawsHold pg.fns pg.laws)
+    (hw : ∀ n, (∀ l' ∈ labels, ∀ (ρ' : Env) (fam' : Fam), ρ'.fn = pg.fns →
+        Ok fetch (linux.exitsOnly Q) Ψ n l'.addr
+          (l'.pat.den { ρ' with bound := fam' :: ρ'.bound })) →
+      WellTyped fetch (linux.exitsOnly Q) Ψ₂ n
+        (l.pat.den { ρ with bound := fam :: ρ.bound }) s) :
+    Safe fetch linux s ∧
+      ∀ s', TypedAsm.Steps fetch linux s s' → ∀ len c, fetch s'.rip = some (.syscall, len) →
+        linux { s' with rip := s'.rip + len } = .exit c → Q c :=
+  Safe.of_exitsOnly
+    (safe_of_checked_ext (D := exitsDesc Q) (linux_describes.exitsOnly Q) rfl
+      (by rw [hpg]; exact preExits_sound hq) hcode hk hst hext hwf hlaws h hl hrip ρ fam hfn hw)
+
+/-- The same, the state matching under the memory typing the program is
+checked under. -/
 theorem exits_of_checked {Q : BitVec 32 → Prop} {q : BitVec 32 → Bool}
     (hq : ∀ c, q c = true → Q c) {pg : Prog} {labels : List Label} {fuel k : Nat}
     (hpg : pg.pre = preExits q)
@@ -94,8 +118,6 @@ theorem exits_of_checked {Q : BitVec 32 → Prop} {q : BitVec 32 → Bool}
     Safe fetch linux s ∧
       ∀ s', TypedAsm.Steps fetch linux s s' → ∀ len c, fetch s'.rip = some (.syscall, len) →
         linux { s' with rip := s'.rip + len } = .exit c → Q c :=
-  Safe.of_exitsOnly
-    (safe_of_checked (D := exitsDesc Q) (linux_describes.exitsOnly Q) rfl
-      (by rw [hpg]; exact preExits_sound hq) hcode hk hst hwf hlaws h hl hrip ρ fam hfn hw)
+  exits_of_checked_ext hq hpg hcode hk hst (MemTy.Ext.refl Ψ) hwf h hl hrip ρ fam hfn hlaws hw
 
 end TypedAsm.U
