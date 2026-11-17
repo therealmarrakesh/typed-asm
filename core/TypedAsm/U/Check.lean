@@ -1,4 +1,4 @@
-import TypedAsm.U.Term
+import TypedAsm.U.TyS
 import TypedAsm.U.Regs
 import TypedAsm.U.Mem
 
@@ -27,6 +27,8 @@ structure CtxS where
   regs : Regs Val
   flags : FlagsT
   held : List (Val × HeldS) := []
+  /-- What is known of values. -/
+  known : List (Val × TyS) := []
 
 def HeldS.den (ρ : Env) (S : HeldS) : Held := ⟨S.size, S.slots.map fun p => (p.1, p.2.den ρ)⟩
 
@@ -35,6 +37,7 @@ def CtxS.den (ρ : Env) (Γ : CtxS) : Ctx where
   val r := (Γ.regs.get r).den ρ
   flags := Γ.flags.den ρ
   held := Γ.held.map fun b => (b.1.den ρ, b.2.den ρ)
+  known := Γ.known.map fun f => (f.1.den ρ, f.2.den ρ)
 
 /-- The address a memory operand names, as a term. -/
 def eaS (regs : Regs Val) (next : BitVec 64) : Mem → Val

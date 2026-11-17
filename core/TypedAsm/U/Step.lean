@@ -120,7 +120,7 @@ theorem readCell_sound {ρ : Env} {Γ : CtxS} {k : Nat} {next : BitVec 64} {cell
           -- the slot's term mentions no name from `k` on
           have hcu : cell.under k = true := by
             simp only [CtxS.under, Bool.and_eq_true, List.all_eq_true] at hu
-            exact (hu.2 (b, S) (List.mem_of_getElem? hl)).2 (o, cell) hm
+            exact (hu.1.2 (b, S) (List.mem_of_getElem? hl)).2 (o, cell) hm
           rw [Val.den_setVal ρ k x _ hcu]
           exact hx.symm
         · cases h; exact Env.setVal_get_self ρ k x
@@ -226,7 +226,8 @@ def stepHeld (Γ : CtxS) (k : Nat) (next : BitVec 64) (i : Instr) : Option (CtxS
       let ea := eaTerm Γ next d.ea
       match writeCell Γ next (.stored i a b c Γ.flags next ea cell) d.wr with
       | some held' =>
-        some ({ regs := setOuts (fun j => simpOut i j a b c Γ.flags next ea cell) i.outs 0 Γ.regs
+        some ({ Γ with
+                regs := setOuts (fun j => simpOut i j a b c Γ.flags next ea cell) i.outs 0 Γ.regs
                 flags := .out i a b c Γ.flags next ea cell
                 held := held' },
           .goes i a b c Γ.flags next ea cell)

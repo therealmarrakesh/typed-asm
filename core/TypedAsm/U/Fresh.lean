@@ -20,11 +20,11 @@ def Env.setVal (ρ : Env) (k : Nat) (x : BitVec 64) : Env :=
 theorem Env.setVal_get_lt (ρ : Env) (k : Nat) (x : BitVec 64) {i : Nat} (h : i < k) :
     (ρ.setVal k x).val i = ρ.val i := by
   show (if i = k then x else ρ.val i) = ρ.val i
-  rw [if_neg (by omega)]
+  simp only [show i ≠ k by omega, ↓reduceIte]
 
 theorem Env.setVal_get_self (ρ : Env) (k : Nat) (x : BitVec 64) : (ρ.setVal k x).val k = x := by
   show (if k = k then x else ρ.val k) = x
-  rw [if_pos rfl]
+  simp only [↓reduceIte]
 
 mutual
 
@@ -97,21 +97,48 @@ theorem FlagsT.den_setVal (ρ : Env) (k : Nat) (x : BitVec 64) :
 
 end
 
+mutual
+
+/-- What is known of a value, as data, mentions no value: it stands for
+the same whatever a value's name is given. -/
+theorem TyS.den_setVal (ρ : Env) (k : Nat) (x : BitVec 64) :
+    (τ : TyS) → τ.den (ρ.setVal k x) = τ.den ρ
+  | .any => rfl
+  | .ptr S w off => by simp only [TyS.den, ShapeS.den_setVal ρ k x S]
+  | .ref _ _ _ => rfl
+  | .nullable τ => by simp only [TyS.den, TyS.den_setVal ρ k x τ]
+  | .orErr τ => by simp only [TyS.den, TyS.den_setVal ρ k x τ]
+  | .str _ => rfl
+  | .atom _ => rfl
+
+theorem ShapeS.den_setVal (ρ : Env) (k : Nat) (x : BitVec 64) :
+    (S : ShapeS) → S.den (ρ.setVal k x) = S.den ρ
+  | .mk size vals => by simp only [ShapeS.den, ValsS.den_setVal ρ k x vals]
+
+theorem ValsS.den_setVal (ρ : Env) (k : Nat) (x : BitVec 64) :
+    (vs : ValsS) → vs.den (ρ.setVal k x) = vs.den ρ
+  | .nil => rfl
+  | .cons o τ rest => by
+    simp only [ValsS.den, TyS.den_setVal ρ k x τ, ValsS.den_setVal ρ k x rest]
+
+end
+
 /-- Whether a context mentions only names below `k`. -/
 def CtxS.under (k : Nat) (Γ : CtxS) : Bool :=
   (Γ.regs.map (·.under k)) == ⟨true, true, true, true, true, true, true, true, true, true, true,
     true, true, true, true, true⟩ && Γ.flags.under k &&
-  Γ.held.all fun b => b.1.under k && b.2.slots.all fun p => p.2.under k
+  (Γ.held.all fun b => b.1.under k && b.2.slots.all fun p => p.2.under k) &&
+  Γ.known.all fun f => f.1.under k
 
 theorem CtxS.den_setVal (ρ : Env) (k : Nat) (x : BitVec 64) (Γ : CtxS) (h : Γ.under k = true) :
     Γ.den (ρ.setVal k x) = Γ.den ρ := by
   simp only [CtxS.under, Bool.and_eq_true, beq_iff_eq, List.all_eq_true] at h
-  obtain ⟨⟨hr, hf⟩, hh⟩ := h
+  obtain ⟨⟨⟨hr, hf⟩, hh⟩, hkn⟩ := h
   have hreg : ∀ r, (Γ.regs.get r).under k = true := fun r => by
     have h1 : (Γ.regs.map (·.under k)).get r = (Γ.regs.get r).under k := Regs.get_map _ _ r
     rw [← h1, hr]
     cases r <;> rfl
-  refine ctx_ext ?_ ?_ ?_ rfl
+  refine ctx_ext ?_ ?_ ?_ ?_
   · funext r
     exact Val.den_setVal ρ k x _ (hreg r)
   · exact FlagsT.den_setVal ρ k x _ hf
@@ -124,5 +151,9 @@ theorem CtxS.den_setVal (ρ : Env) (k : Nat) (x : BitVec 64) (Γ : CtxS) (h : Γ
     unfold HeldS.den
     congr 1
     exact List.map_congr_left fun p hp => by rw [Val.den_setVal ρ k x _ (hbk.2 p hp)]
+  · show Γ.known.map _ = Γ.known.map _
+    refine List.map_congr_left fun f hf' => ?_
+    show (f.1.den _, f.2.den _) = (f.1.den ρ, f.2.den ρ)
+    rw [Val.den_setVal ρ k x _ (hkn f hf'), TyS.den_setVal]
 
 end TypedAsm.U

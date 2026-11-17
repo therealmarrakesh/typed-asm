@@ -1,4 +1,5 @@
 import TypedAsm.U.Outs
+import TypedAsm.U.Types
 
 /-!
 # Values and flags, as terms
@@ -21,6 +22,9 @@ namespace TypedAsm.U
 structure Env where
   val : Nat → BitVec 64 := fun _ => 0
   flags : Nat → Flags := fun _ => ⟨none, none, none, none⟩
+  /-- What is known of a value, where it is not written out as data: that
+  it is code wanting some contexts, say. -/
+  ty : Nat → Ty := fun _ => .any
 
 mutual
 
