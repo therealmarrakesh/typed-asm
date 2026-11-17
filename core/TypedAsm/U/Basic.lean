@@ -44,20 +44,10 @@ theorem hasTy_str {more : Bool} {v : BitVec 64} :
 /-- A value is code wanting a family of contexts if entering it, in any
 state matching any of them, is safe for any smaller number of steps, now and
 however the memory typing grows. -/
-theorem hasTy_code {pre : Seq → Ctx} {v : BitVec 64} :
+theorem hasTy_code {pre : Fam → Ctx} {v : BitVec 64} :
     HasTy fetch sys Ψ n (.code pre) v ↔
-      ∀ x : Seq, ∀ k, k < n → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, s.rip = v →
+      ∀ x : Fam, ∀ k, k < n → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, s.rip = v →
         WellTyped fetch sys Ψ' k (pre x) s → SafeN fetch sys k s := by
-  rw [HasTy]
-
-/-- A value is a function if entering it, from any caller that hands it
-what its signature asks, is safe for any smaller number of steps. -/
-theorem hasTy_fn {sig : Sig} {v : BitVec 64} :
-    HasTy fetch sys Ψ n (.fn sig) v ↔
-      ∀ k, k < n → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF →
-        ∀ (p : Seq) (saved : Reg → BitVec 64) (lo : BitVec 64) (m : Nat) (ra : BitVec 64)
-          (frame : List Region) (fl : Flags) (s : State), s.rip = v →
-        WellTyped fetch sys Ψ' k (sig.entry p saved lo m ra frame fl) s → SafeN fetch sys k s := by
   rw [HasTy]
 
 /-- What is known of a value at a step count is known at every smaller one. -/
@@ -77,9 +67,6 @@ theorem HasTy.mono {m : Nat} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys Ψ n
   | code pre =>
     rw [hasTy_code] at h ⊢
     exact fun x k hk => h x k (by omega)
-  | fn sig =>
-    rw [hasTy_fn] at h ⊢
-    exact fun k hk => h k (by omega)
 termination_by sizeOf τ
 
 /-- And stays known when the memory typing grows. -/
@@ -105,9 +92,6 @@ theorem HasTy.ext {Ψ' : MemTy} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys �
   | code pre =>
     rw [hasTy_code] at h ⊢
     exact fun x k hk Ψ'' he' => h x k hk Ψ'' (he.trans he')
-  | fn sig =>
-    rw [hasTy_fn] at h ⊢
-    exact fun k hk Ψ'' he' => h k hk Ψ'' (he.trans he')
 termination_by sizeOf τ
 
 /-- **What follows by `Sub` is so.** -/

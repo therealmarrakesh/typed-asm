@@ -19,8 +19,8 @@ structure Inst where
   val : Nat → Val
   flags : Nat → FlagsT
   ty : Nat → TyS
-  /-- The name each name for a rest of what is held is given, if any. -/
-  rest : Nat → Option Nat := fun _ => none
+  /-- What each name for a rest of what is held is given. -/
+  rest : Nat → RestS := fun _ => .none
 
 /-- The setting of the names that the terms give. -/
 def Env.inst (ρ : Env) (σ : Inst) : Env where
@@ -121,10 +121,10 @@ def FlagsT.closedAt (n : Nat) : FlagsT → Bool
 end
 
 /-- Two stacks of families' values that agree on the `n` nearest. -/
-def Agree (n : Nat) (zs zs' : List Seq) : Prop :=
-  ∀ d, d < n → zs.getD d (fun _ => 0) = zs'.getD d (fun _ => 0)
+def Agree (n : Nat) (zs zs' : List Fam) : Prop :=
+  ∀ d, d < n → zs.getD d {} = zs'.getD d {}
 
-theorem Agree.cons {n : Nat} {zs zs' : List Seq} (h : Agree n zs zs') (z : Seq) :
+theorem Agree.cons {n : Nat} {zs zs' : List Fam} (h : Agree n zs zs') (z : Fam) :
     Agree (n + 1) (z :: zs) (z :: zs') := by
   intro d hd
   cases d with
@@ -135,13 +135,13 @@ mutual
 
 /-- Such a term stands for the same under any two stacks that agree on
 those families. -/
-theorem Val.den_agree (ρ : Env) (n : Nat) (zs zs' : List Seq) (hz : Agree n zs zs') :
+theorem Val.den_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n zs zs') :
     (a : Val) → a.closedAt n = true → a.den { ρ with bound := zs } = a.den { ρ with bound := zs' }
   | .lit _, _ => rfl
   | .var _, _ => rfl
   | .bvar d i, h => by
     simp only [Val.closedAt, decide_eq_true_eq] at h
-    show (zs.getD d fun _ => 0) (i + 1) = (zs'.getD d fun _ => 0) (i + 1)
+    show (zs.getD d {}).vals i = (zs'.getD d {}).vals i
     rw [hz d h]
   | .add a b, h => by
     simp only [Val.closedAt, Bool.and_eq_true] at h
@@ -168,14 +168,14 @@ theorem Val.den_agree (ρ : Env) (n : Nat) (zs zs' : List Seq) (hz : Agree n zs 
       Val.den_agree ρ n zs zs' hz c hc, FlagsT.den_agree ρ n zs zs' hz fl hf,
       Val.den_agree ρ n zs zs' hz ea he, Val.den_agree ρ n zs zs' hz cell hcell]
 
-theorem FlagsT.den_agree (ρ : Env) (n : Nat) (zs zs' : List Seq) (hz : Agree n zs zs') :
+theorem FlagsT.den_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n zs zs') :
     (f : FlagsT) → f.closedAt n = true →
     f.den { ρ with bound := zs } = f.den { ρ with bound := zs' }
   | .lit _, _ => rfl
   | .var _, _ => rfl
   | .bvar d, h => by
     simp only [FlagsT.closedAt, decide_eq_true_eq] at h
-    show flagsOf ((zs.getD d fun _ => 0) 0) = flagsOf ((zs'.getD d fun _ => 0) 0)
+    show (zs.getD d {}).flags = (zs'.getD d {}).flags
     rw [hz d h]
   | .out i a b c fl next ea cell, h => by
     simp only [FlagsT.closedAt, Bool.and_eq_true] at h
@@ -186,11 +186,28 @@ theorem FlagsT.den_agree (ρ : Env) (n : Nat) (zs zs' : List Seq) (hz : Agree n 
 
 end
 
+/-- Whether whatever else is held is that of one of the `n` families
+nearest, or of none. -/
+def RestS.closedAt (n : Nat) : RestS → Bool
+  | .bvar d => decide (d < n)
+  | _ => true
+
+theorem RestS.den_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n zs zs')
+    (r : RestS) (h : r.closedAt n = true) :
+    restDen { ρ with bound := zs } r = restDen { ρ with bound := zs' } r := by
+  cases r with
+  | none => rfl
+  | name j => rfl
+  | bvar d =>
+    simp only [RestS.closedAt, decide_eq_true_eq] at h
+    show (zs.getD d {}).rest = (zs'.getD d {}).rest
+    rw [hz d h]
+
 /-- Whether the regions of a list mention only so many families. -/
 def heldClosedAt (n : Nat) (held : List (Val × HeldS)) : Bool :=
   held.all fun b => b.1.closedAt n && b.2.slots.all fun p => p.2.closedAt n
 
-theorem heldDen_agree (ρ : Env) (n : Nat) (zs zs' : List Seq) (hz : Agree n zs zs')
+theorem heldDen_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n zs zs')
     (held : List (Val × HeldS)) (h : heldClosedAt n held = true) :
     (held.map fun b => (b.1.den { ρ with bound := zs }, b.2.den { ρ with bound := zs }))
       = held.map fun b => (b.1.den { ρ with bound := zs' }, b.2.den { ρ with bound := zs' }) := by
@@ -218,9 +235,9 @@ def TyS.closedAt (n : Nat) : TyS → Bool
   | .ptr S _ _ => S.closedAt n
   | .nullable τ => τ.closedAt n
   | .orErr τ => τ.closedAt n
-  | .code regs flags held known _ =>
+  | .code regs flags held known rest =>
     (regs.map (Val.closedAt (n + 1)) == allTrue) && flags.closedAt (n + 1) &&
-      heldClosedAt (n + 1) held && known.closedAt (n + 1)
+      heldClosedAt (n + 1) held && known.closedAt (n + 1) && rest.closedAt (n + 1)
   | _ => true
 
 def ShapeS.closedAt (n : Nat) : ShapeS → Bool
@@ -238,7 +255,7 @@ end
 
 mutual
 
-theorem TyS.den_agree (ρ : Env) (n : Nat) (zs zs' : List Seq) (hz : Agree n zs zs') :
+theorem TyS.den_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n zs zs') :
     (τ : TyS) → τ.closedAt n = true → τ.den { ρ with bound := zs } = τ.den { ρ with bound := zs' }
   | .any, _ => rfl
   | .ptr S w off, h => by
@@ -252,7 +269,7 @@ theorem TyS.den_agree (ρ : Env) (n : Nat) (zs zs' : List Seq) (hz : Agree n zs 
   | .atom _, _ => rfl
   | .code regs flags held known rest, h => by
     simp only [TyS.closedAt, Bool.and_eq_true] at h
-    obtain ⟨⟨⟨hr, hf⟩, hh⟩, hkn⟩ := h
+    obtain ⟨⟨⟨⟨hr, hf⟩, hh⟩, hkn⟩, hrest⟩ := h
     show Ty.code _ = Ty.code _
     congr 1
     funext z
@@ -265,17 +282,17 @@ theorem TyS.den_agree (ρ : Env) (n : Nat) (zs zs' : List Seq) (hz : Agree n zs 
           ++ restDen { ρ with bound := z :: zs } rest
         = (held.map fun b => (b.1.den { ρ with bound := z :: zs' },
             b.2.den { ρ with bound := z :: zs' })) ++ restDen { ρ with bound := z :: zs' } rest
-      rw [heldDen_agree ρ (n + 1) (z :: zs) (z :: zs') hz' held hh]
-      congr 1
+      rw [heldDen_agree ρ (n + 1) (z :: zs) (z :: zs') hz' held hh,
+        RestS.den_agree ρ (n + 1) (z :: zs) (z :: zs') hz' rest hrest]
     · exact FactsS.den_agree ρ (n + 1) (z :: zs) (z :: zs') hz' known hkn
 
-theorem ShapeS.den_agree (ρ : Env) (n : Nat) (zs zs' : List Seq) (hz : Agree n zs zs') :
+theorem ShapeS.den_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n zs zs') :
     (S : ShapeS) → S.closedAt n = true → S.den { ρ with bound := zs } = S.den { ρ with bound := zs' }
   | .mk size vals, h => by
     simp only [ShapeS.den,
       ValsS.den_agree ρ n zs zs' hz vals (by simpa only [ShapeS.closedAt] using h)]
 
-theorem ValsS.den_agree (ρ : Env) (n : Nat) (zs zs' : List Seq) (hz : Agree n zs zs') :
+theorem ValsS.den_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n zs zs') :
     (vs : ValsS) → vs.closedAt n = true →
     vs.den { ρ with bound := zs } = vs.den { ρ with bound := zs' }
   | .nil, _ => rfl
@@ -283,7 +300,7 @@ theorem ValsS.den_agree (ρ : Env) (n : Nat) (zs zs' : List Seq) (hz : Agree n z
     simp only [ValsS.closedAt, Bool.and_eq_true] at h
     simp only [ValsS.den, TyS.den_agree ρ n zs zs' hz τ h.1, ValsS.den_agree ρ n zs zs' hz rest h.2]
 
-theorem FactsS.den_agree (ρ : Env) (n : Nat) (zs zs' : List Seq) (hz : Agree n zs zs') :
+theorem FactsS.den_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n zs zs') :
     (fs : FactsS) → fs.closedAt n = true →
     fs.den { ρ with bound := zs } = fs.den { ρ with bound := zs' }
   | .nil, _ => rfl
@@ -295,27 +312,38 @@ theorem FactsS.den_agree (ρ : Env) (n : Nat) (zs zs' : List Seq) (hz : Agree n 
 end
 
 /-- What mentions no family's values stands for the same under any stack. -/
-theorem Val.den_bound (ρ : Env) (zs : List Seq) (a : Val) (h : a.closedAt 0 = true) :
+theorem Val.den_bound (ρ : Env) (zs : List Fam) (a : Val) (h : a.closedAt 0 = true) :
     a.den { ρ with bound := zs } = a.den ρ :=
   Val.den_agree ρ 0 zs ρ.bound (fun _ hd => absurd hd (Nat.not_lt_zero _)) a h
 
-theorem FlagsT.den_bound (ρ : Env) (zs : List Seq) (f : FlagsT) (h : f.closedAt 0 = true) :
+theorem FlagsT.den_bound (ρ : Env) (zs : List Fam) (f : FlagsT) (h : f.closedAt 0 = true) :
     f.den { ρ with bound := zs } = f.den ρ :=
   FlagsT.den_agree ρ 0 zs ρ.bound (fun _ hd => absurd hd (Nat.not_lt_zero _)) f h
 
-theorem TyS.den_bound (ρ : Env) (zs : List Seq) (τ : TyS) (h : τ.closedAt 0 = true) :
+theorem TyS.den_bound (ρ : Env) (zs : List Fam) (τ : TyS) (h : τ.closedAt 0 = true) :
     τ.den { ρ with bound := zs } = τ.den ρ :=
   TyS.den_agree ρ 0 zs ρ.bound (fun _ hd => absurd hd (Nat.not_lt_zero _)) τ h
+
+theorem RestS.den_bound (ρ : Env) (zs : List Fam) (r : RestS) (h : r.closedAt 0 = true) :
+    restDen { ρ with bound := zs } r = restDen ρ r :=
+  RestS.den_agree ρ 0 zs ρ.bound (fun _ hd => absurd hd (Nat.not_lt_zero _)) r h
+
+theorem heldDen_bound (ρ : Env) (zs : List Fam) (held : List (Val × HeldS))
+    (h : heldClosedAt 0 held = true) :
+    (held.map fun b => (b.1.den { ρ with bound := zs }, b.2.den { ρ with bound := zs }))
+      = held.map fun b => (b.1.den ρ, b.2.den ρ) :=
+  heldDen_agree ρ 0 zs ρ.bound (fun _ hd => absurd hd (Nat.not_lt_zero _)) held h
 
 /-- The terms given to names mention no family's values. -/
 structure Inst.Closed (σ : Inst) : Prop where
   val : ∀ j, (σ.val j).closedAt 0 = true
   flags : ∀ j, (σ.flags j).closedAt 0 = true
   ty : ∀ j, (σ.ty j).closedAt 0 = true
+  rest : ∀ j, (σ.rest j).closedAt 0 = true
 
 /-- Then the setting they give, inside families, is the setting they give
 outside them with the families' values. -/
-theorem Env.inst_bound (ρ : Env) (σ : Inst) (hσ : σ.Closed) (zs : List Seq) :
+theorem Env.inst_bound (ρ : Env) (σ : Inst) (hσ : σ.Closed) (zs : List Fam) :
     ({ ρ with bound := zs } : Env).inst σ = { ρ.inst σ with bound := zs } := by
   have h1 : (fun j => (σ.val j).den { ρ with bound := zs }) = fun j => (σ.val j).den ρ :=
     funext fun j => Val.den_bound ρ zs _ (hσ.val j)
@@ -324,7 +352,7 @@ theorem Env.inst_bound (ρ : Env) (σ : Inst) (hσ : σ.Closed) (zs : List Seq) 
   have h3 : (fun j => (σ.ty j).den { ρ with bound := zs }) = fun j => (σ.ty j).den ρ :=
     funext fun j => TyS.den_bound ρ zs _ (hσ.ty j)
   have h4 : (fun j => restDen { ρ with bound := zs } (σ.rest j)) = fun j => restDen ρ (σ.rest j) :=
-    funext fun j => by cases σ.rest j <;> rfl
+    funext fun j => RestS.den_bound ρ zs _ (hσ.rest j)
   show Env.mk (fun j => (σ.val j).den { ρ with bound := zs })
       (fun j => (σ.flags j).den { ρ with bound := zs })
       (fun j => (σ.ty j).den { ρ with bound := zs })
@@ -356,8 +384,13 @@ theorem heldDen_subst (ρ : Env) (σ : Inst) (held : List (Val × HeldS)) :
     show ((b.1.subst σ).den ρ, (b.2.subst σ).den ρ) = _
     rw [Val.den_subst, HeldS.den_subst]
 
-theorem restDen_subst (ρ : Env) (σ : Inst) (rest : Option Nat) :
-    restDen ρ (rest.bind σ.rest) = restDen (ρ.inst σ) rest := by
+/-- Whatever else is held, with its name given what the terms give it. -/
+def RestS.subst (σ : Inst) : RestS → RestS
+  | .name j => σ.rest j
+  | r => r
+
+theorem restDen_subst (ρ : Env) (σ : Inst) (rest : RestS) :
+    restDen ρ (rest.subst σ) = restDen (ρ.inst σ) rest := by
   cases rest <;> rfl
 
 mutual
@@ -372,7 +405,7 @@ def TyS.subst (σ : Inst) : TyS → TyS
   | .atom i => σ.ty i
   | .code regs flags held known rest =>
     .code (regs.map (Val.subst σ)) (flags.subst σ)
-      (held.map fun b => (b.1.subst σ, b.2.subst σ)) (known.subst σ) (rest.bind σ.rest)
+      (held.map fun b => (b.1.subst σ, b.2.subst σ)) (known.subst σ) (rest.subst σ)
 
 def ShapeS.subst (σ : Inst) : ShapeS → ShapeS
   | .mk size vals => .mk size (vals.subst σ)
@@ -413,7 +446,7 @@ theorem TyS.den_subst (ρ : Env) (σ : Inst) (hσ : σ.Closed) :
       rw [FlagsT.den_subst, e]
     · show ((held.map fun b => (b.1.subst σ, b.2.subst σ)).map fun b =>
           (b.1.den { ρ with bound := z :: ρ.bound }, b.2.den { ρ with bound := z :: ρ.bound }))
-          ++ restDen { ρ with bound := z :: ρ.bound } (rest.bind σ.rest)
+          ++ restDen { ρ with bound := z :: ρ.bound } (rest.subst σ)
         = (held.map fun b => (b.1.den { ρ.inst σ with bound := z :: ρ.bound },
             b.2.den { ρ.inst σ with bound := z :: ρ.bound }))
           ++ restDen { ρ.inst σ with bound := z :: ρ.bound } rest
@@ -447,7 +480,7 @@ def CtxS.subst (σ : Inst) (Γ : CtxS) : CtxS where
   flags := Γ.flags.subst σ
   held := Γ.held.map fun b => (b.1.subst σ, b.2.subst σ)
   known := Γ.known.map fun f => (f.1.subst σ, f.2.subst σ)
-  rest := Γ.rest.bind σ.rest
+  rest := Γ.rest.subst σ
 
 /-- **It stands for what the context stood for in the setting the terms
 give.** -/
@@ -459,7 +492,7 @@ theorem CtxS.den_subst (ρ : Env) (σ : Inst) (hσ : σ.Closed) (Γ : CtxS) :
     rw [Regs.get_map]
     exact Val.den_subst ρ σ _
   · exact FlagsT.den_subst ρ σ _
-  · show (Γ.held.map _).map _ ++ restDen ρ (Γ.rest.bind σ.rest)
+  · show (Γ.held.map _).map _ ++ restDen ρ (Γ.rest.subst σ)
       = Γ.held.map _ ++ restDen (ρ.inst σ) Γ.rest
     rw [heldDen_subst, restDen_subst]
   · show (Γ.known.map _).map _ = Γ.known.map _

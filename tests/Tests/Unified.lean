@@ -244,11 +244,11 @@ example : checkProgram codeJ
 -- with a name for whatever else is held: the label keeps it, and may not
 -- leave it out; and a label that names a rest is typed for any rest, so it
 -- may be reached holding none
-example : checkProgram codeJ [(0, { Γw with rest := some 0 }), (5, { Γw with rest := some 0 })]
+example : checkProgram codeJ [(0, { Γw with rest := .name 0 }), (5, { Γw with rest := .name 0 })]
     10 20 = true := by decide +kernel
-example : checkProgram codeJ [(0, { Γw with rest := some 0 }), (5, Γw)] 10 20 = false := by
+example : checkProgram codeJ [(0, { Γw with rest := .name 0 }), (5, Γw)] 10 20 = false := by
   decide +kernel
-example : checkProgram codeJ [(0, Γw), (5, { Γw with rest := some 0 })] 10 20 = true := by
+example : checkProgram codeJ [(0, Γw), (5, { Γw with rest := .name 0 })] 10 20 = true := by
   decide +kernel
 
 -- the frame loop again: the label may say the slot holds what `rdi` holds,
@@ -275,7 +275,7 @@ the family the knowledge sits in, one out from its own. -/
 
 /-- Code wanting `rax` to hold the first value of the family one out, and
 any flags of its own. -/
-def innerCode : TyS := .code (Γw.regs.set .rax (.bvar 1 0)) (.bvar 0) [] .nil none
+def innerCode : TyS := .code (Γw.regs.set .rax (.bvar 1 0)) (.bvar 0) [] .nil .none
 
 -- it speaks of an enclosing family, so it is not knowledge that stands alone,
 -- and is knowledge that may sit inside one family
@@ -284,13 +284,13 @@ example : innerCode.closedAt 1 = true := by decide +kernel
 
 -- the enclosing family taken at a particular value: the inner code now wants
 -- `rax` to hold that value, and its own flags are still its own
-example : innerCode.open ⟨fun _ => .var 7, .var 0⟩ 0
-    = .code (Γw.regs.set .rax (.var 7)) (.bvar 0) [] .nil none := by decide +kernel
+example : innerCode.open { b := fun _ => .var 7, f := .var 0 } 0
+    = .code (Γw.regs.set .rax (.var 7)) (.bvar 0) [] .nil .none := by decide +kernel
 
 -- its own family's value is untouched when the enclosing one is taken
-example : (TyS.code (Γw.regs.set .rax (.bvar 0 0)) (.bvar 0) [] .nil none).open
-      ⟨fun _ => .var 7, .var 0⟩ 0
-    = .code (Γw.regs.set .rax (.bvar 0 0)) (.bvar 0) [] .nil none := by decide +kernel
+example : (TyS.code (Γw.regs.set .rax (.bvar 0 0)) (.bvar 0) [] .nil .none).open
+      { b := fun _ => .var 7, f := .var 0 } 0
+    = .code (Γw.regs.set .rax (.bvar 0 0)) (.bvar 0) [] .nil .none := by decide +kernel
 
 /-! ## Going to a value known to be code -/
 
@@ -303,7 +303,7 @@ def anyRegs : Regs Val :=
 these registers and regions, the context holding the stack of `Γw`. -/
 def mayJump (regs : Regs Val) (held : List (Val × HeldS)) : Bool :=
   checkProgram [(0, .jmp (.ind (.reg .rax)), 2)]
-    [(0, { Γw with known := [(.var 0, .code regs (.bvar 0) held .nil none)] })] 10 20
+    [(0, { Γw with known := [(.var 0, .code regs (.bvar 0) held .nil .none)] })] 10 20
 
 -- code wanting any registers and the stack: the jump is typed
 example : mayJump anyRegs [(.var 16, ⟨64, []⟩)] = true := by decide +kernel
@@ -325,7 +325,7 @@ def mayReturn (rsp' : Val) : Bool :=
     [(0, { Γw with
             held := [(.var 16, ⟨64, [(32, .var 17)]⟩)]
             known := [(.var 17, .code (anyRegs.set .rsp rsp') (.bvar 0)
-                        [(.var 16, ⟨64, []⟩)] .nil none)] })] 10 20
+                        [(.var 16, ⟨64, []⟩)] .nil .none)] })] 10 20
 
 -- the return address wants the stack pointer just past it: typed
 example : mayReturn (.add (.var 16) (.lit 40)) = true := by decide +kernel

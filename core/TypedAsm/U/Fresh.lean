@@ -174,7 +174,7 @@ theorem heldDen_setVal (ρ : Env) (k : Nat) (x : BitVec 64) (held : List (Val ×
   exact List.map_congr_left fun p hp => by
     rw [Val.den_setVal ρ k x _ (List.all_eq_true.mp hbk.2 p hp)]
 
-theorem restDen_setVal (ρ : Env) (k : Nat) (x : BitVec 64) (rest : Option Nat) :
+theorem restDen_setVal (ρ : Env) (k : Nat) (x : BitVec 64) (rest : RestS) :
     restDen (ρ.setVal k x) rest = restDen ρ rest := by
   cases rest <;> rfl
 

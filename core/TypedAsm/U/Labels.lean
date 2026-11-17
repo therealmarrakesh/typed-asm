@@ -27,7 +27,7 @@ variable {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
 /-! ## Finding terms for a label's names -/
 
 def Inst.ofLists (vs : List (Nat × Val)) (fs : List (Nat × FlagsT)) (ts : List (Nat × TyS))
-    (r : Option Nat := none) : Inst where
+    (r : RestS := .none) : Inst where
   val j := (vs.lookup j).getD (.lit 0)
   flags j := (fs.lookup j).getD (.lit Flags.unknown)
   ty j := (ts.lookup j).getD .any
@@ -38,14 +38,14 @@ structure InstL where
   vs : List (Nat × Val) := []
   fs : List (Nat × FlagsT) := []
   ts : List (Nat × TyS) := []
-  r : Option Nat := none
+  r : RestS := .none
 
 def InstL.inst (l : InstL) : Inst := Inst.ofLists l.vs l.fs l.ts l.r
 
 /-- Whether the terms mention no family's values. -/
 def InstL.closed (l : InstL) : Bool :=
   (l.vs.all fun p => p.2.closedAt 0) && (l.fs.all fun p => p.2.closedAt 0) &&
-    l.ts.all fun p => p.2.closedAt 0
+    (l.ts.all fun p => p.2.closedAt 0) && l.r.closedAt 0
 
 theorem lookup_mem {α : Type} : (l : List (Nat × α)) → (j : Nat) → (v : α) →
     l.lookup j = some v → (j, v) ∈ l
@@ -61,22 +61,25 @@ theorem lookup_mem {α : Type} : (l : List (Nat × α)) → (j : Nat) → (v : �
 
 theorem InstL.closed_inst {l : InstL} (h : l.closed = true) : l.inst.Closed := by
   simp only [InstL.closed, Bool.and_eq_true, List.all_eq_true] at h
+  obtain ⟨⟨⟨hv, hf⟩, ht⟩, hr⟩ := h
   constructor
   · intro j
     show ((l.vs.lookup j).getD (.lit 0)).closedAt 0 = true
     cases hl : l.vs.lookup j with
     | none => rfl
-    | some v => exact h.1.1 _ (lookup_mem _ _ _ hl)
+    | some v => exact hv _ (lookup_mem _ _ _ hl)
   · intro j
     show ((l.fs.lookup j).getD (.lit Flags.unknown)).closedAt 0 = true
     cases hl : l.fs.lookup j with
     | none => rfl
-    | some v => exact h.1.2 _ (lookup_mem _ _ _ hl)
+    | some v => exact hf _ (lookup_mem _ _ _ hl)
   · intro j
     show ((l.ts.lookup j).getD .any).closedAt 0 = true
     cases hl : l.ts.lookup j with
     | none => rfl
-    | some v => exact h.2 _ (lookup_mem _ _ _ hl)
+    | some v => exact ht _ (lookup_mem _ _ _ hl)
+  · intro j
+    exact hr
 
 /-- The term a name must be given for a pattern to be a value: the value,
 where the pattern is the name; the value less a number, where the pattern is
@@ -265,45 +268,100 @@ def bindB (pat got : Val) : List (Nat × Val) :=
   | .add (.bvar 0 j) (.lit c) => [(j, .add got (.lit (-c)))]
   | _ => []
 
-/-- Terms for a family's values, as a list, and one for its flags. -/
+/-- What a member of a family is, as terms in lists. -/
 structure OpenL where
   bs : List (Nat × Val) := []
   f : FlagsT := .lit Flags.unknown
+  rest : List (Val × HeldS) := []
+  tail : RestS := .none
 
-def OpenL.opening (l : OpenL) : Opening := ⟨fun j => (l.bs.lookup j).getD (.lit 0), l.f⟩
+def OpenL.opening (l : OpenL) : Opening :=
+  { b := fun j => (l.bs.lookup j).getD (.lit 0), f := l.f, rest := l.rest, tail := l.tail }
 
-def OpenL.closed (l : OpenL) : Bool := (l.bs.all fun p => p.2.closedAt 0) && l.f.closedAt 0
+def OpenL.closed (l : OpenL) : Bool :=
+  (l.bs.all fun p => p.2.closedAt 0) && l.f.closedAt 0 && heldClosedAt 0 l.rest &&
+    l.tail.closedAt 0
 
 theorem OpenL.closed_opening {l : OpenL} (h : l.closed = true) : l.opening.Closed := by
   simp only [OpenL.closed, Bool.and_eq_true, List.all_eq_true] at h
+  obtain ⟨⟨⟨hb, hf⟩, hr⟩, ht⟩ := h
   constructor
   · intro j
     show ((l.bs.lookup j).getD (.lit 0)).closedAt 0 = true
     cases hl : l.bs.lookup j with
     | none => rfl
-    | some v => exact h.1 _ (lookup_mem _ _ _ hl)
-  · exact h.2
+    | some v => exact hb _ (lookup_mem _ _ _ hl)
+  · exact hf
+  · exact hr
+  · exact ht
 
-/-- **Terms for a family's values**, read off the context reached: from the
-registers, then from the regions at the addresses those give. -/
+/-- A list of pieces of a region, by where they start. -/
+def insertPiece (x : Nat × Nat) : List (Nat × Nat) → List (Nat × Nat)
+  | [] => [x]
+  | y :: ys => if x.1 ≤ y.1 then x :: y :: ys else y :: insertPiece x ys
+
+def sortPieces : List (Nat × Nat) → List (Nat × Nat)
+  | [] => []
+  | x :: xs => insertPiece x (sortPieces xs)
+
+/-- The stretches of a region of `size` bytes, from byte `cur` on, that
+pieces listed by where they start leave out. -/
+def gaps (size : Nat) : Nat → List (Nat × Nat) → List (Nat × Nat)
+  | cur, [] => if cur < size then [(cur, size - cur)] else []
+  | cur, (o, n) :: rest => (if cur < o then [(cur, o - cur)] else []) ++ gaps size (o + n) rest
+
+/-- A stretch of a region, as a region: its bytes, and the values the
+region says lie wholly in it. -/
+def stretch (g : Val × HeldS) (x : Nat × Nat) : Val × HeldS :=
+  (.add g.1 (.lit (BitVec.ofNat 64 x.1)),
+    ⟨x.2, g.2.slots.filterMap fun p =>
+      if x.1 ≤ p.1 ∧ p.1 + 8 ≤ x.1 + x.2 then some (p.1 - x.1, p.2) else none⟩)
+
+/-- Where each region wanted lies in the context reached: in which region,
+how far in, and how long. -/
+def placed (held : List (Val × HeldS)) (Γ : CtxS) : List (Nat × Nat × Nat) :=
+  held.filterMap fun d =>
+    match hostExtent d.1 d.2.size Γ.held 0 with
+    | some (i, off, _) => some (i, off, d.2.size)
+    | none => none
+
+/-- **What the context reached holds besides the regions wanted**: the
+stretches of each of its regions that they leave out. Where a family ranges
+over whatever else is held, this is what that is. -/
+def leftover (held : List (Val × HeldS)) (Γ : CtxS) : List (Val × HeldS) :=
+  let ps := placed held Γ
+  (List.range Γ.held.length).flatMap fun i =>
+    match Γ.held[i]? with
+    | some g =>
+      (gaps g.2.size 0 (sortPieces ((ps.filter fun p => p.1 == i).map fun p => p.2))).map
+        (stretch g)
+    | none => []
+
+/-- **A member of a family**, read off the context reached: its values from
+the registers, then from the regions at the addresses those give; and,
+where the family ranges over whatever else is held, all that the context
+holds besides. -/
 def matchOpen (P Γ : CtxS) : OpenL :=
   let bs₁ := allRegs.flatMap fun r => bindB (P.regs.get r) (Γ.regs.get r)
-  let o₁ : Opening := ⟨fun j => (bs₁.lookup j).getD (.lit 0), Γ.flags⟩
-  let bs₂ := P.held.flatMap fun d =>
-    match hostExtent (d.1.open o₁ 0) d.2.size Γ.held 0 with
+  let o₁ : Opening := { b := fun j => (bs₁.lookup j).getD (.lit 0), f := Γ.flags }
+  let wantedRegions := P.held.map fun d => (d.1.open o₁ 0, d.2)
+  let bs₂ := wantedRegions.flatMap fun d =>
+    match hostExtent d.1 d.2.size Γ.held 0 with
     | some (_, off, G) =>
       d.2.slots.flatMap fun p =>
         match G.slots.lookup (off + p.1) with
         | some g => bindB p.2 g
         | none => []
     | none => []
-  ⟨bs₁ ++ bs₂, Γ.flags⟩
+  match P.rest with
+  | .bvar 0 => ⟨bs₁ ++ bs₂, Γ.flags, leftover wantedRegions Γ, Γ.rest⟩
+  | _ => ⟨bs₁ ++ bs₂, Γ.flags, [], .none⟩
 
 /-- The bytes a family's contexts say hold a value and the context reached
 says nothing of. -/
 def wantedCode (P Γ : CtxS) : List (Nat × Nat) :=
   let bs₁ := allRegs.flatMap fun r => bindB (P.regs.get r) (Γ.regs.get r)
-  let o₁ : Opening := ⟨fun j => (bs₁.lookup j).getD (.lit 0), Γ.flags⟩
+  let o₁ : Opening := { b := fun j => (bs₁.lookup j).getD (.lit 0), f := Γ.flags }
   wantedHeld (P.held.map fun d => (d.1.open o₁ 0, d.2)) Γ
 
 /-! ## A walk that leaves nothing to be shown -/
@@ -404,7 +462,7 @@ theorem Walk.holds_of_closes {n : Nat} {labels : List (BitVec 64 × CtxS)}
           rw [← code_den]
           exact List.mem_map.mpr ⟨_, hmem, rfl⟩
         refine Arrives.code
-          (seqOf ρ' (matchOpen (codeCtx regs flags held known rest) Γ').opening) hf ?_
+          (famOf ρ' (matchOpen (codeCtx regs flags held known rest) Γ').opening) hf ?_
         rw [← CtxS.den_open ρ' _ ho]
         exact regardS_sound ρ' hreg
     · cases h

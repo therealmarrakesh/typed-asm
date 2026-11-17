@@ -36,7 +36,7 @@ theorem Ok.ext {Ψ' : MemTy} {n : Nat} {a : BitVec 64} {Γ : Ctx} (h : Ok fetch 
 
 /-- Code wanting a family of contexts is code typed in each of them, for
 fewer steps. -/
-theorem hasTy_code_iff {n : Nat} {pre : Seq → Ctx} {v : BitVec 64} :
+theorem hasTy_code_iff {n : Nat} {pre : Fam → Ctx} {v : BitVec 64} :
     HasTy fetch sys Ψ (n + 1) (.code pre) v ↔ ∀ x, Ok fetch sys Ψ n v (pre x) := by
   rw [hasTy_code]
   constructor

@@ -24,10 +24,19 @@ structure HeldS where
 
 def HeldS.den (ρ : Env) (S : HeldS) : Held := ⟨S.size, S.slots.map fun p => (p.1, p.2.den ρ)⟩
 
-/-- The regions a name for the rest stands for. -/
-def restDen (ρ : Env) : Option Nat → List Region
-  | some j => ρ.frame j
-  | none => []
+/-- Whatever else is held, besides the regions written out: nothing; what a
+name stands for; or what the family `d` out ranges over. -/
+inductive RestS
+  | none
+  | name (j : Nat)
+  | bvar (d : Nat)
+  deriving DecidableEq
+
+/-- The regions it stands for. -/
+def restDen (ρ : Env) : RestS → List Region
+  | .none => []
+  | .name j => ρ.frame j
+  | .bvar d => (ρ.bound.getD d {}).rest
 
 mutual
 
@@ -44,7 +53,7 @@ inductive TyS
   /-- It is code, safe to enter in the context these terms stand for,
   whatever the values the family ranges over are. -/
   | code (regs : Regs Val) (flags : FlagsT) (held : List (Val × HeldS)) (known : FactsS)
-      (rest : Option Nat)
+      (rest : RestS)
 
 /-- The shape of a block others may point into, as data. -/
 inductive ShapeS

@@ -23,8 +23,8 @@ structure CtxS where
   held : List (Val × HeldS) := []
   /-- What is known of values. -/
   known : List (Val × TyS) := []
-  /-- A name for whatever else is held, where there may be more. -/
-  rest : Option Nat := none
+  /-- Whatever else is held, where there may be more. -/
+  rest : RestS := .none
 
 
 /-- The context a context written as terms stands for. -/

@@ -19,25 +19,13 @@ variable {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
 
 /-- **The machine arrives at a value known to be code**, in a context that
 may be regarded as one the code wants. -/
-theorem Arrives.code {n : Nat} {t : BitVec 64} {Γ : Ctx} {pre : Seq → Ctx} (x : Seq)
+theorem Arrives.code {n : Nat} {t : BitVec 64} {Γ : Ctx} {pre : Fam → Ctx} (x : Fam)
     (hf : (t, Ty.code pre) ∈ Γ.known) (hreg : Regards fetch sys Ψ Γ (pre x)) :
     Arrives fetch sys Ψ n t Γ := by
   intro k _ Ψ' he hwf s hs hw
   have hw' := hreg (k + 1) Ψ' he hwf s hw
   exact hasTy_code.mp (hw.known _ hf) x k (Nat.lt_succ_self k) Ψ' (MemTy.Ext.refl _) hwf s hs
     (hw'.mono (Nat.le_succ k))
-
-/-- **And at a value known to be a function**, in a context that may be
-regarded as the function's entry, from some caller. -/
-theorem Arrives.fn {n : Nat} {t : BitVec 64} {Γ : Ctx} {sig : Sig} (p : Seq)
-    (saved : Reg → BitVec 64) (lo : BitVec 64) (m : Nat) (ra : BitVec 64) (frame : List Region)
-    (fl : Flags) (hf : (t, Ty.fn sig) ∈ Γ.known)
-    (hreg : Regards fetch sys Ψ Γ (sig.entry p saved lo m ra frame fl)) :
-    Arrives fetch sys Ψ n t Γ := by
-  intro k _ Ψ' he hwf s hs hw
-  have hw' := hreg (k + 1) Ψ' he hwf s hw
-  exact hasTy_fn.mp (hw.known _ hf) k (Nat.lt_succ_self k) Ψ' (MemTy.Ext.refl _) hwf p saved lo
-    m ra frame fl s hs (hw'.mono (Nat.le_succ k))
 
 /-- A fact that is so, for as many steps as matter and however the memory
 typing grows, may be taken as known. -/
@@ -49,7 +37,7 @@ theorem Ok.learn {n : Nat} {a : BitVec 64} {Γ : Ctx} (fs : List Fact)
 
 /-- Code typed in each of a family of contexts, at an address, makes the
 address a value known to be code wanting them. -/
-theorem hasTy_code_of_ok {n : Nat} {v : BitVec 64} {pre : Seq → Ctx}
+theorem hasTy_code_of_ok {n : Nat} {v : BitVec 64} {pre : Fam → Ctx}
     (h : ∀ x, Ok fetch sys Ψ n v (pre x)) :
     ∀ k, k ≤ n + 1 → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → HasTy fetch sys Ψ' k (.code pre) v := by
   intro k hk Ψ' he _

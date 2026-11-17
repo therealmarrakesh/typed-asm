@@ -27,10 +27,9 @@ structure Env where
   ty : Nat → Ty := fun _ => .any
   /-- Regions held that are not written out: whatever else a caller holds. -/
   frame : Nat → List Region := fun _ => []
-  /-- The values each enclosing family of contexts ranges over, inside a
-  value known to be code wanting the family: the innermost family first. The
-  first value of each stands for the flags. -/
-  bound : List Seq := []
+  /-- What each enclosing family of contexts ranges over, inside a value
+  known to be code wanting the family: the innermost family first. -/
+  bound : List Fam := []
 
 mutual
 
@@ -85,7 +84,7 @@ mutual
 def Val.den (ρ : Env) : Val → BitVec 64
   | .lit v => v
   | .var i => ρ.val i
-  | .bvar d i => (ρ.bound.getD d fun _ => 0) (i + 1)
+  | .bvar d i => (ρ.bound.getD d {}).vals i
   | .add a b => a.den ρ + b.den ρ
   | .shl a k => a.den ρ <<< k
   | .out i k a b c fl next ea cell =>
@@ -100,7 +99,7 @@ def Val.den (ρ : Env) : Val → BitVec 64
 def FlagsT.den (ρ : Env) : FlagsT → Flags
   | .lit f => f
   | .var i => ρ.flags i
-  | .bvar d => flagsOf ((ρ.bound.getD d fun _ => 0) 0)
+  | .bvar d => (ρ.bound.getD d {}).flags
   | .out i a b c fl next ea cell =>
     (effectOf i [a.den ρ, b.den ρ, c.den ρ] (fl.den ρ) next (ea.den ρ) (cell.den ρ)).flags
 
