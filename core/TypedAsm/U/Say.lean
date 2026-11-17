@@ -42,38 +42,52 @@ def keptRegs : List Reg := [.rbx, .rbp, .r12, .r13, .r14, .r15]
 /-- **What a function returns with**, written one family in from its
 entry: the registers it keeps as they were at entry, the stack pointer past
 the return address, the bytes it was given below the stack pointer and the
-eight that held the return address held still, and whatever else was held,
-held. The other registers hold whatever they hold, but for those said. -/
-def returnsWith (results : List (Reg × Val) := []) (room : Nat := 0) : TyS :=
+eight that held the return address held still, the regions it took given
+back, the regions it hands its caller, each at the address a register holds
+at return, and whatever else was held, held. The other registers hold
+whatever they hold, but for those said. -/
+def returnsWith (results : List (Reg × Val) := []) (room : Nat := 0)
+    (takes : List (Reg × Nat) := []) (gives : List (Reg × Nat) := []) : TyS :=
   .code
     (regsWith
       (regsWith anyRegs (keptRegs.map fun r => (r, .bvar 1 (allRegs.idxOf r))))
       ((.rsp, .add (.bvar 1 4) (.lit 8)) :: results))
-    (.bvar 0) [(.add (.bvar 1 4) (.lit (-(BitVec.ofNat 64 room))), ⟨room + 8, []⟩)] .nil (.bvar 1)
+    (.bvar 0)
+    ((.add (.bvar 1 4) (.lit (-(BitVec.ofNat 64 room))), ⟨room + 8, []⟩) ::
+      (takes.map fun t => (.bvar 1 (allRegs.idxOf t.1), ⟨t.2, []⟩)) ++
+      gives.map fun t => (.bvar 0 (allRegs.idxOf t.1), ⟨t.2, []⟩))
+    .nil (.bvar 1)
 
-/-- **A label where a function is entered**: the return address at the
-stack pointer, known to be code wanting what the function returns with; so
-many bytes below the stack pointer the function's to use; whatever else its
-caller holds; and the registers and facts said. -/
+/-- **A label where a function is entered, or inside it with nothing
+pushed**: the return address at the stack pointer, known to be code wanting
+what the function returns with; so many bytes below the stack pointer the
+function's to use; the regions it takes from its caller and gives back,
+each at the address a register holds at entry and so many bytes; the
+regions it hands its caller when it returns; whatever else its caller
+holds; and the registers and facts said. -/
 def inFunction (regs : List (Reg × Val) := []) (known : List (Val × TyS) := [])
-    (room : Nat := 0) (results : List (Reg × Val) := []) : CtxS where
+    (room : Nat := 0) (results : List (Reg × Val) := []) (takes : List (Reg × Nat) := [])
+    (gives : List (Reg × Nat) := []) : CtxS where
   regs := regsWith anyRegs regs
   flags := .bvar 0
-  held := [(.add (.bvar 0 4) (.lit (-(BitVec.ofNat 64 room))), ⟨room + 8, [(room, .bvar 0 16)]⟩)]
-  known := (.bvar 0 16, returnsWith results room) :: known
+  held := (.add (.bvar 0 4) (.lit (-(BitVec.ofNat 64 room))), ⟨room + 8, [(room, .bvar 0 16)]⟩) ::
+    takes.map fun t => (.bvar 0 (allRegs.idxOf t.1), ⟨t.2, []⟩)
+  known := (.bvar 0 16, returnsWith results room takes gives) :: known
   rest := .bvar 0
 
 /-- **A label in the program's own code, outside any function**: the stack
 it started with held whole, the stack pointer so many bytes below where it
-started; and the registers and facts said. -/
+started; the registers and facts said; and whatever regions it holds
+besides. -/
 def inProgram (n : Nat) (pushed : Nat := 0) (regs : List (Reg × Val) := [])
-    (known : List (Val × TyS) := []) : CtxS :=
-  if n = 0 then { entryPat with regs := regsWith anyRegs regs, known := known }
+    (known : List (Val × TyS) := []) (held : List (Val × HeldS) := []) : CtxS :=
+  if n = 0 then { entryPat with regs := regsWith anyRegs regs, known := known, held := held }
   else
     { entryPatStack (stackSize n) with
       regs := regsWith
         (anyRegs.set .rsp (.add (.bvar 0 16) (.lit (BitVec.ofNat 64 (stackSize n - pushed))))) regs
-      known := known }
+      known := known
+      held := (entryPatStack (stackSize n)).held ++ held }
 
 /-- What a program says of something in one of its segments: that its
 address is that of a byte of the segment's block. -/

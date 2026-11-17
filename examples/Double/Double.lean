@@ -1,59 +1,39 @@
 import DoubleProgram
-import TypedAsm.Tactic
+import TypedAsm.U.Checked
 
 /-!
 # Double: typing and safety
 
-The program is in `DoubleProgram.lean`. This file types it and proves it
-safe. It is kept separate so that running the program does not link the
-tactics.
+The program is in `DoubleProgram.lean`. This file says what its labels want
+and checks it: one check, run by Lean's kernel, that the code is typed and
+that the state the kernel loads the program into starts as its entry asks.
+Nothing is proved by hand.
+
+The theorems hold whatever the program is given to read and wherever the
+kernel puts the memory it asks for.
+
+It is kept separate so that running the program does not link the checker.
 -/
 
-open TypedAsm
+open TypedAsm TypedAsm.U
 
 namespace Double
 
-/-! ## The typing -/
+/-! ## What the labels want -/
 
-/-- A page of plain bytes. -/
-abbrev words : Shape := .raw 4096
+/-- The program for the checker: its instructions. -/
+def pg : Prog := { code := progCode (Asm.table base code) }
 
-/-- `double` called with exactly `p` in `rdi` takes the page at `p` and gives
-it back, still a page of plain bytes. It uses no stack. -/
-def doubleSig (p : BitVec 64) : FnSig where
-  args := fun r => if r = .rdi then .eq p else .int
-  results := fun _ => .int
-  preserved := calleeSaved
-  need := 0
-  takes := [(p, words)]
-  gives := [(p, words)]
+/-- The labels. `double` takes from its caller the page at the address in
+`rdi`, and gives it back when it returns: while it runs the page is its
+own, and after it the caller's again. The loop inside it is the same. -/
+def labels : List U.Label :=
+  [⟨entry, inProgram 1⟩,
+   ⟨Asm.addr code base .double, inFunction (takes := [(.rdi, 4096)])⟩,
+   ⟨Asm.addr code base .loop, inFunction (takes := [(.rdi, 4096)])⟩]
 
-/-- Back from the call: `rbx` still holds the page's address, and the page
-is the program's again. -/
-def backCtx (p : BitVec 64) : Ctx :=
-  ⟨fun r => if r = .rbx then .eq p else .int, [], 8, Flags.Any, [(p, words)], 0⟩
+/-! ## The check, and what it shows -/
 
-/-- Inside the function: `rdi` holds the page's address, the page is the
-function's, and after it come whatever blocks the caller owns besides. -/
-def inside (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) : Ctx :=
-  ⟨fun r => if r = .rdi then .eq p else if calleeSaved r then saved r else .int,
-    .slot (.code ret) :: rest, room, Flags.Any, (p, words) :: ret.owned.drop 1, ret.above⟩
-
-/-- The contexts allowed at each label. -/
-inductive At : Label → Ctx → Prop
-  | start : At .start (entryCtx 1)
-  | back (p : BitVec 64) : At .back (backCtx p)
-  | double (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
-    (doubleSig p).CallerOk saved ret rest room →
-    At .double ((doubleSig p).entry saved ret rest room)
-  | loop (p : BitVec 64) (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
-    (doubleSig p).CallerOk saved ret rest room → At .loop (inside p saved ret rest room)
-
-asm_typing At
-
-/-! ## Safety -/
-
-asm_safety At.start
+asm_checked code start .start stack 1 program pg labels labels fuel 60
 
 end Double
-

@@ -1,57 +1,39 @@
 import FreshProgram
-import TypedAsm.Tactic
+import TypedAsm.U.Checked
 
 /-!
 # Fresh: typing and safety
 
-The program is in `FreshProgram.lean`. This file types it and proves it
-safe. It is kept separate so that running the program does not link the
-tactics.
+The program is in `FreshProgram.lean`. This file says what its labels want
+and checks it: one check, run by Lean's kernel, that the code is typed and
+that the state the kernel loads the program into starts as its entry asks.
+Nothing is proved by hand.
+
+The theorems hold whatever the program is given to read and wherever the
+kernel puts the memory it asks for.
+
+It is kept separate so that running the program does not link the checker.
 -/
 
-open TypedAsm
+open TypedAsm TypedAsm.U
 
 namespace Fresh
 
-/-! ## The typing -/
+/-! ## What the labels want -/
 
-/-- A page of plain bytes. -/
-abbrev words : Shape := .raw 4096
+/-- The program for the checker: its instructions. -/
+def pg : Prog := { code := progCode (Asm.table base code) }
 
-/-- `page` takes nothing and uses no stack. Whatever address `x` it returns
-in `rax`, it hands its caller a page of plain bytes there. -/
-def pageSig : FnSigEx (BitVec 64) where
-  args := fun _ => .int
-  preserved := calleeSaved
-  need := 0
-  results := fun x r => if r = .rax then .eq x else .int
-  gives := fun x => [(x, words)]
+/-- The labels. `page` hands its caller a page of memory, at the address it
+returns in `rax`: for whatever address the kernel chose. In the loop the
+program holds that page, at the address in `rbx`, besides its stack. -/
+def labels : List U.Label :=
+  [⟨entry, inProgram 1⟩,
+   ⟨Asm.addr code base .page, inFunction (gives := [(.rax, 4096)])⟩,
+   ⟨Asm.addr code base .loop, inProgram 1 (held := [(.was .rbx, ⟨4096, []⟩)])⟩]
 
-/-- Back from the call with `x` in `rax`: the page at `x` is the program's. -/
-def backCtx (x : BitVec 64) : Ctx :=
-  ⟨fun r => if r = .rax then .eq x else .int, [], 8, Flags.Any, [(x, words)], 0⟩
+/-! ## The check, and what it shows -/
 
-/-- In the loop: `rbx` holds the page's address, and the page is all numbers. -/
-def loopCtx (p : BitVec 64) : Ctx :=
-  ⟨fun r => if r = .rbx then .eq p else .int, [], 8, Flags.Any, [(p, words)], 0⟩
-
-/-- The contexts allowed at each label. The return point `back` allows one
-for every address the page could be at; `fail` can be reached from anywhere. -/
-inductive At : Label → Ctx → Prop
-  | start : At .start (entryCtx 1)
-  | back (x : BitVec 64) : At .back (backCtx x)
-  | loop (p : BitVec 64) : At .loop (loopCtx p)
-  | done (p : BitVec 64) : At .done (loopCtx p)
-  | page (saved : Reg → Ty) (ret : BitVec 64 → Ctx) (rest : List Shape) (room : Nat)
-      (frame : List (BitVec 64 × Shape)) (above : Nat) :
-    pageSig.CallerOk saved ret rest room frame above →
-    At .page (pageSig.entry saved ret rest room frame above)
-
-asm_typing At
-
-/-! ## Safety -/
-
-asm_safety At.start
+asm_checked code start .start stack 1 program pg labels labels fuel 60
 
 end Fresh
-
