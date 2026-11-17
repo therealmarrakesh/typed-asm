@@ -48,6 +48,36 @@ example : rangeHolds [(.var 0, .range 0 4)] (.add (.var 0) (.lit 1)) 0 4 = false
 example : rangeHolds [(.var 0, .range 0 4), (.var 0, .range 4 2)]
     (.add (.var 0) (.lit 3)) 7 5 = true := by decide +kernel
 
+/-! ## Between what numbers, by everything known -/
+
+/-- The stack, `rdx` at most so much, and `rcx` below `rdx`. -/
+def Pbelow (top : BitVec 64) : CtxS :=
+  { Pw with known := [(.bvar 0 2, .range 0 top), (.bvar 0 1, .upTo (.bvar 0 2) true)] }
+
+-- a value below one that is at most four is at most three; and the one it
+-- is below is at least one
+example : (Pbelow 4).within (.bvar 0 1) = some (0, 3) := by decide +kernel
+example : (Pbelow 4).within (.bvar 0 2) = some (1, 4) := by decide +kernel
+-- eight times it past the stack pointer: from thirty-two into the region, for
+-- at most twenty-four more
+example : (Pbelow 4).spanFrom (.add (.add (.bvar 0 16) (.lit 32)) (.un (.shl 3) (.bvar 0 1)))
+    (.bvar 0 16) = some (32, 24) := by decide +kernel
+-- an address nothing ties to the region: no answer
+example : (Pbelow 4).spanFrom (.bvar 0 5) (.bvar 0 16) = none := by decide +kernel
+
+/-- `mov rax, [rsp + rcx*8]`, and the program ends. -/
+def codeBelow : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .mov .w64 (.r_m .rax (.sib (some .rsp) (some (.rcx, .s8)) 0)), 4),
+   (4, .mov .w32 (.rm_i (.reg .rax) 60), 5), (9, .syscall, 2)]
+
+-- thirty-two bytes above the stack pointer are held: an index below a count
+-- of at most four reads inside them
+example : checkProgram (prog codeBelow) [lab 0 (Pbelow 4)] 10 0 = true := by decide +kernel
+-- of at most five, it may read past them: refused
+example : checkProgram (prog codeBelow) [lab 0 (Pbelow 5)] 10 0 = false := by decide +kernel
+-- and with nothing known of the index: refused
+example : checkProgram (prog codeBelow) [lab 0 Pw] 10 0 = false := by decide +kernel
+
 /-! ## A loop over a table
 
 A family that ties two registers: the pointer is at element `i`, the count
