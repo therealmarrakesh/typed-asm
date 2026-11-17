@@ -158,4 +158,21 @@ theorem Val.linSame_den (ρ : Env) {a b : Val} (h : a.linSame b = true) : a.den 
   simp only [Lin.den, h.1, h.2, multDen] at e
   grind
 
+/-- How far one term is past another, where taking the second from the
+first leaves only a number. -/
+def Val.minus (a p : Val) : Option (BitVec 64) :=
+  if (Lin.addMul (-1) p.lin a.lin).ms.isEmpty then some (Lin.addMul (-1) p.lin a.lin).k else none
+
+theorem Val.minus_den (ρ : Env) {a p : Val} {k : BitVec 64} (h : a.minus p = some k) :
+    a.den ρ = p.den ρ + k := by
+  unfold Val.minus at h
+  split at h
+  · next he =>
+    cases h
+    have e := Lin.addMul_den (Val.den ρ) (-1) p.lin a.lin
+    rw [Val.lin_den, Val.lin_den] at e
+    simp only [Lin.den, List.isEmpty_iff.mp he, multDen] at e
+    grind
+  · cases h
+
 end TypedAsm.U

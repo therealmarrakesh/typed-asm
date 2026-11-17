@@ -1,6 +1,7 @@
 import TypedAsm.U.Check
 import TypedAsm.U.CondRel
 import TypedAsm.U.Norm
+import TypedAsm.U.Lin
 
 /-!
 # Which bytes an address names
@@ -53,20 +54,19 @@ theorem Val.summands_den (ρ : Env) : (a : Val) → a.den ρ = sumDen ρ a.summa
   | .tri .. => sumDen_one ρ _
   | .fop .. => sumDen_one ρ _
 
-/-- How far an address is past another, where the two are sums of the same
-terms: the difference of the numbers added. -/
-def offsetFrom (a base : Val) : Option Nat :=
-  if a.summands.1 = base.summands.1 then some (a.summands.2 - base.summands.2).toNat else none
+/-- How far an address is past another, where taking the one from the
+other leaves only a number, however the two are written. -/
+def offsetFrom (a base : Val) : Option Nat := (a.minus base).map (·.toNat)
 
 theorem offsetFrom_den {ρ : Env} {a base : Val} {o : Nat} (h : offsetFrom a base = some o) :
     a.den ρ = base.den ρ + BitVec.ofNat 64 o := by
   unfold offsetFrom at h
-  split at h
-  · next he =>
+  cases hm : a.minus base with
+  | none => rw [hm] at h; cases h
+  | some k =>
+    rw [hm] at h
     cases h
-    rw [Val.summands_den ρ a, Val.summands_den ρ base, he]
-    bv_omega
-  · cases h
+    rw [Val.minus_den ρ hm, BitVec.ofNat_toNat, BitVec.setWidth_eq]
 
 /-- **The region the context holds that an address names bytes of**, with
 how far in: the first whose address the address is a number past, by less

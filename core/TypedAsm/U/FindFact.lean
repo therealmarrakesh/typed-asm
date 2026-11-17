@@ -80,11 +80,12 @@ def findFact (kinds : Nat → Option ShapeS) (a : Val) (n : Nat) :
   | (p, τ) :: rest =>
     match τ.pointee kinds with
     | some (Sh, w, off) =>
-      if a.summands.1 = p.summands.1 then
-        if (a.summands.2 - p.summands.2 + BitVec.ofNat 64 off).toNat + n ≤ Sh.size then
-          some (p, Sh, w, off, (a.summands.2 - p.summands.2 + BitVec.ofNat 64 off).toNat)
+      match a.minus p with
+      | some d =>
+        if (d + BitVec.ofNat 64 off).toNat + n ≤ Sh.size then
+          some (p, Sh, w, off, (d + BitVec.ofNat 64 off).toNat)
         else findFact kinds a n rest
-      else findFact kinds a n rest
+      | none => findFact kinds a n rest
     | none => findFact kinds a n rest
 
 theorem findFact_spec {ρ : Env} {kinds : Nat → Option ShapeS} {a : Val} {n : Nat} :
@@ -103,16 +104,12 @@ theorem findFact_spec {ρ : Env} {kinds : Nat → Option ShapeS} {a : Val} {n : 
     split at h
     · next Sh' w' off' hpt =>
       split at h
-      · next hsum =>
+      · next d hsum =>
         split at h
         · next hin =>
           cases h
           refine ⟨τ, List.mem_cons_self, hpt, hin, ?_⟩
-          rw [Val.summands_den ρ a, Val.summands_den ρ q, hsum, BitVec.ofNat_toNat,
-            BitVec.setWidth_eq]
-          rw [BitVec.add_assoc, BitVec.add_assoc]
-          congr 1
-          rw [← BitVec.add_assoc, BitVec.add_comm q.summands.2, BitVec.sub_add_cancel]
+          rw [Val.minus_den ρ hsum, BitVec.ofNat_toNat, BitVec.setWidth_eq, BitVec.add_assoc]
         · exact tail h
       · exact tail h
     · exact tail h
