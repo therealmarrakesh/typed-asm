@@ -398,6 +398,31 @@ example : mayReturn (.add (.bvar 1 16) (.lit 40)) = true := by decide +kernel
 -- it wants the stack pointer where it was before the return: refused
 example : mayReturn (.add (.bvar 1 16) (.lit 32)) = false := by decide +kernel
 
+/-! ## Code wanting one family, known to want another -/
+
+/-- Code wanting these registers, the stack held, nothing else. -/
+def codeT (regs : Regs Val) : TyS := .code regs (.bvar 0) [(.bvar 1 16, ⟨64, []⟩)] .nil .none
+
+/-- `rax` is known to be so. -/
+def raxIs (τ : TyS) : CtxS := { Pw with known := [(.bvar 0 0, τ)] }
+
+/-- `nop; exit`, with a label at each: what the second asks of `rax` must
+follow from what the first knows of it. -/
+def codeEnt : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .nop, 1), (1, .mov .w32 (.rm_i (.reg .rax) 60), 5), (6, .syscall, 2)]
+
+-- code ready whatever `rdi` holds is code ready where `rdi` holds nought
+example : checkProgram codeEnt
+    [lab 0 (raxIs (codeT anyRegs)), lab 1 (raxIs (codeT (anyRegs.set .rdi (.lit 0))))] 10 0
+    = true := by decide +kernel
+-- but code that wants nought in `rdi` is not code ready whatever it holds: refused
+example : checkProgram codeEnt
+    [lab 0 (raxIs (codeT (anyRegs.set .rdi (.lit 0)))), lab 1 (raxIs (codeT anyRegs))] 10 0
+    = false := by decide +kernel
+-- of a value nothing is known of, nothing follows: refused
+example : checkProgram codeEnt [lab 0 Pw, lab 1 (raxIs (codeT anyRegs))] 10 0 = false := by
+  decide +kernel
+
 /-! ## A function called
 
 A function is code wanting its entry family: the registers as its caller
