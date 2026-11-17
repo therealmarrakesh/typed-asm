@@ -65,6 +65,12 @@ def _root_.TypedAsm.Instr.flagSrc : Instr → Option (FlagKind × Width × Opnd 
   | .test w dst (.reg _) => some (.tst, w, rmOpnd dst 0, .arg (rmRegs dst).length)
   | .test w dst (.imm i) => some (.tst, w, rmOpnd dst 0, .imm i)
   | .unary .neg w dst => some (.sub, w, .zero, rmOpnd dst 0)
+  | .shift op w dst (.imm k) =>
+    if k.toNat % w.bits = 0 then none
+    else
+      match op with
+      | .shl | .shr | .sar => some (.res, w, resOpnd dst, resOpnd dst)
+      | _ => none
   | _ => none
 
 /-- An operand, at a width. -/
@@ -84,6 +90,16 @@ def FlagKind.Holds {n : Nat} : FlagKind → BitVec n → BitVec n → Flags → 
 
 theorem wide_low (w : Width) (r : BitVec w.bits) : (wide r).setWidth w.bits = r := by
   cases w <;> simp [wide, Width.bits]
+
+/-- A shift by a count that is not nought leaves the zero and sign flags
+those of its result. -/
+theorem shift_res {n : Nat} {op : ShiftOp} (hop : op = .shl ∨ op = .shr ∨ op = .sar) (fl : Flags)
+    (a : BitVec n) {c : Nat} (hc : c ≠ 0) :
+    (op.eval fl a c).2.zf = some ((op.eval fl a c).1 == 0) ∧
+      (op.eval fl a c).2.sf = some (op.eval fl a c).1.msb := by
+  unfold ShiftOp.eval
+  simp only [hc, ↓reduceIte]
+  rcases hop with rfl | rfl | rfl <;> exact ⟨rfl, rfl⟩
 
 /-- **Each instruction's flags come from where the table says.** -/
 theorem flagSrc_sound {i : Instr} {k : FlagKind} {w : Width} {A B : Opnd}
@@ -110,6 +126,47 @@ theorem flagSrc_sound {i : Instr} {k : FlagKind} {w : Width} {A B : Opnd}
     cases op
     · cases h; cases dst <;> rfl
     · cases h
+  | shift op w' dst cnt =>
+    cases cnt with
+    | cl => cases h
+    | imm c =>
+      by_cases hc : c.toNat % w'.bits = 0
+      · simp only [Instr.flagSrc, hc, ↓reduceIte] at h
+        cases h
+      · simp only [Instr.flagSrc, hc, ↓reduceIte] at h
+        have hop : op = .shl ∨ op = .shr ∨ op = .sar := by
+          cases op with
+          | shl => exact .inl rfl
+          | shr => exact .inr (.inl rfl)
+          | sar => exact .inr (.inr rfl)
+          | rol => cases h
+          | ror => cases h
+        have hh : (k, w, A, B) = (FlagKind.res, w', resOpnd dst, resOpnd dst) := by
+          rcases hop with rfl | rfl | rfl <;> exact (Option.some.inj h).symm
+        cases hh
+        cases dst with
+        | reg r =>
+          have key := shift_res hop fl ((BitVec.setWidth w.bits va)) hc
+          refine ⟨?_, ?_⟩
+          · show (ShiftOp.eval op fl (BitVec.setWidth w.bits va) (c.toNat % w.bits)).2.zf
+              = some ((wide (ShiftOp.eval op fl (BitVec.setWidth w.bits va)
+                  (c.toNat % w.bits)).1).setWidth w.bits == 0)
+            rw [wide_low]; exact key.1
+          · show (ShiftOp.eval op fl (BitVec.setWidth w.bits va) (c.toNat % w.bits)).2.sf
+              = some ((wide (ShiftOp.eval op fl (BitVec.setWidth w.bits va)
+                  (c.toNat % w.bits)).1).setWidth w.bits).msb
+            rw [wide_low]; exact key.2
+        | mem m =>
+          have key := shift_res hop fl ((BitVec.setWidth w.bits cell)) hc
+          refine ⟨?_, ?_⟩
+          · show (ShiftOp.eval op fl (BitVec.setWidth w.bits cell) (c.toNat % w.bits)).2.zf
+              = some ((wide (ShiftOp.eval op fl (BitVec.setWidth w.bits cell)
+                  (c.toNat % w.bits)).1).setWidth w.bits == 0)
+            rw [wide_low]; exact key.1
+          · show (ShiftOp.eval op fl (BitVec.setWidth w.bits cell) (c.toNat % w.bits)).2.sf
+              = some ((wide (ShiftOp.eval op fl (BitVec.setWidth w.bits cell)
+                  (c.toNat % w.bits)).1).setWidth w.bits).msb
+            rw [wide_low]; exact key.2
   | _ => cases h
 
 end TypedAsm.U

@@ -93,6 +93,15 @@ theorem flagSrc_res {i : Instr} {w : Width} {A B : Opnd} (h : i.flagSrc = some (
   | alu op w' ops => cases op <;> cases h <;> rfl
   | test w' dst src => cases src <;> cases h
   | unary op w' dst => cases op <;> cases h
+  | shift op w' dst cnt =>
+    cases cnt with
+    | cl => cases h
+    | imm c =>
+      by_cases hc : c.toNat % w'.bits = 0
+      · simp only [Instr.flagSrc, hc, ↓reduceIte] at h
+        cases h
+      · simp only [Instr.flagSrc, hc, ↓reduceIte] at h
+        cases op <;> first | (cases h; rfl) | (cases h; done)
   | _ => cases h
 
 /-- **What a condition on the flags comes to**, where the flags are those an

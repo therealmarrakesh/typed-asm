@@ -457,6 +457,17 @@ example : checkProgram codeR [lab 0 Pw] 10 0 = true := by decide +kernel
 -- entered past the first comparison, the second jump may be taken, to nowhere: refused
 example : checkProgram codeR [lab 6 Pw] 10 0 = false := by decide +kernel
 
+/-- `shr rdi, 1; jne on; cmp rdi, 1; jae nowhere; on: exit`: after the
+shift, not taking `jne` means the result is zero, so it is not at least one. -/
+def codeS : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .shift .shr .w64 (.reg .rdi) (.imm 1), 4), (4, .jcc .ne 6, 2),
+   (6, .alu .cmp .w64 (.rm_i (.reg .rdi) 1), 4), (10, .jcc .ae 188, 2),
+   (12, .mov .w32 (.rm_i (.reg .rax) 60), 5), (17, .syscall, 2)]
+
+-- a shift leaves the zero flag that of its result: the jump after the
+-- comparison is seen to be impossible
+example : checkProgram codeS [lab 0 Pw] 10 0 = true := by decide +kernel
+
 /-! ## Memory mapped, used and given back
 
 `mmap` hands back an error number or the address of fresh memory; `munmap`
