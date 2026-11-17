@@ -170,19 +170,42 @@ end WellTyped
 
 theorem storeN_regs (s : State) (n : Nat) (a v : BitVec 64) : (storeN s n a v).regs = s.regs := by
   unfold storeN
-  split <;> rfl
+  split <;> simp only [State.store64, State.store32, State.store16, State.regs_store8]
 
 theorem storeN_perm (s : State) (n : Nat) (a v : BitVec 64) : (storeN s n a v).perm = s.perm := by
   unfold storeN
-  split <;> rfl
+  split <;> simp only [State.store64, State.store32, State.store16, State.store8, State.perm]
+
+theorem mem_store8_ne (s : State) {a x : BitVec 64} (v : BitVec 8) (h : x ≠ a) :
+    (s.store8 a v).mem x = s.mem x := by
+  rw [State.mem_store8]
+  simp only [h, ↓reduceIte]
+
+theorem mem_store16_out (s : State) (a x : BitVec 64) (v : BitVec 16) (h : 2 ≤ x - a) :
+    (s.store16 a v).mem x = s.mem x := by
+  unfold State.store16
+  rw [mem_store8_ne _ _ (by bv_omega), mem_store8_ne _ _ (by bv_omega)]
+
+theorem mem_store32_out (s : State) (a x : BitVec 64) (v : BitVec 32) (h : 4 ≤ x - a) :
+    (s.store32 a v).mem x = s.mem x := by
+  unfold State.store32
+  rw [mem_store16_out _ _ _ _ (by bv_omega), mem_store16_out _ _ _ _ (by bv_omega)]
+
+theorem mem_store64_out (s : State) (a x : BitVec 64) (v : BitVec 64) (h : 8 ≤ x - a) :
+    (s.store64 a v).mem x = s.mem x := by
+  unfold State.store64
+  rw [mem_store32_out _ _ _ _ (by bv_omega), mem_store32_out _ _ _ _ (by bv_omega)]
 
 /-- A store changes no byte outside the bytes it is of. -/
 theorem storeN_mem_out (s : State) (n : Nat) (a v x : BitVec 64) (hn : n ≤ 8)
     (h : BitVec.ofNat 64 n ≤ x - a) : (storeN s n a v).mem x = s.mem x := by
   unfold storeN
-  split <;>
-    simp only [State.store64, State.store32, State.store16, State.mem_store8] at * <;>
-    (repeat' split) <;> first | rfl | bv_omega
+  split
+  · exact mem_store8_ne s _ (by bv_omega)
+  · exact mem_store16_out s a x _ h
+  · exact mem_store32_out s a x _ h
+  · exact mem_store64_out s a x _ h
+  · rfl
 
 /-- Nor any eight bytes apart from them. -/
 theorem storeN_load64_out (s : State) (n : Nat) (a v y : BitVec 64) (hn : n ≤ 8)
@@ -210,7 +233,7 @@ theorem Reads.held {Γ : Ctx} {k : Nat} {b : BitVec 64} {S : Held} {o n : Nat}
   intro j Ψ' he hwf s hw
   obtain ⟨hklt, hkeq⟩ := List.getElem?_eq_some_iff.mp hk
   have hmem : (b, S) ∈ Γ.held := hkeq ▸ List.getElem_mem hklt
-  refine ⟨State.canRead_of_canWrite (State.canWrite_sub (hw.held.perm _ hmem) hin),
+  refine ⟨State.canRead_of_canWrite (State.canWrite_sub (n := S.size) (hw.held.perm (b, S) hmem) hin),
     Γ, ⟨rfl, ?_⟩, rfl, rfl, hw⟩
   intro h8 w hwv
   subst h8
@@ -224,8 +247,9 @@ theorem Writes.held {Γ : Ctx} {k : Nat} {b : BitVec 64} {S : Held} {o n : Nat} 
   refine ⟨rfl, rfl, fun j Ψ' he hwf s hw => ?_⟩
   obtain ⟨hklt, hkeq⟩ := List.getElem?_eq_some_iff.mp hk
   have hmem : (b, S) ∈ Γ.held := hkeq ▸ List.getElem_mem hklt
-  refine ⟨State.canWrite_sub (hw.held.perm _ hmem) hin, ?_⟩
-  refine hw.writeHeld hwf hk hin ?_ ?_ (storeN_regs _ _ _ _) (storeN_flags _ _ _ _)
+  refine ⟨State.canWrite_sub (n := S.size) (hw.held.perm (b, S) hmem) hin, ?_⟩
+  refine hw.writeHeld (S' := heldPut S o n v) (lo := o) (cnt := n) hwf hk hin ?_ ?_
+    (storeN_regs _ _ _ _) (storeN_flags _ _ _ _)
     (storeN_perm _ _ _ _) (fun y hy => storeN_load64_out _ _ _ _ _ hn hy)
     (fun x hx => storeN_mem_out _ _ _ _ _ hn hx) ?_
   · unfold heldPut; split <;> rfl
@@ -265,8 +289,9 @@ theorem Writes.heldIn {Γ : Ctx} {k : Nat} {b : BitVec 64} {S : Held} {o o' L n 
   obtain ⟨hklt, hkeq⟩ := List.getElem?_eq_some_iff.mp hk
   have hmem : (b, S) ∈ Γ.held := hkeq ▸ List.getElem_mem hklt
   have hin : o' + n ≤ S.size := by omega
-  refine ⟨State.canWrite_sub (hw.held.perm _ hmem) hin, ?_⟩
-  refine hw.writeHeld hwf hk hin rfl ?_ (storeN_regs _ _ _ _) (storeN_flags _ _ _ _)
+  refine ⟨State.canWrite_sub (n := S.size) (hw.held.perm (b, S) hmem) hin, ?_⟩
+  refine hw.writeHeld (S' := S.clear o L) (lo := o') (cnt := n) hwf hk hin rfl ?_
+    (storeN_regs _ _ _ _) (storeN_flags _ _ _ _)
     (storeN_perm _ _ _ _) (fun y hy => storeN_load64_out _ _ _ _ _ hn hy)
     (fun x hx => storeN_mem_out _ _ _ _ _ hn hx) ?_
   · intro p hp
