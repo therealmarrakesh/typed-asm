@@ -1,6 +1,7 @@
 import TypedAsm.U.Walk
 import TypedAsm.U.Subst
 import TypedAsm.U.JoinS
+import TypedAsm.U.Open
 
 /-!
 # A program's labels
@@ -142,16 +143,21 @@ def matchCtx (Δ Γ : CtxS) : InstL :=
 
 /-! ## Naming what the context reached does not say -/
 
-/-- The bytes a label says hold a value and the context reached says
-nothing of: in which region, and where. -/
-def wanted (Δ Γ : CtxS) : List (Nat × Nat) :=
-  let σ₁ := Inst.ofLists (regInst Δ Γ) [] []
-  Δ.held.flatMap fun d =>
-    match hostExtent (d.1.subst σ₁) d.2.size Γ.held 0 with
+/-- The bytes that regions wanted say hold a value and the context reached
+says nothing of: in which region of the context, and where. The regions
+wanted are given with their addresses as terms of the context reached. -/
+def wantedHeld (held : List (Val × HeldS)) (Γ : CtxS) : List (Nat × Nat) :=
+  held.flatMap fun d =>
+    match hostExtent d.1 d.2.size Γ.held 0 with
     | some (i, o, G) =>
       d.2.slots.filterMap fun p =>
         if G.slots.any fun q => q.1 == o + p.1 then none else some (i, o + p.1)
     | none => []
+
+/-- Those of a label. -/
+def wanted (Δ Γ : CtxS) : List (Nat × Nat) :=
+  let σ₁ := Inst.ofLists (regInst Δ Γ) [] []
+  wantedHeld (Δ.held.map fun d => (d.1.subst σ₁, d.2)) Γ
 
 /-- A context with a region it holds said to hold, at eight of its bytes,
 the value the name `k` stands for. -/
@@ -162,9 +168,13 @@ def CtxS.nameSlot (Γ : CtxS) (i o k : Nat) : Option CtxS :=
     else none
   | none => none
 
-theorem CtxS.nameSlot_ok {n : Nat} {a : BitVec 64} {Γ Γ' : CtxS} {i o k : Nat}
+theorem CtxS.nameSlot_ok (Q : Ctx → Prop)
+    (hname : ∀ {Γ : Ctx} {i : Nat} {b : BitVec 64} {S : Held}, Γ.held[i]? = some (b, S) →
+      ∀ {o : Nat}, o + 8 ≤ S.size →
+      (∀ x, Q { Γ with held := Γ.held.set i (b, ⟨S.size, (o, x) :: S.vals⟩) }) → Q Γ)
+    {Γ Γ' : CtxS} {i o k : Nat}
     (h : Γ.nameSlot i o k = some Γ') (hu : Γ.under k = true) (ρ : Env)
-    (hok : ∀ x, Ok fetch sys Ψ n a (Γ'.den (ρ.setVal k x))) : Ok fetch sys Ψ n a (Γ.den ρ) := by
+    (hok : ∀ x, Q (Γ'.den (ρ.setVal k x))) : Q (Γ.den ρ) := by
   unfold CtxS.nameSlot at h
   cases hi : Γ.held[i]? with
   | none => rw [hi] at h; cases h
@@ -175,7 +185,7 @@ theorem CtxS.nameSlot_ok {n : Nat} {a : BitVec 64} {Γ Γ' : CtxS} {i o k : Nat}
     split at h
     · next ho =>
       cases h
-      refine Ok.nameSlot (S := S.den ρ) (CtxS.held_den ρ Γ hi) ho fun x => ?_
+      refine hname (S := S.den ρ) (CtxS.held_den ρ Γ hi) ho fun x => ?_
       have hΓ : Γ.den (ρ.setVal k x) = Γ.den ρ := CtxS.den_setVal ρ k x Γ hu
       have hb : (b.den (ρ.setVal k x), S.den (ρ.setVal k x)) = (b.den ρ, S.den ρ) := by
         have h1 := CtxS.held_den (ρ.setVal k x) Γ hi
@@ -219,12 +229,16 @@ def nameSlots (Γ : CtxS) : List (Nat × Nat) → Nat → Option CtxS
     | some Γ' => if Γ'.under (k + 1) then nameSlots Γ' ws (k + 1) else none
     | none => none
 
-theorem nameSlots_ok {n : Nat} {a : BitVec 64} :
+theorem nameSlots_ok (Q : Ctx → Prop)
+    (hname : ∀ {Γ : Ctx} {i : Nat} {b : BitVec 64} {S : Held}, Γ.held[i]? = some (b, S) →
+      ∀ {o : Nat}, o + 8 ≤ S.size →
+      (∀ x, Q { Γ with held := Γ.held.set i (b, ⟨S.size, (o, x) :: S.vals⟩) }) → Q Γ) :
     (ws : List (Nat × Nat)) → (Γ Γ' : CtxS) → (k : Nat) → nameSlots Γ ws k = some Γ' →
-    Γ.under k = true → (∀ ρ', Ok fetch sys Ψ n a (Γ'.den ρ')) →
-    ∀ ρ, Ok fetch sys Ψ n a (Γ.den ρ)
-  | [], Γ, Γ', _, h, _, hok, ρ => by cases h; exact hok ρ
-  | w :: ws, Γ, Γ', k, h, hu, hok, ρ => by
+    Γ.under k = true → (ρ : Env) →
+    (∀ ρ', (∀ v : Val, v.under k = true → v.den ρ' = v.den ρ) → Q (Γ'.den ρ')) →
+    Q (Γ.den ρ)
+  | [], Γ, Γ', _, h, _, ρ, hok => by cases h; exact hok ρ fun _ _ => rfl
+  | w :: ws, Γ, Γ', k, h, hu, ρ, hok => by
     unfold nameSlots at h
     cases h1 : Γ.nameSlot w.1 w.2 k with
     | none => rw [h1] at h; cases h
@@ -233,16 +247,78 @@ theorem nameSlots_ok {n : Nat} {a : BitVec 64} :
       simp only at h
       split at h
       · next hu₁ =>
-        exact CtxS.nameSlot_ok h1 hu ρ fun x =>
-          nameSlots_ok ws Γ₁ Γ' (k + 1) h hu₁ hok _
+        refine CtxS.nameSlot_ok Q hname h1 hu ρ fun x => ?_
+        refine nameSlots_ok Q hname ws Γ₁ Γ' (k + 1) h hu₁ _ fun ρ' hag => ?_
+        refine hok ρ' fun v hv => ?_
+        rw [hag v (Val.under_mono (Nat.le_succ k) v hv)]
+        exact Val.den_setVal ρ k x v hv
       · cases h
+
+/-! ## Terms for the values of a family -/
+
+/-- The term a value of the nearest family must be given for a pattern to
+be a value: the value, where the pattern is that name; the value less a
+number, where the pattern is the name and that number more. -/
+def bindB (pat got : Val) : List (Nat × Val) :=
+  match pat with
+  | .bvar 0 j => [(j, got)]
+  | .add (.bvar 0 j) (.lit c) => [(j, .add got (.lit (-c)))]
+  | _ => []
+
+/-- Terms for a family's values, as a list, and one for its flags. -/
+structure OpenL where
+  bs : List (Nat × Val) := []
+  f : FlagsT := .lit Flags.unknown
+
+def OpenL.opening (l : OpenL) : Opening := ⟨fun j => (l.bs.lookup j).getD (.lit 0), l.f⟩
+
+def OpenL.closed (l : OpenL) : Bool := (l.bs.all fun p => p.2.closedAt 0) && l.f.closedAt 0
+
+theorem OpenL.closed_opening {l : OpenL} (h : l.closed = true) : l.opening.Closed := by
+  simp only [OpenL.closed, Bool.and_eq_true, List.all_eq_true] at h
+  constructor
+  · intro j
+    show ((l.bs.lookup j).getD (.lit 0)).closedAt 0 = true
+    cases hl : l.bs.lookup j with
+    | none => rfl
+    | some v => exact h.1 _ (lookup_mem _ _ _ hl)
+  · exact h.2
+
+/-- **Terms for a family's values**, read off the context reached: from the
+registers, then from the regions at the addresses those give. -/
+def matchOpen (P Γ : CtxS) : OpenL :=
+  let bs₁ := allRegs.flatMap fun r => bindB (P.regs.get r) (Γ.regs.get r)
+  let o₁ : Opening := ⟨fun j => (bs₁.lookup j).getD (.lit 0), Γ.flags⟩
+  let bs₂ := P.held.flatMap fun d =>
+    match hostExtent (d.1.open o₁ 0) d.2.size Γ.held 0 with
+    | some (_, off, G) =>
+      d.2.slots.flatMap fun p =>
+        match G.slots.lookup (off + p.1) with
+        | some g => bindB p.2 g
+        | none => []
+    | none => []
+  ⟨bs₁ ++ bs₂, Γ.flags⟩
+
+/-- The bytes a family's contexts say hold a value and the context reached
+says nothing of. -/
+def wantedCode (P Γ : CtxS) : List (Nat × Nat) :=
+  let bs₁ := allRegs.flatMap fun r => bindB (P.regs.get r) (Γ.regs.get r)
+  let o₁ : Opening := ⟨fun j => (bs₁.lookup j).getD (.lit 0), Γ.flags⟩
+  wantedHeld (P.held.map fun d => (d.1.open o₁ 0, d.2)) Γ
 
 /-! ## A walk that leaves nothing to be shown -/
 
+/-- Whether what is known of a value is that it is code wanting a family
+of contexts. -/
+def TyS.isCode : TyS → Bool
+  | .code .. => true
+  | _ => false
+
 /-- Whether a walk leaves nothing to be shown: every instruction it stepped
 over is seen not to fault of itself, every jump is decided, and every way
-through it ends the program or stops at a label in a context that may be
-regarded as the label's, once the regions it holds end to end are taken
+through it ends the program, or stops at a label in a context that may be
+regarded as the label's, or goes to a value known to be code wanting a
+context the one reached may be regarded as, once the regions it holds end to end are taken
 as one and the values the label names and the context does not are named. `k` is a name no term of the walk yet mentions. -/
 def Walk.closes (labels : List (BitVec 64 × CtxS)) : Nat → Walk → Bool
   | k, .stop a Γ =>
@@ -254,7 +330,19 @@ def Walk.closes (labels : List (BitVec 64 × CtxS)) : Nat → Walk → Bool
            (matchCtx e.2 Γ').closed && regardS Γ' (e.2.subst (matchCtx e.2 Γ').inst)
          | none => false)
     | none => false
-  | _, .arrive _ _ => false
+  | k, .arrive t Γ =>
+    match Γ.known.find? fun f => f.1.same t && f.2.isCode with
+    | some (tv, .code regs flags held known rest) =>
+      (joinAll Γ.held.length Γ).under k && tv.under k &&
+        (match nameSlots (joinAll Γ.held.length Γ)
+            (wantedCode (codeCtx regs flags held known rest) (joinAll Γ.held.length Γ)) k with
+         | some Γ' =>
+           Γ'.known.contains (tv, .code regs flags held known rest) &&
+             (matchOpen (codeCtx regs flags held known rest) Γ').closed &&
+             regardS Γ' ((codeCtx regs flags held known rest).open
+               (matchOpen (codeCtx regs flags held known rest) Γ').opening)
+         | none => false)
+    | _ => false
   | _, .step i Γ _ k rest => guardS i Γ.flags && rest.closes labels (k + 1)
   | _, .sys k rest => rest.closes labels (k + 1)
   | _, .ends => true
@@ -282,12 +370,44 @@ theorem Walk.holds_of_closes {n : Nat} {labels : List (BitVec 64 × CtxS)}
       | some Γ' =>
         rw [hn] at h
         refine Ok.regard (joinAll_regards ρ Γ.held.length Γ) ?_
-        refine nameSlots_ok _ _ Γ' k hn hu (fun ρ' => ?_) ρ
+        refine nameSlots_ok (Ok fetch sys Ψ n a) (fun hi _ ho h => Ok.nameSlot hi ho h) _ _ Γ' k hn
+          hu ρ (fun ρ' _ => ?_)
         simp only [Bool.and_eq_true] at h
         have hok := H e hmem (ρ'.inst (matchCtx e.2 Γ').inst)
         rw [← CtxS.den_subst _ _ (InstL.closed_inst h.1), ha] at hok
         exact Ok.regard (regardS_sound ρ' h.2) hok
-  | .arrive _ _, _, _, h => nomatch h
+  | .arrive t Γ, k, ρ, h => by
+    unfold Walk.closes at h
+    split at h
+    · next tv regs flags held known rest hfind =>
+      simp only [Bool.and_eq_true] at h
+      obtain ⟨⟨hu, htv⟩, h⟩ := h
+      have hsame := (List.find?_some hfind)
+      simp only [Bool.and_eq_true] at hsame
+      have ht : t.den ρ = tv.den ρ := (Val.same_den ρ hsame.1).symm
+      show Arrives fetch sys Ψ n (t.den ρ) (Γ.den ρ)
+      rw [ht]
+      refine Arrives.regard (joinAll_regards ρ Γ.held.length Γ) ?_
+      cases hn : nameSlots (joinAll Γ.held.length Γ)
+          (wantedCode (codeCtx regs flags held known rest) (joinAll Γ.held.length Γ)) k with
+      | none => rw [hn] at h; cases h
+      | some Γ' =>
+        rw [hn] at h
+        simp only [Bool.and_eq_true, List.contains_iff_mem] at h
+        obtain ⟨⟨hmem, hcl⟩, hreg⟩ := h
+        refine nameSlots_ok (Arrives fetch sys Ψ n (tv.den ρ))
+          (fun hi _ ho h => Arrives.nameSlot hi ho h) _ _ Γ' k hn hu ρ (fun ρ' hag => ?_)
+        rw [← hag tv htv]
+        have ho := OpenL.closed_opening hcl
+        have hf : (tv.den ρ', Ty.code fun z => (codeCtx regs flags held known rest).den
+            { ρ' with bound := z :: ρ'.bound }) ∈ (Γ'.den ρ').known := by
+          rw [← code_den]
+          exact List.mem_map.mpr ⟨_, hmem, rfl⟩
+        refine Arrives.code
+          (seqOf ρ' (matchOpen (codeCtx regs flags held known rest) Γ').opening) hf ?_
+        rw [← CtxS.den_open ρ' _ ho]
+        exact regardS_sound ρ' hreg
+    · cases h
   | .step i Γ next k rest, _, ρ, h => by
     simp only [Walk.closes, Bool.and_eq_true] at h
     exact ⟨fun d hd x => guardS_den ρ h.1 hd _ _ _ _,

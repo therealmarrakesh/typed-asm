@@ -292,4 +292,44 @@ example : (TyS.code (Γw.regs.set .rax (.bvar 0 0)) (.bvar 0) [] .nil none).open
       ⟨fun _ => .var 7, .var 0⟩ 0
     = .code (Γw.regs.set .rax (.bvar 0 0)) (.bvar 0) [] .nil none := by decide +kernel
 
+/-! ## Going to a value known to be code -/
+
+/-- Registers each holding a value of the family's own. -/
+def anyRegs : Regs Val :=
+  ⟨.bvar 0 0, .bvar 0 1, .bvar 0 2, .bvar 0 3, .bvar 0 4, .bvar 0 5, .bvar 0 6, .bvar 0 7,
+    .bvar 0 8, .bvar 0 9, .bvar 0 10, .bvar 0 11, .bvar 0 12, .bvar 0 13, .bvar 0 14, .bvar 0 15⟩
+
+/-- Whether `jmp rax` is typed where `rax` is known to be code wanting
+these registers and regions, the context holding the stack of `Γw`. -/
+def mayJump (regs : Regs Val) (held : List (Val × HeldS)) : Bool :=
+  checkProgram [(0, .jmp (.ind (.reg .rax)), 2)]
+    [(0, { Γw with known := [(.var 0, .code regs (.bvar 0) held .nil none)] })] 10 20
+
+-- code wanting any registers and the stack: the jump is typed
+example : mayJump anyRegs [(.var 16, ⟨64, []⟩)] = true := by decide +kernel
+-- code wanting `rdi` to be zero, which nothing shows: refused
+example : mayJump (anyRegs.set .rdi (.lit 0)) [(.var 16, ⟨64, []⟩)] = false := by decide +kernel
+-- code wanting `rdi` and `rsi` to hold one value, which nothing shows they
+-- do: refused, whichever of the two the family's value is written for
+example : mayJump (anyRegs.set .rdi (.bvar 0 6)) [(.var 16, ⟨64, []⟩)] = false := by
+  decide +kernel
+example : mayJump (anyRegs.set .rsi (.bvar 0 7)) [(.var 16, ⟨64, []⟩)] = false := by
+  decide +kernel
+-- code that would hold nothing: refused, the stack would be left out
+example : mayJump anyRegs [] = false := by decide +kernel
+
+/-- `ret`, the stack holding at its top a return address known to be code
+wanting the stack pointer eight bytes on and the stack held. -/
+def mayReturn (rsp' : Val) : Bool :=
+  checkProgram [(0, .ret, 1)]
+    [(0, { Γw with
+            held := [(.var 16, ⟨64, [(32, .var 17)]⟩)]
+            known := [(.var 17, .code (anyRegs.set .rsp rsp') (.bvar 0)
+                        [(.var 16, ⟨64, []⟩)] .nil none)] })] 10 20
+
+-- the return address wants the stack pointer just past it: typed
+example : mayReturn (.add (.var 16) (.lit 40)) = true := by decide +kernel
+-- it wants the stack pointer where it was before the return: refused
+example : mayReturn (.add (.var 16) (.lit 32)) = false := by decide +kernel
+
 end Tests.Unified

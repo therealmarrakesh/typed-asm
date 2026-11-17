@@ -101,6 +101,51 @@ theorem FlagsT.den_setVal (ρ : Env) (k : Nat) (x : BitVec 64) :
 
 end
 
+mutual
+
+/-- A term that mentions only names below `k` mentions only names below
+any larger number. -/
+theorem Val.under_mono {k k' : Nat} (hk : k ≤ k') : (a : Val) → a.under k = true → a.under k' = true
+  | .lit _, _ => rfl
+  | .var i, h => by
+    simp only [Val.under, decide_eq_true_eq] at h ⊢
+    omega
+  | .bvar _ _, _ => rfl
+  | .add a b, h => by
+    simp only [Val.under, Bool.and_eq_true] at h ⊢
+    exact ⟨Val.under_mono hk a h.1, Val.under_mono hk b h.2⟩
+  | .shl a _, h => by
+    simp only [Val.under] at h ⊢
+    exact Val.under_mono hk a h
+  | .out _ _ a b c fl _ ea cell, h => by
+    simp only [Val.under, Bool.and_eq_true] at h ⊢
+    obtain ⟨⟨⟨⟨⟨ha, hb⟩, hc⟩, hf⟩, he⟩, hcell⟩ := h
+    exact ⟨⟨⟨⟨⟨Val.under_mono hk a ha, Val.under_mono hk b hb⟩, Val.under_mono hk c hc⟩,
+      FlagsT.under_mono hk fl hf⟩, Val.under_mono hk ea he⟩, Val.under_mono hk cell hcell⟩
+  | .stored _ a b c fl _ ea cell, h => by
+    simp only [Val.under, Bool.and_eq_true] at h ⊢
+    obtain ⟨⟨⟨⟨⟨ha, hb⟩, hc⟩, hf⟩, he⟩, hcell⟩ := h
+    exact ⟨⟨⟨⟨⟨Val.under_mono hk a ha, Val.under_mono hk b hb⟩, Val.under_mono hk c hc⟩,
+      FlagsT.under_mono hk fl hf⟩, Val.under_mono hk ea he⟩, Val.under_mono hk cell hcell⟩
+  | .goes _ a b c fl _ ea cell, h => by
+    simp only [Val.under, Bool.and_eq_true] at h ⊢
+    obtain ⟨⟨⟨⟨⟨ha, hb⟩, hc⟩, hf⟩, he⟩, hcell⟩ := h
+    exact ⟨⟨⟨⟨⟨Val.under_mono hk a ha, Val.under_mono hk b hb⟩, Val.under_mono hk c hc⟩,
+      FlagsT.under_mono hk fl hf⟩, Val.under_mono hk ea he⟩, Val.under_mono hk cell hcell⟩
+
+theorem FlagsT.under_mono {k k' : Nat} (hk : k ≤ k') :
+    (f : FlagsT) → f.under k = true → f.under k' = true
+  | .lit _, _ => rfl
+  | .var _, _ => rfl
+  | .bvar _, _ => rfl
+  | .out _ a b c fl _ ea cell, h => by
+    simp only [FlagsT.under, Bool.and_eq_true] at h ⊢
+    obtain ⟨⟨⟨⟨⟨ha, hb⟩, hc⟩, hf⟩, he⟩, hcell⟩ := h
+    exact ⟨⟨⟨⟨⟨Val.under_mono hk a ha, Val.under_mono hk b hb⟩, Val.under_mono hk c hc⟩,
+      FlagsT.under_mono hk fl hf⟩, Val.under_mono hk ea he⟩, Val.under_mono hk cell hcell⟩
+
+end
+
 /-- Every entry of a table of sixteen. -/
 def allTrue : Regs Bool :=
   ⟨true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true⟩

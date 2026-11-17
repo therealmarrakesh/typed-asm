@@ -297,4 +297,19 @@ theorem Ok.nameSlot {n : Nat} {a : BitVec 64} {Γ : Ctx} {i : Nat} {b : BitVec 6
     Ok fetch sys Ψ n a Γ :=
   fun k hk Ψ' he hwf s hs hw => h _ k hk Ψ' he hwf s hs (hw.nameSlot hi ho)
 
+/-! ## The same of arriving -/
+
+/-- **The machine arrives in a context where it arrives in any the context
+may be regarded as.** -/
+theorem Arrives.regard {n : Nat} {t : BitVec 64} {Γ Δ : Ctx} (h : Regards fetch sys Ψ Γ Δ)
+    (hΔ : Arrives fetch sys Ψ n t Δ) : Arrives fetch sys Ψ n t Γ :=
+  fun k hk Ψ' he hwf s hs hw => hΔ k hk Ψ' he hwf s hs (h (k + 1) Ψ' he hwf s hw)
+
+theorem Arrives.nameSlot {n : Nat} {t : BitVec 64} {Γ : Ctx} {i : Nat} {b : BitVec 64} {S : Held}
+    (hi : Γ.held[i]? = some (b, S)) {o : Nat} (ho : o + 8 ≤ S.size)
+    (h : ∀ x, Arrives fetch sys Ψ n t
+      { Γ with held := Γ.held.set i (b, ⟨S.size, (o, x) :: S.vals⟩) }) :
+    Arrives fetch sys Ψ n t Γ :=
+  fun k hk Ψ' he hwf s hs hw => h _ k hk Ψ' he hwf s hs (hw.nameSlot hi ho)
+
 end TypedAsm.U
