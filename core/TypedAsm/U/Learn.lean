@@ -1,4 +1,5 @@
 import TypedAsm.U.Range
+import TypedAsm.U.Bound
 import TypedAsm.U.Fresh
 import TypedAsm.U.Entail
 import TypedAsm.U.RegardS
@@ -125,10 +126,48 @@ theorem CmpT.rangeFacts_hasTy {ρ : Env} {p : CmpT} {b : Bool} (hp : p.den ρ = 
     cases ho
     exact hasTy_range.mpr (CmpT.range_sound hr hp)
 
+/-- Whether a value is known to lie in a range: by the operator that gave
+it, or by what the context knows of it. -/
+def CtxS.fits (Γ : CtxS) (v : Val) (R : Range) : Bool := v.bound.within R || Γ.knowsIn v R
+
+theorem CtxS.fits_has {ρ : Env} {Γ : CtxS} {v : Val} {R : Range} (h : Γ.fits v R = true)
+    {Ψ' : MemTy} {n : Nat} (hg : ∀ g ∈ (Γ.den ρ).known, HasTy fetch sys Ψ' n g.2 g.1) :
+    R.has (v.den ρ) := by
+  unfold CtxS.fits at h
+  rcases Bool.or_eq_true_iff.mp h with h | h
+  · exact Range.within_has h (Val.bound_has ρ v)
+  · exact CtxS.knowsIn_has h hg
+
+/-- **A comparison at 32 bits, as the comparison at 64**, where both values
+are known to fit: it says the same of them. -/
+def CmpT.widen (Γ : CtxS) (p : CmpT) : CmpT :=
+  match p.w with
+  | .w64 => p
+  | .w32 =>
+    if Γ.fits p.a p.form.rel.fitRange && Γ.fits p.b p.form.rel.fitRange then { p with w := .w64 }
+    else p
+
+theorem CmpT.widen_den {ρ : Env} {Γ : CtxS} (p : CmpT) {Ψ' : MemTy} {n : Nat}
+    (hg : ∀ g ∈ (Γ.den ρ).known, HasTy fetch sys Ψ' n g.2 g.1) :
+    (p.widen Γ).den ρ = p.den ρ := by
+  obtain ⟨f, w, a, b⟩ := p
+  cases w with
+  | w64 => rfl
+  | w32 =>
+    simp only [CmpT.widen]
+    split
+    · next h =>
+      rw [Bool.and_eq_true] at h
+      show f.eval (BitVec.setWidth 64 (a.den ρ)) (BitVec.setWidth 64 (b.den ρ))
+        = f.eval (BitVec.setWidth 32 (a.den ρ)) (BitVec.setWidth 32 (b.den ρ))
+      rw [BitVec.setWidth_eq, BitVec.setWidth_eq]
+      exact (Form.eval_low (CtxS.fits_has h.1 hg) (CtxS.fits_has h.2 hg)).symm
+    · rfl
+
 /-- **A context, knowing what a comparison teaches**: the range each value
 compared is left in, and everything known made as sharp as that allows. -/
 def CtxS.learn (p : CmpT) (b : Bool) (Γ : CtxS) : CtxS :=
-  (Γ.addKnown (p.rangeFacts b)).sharpen
+  (Γ.addKnown ((p.widen Γ).rangeFacts b)).sharpen
 
 /-- **Where the comparison is as said, the context may be regarded as the
 one that has learnt it.** -/
@@ -140,7 +179,7 @@ theorem CtxS.learn_regards {ρ : Env} {p : CmpT} {b : Bool} (Γ : CtxS) (hp : p.
   intro f hf Ψ' n hg
   obtain ⟨g, hg', rfl⟩ := List.mem_map.mp hf
   rcases List.mem_append.mp hg' with hr | hs
-  · exact CmpT.rangeFacts_hasTy hp hr Ψ' n
+  · exact CmpT.rangeFacts_hasTy ((CmpT.widen_den p hg).trans hp) hr Ψ' n
   · exact hg _ (List.mem_map.mpr ⟨g, hs, rfl⟩)
 
 /-- **The context on one side of a choice made on a condition**: knowing

@@ -471,6 +471,25 @@ example : checkProgram codeR [lab 0 Pw] 10 0 = true := by decide +kernel
 -- entered past the first comparison, the second jump may be taken, to nowhere: refused
 example : checkProgram codeR [lab 6 Pw] 10 0 = false := by decide +kernel
 
+/-- The same at 32 bits: `mov edi, edi; cmp edi, 5; jb out; cmp edi, 3;
+jb nowhere; out: exit`. The move leaves `rdi` below two to the thirty-second,
+so what the 32-bit comparisons say of its low half they say of it. -/
+def codeR32 : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .mov .w32 (.rm_r (.reg .rdi) .rdi), 2),
+   (2, .alu .cmp .w32 (.rm_i (.reg .rdi) 5), 3), (5, .jcc .b 5, 2),
+   (7, .alu .cmp .w32 (.rm_i (.reg .rdi) 3), 3), (10, .jcc .b 188, 2),
+   (12, .mov .w32 (.rm_i (.reg .rax) 60), 5), (17, .syscall, 2)]
+
+-- the second jump is seen to be impossible, as at 64 bits
+example : checkProgram codeR32 [lab 0 Pw] 10 0 = true := by decide +kernel
+-- entered past the move, nothing says `rdi` fits in 32 bits, so the comparisons
+-- of its low half say nothing of it: the second jump may be taken. Refused
+example : checkProgram codeR32 [lab 2 Pw] 10 0 = false := by decide +kernel
+-- the range an operator's result lies in is read off the operator
+example : (Val.un (.trunc .w32) (.var 3)).bound = ⟨0, 0xffffffff⟩ := by decide +kernel
+example : (Val.un .low8 (.var 3)).bound = ⟨0, 0xff⟩ := by decide +kernel
+example : (Val.fop (.condByte .e) (.var 0) (.lit 0) (.lit 0)).bound = ⟨0, 1⟩ := by decide +kernel
+
 /-- `shr rdi, 1; jne on; cmp rdi, 1; jae nowhere; on: exit`: after the
 shift, not taking `jne` means the result is zero, so it is not at least one. -/
 def codeS : List (BitVec 64 × Instr × BitVec 64) :=
