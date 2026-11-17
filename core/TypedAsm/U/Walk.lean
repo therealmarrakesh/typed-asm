@@ -223,9 +223,10 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
             · subst hW; exact ⟨h, fun hm => nomatch hm⟩
 
 /-- Whether a walk leaves nothing to be shown: every instruction it stepped
-over cannot fault of itself, and every way through it ends the program. -/
+over is seen not to fault of itself, every jump is decided, and every way
+through it ends the program. -/
 def Walk.auto : Walk → Bool
-  | .step i _ _ _ rest => i.noGuard && rest.auto
+  | .step i Γ _ _ rest => guardS i Γ.flags && rest.auto
   | .sys _ rest => rest.auto
   | .ends => true
   | .branch c Γ taken fall => Γ.flags.decides c && taken.auto && fall.auto
@@ -236,7 +237,7 @@ theorem Walk.holds_of_auto (P A : BitVec 64 → Ctx → Prop) :
     (W : Walk) → (ρ : Env) → W.auto = true → W.holds P A ρ
   | .step i Γ next k rest, ρ, h => by
     simp only [Walk.auto, Bool.and_eq_true] at h
-    exact ⟨fun d hd x => desc_noGuard h.1 hd _ _ _ _ _,
+    exact ⟨fun d hd x => guardS_den ρ h.1 hd _ _ _ _,
       fun x => Walk.holds_of_auto P A rest _ h.2⟩
   | .sys k rest, ρ, h => fun x => Walk.holds_of_auto P A rest _ h
   | .ends, _, _ => trivial
