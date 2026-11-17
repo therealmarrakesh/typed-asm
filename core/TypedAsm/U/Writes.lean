@@ -39,21 +39,121 @@ that say those bytes. -/
 def SaidOk (Ψ : MemTy) (said : List (BitVec 64 × List (BitVec 8))) : Prop :=
   ∀ x ∈ said, ∃ l, Ψ x.1 = some l ∧ l.said = some x.2
 
+/-! ## Bytes the program made
+
+A value the context says a region held holds, where it is a number written
+out, is its eight bytes, the least significant first. So the bytes at an
+address in such a region are known where each lies in such a value. -/
+
+/-- The byte at a place in a region, where the region is said to hold a
+number written out that the place lies in. -/
+def cellByte (S : HeldS) (place : Val) : Option (BitVec 8) :=
+  S.slots.findSome? fun p =>
+    match place.minus p.1, p.2 with
+    | some d, .lit v => if d.toNat < 8 then (le64 v)[d.toNat]? else none
+    | _, _ => none
+
+/-- So many bytes of a region from a place on, counted from the `j`th. -/
+def cellBytes (S : HeldS) (o : Val) : Nat → Nat → Option (List (BitVec 8))
+  | _, 0 => some []
+  | j, n + 1 =>
+    match cellByte S (o.plus (litNat j)), cellBytes S o (j + 1) n with
+    | some b, some bs => some (b :: bs)
+    | _, _ => none
+
+/-- **So many bytes at an address, where they lie in numbers a region held
+is said to hold.** -/
+def heldBytes (Γ : CtxS) (buf : Val) (len : Nat) : Option (List (BitVec 8)) :=
+  Γ.held.findSome? fun g => cellBytes g.2 (offTerm buf g.1) 0 len
+
+theorem loadBytes_getElem (s : State) (a : BitVec 64) {n i : Nat} (hi : i < n) :
+    (s.loadBytes a n)[i]'(by simp [State.loadBytes, hi]) = s.mem (a + BitVec.ofNat 64 i) := by
+  simp [State.loadBytes]
+
+theorem cellByte_mem {ρ : Env} {s : State} {b : BitVec 64} {S : HeldS}
+    (hv : ∀ p ∈ (S.den ρ).vals, s.load64 (b + BitVec.ofNat 64 p.1) = p.2) {place : Val}
+    {x : BitVec 8} (h : cellByte S place = some x) : s.mem (b + place.den ρ) = x := by
+  obtain ⟨p, hp, hx⟩ := List.exists_of_findSome?_eq_some h
+  split at hx
+  · next d v hd hlit =>
+    split at hx
+    · next hlt =>
+      have hload := hv (slotDen ρ p) (List.mem_map.mpr ⟨p, hp, rfl⟩)
+      have hp2 : (slotDen ρ p).2 = v := by show p.2.den ρ = v; rw [hlit]; rfl
+      have h8 := s.loadBytes_eight (b + BitVec.ofNat 64 (slotDen ρ p).1)
+      rw [hload, hp2] at h8
+      have hget := List.getElem?_eq_some_iff.mp hx
+      obtain ⟨hlen, hval⟩ := hget
+      have hm := loadBytes_getElem s (b + BitVec.ofNat 64 (slotDen ρ p).1) hlt
+      have e : (s.loadBytes (b + BitVec.ofNat 64 (slotDen ρ p).1) 8)[d.toNat]'(by
+          simp [State.loadBytes, hlt]) = (le64 v)[d.toNat] := by
+        simp only [h8]
+      rw [hm] at e
+      rw [← hval, ← e, Val.minus_den ρ hd]
+      show _ = s.mem (b + BitVec.ofNat 64 (p.1.den ρ).toNat + BitVec.ofNat 64 d.toNat)
+      rw [BitVec.ofNat_toNat, BitVec.setWidth_eq, BitVec.ofNat_toNat, BitVec.setWidth_eq,
+        BitVec.add_assoc]
+    · cases hx
+  · cases hx
+
+theorem cellBytes_mem {ρ : Env} {s : State} {b : BitVec 64} {S : HeldS}
+    (hv : ∀ p ∈ (S.den ρ).vals, s.load64 (b + BitVec.ofNat 64 p.1) = p.2) (o : Val) :
+    (n j : Nat) → {bs : List (BitVec 8)} → cellBytes S o j n = some bs →
+    bs = (List.range n).map fun i => s.mem (b + o.den ρ + BitVec.ofNat 64 (j + i))
+  | 0, _, _, h => by cases h; rfl
+  | n + 1, j, bs, h => by
+    simp only [cellBytes] at h
+    split at h
+    · next x xs hx hxs =>
+      cases h
+      have h1 := cellByte_mem hv hx
+      rw [Val.plus_den] at h1
+      have h2 := cellBytes_mem hv o n (j + 1) hxs
+      rw [List.range_succ_eq_map, List.map_cons, List.map_map, h2]
+      congr 1
+      · rw [← h1, BitVec.add_assoc]
+        rfl
+      · refine List.map_congr_left fun i _ => ?_
+        show s.mem (b + o.den ρ + BitVec.ofNat 64 (j + 1 + i))
+          = s.mem (b + o.den ρ + BitVec.ofNat 64 (j + (i + 1)))
+        rw [show j + 1 + i = j + (i + 1) from by omega]
+    · cases h
+
+/-- **The bytes found so are the bytes there**, in any state that matches
+the context. -/
+theorem heldBytes_load {n : Nat} {Γ : CtxS} {ρ : Env} {s : State} {Ψ' : MemTy}
+    (hw : WellTyped fetch sys Ψ' n (Γ.den ρ) s) {buf : Val} {len : Nat} {bs : List (BitVec 8)}
+    (h : heldBytes Γ buf len = some bs) : s.loadBytes (buf.den ρ) len = bs := by
+  obtain ⟨g, hg, hc⟩ := List.exists_of_findSome?_eq_some h
+  have hmem : (g.1.den ρ, g.2.den ρ) ∈ (Γ.den ρ).held :=
+    List.mem_append_left _ (List.mem_map.mpr ⟨g, hg, rfl⟩)
+  have := cellBytes_mem (ρ := ρ) (s := s) (b := g.1.den ρ)
+    (fun p hp => hw.held.vals _ hmem p hp) (offTerm buf g.1) len 0 hc
+  rw [this, ← offTerm_den]
+  simp [State.loadBytes]
+
 /-- **Whether a context at a system call is seen to offer, if the call is a
 `write`, a descriptor and bytes as wanted**: the call number is written
-out; and where it is a `write`, so are the descriptor, the address and the
-length, and the bytes lie in a block that says its bytes. -/
+out; and where it is a `write`, so are the descriptor and the length, and
+the bytes lie in a block that says its bytes, at an address written out,
+or in numbers a region held is said to hold. -/
 def preWrites (said : List (BitVec 64 × List (BitVec 8))) (r : BitVec 64 → List (BitVec 8) → Bool)
     (Γ : CtxS) : Bool :=
   match Γ.regs.rax.lit? with
   | some nr =>
     if nr = 1 then
-      match Γ.regs.rdi.lit?, Γ.regs.rsi.lit?, Γ.regs.rdx.lit? with
-      | some fd, some buf, some len =>
-        said.any fun x =>
-          decide ((buf - x.1).toNat + len.toNat ≤ x.2.length) &&
-            r fd ((x.2.drop (buf - x.1).toNat).take len.toNat)
-      | _, _, _ => false
+      match Γ.regs.rdi.lit?, Γ.regs.rdx.lit? with
+      | some fd, some len =>
+        (match Γ.regs.rsi.lit? with
+         | some buf =>
+           said.any fun x =>
+             decide ((buf - x.1).toNat + len.toNat ≤ x.2.length) &&
+               r fd ((x.2.drop (buf - x.1).toNat).take len.toNat)
+         | none => false) ||
+        (match heldBytes Γ Γ.regs.rsi len.toNat with
+         | some bs => r fd bs
+         | none => false)
+      | _, _ => false
     else true
   | none => false
 
@@ -72,20 +172,31 @@ theorem preWrites_holds {R : BitVec 64 → List (BitVec 8) → Prop}
     have hrax : s.getReg .rax = nr := (hw.val .rax).trans (Val.lit?_den hnr)
     split at h
     · split at h
-      · next fd buf len hfd hbuf hlen =>
+      · next fd len hfd hlen =>
         have hrdi : s.getReg .rdi = fd := (hw.val .rdi).trans (Val.lit?_den hfd)
-        have hrsi : s.getReg .rsi = buf := (hw.val .rsi).trans (Val.lit?_den hbuf)
         have hrdx : s.getReg .rdx = len := (hw.val .rdx).trans (Val.lit?_den hlen)
-        simp only [List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq] at h
-        obtain ⟨x, hx, hin, hrx⟩ := h
-        obtain ⟨l, hl, hs⟩ := hsaid x hx
-        have hbytes := hw.loadBytes_said (he.blocks _ _ hl) hs hin
-        have hb : x.1 + BitVec.ofNat 64 (buf - x.1).toNat = buf := by
-          rw [BitVec.ofNat_toNat, BitVec.setWidth_eq, BitVec.add_comm, BitVec.sub_add_cancel]
-        rw [hb] at hbytes
         show R (s.getReg .rdi) (s.loadBytes (s.getReg .rsi) (s.getReg .rdx).toNat)
-        rw [hrdi, hrsi, hrdx, hbytes]
-        exact hr _ _ hrx
+        rw [hrdi, hrdx]
+        rcases Bool.or_eq_true _ _ |>.mp h with h | h
+        · split at h
+          · next buf hbuf =>
+            have hrsi : s.getReg .rsi = buf := (hw.val .rsi).trans (Val.lit?_den hbuf)
+            simp only [List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq] at h
+            obtain ⟨x, hx, hin, hrx⟩ := h
+            obtain ⟨l, hl, hs⟩ := hsaid x hx
+            have hbytes := hw.loadBytes_said (he.blocks _ _ hl) hs hin
+            have hb : x.1 + BitVec.ofNat 64 (buf - x.1).toNat = buf := by
+              rw [BitVec.ofNat_toNat, BitVec.setWidth_eq, BitVec.add_comm, BitVec.sub_add_cancel]
+            rw [hb] at hbytes
+            rw [hrsi, hbytes]
+            exact hr _ _ hrx
+          · cases h
+        · split at h
+          · next bs hbs =>
+            have hrsi : s.getReg .rsi = Γ.regs.rsi.den ρ := hw.val .rsi
+            rw [hrsi, heldBytes_load hw hbs]
+            exact hr _ _ h
+          · cases h
       · cases h
     · next hne =>
       rw [hrax] at h1
