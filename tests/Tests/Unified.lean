@@ -477,4 +477,37 @@ example : checkProgram
       (20, .mov .w32 (.rm_i (.reg .rax) 60), 5), (25, .syscall, 2)])
     [lab 0 Pw] 20 0 = false := by decide +kernel
 
+/-! ## A call that stores bytes -/
+
+/-- `mov [rsp], rdi; read(0, rsp, <count>); exit`: the buffer is the stack
+from the stack pointer on, of which `Pw`'s family holds thirty-two bytes. -/
+def codeRd (count : BitVec 32) : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .mov .w64 (.rm_r (.mem (.sib (some .rsp) none 0)) .rdi), 4),
+   (4, .mov .w32 (.rm_i (.reg .rax) 0), 5), (9, .mov .w32 (.rm_i (.reg .rdi) 0), 5),
+   (14, .mov .w64 (.rm_r (.reg .rsi) .rsp), 3), (17, .mov .w32 (.rm_i (.reg .rdx) count), 5),
+   (22, .syscall, 2), (24, .mov .w32 (.rm_i (.reg .rax) 60), 5), (29, .syscall, 2)]
+
+-- thirty-two bytes read into the thirty-two held above the stack pointer: typed
+example : checkProgram (codeRd 32) [lab 0 Pw] 20 0 = true := by decide +kernel
+-- thirty-three, one past the end of what is held: refused
+example : checkProgram (codeRd 33) [lab 0 Pw] 20 0 = false := by decide +kernel
+
+/-- The same, the program then going round to a label that says the stack
+still holds at its thirty-second byte what `rdi` held: which the call may
+have written over. -/
+def afterRead (keeps : Bool) : Bool :=
+  checkProgram
+    [(0, .mov .w64 (.rm_r (.mem (.sib (some .rsp) none 0)) .rdi), 4),
+     (4, .mov .w32 (.rm_i (.reg .rax) 0), 5), (9, .mov .w64 (.rm_r (.reg .rsi) .rsp), 3),
+     (12, .mov .w32 (.rm_i (.reg .rdx) 8), 5), (17, .syscall, 2), (19, .jmp (.rel 76), 5),
+     (100, .jmp (.rel (-5)), 5)]
+    [lab 0 Pw,
+     lab 100 { Pw with
+       regs := anyRegs.set .rsp (.add (.bvar 0 16) (.lit 32))
+       held := [(.bvar 0 16, ⟨64, if keeps then [(32, .bvar 0 7)] else []⟩)] }] 20 0
+
+-- what the bytes held is no longer known after the call: a label saying it is, refused
+example : afterRead true = false := by decide +kernel
+example : afterRead false = true := by decide +kernel
+
 end Tests.Unified

@@ -117,7 +117,13 @@ def walk (code : List (BitVec 64 × Instr × BitVec 64)) (stops : BitVec 64 → 
                       (Γe.addKnown [(.var k, .range (-4095) (-1))]))
                     (walk code stops false fuel (k + 1) (a + len) Γo)
                 else .stop a Γ
-              | none => .stop a Γ
+              | none =>
+                match sysFills Γ k (a + len) with
+                | some (Γe, Γh) =>
+                  if Γh.under (k + 1) && regardS Γe Γh then
+                    .sys k (walk code stops false fuel (k + 1) (a + len) Γh)
+                  else .stop a Γ
+                | none => .stop a Γ
       else if let .jcc c d := i then
         if (Γ.side c true).under k && (Γ.side c false).under k then
           .branch c Γ (walk code stops false fuel k (a + len + d.signExtend 64) (Γ.side c true))
@@ -288,7 +294,23 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
                     · exact (iho.mono hm).arrives
                   exact ⟨hb.1, fun _ => hb.2⟩
                 · subst hW; exact ⟨h, fun hm => nomatch hm⟩
-              · subst hW; exact ⟨h, fun hm => nomatch hm⟩
+              · split at hW
+                · next Γe Γh hfill =>
+                  split at hW
+                  · next hchk =>
+                    subst hW
+                    rw [Bool.and_eq_true] at hchk
+                    have ih := fun x => (walk_sound hD hkind hpre code stops hcode false fuel
+                      (k + 1) (e + len) Γh (ρ.setVal k x) hchk.1 (h x)).1
+                    have hb := both fun m hm => by
+                      refine Ok.step hf (sysFills_sound hD hkind hpre hfill hu) ?_
+                      rintro t Δ ⟨x, rfl, rfl | rfl⟩
+                      · exact Arrives.regard (regardS_sound (ρ.setVal k x) hchk.2)
+                          ((ih x).mono hm).arrives
+                      · exact ((ih x).mono hm).arrives
+                    exact ⟨hb.1, fun _ => hb.2⟩
+                  · subst hW; exact ⟨h, fun hm => nomatch hm⟩
+                · subst hW; exact ⟨h, fun hm => nomatch hm⟩
       · split at hW
         · next =>
           split at hW

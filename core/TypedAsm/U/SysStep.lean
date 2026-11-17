@@ -1,6 +1,7 @@
 import TypedAsm.U.Step
 import TypedAsm.U.RegardS
 import TypedAsm.U.Unmap
+import TypedAsm.U.SysMem
 
 /-!
 # System calls, as steps on terms
@@ -83,6 +84,122 @@ theorem sysEnds_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = lin
     · next hk =>
       have hrax : (Γ.den ρ).val .rax = nr := Val.lit?_den hnr
       exact Ok.ends hD hf (by rw [hkind, hrax]; exact hk) (fun _ _ _ _ s _ _ => hpre s)
+    · cases h
+  · cases h
+
+/-! ## Calls that store bytes -/
+
+/-- A region saying nothing of the `n` bytes from `o`. -/
+def HeldS.clear (S : HeldS) (o n : Nat) : HeldS :=
+  ⟨S.size, S.slots.filter (ShapeOf.clearOf o n)⟩
+
+theorem HeldS.clear_den (ρ : Env) (S : HeldS) (o n : Nat) :
+    (S.clear o n).den ρ = (S.den ρ).clear o n := by
+  show (⟨S.size, (S.slots.filter (ShapeOf.clearOf o n)).map fun p => (p.1, p.2.den ρ)⟩ : Held)
+    = ⟨S.size, (S.slots.map fun p => (p.1, p.2.den ρ)).filter (ShapeOf.clearOf o n)⟩
+  rw [List.filter_map]
+  rfl
+
+/-- How many bytes a call may store, where that is written out. -/
+def roomS (regs : Regs Val) : Reg ⊕ Nat → Option Nat
+  | .inl r => (regs.get r).lit?.map (·.toNat)
+  | .inr n => some n
+
+theorem roomS_den (ρ : Env) (Γ : CtxS) {room : Reg ⊕ Nat} {n : Nat} (h : roomS Γ.regs room = some n) :
+    roomVal (Γ.den ρ).val room = n := by
+  cases room with
+  | inr m => cases h; rfl
+  | inl r =>
+    simp only [roomS, Option.map_eq_some_iff] at h
+    obtain ⟨x, hx, rfl⟩ := h
+    show ((Γ.regs.get r).den ρ).toNat = x.toNat
+    rw [Val.lit?_den hx]
+
+/-- **A call that stores bytes at an address the program gives, as a step
+on terms**: where the call number and the room are written out and the
+bytes lie in a region held, the two contexts it may return in, with the
+name `k` for what it hands back: the context as it was, and the context
+saying nothing of those bytes. -/
+def sysFills (Γ : CtxS) (k : Nat) (next : BitVec 64) : Option (CtxS × CtxS) :=
+  match Γ.regs.rax.lit? with
+  | some nr =>
+    match linuxKind nr with
+    | some (.fills b room) =>
+      match roomS Γ.regs room with
+      | some n =>
+        match findHeld (Γ.regs.get b) n Γ.held 0 with
+        | some (j, base, S, o) =>
+          some (Γ.afterSys (.var k) next,
+            CtxS.afterSys { Γ with held := Γ.held.set j (base, S.clear o n) } (.var k) next)
+        | none => none
+      | none => none
+    | _ => none
+  | none => none
+
+theorem sysFills_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
+    (hpre : ∀ s, D.pre s) {ρ : Env} {Γ Γe Γh : CtxS} {k : Nat} {next : BitVec 64}
+    (h : sysFills Γ k next = some (Γe, Γh)) (hu : Γ.under k = true) :
+    Steps fetch sys Ψ .syscall next (Γ.den ρ) fun t Δ =>
+      ∃ x, t = next ∧ (Δ = Γe.den (ρ.setVal k x) ∨ Δ = Γh.den (ρ.setVal k x)) := by
+  unfold sysFills at h
+  split at h
+  · next nr hnr =>
+    split at h
+    · next b room hk =>
+      split at h
+      · next n hroom =>
+        split at h
+        · next j base S o hfind =>
+          cases h
+          obtain ⟨i, hi, hl, hin, ha⟩ := findHeld_spec (ρ := ρ) Γ.held 0 hfind
+          have hji : j = i := by omega
+          subst hji
+          have hrax : (Γ.den ρ).val .rax = nr := Val.lit?_den hnr
+          have hjlt : j < (Γ.held.map fun b => (b.1.den ρ, b.2.den ρ)).length := by
+            rw [List.length_map]; exact (List.getElem?_eq_some_iff.mp hl).1
+          have hH := Havoc.held (fetch := fetch) (sys := sys) (Ψ := Ψ) (CtxS.held_den ρ Γ hl) hin
+          refine Steps.mono (Steps.fills hD (by rw [hkind, hrax]; exact hk)
+            (fun _ _ _ _ s _ _ => hpre s) (by
+              rw [show (Γ.den ρ).val b = base.den ρ + BitVec.ofNat 64 o from ha,
+                roomS_den ρ Γ hroom]
+              exact hH)) ?_
+          rintro t Δ ⟨rfl, x, hcase⟩
+          have hΓ : Γ.den (ρ.setVal k x) = Γ.den ρ := CtxS.den_setVal ρ k x Γ hu
+          refine ⟨x, rfl, ?_⟩
+          rcases hcase with rfl | rfl
+          · refine .inl ?_
+            rw [CtxS.afterSys_den, hΓ]
+            show _ = CtxOf.afterSys (Γ.den ρ) ((ρ.setVal k x).val k) t
+            rw [Env.setVal_get_self]
+          · refine .inr ?_
+            rw [CtxS.afterSys_den]
+            have e : CtxS.den (ρ.setVal k x) { Γ with held := Γ.held.set j (base, S.clear o n) }
+                = { Γ.den ρ with
+                    held := (Γ.den ρ).held.set j (base.den ρ, (S.den ρ).clear o n) } := by
+              have hbS : (base.den (ρ.setVal k x), S.den (ρ.setVal k x)) = (base.den ρ, S.den ρ) := by
+                have h1 := CtxS.held_den (ρ.setVal k x) Γ hl
+                rw [hΓ, CtxS.held_den ρ Γ hl] at h1
+                exact (Option.some.inj h1).symm
+              refine ctx_ext
+                (congrArg CtxOf.val hΓ : (Γ.den (ρ.setVal k x)).val = (Γ.den ρ).val)
+                (congrArg CtxOf.flags hΓ : (Γ.den (ρ.setVal k x)).flags = (Γ.den ρ).flags) ?_
+                (congrArg CtxOf.known hΓ : (Γ.den (ρ.setVal k x)).known = (Γ.den ρ).known)
+              have hjlt' : j < (Γ.held.map fun b =>
+                  (b.1.den (ρ.setVal k x), b.2.den (ρ.setVal k x))).length := by
+                rw [List.length_map]; exact (List.getElem?_eq_some_iff.mp hl).1
+              show (Γ.held.set j (base, S.clear o n)).map
+                    (fun b => (b.1.den (ρ.setVal k x), b.2.den (ρ.setVal k x)))
+                  ++ restDen (ρ.setVal k x) Γ.rest = (Γ.den ρ).held.set j _
+              rw [← congrArg CtxOf.held hΓ]
+              show _ = ((Γ.held.map fun b => (b.1.den (ρ.setVal k x), b.2.den (ρ.setVal k x)))
+                ++ restDen (ρ.setVal k x) Γ.rest).set j _
+              rw [List.set_append_left _ _ hjlt', List.map_set, HeldS.clear_den,
+                (Prod.mk.inj hbS).1, (Prod.mk.inj hbS).2]
+            rw [e]
+            show _ = CtxOf.afterSys _ ((ρ.setVal k x).val k) t
+            rw [Env.setVal_get_self]
+        · cases h
+      · cases h
     · cases h
   · cases h
 
