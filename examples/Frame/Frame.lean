@@ -1,45 +1,40 @@
 import FrameProgram
-import TypedAsm.Tactic
+import TypedAsm.U.Checked
 
 /-!
 # Frame: typing and safety
 
-The program is in `FrameProgram.lean`. This file types it and proves it safe.
-It is kept separate so that running the program does not link the tactics.
+The program is in `FrameProgram.lean`. This file says what its labels want
+and checks it: one check, run by Lean's kernel, that the code is typed and
+that the state the kernel loads the program into starts as its entry asks.
+Nothing is proved by hand.
+
+It is kept separate so that running the program does not link the checker.
 -/
 
-open TypedAsm
+open TypedAsm TypedAsm.U
 
 namespace Frame
 
-/-! ## The typing -/
+/-! ## What the labels want -/
 
-/-- A pointer to a writable record of sixteen plain bytes: two numbers. -/
-def pair : Ty := .ptr (.raw 16) true 0
+/-- The program for the checker: its instructions, and that the record is
+in the segment it was written in. -/
+def pg : Prog :=
+  { code := progCode (Asm.table base code)
+    statics := staticIn (blocksOf code .start) (Asm.addr code base .record) }
 
-/-- `pick` takes the pointer in `rdi`, uses two stack slots, and preserves
-the callee-saved registers. -/
-def pickSig : FnSig where
-  args := fun r => if r = .rdi then pair else .int
-  results := fun _ => .int
-  preserved := calleeSaved
-  need := 16
+/-- The labels. `pick` takes in `rdi` a pointer to memory it may write, and
+uses sixteen bytes of stack below its return address. `spin` goes round for
+ever, wanting nothing more than the program's start does. -/
+def labels : List U.Label :=
+  [⟨entry, entryOf 3⟩,
+   ⟨Asm.addr code base .spin, entryOf 3⟩,
+   ⟨Asm.addr code base .pick,
+     inFunction [] [(.was .rdi, .ptr (.mk 4096 .nil) true 0)] (room := 16)⟩]
 
-/-- Nothing is known about any register. -/
-def fin : Ctx := ⟨fun _ => .int, [], 24, Flags.Any, [], 0⟩
+/-! ## The check, and what it shows -/
 
-/-- The contexts allowed at each label. -/
-inductive At : Label → Ctx → Prop
-  | start : At .start (entryCtx 3)
-  | afterCall : At .afterCall fin
-  | pick (saved : Reg → Ty) (ret : Ctx) (rest : List Shape) (room : Nat) :
-    pickSig.CallerOk saved ret rest room → At .pick (pickSig.entry saved ret rest room)
-
-asm_typing At
-
-/-! ## Safety -/
-
-asm_safety At.start
+asm_checked code start .start stack 3 program pg labels labels fuel 30
 
 end Frame
-

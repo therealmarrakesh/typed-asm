@@ -41,26 +41,26 @@ def keptRegs : List Reg := [.rbx, .rbp, .r12, .r13, .r14, .r15]
 
 /-- **What a function returns with**, written one family in from its
 entry: the registers it keeps as they were at entry, the stack pointer past
-the return address, the eight bytes that held it held still, and whatever
-else was held, held. The other registers hold whatever they hold, but for
-those said. -/
-def returnsWith (results : List (Reg × Val) := []) : TyS :=
+the return address, the bytes it was given below the stack pointer and the
+eight that held the return address held still, and whatever else was held,
+held. The other registers hold whatever they hold, but for those said. -/
+def returnsWith (results : List (Reg × Val) := []) (room : Nat := 0) : TyS :=
   .code
     (regsWith
       (regsWith anyRegs (keptRegs.map fun r => (r, .bvar 1 (allRegs.idxOf r))))
       ((.rsp, .add (.bvar 1 4) (.lit 8)) :: results))
-    (.bvar 0) [(.bvar 1 4, ⟨8, []⟩)] .nil (.bvar 1)
+    (.bvar 0) [(.add (.bvar 1 4) (.lit (-(BitVec.ofNat 64 room))), ⟨room + 8, []⟩)] .nil (.bvar 1)
 
-/-- **A label inside a function that has pushed nothing**: the return
-address at the stack pointer, known to be code wanting what the function
-returns with; whatever else its caller holds; and the registers and facts
-said. -/
+/-- **A label where a function is entered**: the return address at the
+stack pointer, known to be code wanting what the function returns with; so
+many bytes below the stack pointer the function's to use; whatever else its
+caller holds; and the registers and facts said. -/
 def inFunction (regs : List (Reg × Val) := []) (known : List (Val × TyS) := [])
-    (returns : TyS := returnsWith) : CtxS where
+    (room : Nat := 0) (results : List (Reg × Val) := []) : CtxS where
   regs := regsWith anyRegs regs
   flags := .bvar 0
-  held := [(.bvar 0 4, ⟨8, [(0, .bvar 0 16)]⟩)]
-  known := (.bvar 0 16, returns) :: known
+  held := [(.add (.bvar 0 4) (.lit (-(BitVec.ofNat 64 room))), ⟨room + 8, [(room, .bvar 0 16)]⟩)]
+  known := (.bvar 0 16, returnsWith results room) :: known
   rest := .bvar 0
 
 /-- What a program says of something in one of its segments: that its
