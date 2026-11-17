@@ -1,4 +1,4 @@
-import TypedAsm.U.Walk
+import TypedAsm.U.Labels
 
 /-!
 # What the checker on the one model answers
@@ -64,14 +64,14 @@ def codeW : List (BitVec 64 × Instr × BitVec 64) :=
   [(0, .push .rbx, 1), (1, .mov .w64 (.rm_r (.reg .rbx) .rdi), 3), (4, .pop .rbx, 1)]
 
 -- three instructions are stepped over, and the walk stops at address 5
-example : (match walk codeW 10 20 0 Γw with
+example : (match walk codeW (fun _ => false) true 10 20 0 Γw with
     | .step _ _ _ _ (.step _ _ _ _ (.step _ _ _ _ (.stop a _))) => a
     | _ => 99) = 5 := by decide +kernel
 
 -- after push, mov, pop: rbx holds what it held (the value pushed is the value popped)
-example : (match walk codeW 10 20 0 Γw with
+example : (match walk codeW (fun _ => false) true 10 20 0 Γw with
     | .step _ _ _ _ (.step _ _ _ _ (.step _ _ _ _ (.stop _ Γ))) => Γ.regs.rbx.summands
-    | _ => ([], 0)) = (match walk codeW 10 20 0 Γw with
+    | _ => ([], 0)) = (match walk codeW (fun _ => false) true 10 20 0 Γw with
     | .step _ _ _ _ (.step _ _ _ _ (.step _ _ _ _ (.stop _ Γ))) =>
         ((Γ.held.head?.map fun b => b.2.slots.map (·.2)).getD []).head?.map (·.summands) |>.getD ([], 0)
     | _ => ([], 1)) := by decide +kernel
@@ -84,7 +84,7 @@ def codeE : List (BitVec 64 × Instr × BitVec 64) :=
    (10, .syscall, 2)]
 
 -- the walk steps over the two moves and sees that the call ends the program
-example : (match walk codeE 10 20 0 Γw with
+example : (match walk codeE (fun _ => false) true 10 20 0 Γw with
     | .step _ _ _ _ (.step _ _ _ _ .ends) => true
     | _ => false) = true := by decide +kernel
 
@@ -94,8 +94,8 @@ what Linux is described to do: by the walk alone, which the kernel runs. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
     (hcode : ∀ e ∈ codeE, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (n : Nat) :
     Ok fetch sys Ψ (n + 1) 0 (Γw.den ρ) :=
-  (walk_sound hD rfl (fun _ => trivial) codeE hcode 10 20 0 Γw ρ (by decide +kernel)
-    (Walk.holds_of_auto _ _ _ ρ (by decide +kernel))).2 (by decide +kernel)
+  (walk_sound hD rfl (fun _ => trivial) codeE (fun _ => false) hcode true 10 20 0 Γw ρ (by decide +kernel)
+    (Walk.holds_of_auto _ ρ (by decide +kernel))).2 (by decide +kernel)
 
 /-- `test rdi, rdi; je there; mov eax, 60; syscall; there: mov eax, 231;
 syscall`: a branch on a comparison, each
@@ -110,11 +110,11 @@ defined, so the jump is decided, and both ways end the program. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
     (hcode : ∀ e ∈ codeB, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (n : Nat) :
     Ok fetch sys Ψ (n + 1) 0 (Γw.den ρ) :=
-  (walk_sound hD rfl (fun _ => trivial) codeB hcode 10 20 0 Γw ρ (by decide +kernel)
-    (Walk.holds_of_auto _ _ _ ρ (by decide +kernel))).2 (by decide +kernel)
+  (walk_sound hD rfl (fun _ => trivial) codeB (fun _ => false) hcode true 10 20 0 Γw ρ (by decide +kernel)
+    (Walk.holds_of_auto _ ρ (by decide +kernel))).2 (by decide +kernel)
 
 -- with no comparison before it, the jump is not decided, and nothing is concluded
-example : (walk (codeB.drop 1) 10 20 3 Γw).auto = false := by decide +kernel
+example : (walk (codeB.drop 1) (fun _ => false) true 10 20 3 Γw).auto = false := by decide +kernel
 
 /-! ## What a branch teaches -/
 
@@ -135,10 +135,37 @@ jump the pointer is known not to be null, by the walk alone. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
     (hcode : ∀ e ∈ codeN .e, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (n : Nat) :
     Ok fetch sys Ψ (n + 1) 0 (Γn.den ρ) :=
-  (walk_sound hD rfl (fun _ => trivial) (codeN .e) hcode 10 20 0 Γn ρ (by decide +kernel)
-    (Walk.holds_of_auto _ _ _ ρ (by decide +kernel))).2 (by decide +kernel)
+  (walk_sound hD rfl (fun _ => trivial) (codeN .e) (fun _ => false) hcode true 10 20 0 Γn ρ (by decide +kernel)
+    (Walk.holds_of_auto _ ρ (by decide +kernel))).2 (by decide +kernel)
 
 -- jumping away when it is not null, the load is of a pointer that is null: refused
-example : (walk (codeN .ne) 10 20 0 Γn).auto = false := by decide +kernel
+example : (walk (codeN .ne) (fun _ => false) true 10 20 0 Γn).auto = false := by decide +kernel
+
+/-! ## A program with labels -/
+
+/-- `start: mov ecx, 5; loop: sub rcx, 1; jne loop; mov eax, 60; syscall`. -/
+def codeL : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .mov .w32 (.rm_i (.reg .rcx) 5), 5),
+   (5, .alu .sub .w64 (.rm_i (.reg .rcx) 1), 4), (9, .jcc .ne (-6), 2),
+   (11, .mov .w32 (.rm_i (.reg .rax) 60), 5), (16, .syscall, 2)]
+
+/-- Both labels ask the same: a stack, and nothing of any register. -/
+def labelsL : List (BitVec 64 × CtxS) := [(0, Γw), (5, Γw)]
+
+/-- **The loop is typed at both labels, for any number of steps**: the
+walk from `start` stops at `loop`, the walk from `loop` comes back to it or
+ends the program, and each context reached is decided to be one the label
+asks. The kernel runs the whole check. -/
+example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
+    (hcode : ∀ e ∈ codeL, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (n : Nat) :
+    Ok fetch sys Ψ n 0 (Γw.den ρ) :=
+  program_ok hD rfl (fun _ => trivial) hcode (labels := labelsL) (fuel := 10) (k := 20)
+    (by decide +kernel) n (0, Γw) (List.mem_cons_self ..) ρ
+
+/-- A label asking that `rcx` be five is not one the loop comes back to. -/
+def labelsBad : List (BitVec 64 × CtxS) :=
+  [(0, Γw), (5, { Γw with regs := Γw.regs.set .rcx (.lit 5) })]
+
+example : checkProgram codeL labelsBad 10 20 = false := by decide +kernel
 
 end Tests.Unified

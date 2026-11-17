@@ -68,10 +68,14 @@ def Walk.moved : Walk → Bool
   | _ => false
 
 /-- **The checker walked from an address**, for at most so many
-instructions, `k` being a name no term yet mentions. -/
-def walk (code : List (BitVec 64 × Instr × BitVec 64)) : Nat → Nat → BitVec 64 → CtxS → Walk
-  | 0, _, a, Γ => .stop a Γ
-  | fuel + 1, k, a, Γ =>
+instructions, `k` being a name no term yet mentions. It stops where `stops`
+says, unless that is where it starts: at the labels of a program, which are
+typed each by a walk of its own. -/
+def walk (code : List (BitVec 64 × Instr × BitVec 64)) (stops : BitVec 64 → Bool) :
+    Bool → Nat → Nat → BitVec 64 → CtxS → Walk
+  | _, 0, _, a, Γ => .stop a Γ
+  | start, fuel + 1, k, a, Γ =>
+    if !start && stops a then .stop a Γ else
     match code.find? fun e => e.1 = a with
     | none => .stop a Γ
     | some (_, i, len) =>
@@ -80,18 +84,18 @@ def walk (code : List (BitVec 64 × Instr × BitVec 64)) : Nat → Nat → BitVe
         else
           match sysWorld Γ k (a + len) with
           | some Γ' =>
-            if Γ'.under (k + 1) then .sys k (walk code fuel (k + 1) (a + len) Γ') else .stop a Γ
+            if Γ'.under (k + 1) then .sys k (walk code stops false fuel (k + 1) (a + len) Γ') else .stop a Γ
           | none => .stop a Γ
       else if let .jcc c d := i then
-        .branch c Γ (walk code fuel k (a + len + d.signExtend 64) (Γ.side c true))
-          (walk code fuel k (a + len) (Γ.side c false))
+        .branch c Γ (walk code stops false fuel k (a + len + d.signExtend 64) (Γ.side c true))
+          (walk code stops false fuel k (a + len) (Γ.side c false))
       else
         match stepHeld Γ k (a + len) i with
         | none => .stop a Γ
         | some (Γ', t) =>
           if Γ'.under (k + 1) then
             match t.lit? with
-            | some t' => .step i Γ (a + len) k (walk code fuel (k + 1) t' Γ')
+            | some t' => .step i Γ (a + len) k (walk code stops false fuel (k + 1) t' Γ')
             | none => .step i Γ (a + len) k (.arrive t Γ')
           else .stop a Γ
 
@@ -138,15 +142,18 @@ where the walk got anywhere, which is what a program's labels are typed by,
 each for one step more than all are assumed typed for. -/
 theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
     (hpre : ∀ s, D.pre s) {n : Nat} (code : List (BitVec 64 × Instr × BitVec 64))
+    (stops : BitVec 64 → Bool)
     (hcode : ∀ e ∈ code, fetch e.1 = some (e.2.1, e.2.2)) :
-    (fuel k : Nat) → (a : BitVec 64) → (Γ : CtxS) → (ρ : Env) → Γ.under k = true →
-    (walk code fuel k a Γ).holds (Ok fetch sys Ψ n) (Arrives fetch sys Ψ n) ρ →
+    (start : Bool) → (fuel k : Nat) → (a : BitVec 64) → (Γ : CtxS) → (ρ : Env) → Γ.under k = true →
+    (walk code stops start fuel k a Γ).holds (Ok fetch sys Ψ n) (Arrives fetch sys Ψ n) ρ →
     Ok fetch sys Ψ n a (Γ.den ρ) ∧
-      ((walk code fuel k a Γ).moved = true → Ok fetch sys Ψ (n + 1) a (Γ.den ρ))
-  | 0, _, _, _, _, _, h => ⟨h, fun hm => nomatch hm⟩
-  | fuel + 1, k, a, Γ, ρ, hu, h => by
-    generalize hW : walk code (fuel + 1) k a Γ = W at h ⊢
+      ((walk code stops start fuel k a Γ).moved = true → Ok fetch sys Ψ (n + 1) a (Γ.den ρ))
+  | _, 0, _, _, _, _, _, h => ⟨h, fun hm => nomatch hm⟩
+  | start, fuel + 1, k, a, Γ, ρ, hu, h => by
+    generalize hW : walk code stops start (fuel + 1) k a Γ = W at h ⊢
     unfold walk at hW
+    split at hW
+    · subst hW; exact ⟨h, fun hm => nomatch hm⟩
     split at hW
     · subst hW; exact ⟨h, fun hm => nomatch hm⟩
     · next e i len hfind =>
@@ -173,7 +180,7 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
             split at hW
             · next hu' =>
               subst hW
-              have ih := fun x => (walk_sound hD hkind hpre code hcode fuel (k + 1) (e + len) Γ'
+              have ih := fun x => (walk_sound hD hkind hpre code stops hcode false fuel (k + 1) (e + len) Γ'
                 (ρ.setVal k x) hu' (h x)).1
               have hb := both fun m hm => by
                 refine Ok.step hf (sysWorld_sound hD hkind hpre hw hu) ?_
@@ -189,9 +196,9 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
           have hb := both fun m hm => by
             refine Ok.step hf (jcc_steps (Γ := Γ.den ρ) hdec) ?_
             rintro t Δ ⟨rfl, ⟨hc, rfl⟩ | ⟨hc, rfl⟩⟩
-            · exact ((Ok.regard (Γ.side_regards hc) (walk_sound hD hkind hpre code hcode fuel k _
+            · exact ((Ok.regard (Γ.side_regards hc) (walk_sound hD hkind hpre code stops hcode false fuel k _
                 _ ρ (by rw [CtxS.side_under]; exact hu) (htk hc)).1).mono hm).arrives
-            · exact ((Ok.regard (Γ.side_regards hc) (walk_sound hD hkind hpre code hcode fuel k _
+            · exact ((Ok.regard (Γ.side_regards hc) (walk_sound hD hkind hpre code stops hcode false fuel k _
                 _ ρ (by rw [CtxS.side_under]; exact hu) (hfl hc)).1).mono hm).arrives
           exact ⟨hb.1, fun _ => hb.2⟩
         · split at hW
@@ -215,38 +222,12 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
                 subst hW
                 have hb := key _ h (fun x hx => by
                   rw [Val.lit?_den ht]
-                  exact (walk_sound hD hkind hpre code hcode fuel (k + 1) t' Γ' (ρ.setVal k x) hu'
+                  exact (walk_sound hD hkind hpre code stops hcode false fuel (k + 1) t' Γ' (ρ.setVal k x) hu'
                     hx).1.arrives)
                 exact ⟨hb.1, fun _ => hb.2⟩
               · subst hW
                 have hb := key _ h (fun x hx => hx)
                 exact ⟨hb.1, fun _ => hb.2⟩
             · subst hW; exact ⟨h, fun hm => nomatch hm⟩
-
-/-- Whether a walk leaves nothing to be shown: every instruction it stepped
-over is seen not to fault of itself, every jump is decided, and every way
-through it ends the program. -/
-def Walk.auto : Walk → Bool
-  | .step i Γ _ _ rest => guardS i Γ.flags && rest.auto
-  | .sys _ rest => rest.auto
-  | .ends => true
-  | .branch c Γ taken fall => Γ.flags.decides c && taken.auto && fall.auto
-  | _ => false
-
-/-- Such a walk holds. -/
-theorem Walk.holds_of_auto (P A : BitVec 64 → Ctx → Prop) :
-    (W : Walk) → (ρ : Env) → W.auto = true → W.holds P A ρ
-  | .step i Γ next k rest, ρ, h => by
-    simp only [Walk.auto, Bool.and_eq_true] at h
-    exact ⟨fun d hd x => guardS_den ρ h.1 hd _ _ _ _,
-      fun x => Walk.holds_of_auto P A rest _ h.2⟩
-  | .sys k rest, ρ, h => fun x => Walk.holds_of_auto P A rest _ h
-  | .ends, _, _ => trivial
-  | .branch c Γ taken fall, ρ, h => by
-    simp only [Walk.auto, Bool.and_eq_true] at h
-    exact ⟨FlagsT.decides_den ρ Γ.flags c h.1.1, fun _ => Walk.holds_of_auto P A taken ρ h.1.2,
-      fun _ => Walk.holds_of_auto P A fall ρ h.2⟩
-  | .stop _ _, _, h => nomatch h
-  | .arrive _ _, _, h => nomatch h
 
 end TypedAsm.U
