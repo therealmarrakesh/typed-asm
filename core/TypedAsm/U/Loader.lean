@@ -45,9 +45,9 @@ theorem PermsWithin.congr {s t : State} {rs : List (BitVec 64 × BitVec 64)} (h 
   exact h a ha
 
 /-- Whether a stretch's pages lie wholly within one of some ranges of bytes,
-each an address and a size. -/
+each an address and a size; a stretch of no pages does. -/
 def stretchIn (cs : List (BitVec 64 × Nat)) (r : BitVec 64 × BitVec 64) : Bool :=
-  cs.any fun c =>
+  (State.pagesOf r.1.toNat r.2.toNat).2 == 0 || cs.any fun c =>
     decide (c.1.toNat ≤ 4096 * (State.pagesOf r.1.toNat r.2.toNat).1 ∧
       4096 * ((State.pagesOf r.1.toNat r.2.toNat).1 + (State.pagesOf r.1.toNat r.2.toNat).2)
         ≤ c.1.toNat + c.2)
@@ -59,11 +59,12 @@ theorem PermsWithin.covered {s : State} {rs : List (BitVec 64 × BitVec 64)}
     {a : BitVec 64} (ha : s.perm a ≠ .none) : ∃ c ∈ cs, (a - c.1).toNat < c.2 := by
   obtain ⟨r, hr, h1, h2⟩ := h a ha
   have := List.all_eq_true.mp hc r hr
-  simp only [stretchIn, List.any_eq_true, decide_eq_true_eq] at this
-  obtain ⟨c, hcm, h3, h4⟩ := this
+  simp only [stretchIn, Bool.or_eq_true, beq_iff_eq, List.any_eq_true, decide_eq_true_eq] at this
   generalize (State.pagesOf r.1.toNat r.2.toNat).1 = p1 at *
   generalize (State.pagesOf r.1.toNat r.2.toNat).2 = p2 at *
-  exact ⟨c, hcm, by bv_omega⟩
+  rcases this with h0 | ⟨c, hcm, h3, h4⟩
+  · omega
+  · exact ⟨c, hcm, by bv_omega⟩
 
 /-- **All the memory there is, for the entry contract**: every byte the
 machine can touch is in a region held or in a block. -/
