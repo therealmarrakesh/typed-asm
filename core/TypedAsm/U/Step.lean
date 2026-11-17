@@ -5,6 +5,7 @@ import TypedAsm.U.Bridge
 import TypedAsm.U.Guard
 import TypedAsm.U.Text
 import TypedAsm.U.Span
+import TypedAsm.U.FindArr
 
 /-!
 # The checker's step
@@ -127,7 +128,9 @@ held there, where one is held at those eight bytes, and otherwise the name
 point into: the name `k`, of which is then known what the block's shape
 says is at those bytes. A byte of text, through a pointer to text: the name
 `k`, and of the pointer it is then known that there is more unless that
-byte is nought. -/
+byte is nought. One of a row of values a pointer is known to be the address
+of, where the ranges known show it is fewer along than there are: the name
+`k`, known to be of the type the row's values are. -/
 def readCell (kinds : Nat → Option ShapeS) (Γ : CtxS) (k : Nat) (next : BitVec 64) :
     Option (Mem × Nat) → Option (Val × List (Val × TyS))
   | none => some (.lit 0, [])
@@ -146,6 +149,10 @@ def readCell (kinds : Nat → Option ShapeS) (Γ : CtxS) (k : Nat) (next : BitVe
         if n = 1 then
           match findStr (eaS Γ.regs next m) Γ.known with
           | some (q, _) => some (narrow 1 (.var k), [(q, .str (narrow 1 (.var k)))])
+          | none => none
+        else if n = 8 then
+          match findArr Γ.known (eaS Γ.regs next m) Γ.known with
+          | some (_, _, τ) => some (.var k, [(.var k, τ)])
           | none => none
         else none
 
@@ -253,7 +260,42 @@ theorem readCell_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
                 :: (Γ.den (ρ.setVal k x)).known
             rw [hcell, Val.den_setVal ρ k x _ hq, hΓ]
           · cases h
-        · cases h
+        · split at h
+          · next h8 =>
+            subst h8
+            split at h
+            · next p c τ hfa =>
+              cases h
+              show Reads fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) 8 _
+              intro j Ψ' he hwf s hw
+              obtain ⟨hmem, i, ha, hi⟩ := findArr_spec (ρ := ρ) (Ψ' := Ψ') (n := j)
+                (fun g hg => hw.known (g.1.den ρ, g.2.den ρ) (List.mem_map.mpr ⟨g, hg, rfl⟩))
+                Γ.known hfa
+              have hf : (p.den ρ, Ty.arr (c.den ρ) (τ.den ρ)) ∈ (Γ.den ρ).known :=
+                List.mem_map.mpr ⟨(p, .arr c τ), hmem, rfl⟩
+              have haddr : eaOf (Γ.den ρ).val next m = p.den ρ + BitVec.ofNat 64 (8 * i) := by
+                rw [← eaS_den]; exact ha
+              obtain ⟨hr, Γr, hΓr, hv, hfl, hw'⟩ := Reads.arr hf haddr hi j Ψ' he hwf s hw
+              refine ⟨hr, Γr, ⟨?_, Env.setVal_get_self ρ k _⟩, hv, hfl, hw'⟩
+              rw [hΓr]
+              have hΓ := CtxS.den_setVal ρ k (loadN s 8 (eaOf (Γ.den ρ).val next m)) Γ hu
+              refine ctx_ext (congrArg CtxOf.val hΓ).symm (congrArg CtxOf.flags hΓ).symm
+                (congrArg CtxOf.held hΓ).symm ?_
+              have hτu : τ.under k = true := by
+                have hu' := hu
+                simp only [CtxS.under, Bool.and_eq_true, List.all_eq_true] at hu'
+                have := (hu'.1.2 _ hmem).2
+                simp only [TyS.under, Bool.and_eq_true] at this
+                exact this.2
+              show (loadN s 8 (eaOf (Γ.den ρ).val next m), τ.den ρ) :: (Γ.den ρ).known
+                = ((Val.var k).den (ρ.setVal k (loadN s 8 (eaOf (Γ.den ρ).val next m))),
+                    τ.den (ρ.setVal k (loadN s 8 (eaOf (Γ.den ρ).val next m))))
+                  :: (Γ.den (ρ.setVal k (loadN s 8 (eaOf (Γ.den ρ).val next m)))).known
+              rw [TyS.den_setVal ρ k _ τ hτu, hΓ,
+                show (Val.var k).den (ρ.setVal k (loadN s 8 (eaOf (Γ.den ρ).val next m)))
+                  = loadN s 8 (eaOf (Γ.den ρ).val next m) from Env.setVal_get_self ρ k _]
+            · cases h
+          · cases h
 
 /-- Whether each typed value of a block keeps clear of the `n` bytes written
 at `o`, or is the eight bytes written, with a value that is of its type:
