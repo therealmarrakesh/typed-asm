@@ -186,4 +186,64 @@ theorem storeN_load64_out (s : State) (n : Nat) (a v y : BitVec 64) (hn : n ≤ 
     refine State.load64_congr_bytes fun j hj => storeN_mem_out s n a v _ hn ?_
     bv_omega
 
+/-! ## Access to bytes of a held region -/
+
+/-- What a held region holds once `n` of its bytes, from `o`, are given the
+value `v`: that value there if they are eight, and plain bytes otherwise;
+whatever reached into them is gone. -/
+def heldPut (S : Held) (o n : Nat) (v : BitVec 64) : Held :=
+  if n = 8 then S.set o v else S.clear o n
+
+/-- **A context provides the bytes of a region it holds.** They may be read
+and written. Read, they are the value the region holds there, if it holds
+one at those eight bytes; written, the region holds what was written. -/
+theorem Access.held {Γ : Ctx} {k : Nat} {b : BitVec 64} {S : Held} {o n : Nat} (rd wr : Bool)
+    (hk : Γ.held[k]? = some (b, S)) (hin : o + n ≤ S.size) (hn : n ≤ 8) :
+    Access fetch sys Ψ Γ (b + BitVec.ofNat 64 o) n rd wr (fun _ => True)
+      (fun x v Γ₁ => (n = 8 → ∀ w, (o, w) ∈ S.vals → x = w) ∧
+        Γ₁ = if wr then { Γ with held := Γ.held.set k (b, heldPut S o n v) } else Γ) := by
+  intro j Ψ' he hwf s hw
+  obtain ⟨hklt, hkeq⟩ := List.getElem?_eq_some_iff.mp hk
+  have hmem : (b, S) ∈ Γ.held := hkeq ▸ List.getElem_mem hklt
+  have hcw : s.canWrite (b + BitVec.ofNat 64 o) n = true :=
+    State.canWrite_sub (hw.held.perm _ hmem) hin
+  refine ⟨fun _ => State.canRead_of_canWrite hcw, fun _ => hcw, fun v _ => ?_⟩
+  have hx : n = 8 → ∀ w, (o, w) ∈ S.vals → loadN s n (b + BitVec.ofNat 64 o) = w := by
+    intro h8 w hwv
+    subst h8
+    exact hw.held.vals _ hmem (o, w) hwv
+  cases wr with
+  | false => exact ⟨Γ, ⟨hx, rfl⟩, rfl, rfl, hw⟩
+  | true =>
+    refine ⟨_, ⟨hx, rfl⟩, rfl, rfl, ?_⟩
+    show WellTyped fetch sys Ψ' j { Γ with held := Γ.held.set k (b, heldPut S o n v) }
+      (storeN s n (b + BitVec.ofNat 64 o) v)
+    refine hw.writeHeld hwf hk hin ?_ ?_ (storeN_regs _ _ _ _) (storeN_flags _ _ _ _)
+      (storeN_perm _ _ _ _) (fun y hy => storeN_load64_out _ _ _ _ _ hn hy)
+      (fun x hx => storeN_mem_out _ _ _ _ _ hn hx) ?_
+    · unfold heldPut; split <;> rfl
+    · intro p hp
+      have hsize : (heldPut S o n v).size = S.size := by unfold heldPut; split <;> rfl
+      rw [hsize]
+      unfold heldPut at hp
+      split at hp
+      · next h8 =>
+        simp only [ShapeOf.set, ShapeOf.clear, List.mem_cons, List.mem_filter] at hp
+        rcases hp with rfl | hp
+        · show o + 8 ≤ S.size; omega
+        · exact hw.held.fits _ hmem p hp.1
+      · simp only [ShapeOf.clear, List.mem_filter] at hp
+        exact hw.held.fits _ hmem p hp.1
+    · intro p hp
+      unfold heldPut at hp
+      split at hp
+      · next h8 =>
+        subst h8
+        simp only [ShapeOf.set, ShapeOf.clear, List.mem_cons, List.mem_filter] at hp
+        rcases hp with rfl | hp
+        · exact .inr (TypedAsm.State.load64_store64_same _ _ _)
+        · exact .inl ⟨hp.1, by simpa [ShapeOf.clearOf] using hp.2⟩
+      · simp only [ShapeOf.clear, List.mem_filter] at hp
+        exact .inl ⟨hp.1, by simpa [ShapeOf.clearOf] using hp.2⟩
+
 end TypedAsm.U
