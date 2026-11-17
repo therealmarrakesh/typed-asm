@@ -7117,6 +7117,70 @@ def dst? : Instr → Option Reg
   | .lea _ d _ => some d
   | _ => none
 
+/-- Why a system call that is to return is refused. -/
+inductive SysReject
+  /-- The call number is not exactly known: what `rax` holds. -/
+  | number (τ : TyS)
+  /-- There is no rule for the call of this number. -/
+  | noRule (nr : BitVec 64)
+  /-- The register that is to hold the buffer does not hold a writable
+  pointer or an exactly known address. -/
+  | buffer (r : Reg) (τ : TyS)
+  /-- The register that is to hold the count does not hold an exactly known
+  value. -/
+  | count (r : Reg) (τ : TyS)
+  /-- The buffer has no room in plain bytes for what the kernel stores: the
+  count's register, or the bytes a call of fixed size stores. -/
+  | noRoom (buf : Reg) (cnt : Option Reg) (bytes : Nat)
+  /-- An `mmap` whose argument is not the one the model has: the register,
+  what it must hold exactly, and what it holds. -/
+  | mmapArg (r : Reg) (want : BitVec 64) (τ : TyS)
+  /-- An `mmap` whose length is not written out. -/
+  | mmapLen (τ : TyS)
+  /-- A `munmap` that is not of a block the context owns, by its address
+  exactly in `rdi`, with a length written out in `rsi`. -/
+  | munmap
+
+/-- Why a call that stores into a buffer is refused: the buffer's register,
+and the count's or the bytes stored. -/
+def whyFill (Γ : CtxS) (b : Reg) (c : Option Reg) (bytes : Nat) : SysReject :=
+  let room : SysReject := .noRoom b c bytes
+  let counted : SysReject :=
+    match c with
+    | some cr =>
+      match Γ.regs.get cr with
+      | .eq _ => room
+      | τ => .count cr τ
+    | none => room
+  match Γ.regs.get b with
+  | .ptr _ true _ => counted
+  | .eq _ => if c.isSome then counted else .buffer b (Γ.regs.get b)
+  | τ => .buffer b τ
+
+/-- Why `stepSys`, and an `mmap` for memory to own, have no answer for a
+system call. -/
+def whySys (Γ : CtxS) : SysReject :=
+  match Γ.regs.get .rax with
+  | .eq (.lit nr) =>
+    if nr = 5 then whyFill Γ .rsi none 144
+    else if nr = 228 then whyFill Γ .rsi none 16
+    else if nr = 0 then whyFill Γ .rsi (some .rdx) 0
+    else if nr = 318 then whyFill Γ .rdi (some .rsi) 0
+    else if nr = 11 then .munmap
+    else if nr = 9 then
+      match Γ.regs.get .rdi, Γ.regs.get .r10, Γ.regs.get .rdx, Γ.regs.get .rsi with
+      | .eq (.lit hint), .eq (.lit fl), .eq (.lit prot), .eq (.lit _) =>
+        if hint ≠ 0 then .mmapArg .rdi 0 (Γ.regs.get .rdi)
+        else if fl ≠ 0x22 then .mmapArg .r10 0x22 (Γ.regs.get .r10)
+        else if prot ≠ 3 then .mmapArg .rdx 3 (Γ.regs.get .rdx)
+        else .noRule nr
+      | .eq (.lit _), .eq (.lit _), .eq (.lit _), τ => .mmapLen τ
+      | .eq (.lit _), .eq (.lit _), τ, _ => .mmapArg .rdx 3 τ
+      | .eq (.lit _), τ, _, _ => .mmapArg .r10 0x22 τ
+      | τ, _, _, _ => .mmapArg .rdi 0 τ
+    else .noRule nr
+  | τ => .number τ
+
 /-- Why an access of `n` bytes to a memory operand is refused. `typed` is
 whether what is stored is a whole value with a type of its own. -/
 def whyMem (next : BitVec 64) (Γ : CtxS) (m : Mem) (n : Nat) (writing typed : Bool) : Reject :=

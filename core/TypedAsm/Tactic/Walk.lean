@@ -634,7 +634,9 @@ inductive StepResult
   | stepped
   /-- The block was typed to its end: it was handed over at a label. -/
   | done
-  | endOfBlock (instr : Instr)
+  /-- The instruction here ends the block; with why the checker refuses that
+  ending, where its walk looked and found it refused. -/
+  | endOfBlock (instr : Instr) (why : Option MessageData := none)
   | notABlock
 
 /-- Runs a tactic on one goal and returns the goals it leaves. -/
@@ -1126,6 +1128,46 @@ def explainRet (atoms : Sym.Atoms) (p : Sym.Part) (c : Sym.CondS) : MetaM Messag
       followed by the caller's own; a function must hand back what its signature says and \
       dispose of anything else it took"
   | p => return m!"`ret`: {← explainPart atoms p c}, where the function returns"
+
+/-- Says, of the program, why the checker refuses a system call. -/
+def explainSys (atoms : Sym.Atoms) (name : String) : Sym.SysReject → MetaM MessageData
+  | .number τ => do
+    return m!"`syscall`: the call number in `rax` must be exactly known, but its type is \
+      `{← ppTy (← Sym.denTy atoms τ)}`"
+  | .noRule nr =>
+    return m!"`syscall`: call number {nr.toNat} has no rule. The calls that can be typed are \
+      {typedCalls}"
+  | .buffer r τ => do
+    return m!"`{name}` needs `{r.name64}` to hold a writable pointer to the buffer, the \
+      address of stack slots taken with `lea` once `rsp` has a name, or the address of a byte \
+      of a block the context owns, but its type is `{← ppTy (← Sym.denTy atoms τ)}`"
+  | .count r τ => do
+    return m!"`{name}` needs the count in `{r.name64}` to be exactly known, but its type is \
+      `{← ppTy (← Sym.denTy atoms τ)}`"
+  | .noRoom buf (some cnt) _ =>
+    return m!"`{name}` could overwrite something that is not plain bytes: the buffer in \
+      `{buf.name64}` does not have room for the count in `{cnt.name64}` in plain bytes of its \
+      block"
+  | .noRoom buf none bytes =>
+    return m!"`{name}` could overwrite something that is not plain bytes: the buffer in \
+      `{buf.name64}` does not have room in plain bytes of its block for the {bytes} bytes the \
+      kernel stores"
+  | .mmapArg .rdi _ τ => do
+    return m!"`mmap` is typed only where the kernel chooses the place: `rdi` must hold exactly \
+      0, but its type is `{← ppTy (← Sym.denTy atoms τ)}`. Asked for an address, the kernel may \
+      put the memory where it would not of its own accord, such as in the reach of the stack"
+  | .mmapArg .rdx _ τ => do
+    return m!"`mmap` is typed only for memory to read and write: `rdx` must hold exactly 3, \
+      but its type is `{← ppTy (← Sym.denTy atoms τ)}`"
+  | .mmapArg r _ τ => do
+    return m!"`mmap` is typed only for private memory that is not a file: `{r.name64}` must \
+      hold exactly 0x22, but its type is `{← ppTy (← Sym.denTy atoms τ)}`"
+  | .mmapLen τ => do
+    return m!"`mmap` needs the length in `rsi` to be exactly known, but its type is \
+      `{← ppTy (← Sym.denTy atoms τ)}`"
+  | .munmap =>
+    return m!"`munmap` is typed for a block the context owns: `rax` must hold exactly 11, `rdi` \
+      exactly the address of an owned block, and `rsi` an exactly known length"
 
 /-- Whether a context is declared for a label. -/
 def ctorIsFor (kName lName : Name) : MetaM Bool := do
@@ -3683,6 +3725,15 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
               continue
           let some (S', cs) := Sym.stepSys cur linux?.isSome | do
             if (Sym.exitAt cur i).isSome then break
+            -- refused: why, where it is the first thing asked of the walk
+            -- (a `write` where what the program writes is being shown is
+            -- spoken of where its offer is looked for)
+            let nr? := match cur.regs.get .rax with
+              | .eq (.lit nr) => some nr.toNat
+              | _ => none
+            let name := ((bufferCalls.find? (some ·.1 == nr?)).map (·.2.1)).getD "syscall"
+            if moves.isEmpty && !(nr? == some 1 && linux?.isNone) then
+              refusal.set (some (← explainSys (← get) name (Sym.whySys cur)))
             trace[TypedAsm.fast] "system call not stepped: rax {toExpr (cur.regs.get .rax)}, rsi {
               toExpr (cur.regs.get .rsi)}, rdx {toExpr (cur.regs.get .rdx)}, owned {toExpr cur.owned}"
             break
@@ -4883,11 +4934,12 @@ partial def typeStepCore (named : Bool := false) : TacticM StepResult :=
     if let .syscall := instr then
       if let some nr ← syscallNumber ty.getAppArgs[5]! then
         if isStepCall nr then
+          if let some msg ← refusal.modifyGet fun r => (r, none) then throwError msg
           setGoals [goal]
           typeSyscallStep goal nr
           setGoals ((← getGoals) ++ others)
           return .stepped
-    return .endOfBlock instr
+    return .endOfBlock instr (← refusal.modifyGet fun r => (r, none))
   setGoals [goal]
   try
     evalTactic (← `(tactic| refine BlockOk.step (Γ' := ?_) (by ty_fetch) ?_ ?_))
@@ -4910,11 +4962,12 @@ partial def typeStepCore (named : Bool := false) : TacticM StepResult :=
       if let .syscall := instr then
         if let some nr ← syscallNumber ty.getAppArgs[5]! then
           if isStepCall nr then
+            if let some msg ← refusal.modifyGet fun r => (r, none) then throwError msg
             setGoals [goal]
             typeSyscallStep goal nr
             setGoals ((← getGoals) ++ others)
             return .stepped
-      return .endOfBlock instr
+      return .endOfBlock instr (← refusal.modifyGet fun r => (r, none))
     -- What a register holds is looked into where the instruction turns on
     -- it. A test of a register against itself, when it holds a pointer that
     -- may be null or what a system call handed back, is where a program
@@ -5095,7 +5148,7 @@ elab "ty_step" : tactic => do
   match ← typeStep with
   | .stepped => pure ()
   | .done => pure ()
-  | .endOfBlock instr =>
+  | .endOfBlock instr _ =>
     throwError "`{instr.toAsm}` can transfer control, so it ends the block and is not typed by `ty_step`"
   | .notABlock => throwError "ty_step: the goal is not a block"
 

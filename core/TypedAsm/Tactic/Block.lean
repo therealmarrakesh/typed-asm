@@ -630,12 +630,13 @@ def finishBlockCore (goal : MVarId) (instr : Instr) : TacticM Finish := do
 /-- Ends a block, adding to a rejection where the registers and flags it
 speaks of got what they have, and carrying that record on to wherever the
 block goes on from here. -/
-def finishBlock (goal : MVarId) (instr : Instr) : TacticM Finish := do
+def finishBlock (goal : MVarId) (instr : Instr) (why? : Option MessageData := none) :
+    TacticM Finish := do
   let before ← try trailKey goal catch _ => pure none
   let r ← try
       -- where the checker's walk looked for this ending and found why it is
       -- refused, that is the reason given
-      if let some msg ← refusal.modifyGet fun r => (r, none) then throwError msg
+      if let some msg := why? then throwError msg
       trace[TypedAsm.fast] "block ending the long way: {instr.toAsm}"
       finishBlockCore goal instr
     catch e =>
@@ -869,6 +870,7 @@ elab "ty_block_core" : tactic => do
     work := more
     setGoals [g]
     let mut endInstr? : Option Instr := none
+    let mut endWhy : Option MessageData := none
     let mut entered := false
     enterOff.set false
     repeat
@@ -907,7 +909,7 @@ elab "ty_block_core" : tactic => do
       match r with
       | .stepped => continue
       | .done => entered := true; break
-      | .endOfBlock instr => endInstr? := some instr; break
+      | .endOfBlock instr why => endInstr? := some instr; endWhy := why; break
       | .notABlock => break
     if entered then
       -- a step that told two cases apart left the other case behind this one
@@ -917,7 +919,7 @@ elab "ty_block_core" : tactic => do
     let goal ← getMainGoal
     -- a step that told two cases apart left the other case behind this one
     work := (← getGoals).drop 1 ++ work
-    match ← finishBlock goal instr with
+    match ← finishBlock goal instr endWhy with
     | .done l => left := left ++ l
     | .continues rest l =>
       left := left ++ l
@@ -1042,9 +1044,9 @@ elab "ty_branch" : tactic => do
   let others := (← getGoals).drop 1
   let saved ← saveState
   match ← typeStep with
-  | .endOfBlock instr =>
+  | .endOfBlock instr why =>
     let goal ← getMainGoal
-    match ← finishBlock goal instr with
+    match ← finishBlock goal instr why with
     | .done l => setGoals (l ++ others)
     | .continues rest l => setGoals (rest :: l ++ others)
     | .forks blocks l =>
@@ -1082,7 +1084,7 @@ def seeking (tac : TacticM Unit) : TacticM Unit := do
     let moved ← try
         match ← typeStep with
         | .stepped => pure true
-        | .endOfBlock (.jcc _ _) =>
+        | .endOfBlock (.jcc _ _) _ =>
           evalTactic (← `(tactic| ty_branch))
           pure true
         | _ => pure false
