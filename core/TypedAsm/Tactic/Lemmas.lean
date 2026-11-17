@@ -16,7 +16,7 @@ import TypedAsm.Program
 import TypedAsm.Fn
 import TypedAsm.Print
 import TypedAsm.Blocks
-import TypedAsm.Linux
+import TypedAsm.LinuxOld
 import TypedAsm.Owned
 import TypedAsm.RegMap
 import TypedAsm.Entry

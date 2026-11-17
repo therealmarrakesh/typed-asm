@@ -1,5 +1,5 @@
 import TypedAsm.Program
-import TypedAsm.Linux
+import TypedAsm.LinuxOld
 
 /-!
 # Memory a program owns

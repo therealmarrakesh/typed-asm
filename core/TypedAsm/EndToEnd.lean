@@ -1,5 +1,5 @@
 import TypedAsm.ArgText
-import TypedAsm.Linux
+import TypedAsm.LinuxOld
 import TypedAsm.Output
 
 /-!

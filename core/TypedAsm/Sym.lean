@@ -1,5 +1,5 @@
 import TypedAsm.Loc
-import TypedAsm.Linux
+import TypedAsm.LinuxOld
 import TypedAsm.Owned
 import TypedAsm.Written
 import TypedAsm.RegMap

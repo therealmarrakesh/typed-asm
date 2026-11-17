@@ -1,4 +1,4 @@
-import TypedAsm.Linux
+import TypedAsm.LinuxOld
 import TypedAsm.Bytes
 import TypedAsm.Output
 import TypedAsm.Encode
