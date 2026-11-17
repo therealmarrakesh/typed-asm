@@ -40,6 +40,11 @@ theorem Val.summands_den (ρ : Env) : (a : Val) → a.den ρ = sumDen ρ a.summa
     bv_omega
   | .var i => by simp [Val.summands, sumDen]
   | .bvar d i => by simp [Val.summands, sumDen]
+  | .slot .. => by simp [Val.summands, sumDen]
+  | .un .. => by simp [Val.summands, sumDen]
+  | .bin .. => by simp [Val.summands, sumDen]
+  | .tri .. => by simp [Val.summands, sumDen]
+  | .fop .. => by simp [Val.summands, sumDen]
   | .shl a k => by simp [Val.summands, sumDen]
   | .out .. => by simp [Val.summands, sumDen]
   | .stored .. => by simp [Val.summands, sumDen]

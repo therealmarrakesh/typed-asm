@@ -34,6 +34,8 @@ def FlagsT.defined : FlagsT → Flag → Bool
   | .lit f, x => (f.get x).isSome
   | .var _, _ => false
   | .bvar _, _ => false
+  | .old, _ => false
+  | .src .., _ => false
   | .out i _ _ _ fl _ _ _, x =>
     match i.fate x with
     | .defines => true
@@ -46,6 +48,8 @@ theorem FlagsT.defined_den (ρ : Env) : (t : FlagsT) → (x : Flag) → t.define
   | .lit f, x, h => h
   | .var _, _, h => nomatch h
   | .bvar _, _, h => nomatch h
+  | .old, _, h => nomatch h
+  | .src .., _, h => nomatch h
   | .out i a b c fl next ea cell, x, h => by
     unfold FlagsT.defined at h
     show ((effectOf i _ (fl.den ρ) next _ _).flags.get x).isSome = true

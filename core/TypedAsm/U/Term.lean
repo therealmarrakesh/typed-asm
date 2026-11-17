@@ -1,5 +1,6 @@
 import TypedAsm.U.Outs
 import TypedAsm.U.Types
+import TypedAsm.U.Ops
 
 /-!
 # Values and flags, as terms
@@ -30,6 +31,11 @@ structure Env where
   /-- What each enclosing family of contexts ranges over, inside a value
   known to be code wanting the family: the innermost family first. -/
   bound : List Fam := []
+  /-- What an instruction computes with, where a term is of an instruction's
+  own description and not yet of any context. -/
+  slot : Slot → BitVec 64 := fun _ => 0
+  /-- The flags before an instruction, likewise. -/
+  old : Flags := ⟨none, none, none, none⟩
 
 mutual
 
@@ -43,6 +49,14 @@ inductive Val
   | add (a b : Val)
   /-- A value shifted left by so many bits: an index scaled. -/
   | shl (a : Val) (k : Nat)
+  /-- A thing an instruction computes with: in an instruction's description
+  only, where the terms of a context are to be put. -/
+  | slot (s : Slot)
+  /-- An operator on one value, on two, on three; and on two with the flags. -/
+  | un (o : Un) (a : Val)
+  | bin (o : Bin) (a b : Val)
+  | tri (o : Tri) (a b c : Val)
+  | fop (o : FOp) (fl : FlagsT) (a b : Val)
   /-- The value the instruction gives the `k`th register it writes. -/
   | out (i : Instr) (k : Nat) (a b c : Val) (fl : FlagsT) (next : BitVec 64) (ea cell : Val)
   /-- The value the instruction stores to memory. -/
@@ -56,6 +70,11 @@ inductive FlagsT
   | var (i : Nat)
   /-- The flags the family `d` out from here ranges over. -/
   | bvar (d : Nat)
+  /-- The flags before an instruction: in an instruction's description only. -/
+  | old
+  /-- The flags an operation leaves, on up to three values and the flags
+  before. -/
+  | src (o : FSrc) (fl : FlagsT) (a b c : Val)
   /-- The flags the instruction leaves. -/
   | out (i : Instr) (a b c : Val) (fl : FlagsT) (next : BitVec 64) (ea cell : Val)
 
@@ -87,6 +106,11 @@ def Val.den (ρ : Env) : Val → BitVec 64
   | .bvar d i => (ρ.bound.getD d {}).vals i
   | .add a b => a.den ρ + b.den ρ
   | .shl a k => a.den ρ <<< k
+  | .slot s => ρ.slot s
+  | .un o a => o.eval (a.den ρ)
+  | .bin o a b => o.eval (a.den ρ) (b.den ρ)
+  | .tri o a b c => o.eval (a.den ρ) (b.den ρ) (c.den ρ)
+  | .fop o fl a b => o.eval (fl.den ρ) (a.den ρ) (b.den ρ)
   | .out i k a b c fl next ea cell =>
     (((effectOf i [a.den ρ, b.den ρ, c.den ρ] (fl.den ρ) next (ea.den ρ) (cell.den ρ)).regs.getD k
       (.rax, 0)).2)
@@ -100,6 +124,8 @@ def FlagsT.den (ρ : Env) : FlagsT → Flags
   | .lit f => f
   | .var i => ρ.flags i
   | .bvar d => (ρ.bound.getD d {}).flags
+  | .old => ρ.old
+  | .src o fl a b c => o.eval (fl.den ρ) (a.den ρ) (b.den ρ) (c.den ρ)
   | .out i a b c fl next ea cell =>
     (effectOf i [a.den ρ, b.den ρ, c.den ρ] (fl.den ρ) next (ea.den ρ) (cell.den ρ)).flags
 
