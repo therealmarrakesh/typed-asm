@@ -965,6 +965,57 @@ example : rangeHolds [(.var 0, .range 0 4)] (.add (.var 0) (.lit 1)) 0 4 = false
 example : rangeHolds [(.var 0, .range 0 4), (.var 0, .range 4 2)]
     (.add (.var 0) (.lit 3)) 7 5 = true := by decide +kernel
 
+/-! ## A loop over a table
+
+A family that ties two registers: the pointer is at element `i`, the count
+is five less `i`. Going round, `i` is found from the count, and the pointer
+checked against it. -/
+
+/-- The loop's family: `rdi` at element `i` of a table of five at 0x5000,
+`rsi` five less `i`, `i` at most four. -/
+def Ploop : CtxS where
+  regs := ⟨.bvar 0 0, .bvar 0 1, .bvar 0 2, .bvar 0 3, .add (.bvar 0 16) (.lit 32), .bvar 0 5,
+    .add (.lit 5) (.un (.neg .w64) (.bvar 0 17)), .add (.lit 0x5000) (.shl (.bvar 0 17) 3),
+    .bvar 0 8, .bvar 0 9, .bvar 0 10, .bvar 0 11, .bvar 0 12, .bvar 0 13, .bvar 0 14, .bvar 0 15⟩
+  flags := .bvar 0
+  held := [(.bvar 0 16, ⟨64, []⟩)]
+  known := [(.bvar 0 17, .range 0 4)]
+
+/-- `mov edi, 0x5000; mov esi, 5; xor eax, eax;
+loop: add rax, [rdi]; add rdi, 8; sub rsi, 1; jne loop; mov eax, 60; syscall`. -/
+def codeSum : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .mov .w32 (.rm_i (.reg .rdi) 0x5000), 5), (5, .mov .w32 (.rm_i (.reg .rsi) 5), 5),
+   (10, .alu .xor .w32 (.rm_r (.reg .rax) .rax), 2),
+   (12, .alu .add .w64 (.r_m .rax (.sib (some .rdi) none 0)), 3),
+   (15, .alu .add .w64 (.rm_i (.reg .rdi) 8), 4), (19, .alu .sub .w64 (.rm_i (.reg .rsi) 1), 4),
+   (23, .jcc .ne (-13), 2), (25, .mov .w32 (.rm_i (.reg .rax) 60), 5), (30, .syscall, 2)]
+
+def pgSum : Prog := { code := codeSum, statics := [(.lit 0x5000, .ptr (.mk 40 .nil) false 0)] }
+
+-- the loop goes round with the pointer one element on and the count one less, and
+-- `i` still at most four, since the count was not nought: typed, nothing said
+example : checkProgram pgSum [⟨0, Pw⟩, ⟨12, Ploop⟩] 12 0 = true := by decide +kernel
+
+-- a table of four: the fifth read is past its end. Refused
+example : checkProgram { pgSum with statics := [(.lit 0x5000, .ptr (.mk 32 .nil) false 0)] }
+    [⟨0, Pw⟩, ⟨12, Ploop⟩] 12 0 = false := by decide +kernel
+-- a loop said to hold for `i` up to five: the read at five is past the end. Refused
+example : checkProgram pgSum
+    [⟨0, Pw⟩, ⟨12, { Ploop with known := [(.bvar 0 17, .range 0 5)] }⟩] 12 0 = false := by
+  decide +kernel
+-- a loop said to hold for `i` up to three only: going round from three is not in it. Refused
+example : checkProgram pgSum
+    [⟨0, Pw⟩, ⟨12, { Ploop with known := [(.bvar 0 17, .range 0 3)] }⟩] 12 0 = false := by
+  decide +kernel
+-- stepping by sixteen: the pointer is not at the element the loop says. Refused
+example : checkProgram { pgSum with code := codeSum.map fun e =>
+      if e.1 = 15 then (15, .alu .add .w64 (.rm_i (.reg .rdi) 16), 4) else e }
+    [⟨0, Pw⟩, ⟨12, Ploop⟩] 12 0 = false := by decide +kernel
+-- counting from six: the loop is entered with a count it does not allow. Refused
+example : checkProgram { pgSum with code := codeSum.map fun e =>
+      if e.1 = 5 then (5, .mov .w32 (.rm_i (.reg .rsi) 6), 5) else e }
+    [⟨0, Pw⟩, ⟨12, Ploop⟩] 12 0 = false := by decide +kernel
+
 /-! ## All the memory a first state has -/
 
 /-- Two pages that may be written, and one of code. -/
