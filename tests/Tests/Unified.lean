@@ -1042,6 +1042,25 @@ example : checkProgram (codeArr .rdx .ae 8) [lab 0 Parr] 10 0 = false := by deci
 -- eight bytes that are not one of the values: refused
 example : checkProgram (codeArr .rdx .ae 4) [lab 0 Parr] 10 0 = false := by decide +kernel
 
+/-- `rbx` is the address of a row of `rdx` values, and `rdx` is not nought. -/
+def Prow : CtxS :=
+  { Pw with known := [(.bvar 0 3, .arr (.bvar 0 2) .any), (.bvar 0 2, .range 1 (-1))] }
+
+/-- `loop: add rax, [rbx]; add rbx, <step>; sub rdx, 1; jne loop; exit`. -/
+def codeRow (step : BitVec 32) : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .alu .add .w64 (.r_m .rax (.sib (some .rbx) none 0)), 3),
+   (3, .alu .add .w64 (.rm_i (.reg .rbx) step), 4), (7, .alu .sub .w64 (.rm_i (.reg .rdx) 1), 4),
+   (11, .jcc .ne (-13), 2), (13, .mov .w32 (.rm_i (.reg .rax) 60), 5), (18, .syscall, 2)]
+
+-- the rest of a row is a row: one value on and one fewer, going round, for any row
+example : checkProgram (codeRow 8) [lab 0 Prow] 10 0 = true := by decide +kernel
+-- two values on for one fewer: the rest may be shorter than is said. Refused
+example : checkProgram (codeRow 16) [lab 0 Prow] 10 0 = false := by decide +kernel
+-- a row that may be of none: the first read may be past it. Refused
+example : checkProgram (codeRow 8)
+    [lab 0 { Pw with known := [(.bvar 0 3, .arr (.bvar 0 2) .any)] }] 10 0 = false := by
+  decide +kernel
+
 /-! ## All the memory a first state has -/
 
 /-- Two pages that may be written, and one of code. -/

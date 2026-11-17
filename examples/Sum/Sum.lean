@@ -18,34 +18,32 @@ namespace Sum
 
 /-! ## What the labels want -/
 
-/-- Where the array is. -/
-def arr : Val := .lit (Asm.addr code base .array)
-
-/-- How many elements the loop has taken. -/
-def i : Val := .named 0
-
-/-- The blocks the program says its segments are. The array: five numbers, not to be written. -/
+/-- The blocks the program says its segments are. The array: a row of five
+values, not to be written. -/
 def blocks : List (BitVec 64 × U.LayoutS) :=
-  blocksWith code .start [(Asm.addr code base .array, plainBlock 40 false)]
+  blocksWith code .start [(Asm.addr code base .array, rowBlock 5 .any false)]
 
-/-- The program for the checker: its instructions, and that the array is in
-one of the blocks said. -/
+/-- The program for the checker: its instructions, and that the array is a
+row of five values. -/
 def pg : Prog :=
   { code := progCode (Asm.table base code)
-    statics := staticIn blocks (Asm.addr code base .array) }
+    statics := staticRow (Asm.addr code base .array) 5 .any }
 
-/-- The labels. `sum` is entered with the array in `rdi` and its length in
-`rsi`; going round the loop, `rdi` is at element `i` and `rsi` is what is
-left, for `i` at most four. A function gives back the registers it must as
-it found them: that is checked, not said here. -/
+/-- `rdi` is the address of a row of as many values as `rsi` says. -/
+def row : List (Val × TyS) := [(.was .rdi, .arr (.was .rsi) .any)]
+
+/-- The labels. `sum` takes in `rdi` a row of as many values as `rsi` says:
+whatever row, and however many. Going round the loop the same is so of what
+is left, and there is some left: the rest of a row is a row, and the count
+was not nought. A function gives back the registers it must as it found
+them: that is checked, not said here. -/
 def labels : List U.Label :=
-  [⟨entry, entryOf 1⟩,
-   ⟨Asm.addr code base .sum, inFunction [(.rdi, arr), (.rsi, 5)]⟩,
-   ⟨Asm.addr code base .loop,
-     inFunction [(.rdi, arr + (i <<< 3)), (.rsi, 5 - i)] [(i, .range 0 4)]⟩]
+  [⟨entry, inProgram 1⟩,
+   ⟨Asm.addr code base .sum, inFunction (known := row)⟩,
+   ⟨Asm.addr code base .loop, inFunction (known := row ++ [(.was .rsi, .range 1 (-1))])⟩]
 
 /-! ## The check, and what it shows -/
 
-asm_checked code start .start stack 1 program pg labels labels blocks blocks fuel 14
+asm_checked code start .start stack 1 program pg labels labels blocks blocks fuel 30
 
 end Sum
