@@ -63,6 +63,7 @@ theorem TyS.strip_follows (ρ : Env) {nz ne : Bool} {v : BitVec 64} (hnz : nz = 
   | .str _ => Follows.refl _ _
   | .atom _ => Follows.refl _ _
   | .code .. => Follows.refl _ _
+  | .range _ _ => Follows.refl _ _
 
 /-- Whether the values a comparison leaves a value lie within a range. -/
 def CmpT.leaves (p : CmpT) (b : Bool) (v : Val) (R : Range) : Bool :=
@@ -114,6 +115,7 @@ theorem TyS.strip_under (k : Nat) (nz ne : Bool) :
   | .str _, h => h
   | .atom _, h => h
   | .code .., h => h
+  | .range _ _, h => h
 
 theorem CtxS.learn_under (p : CmpT) (b : Bool) (Γ : CtxS) (k : Nat) (h : Γ.under k = true) :
     (Γ.learn p b).under k = true := by

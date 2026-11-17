@@ -54,6 +54,8 @@ inductive TyS
   whatever the values the family ranges over are. -/
   | code (regs : Regs Val) (flags : FlagsT) (held : List (Val × HeldS)) (known : FactsS)
       (rest : RestS)
+  /-- It lies in a range. -/
+  | range (lo hi : BitVec 64)
 
 /-- The shape of a block others may point into, as data. -/
 inductive ShapeS
@@ -83,6 +85,7 @@ def TyS.den (ρ : Env) : TyS → Ty
   | .orErr τ => .orErr (τ.den ρ)
   | .str more => .str more
   | .atom i => ρ.ty i
+  | .range lo hi => .range lo hi
   | .code regs flags held known rest => .code fun z =>
     { val := fun r => (regs.get r).den { ρ with bound := z :: ρ.bound }
       flags := flags.den { ρ with bound := z :: ρ.bound }

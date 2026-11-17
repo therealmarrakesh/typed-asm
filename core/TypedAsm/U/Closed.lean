@@ -187,6 +187,7 @@ theorem TyS.den_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n zs 
     simp only [TyS.den, TyS.den_agree ρ n zs zs' hz τ (by simpa only [TyS.closedAt] using h)]
   | .str _, _ => rfl
   | .atom _, _ => rfl
+  | .range _ _, _ => rfl
   | .code regs flags held known rest, h => by
     simp only [TyS.closedAt, Bool.and_eq_true] at h
     obtain ⟨⟨⟨⟨hr, hf⟩, hh⟩, hkn⟩, hrest⟩ := h

@@ -63,6 +63,7 @@ theorem findFact_spec {ρ : Env} {a : Val} {n : Nat} :
     | str _ => exact tail h
     | atom _ => exact tail h
     | code _ _ _ _ _ => exact tail h
+    | range _ _ => exact tail h
 
 /-- What a shape says is at a byte. -/
 def ValsS.at (o : Nat) : ValsS → List TyS

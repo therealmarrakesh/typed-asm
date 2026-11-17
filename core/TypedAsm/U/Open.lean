@@ -235,6 +235,7 @@ def TyS.open (o : Opening) (n : Nat) : TyS → TyS
   | .orErr τ => .orErr (τ.open o n)
   | .str more => .str more
   | .atom i => .atom i
+  | .range lo hi => .range lo hi
   | .code regs flags held known rest =>
     .code (regs.map (Val.open o (n + 1))) (flags.open o (n + 1))
       (heldOpen o (n + 1) held ++ (rest.openHeld o (n + 1)).1) (known.open o (n + 1))
@@ -265,6 +266,7 @@ theorem TyS.den_open (ρ : Env) (o : Opening) (ho : o.Closed) (pre zs : List Fam
   | .orErr τ => by simp only [TyS.open, TyS.den, TyS.den_open ρ o ho pre zs τ]
   | .str _ => rfl
   | .atom _ => rfl
+  | .range _ _ => rfl
   | .code regs flags held known rest => by
     show Ty.code _ = Ty.code _
     congr 1

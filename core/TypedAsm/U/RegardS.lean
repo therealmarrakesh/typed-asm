@@ -1,5 +1,6 @@
 import TypedAsm.U.Find
 import TypedAsm.U.Entail
+import TypedAsm.U.Range
 
 /-!
 # Whether one context may be regarded as another, computed
@@ -245,6 +246,10 @@ def followsS (τ : TyS) : TyS → Bool
   | .str more => τ == .str more || τ == .str true
   | .atom i => τ == .atom i
   | .code r f h k rest => τ == .code r f h k rest
+  | .range lo hi =>
+    match τ with
+    | .range lo' hi' => Range.within ⟨lo', hi'⟩ ⟨lo, hi⟩
+    | _ => false
 
 theorem followsS_sub (ρ : Env) (v : BitVec 64) :
     (υ τ : TyS) → followsS τ υ = true → Sub v (τ.den ρ) (υ.den ρ)
@@ -288,6 +293,12 @@ theorem followsS_sub (ρ : Env) (v : BitVec 64) :
     simp only [followsS, beq_iff_eq] at h
     subst h
     exact .refl _ _
+  | .range lo hi, τ, h => by
+    cases τ with
+    | range lo' hi' =>
+      exact .rangeIn lo' hi' lo hi fun hv =>
+        Range.within_has (r := ⟨lo', hi'⟩) (s := ⟨lo, hi⟩) h hv
+    | _ => cases h
 
 /-- Whether a thing is so of a value whatever else is known: that nothing
 is; that zero may be null; that an error number may be one. -/
@@ -298,6 +309,10 @@ def outright (v : Val) : TyS → Bool
     (match v.lit? with
      | some k => decide (SysErr k)
      | none => false) || outright v τ
+  | .range lo hi =>
+    match v.lit? with
+    | some k => decide (k - lo ≤ hi - lo)
+    | none => false
   | _ => false
 
 theorem outright_hasTy (ρ : Env) (Ψ' : MemTy) (n : Nat) (v : Val) :
@@ -325,6 +340,14 @@ theorem outright_hasTy (ρ : Env) (Ψ' : MemTy) (n : Nat) (v : Val) :
   | .str _, h => nomatch h
   | .atom _, h => nomatch h
   | .code .., h => nomatch h
+  | .range lo hi, h => by
+    simp only [outright] at h
+    cases hl : v.lit? with
+    | none => rw [hl] at h; cases h
+    | some k =>
+      rw [hl] at h
+      rw [Val.lit?_den hl]
+      exact hasTy_range.mpr (of_decide_eq_true h)
 
 /-- Whether a thing known is so of itself, or follows from one of a list, of
 the same value. -/

@@ -50,6 +50,10 @@ theorem hasTy_code {pre : Fam → Ctx} {v : BitVec 64} :
         WellTyped fetch sys Ψ' k (pre x) s → SafeN fetch sys k s := by
   rw [HasTy]
 
+theorem hasTy_range {lo hi v : BitVec 64} :
+    HasTy fetch sys Ψ n (.range lo hi) v ↔ v - lo ≤ hi - lo := by
+  rw [HasTy]
+
 /-- What is known of a value at a step count is known at every smaller one. -/
 theorem HasTy.mono {m : Nat} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys Ψ n τ v)
     (hle : m ≤ n) : HasTy fetch sys Ψ m τ v := by
@@ -67,6 +71,7 @@ theorem HasTy.mono {m : Nat} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys Ψ n
   | code pre =>
     rw [hasTy_code] at h ⊢
     exact fun x k hk => h x k (by omega)
+  | range lo hi => exact hasTy_range.mpr (hasTy_range.mp h)
 termination_by sizeOf τ
 
 /-- And stays known when the memory typing grows. -/
@@ -92,6 +97,7 @@ theorem HasTy.ext {Ψ' : MemTy} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys �
   | code pre =>
     rw [hasTy_code] at h ⊢
     exact fun x k hk Ψ'' he' => h x k hk Ψ'' (he.trans he')
+  | range lo hi => exact hasTy_range.mpr (hasTy_range.mp h)
 termination_by sizeOf τ
 
 /-- **What follows by `Sub` is so.** -/
@@ -122,6 +128,7 @@ theorem HasTy.sub {τ υ : Ty} {v : BitVec 64} (h : Sub v τ υ) (hv : HasTy fet
   | codeMap v pre f =>
     rw [hasTy_code] at hv ⊢
     exact fun x => hv (f x)
+  | rangeIn lo hi lo' hi' h => exact hasTy_range.mpr (h (hasTy_range.mp hv))
 
 /-- Matching a context carries over to any weaker notion of what is known. -/
 theorem Matches.imp {H H' : Ty → BitVec 64 → Prop} {Γ : Ctx} {s : State}

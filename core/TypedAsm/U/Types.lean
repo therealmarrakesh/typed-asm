@@ -71,6 +71,8 @@ inductive Ty
   keeps, and whatever else its caller holds; and in each member the return
   address is known to be code wanting what the function returns with. -/
   | code (pre : Fam → CtxOf Ty)
+  /-- It lies in a range: from `lo` round to `hi`, going up and wrapping. -/
+  | range (lo hi : BitVec 64)
 
 abbrev Ctx := CtxOf Ty
 
@@ -159,6 +161,10 @@ inductive Sub : BitVec 64 → Ty → Ty → Prop
   part of the family, however the part is picked out. -/
   | codeMap (v : BitVec 64) (pre : Fam → Ctx) (f : Fam → Fam) :
     Sub v (.code pre) (.code fun s => pre (f s))
+  /-- What lies in one range lies in another, where being in the first puts
+  the value in the second. -/
+  | rangeIn {v : BitVec 64} (lo hi lo' hi' : BitVec 64) :
+    (v - lo ≤ hi - lo → v - lo' ≤ hi' - lo') → Sub v (.range lo hi) (.range lo' hi')
 
 /-! ## What a context asks of a state -/
 
@@ -221,6 +227,7 @@ def HasTy (fetch : Fetch) (sys : Syscall) : MemTy → Nat → Ty → BitVec 64 �
     ∀ x : Fam, ∀ k, (hk : k < n) → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State,
       s.rip = v → Matches (fun τ w => HasTy fetch sys Ψ' k τ w) Ψ' (pre x) s →
       SafeN fetch sys k s
+  | _, _, .range lo hi, v => v - lo ≤ hi - lo
 termination_by _ n τ => (n, τ)
 
 /-- `WellTyped fetch sys Ψ n Γ s`: the state `s` matches the context `Γ`, at
