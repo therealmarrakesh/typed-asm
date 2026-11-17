@@ -1130,6 +1130,49 @@ example : checkProgram
       (4, .lea .w64 .rsi (.sib (some .rsp) none 0), 4), (8, .syscall, 2)] ++ exitAt 10))
     [lab 0 Pw] 10 0 = false := by decide +kernel
 
+/-- The stack, and `rbx` a pointer to sixteen bytes that may be written, the
+second eight of them a pointer. -/
+def Pq : CtxS :=
+  { Pw with known := [(.bvar 0 3, .ptr (.mk 16 (.cons 8 (.ptr (.mk 8 .nil) true 0) .nil)) true 0)] }
+
+-- `fstat` fills 144 bytes: into thirty-two of stack, refused
+example : checkProgram (prog ([(0, .mov .w32 (.rm_i (.reg .rax) 5), 5),
+    (5, .lea .w64 .rsi (.sib (some .rsp) none 0), 4), (9, .syscall, 2)] ++ exitAt 11))
+    [lab 0 Pw] 10 0 = false := by decide +kernel
+-- `clock_gettime` fills sixteen: into the stack, typed
+example : checkProgram (prog ([(0, .mov .w32 (.rm_i (.reg .rax) 228), 5),
+    (5, .lea .w64 .rsi (.sib (some .rsp) none 0), 4), (9, .syscall, 2)] ++ exitAt 11))
+    [lab 0 Pw] 10 0 = true := by decide +kernel
+-- through a register nothing is known of: refused
+example : checkProgram (prog ([(0, .mov .w32 (.rm_i (.reg .rax) 228), 5), (5, .syscall, 2)] ++
+    exitAt 7)) [lab 0 Pw] 10 0 = false := by decide +kernel
+-- `getrandom` of as many bytes as a register nothing is known of says: refused
+example : checkProgram (prog ([(0, .mov .w32 (.rm_i (.reg .rax) 318), 5),
+    (5, .lea .w64 .rdi (.sib (some .rsp) none 0), 4), (9, .syscall, 2)] ++ exitAt 11))
+    [lab 0 Pw] 10 0 = false := by decide +kernel
+-- what holds of a load and a store holds of every instruction with a memory
+-- operand. `neg` at an index nothing is known of: refused
+example : checkProgram (prog ([(0, .unary .neg .w64 (.mem (.sib (some .rbx) (some (.rcx, .s8)) 0)),
+    4)] ++ exitAt 4)) [lab 0 Pq] 10 0 = false := by decide +kernel
+-- `not` of the eight plain bytes: typed
+example : checkProgram (prog ([(0, .unary .not .w64 (.mem (.sib (some .rbx) none 0)), 3)] ++
+    exitAt 3)) [lab 0 Pq] 10 0 = true := by decide +kernel
+-- of the eight that hold a pointer: refused, they would no longer hold one
+example : checkProgram (prog ([(0, .unary .not .w64 (.mem (.sib (some .rbx) none 8)), 4)] ++
+    exitAt 4)) [lab 0 Pq] 10 0 = false := by decide +kernel
+-- `add` to four bytes that run into the pointer: refused
+example : checkProgram (prog ([(0, .alu .add .w32 (.rm_i (.mem (.sib (some .rbx) none 6)) 1), 4)] ++
+    exitAt 4)) [lab 0 Pq] 10 0 = false := by decide +kernel
+-- two bytes stored across the pointer's start: refused
+example : checkProgram (prog ([(0, .store16 (.sib (some .rbx) none 7) .rax, 4)] ++ exitAt 4))
+    [lab 0 Pq] 10 0 = false := by decide +kernel
+-- a shift of four bytes that run past the end of the block: refused
+example : checkProgram (prog ([(0, .shift .shl .w32 (.mem (.sib (some .rbx) none 14)) (.imm 1),
+    4)] ++ exitAt 4)) [lab 0 Pq] 10 0 = false := by decide +kernel
+-- a multiply by four bytes that run past the end: refused
+example : checkProgram (prog ([(0, .imul2 .w32 .rax (.mem (.sib (some .rbx) none 14)), 4)] ++
+    exitAt 4)) [lab 0 Pq] 10 0 = false := by decide +kernel
+
 /-! ## All the memory a first state has -/
 
 /-- Two pages that may be written, and one of code. -/
