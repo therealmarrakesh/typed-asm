@@ -264,28 +264,33 @@ theorem targetOf_next {i : Instr} {d₁ : Desc1} (h : i.desc1 = some d₁) (vals
 instruction, for one that goes on; the address jumped to or called, where
 the instruction names it; and otherwise the term for where the instruction
 sends it. -/
-def targetS (i : Instr) (next : BitVec 64) (t : Val) : Val :=
+def targetS (i : Instr) (next : BitVec 64) (a b cell t : Val) : Val :=
   match i.desc1 with
   | some _ => .lit next
   | none =>
     match i with
     | .jmp (.rel d) => .lit (next + d.signExtend 64)
     | .call (.rel d) => .lit (next + d.signExtend 64)
+    | .jmp (.ind (.reg _)) => a
+    | .jmp (.ind (.mem _)) => cell
+    | .call (.ind (.reg _)) => b
+    | .call (.ind (.mem _)) => cell
+    | .ret => cell
     | _ => t
 
 theorem targetS_den (ρ : Env) (i : Instr) (a b c : Val) (fl : FlagsT) (next : BitVec 64)
     (ea cell : Val) :
-    (targetS i next (.goes i a b c fl next ea cell)).den ρ
+    (targetS i next a b cell (.goes i a b c fl next ea cell)).den ρ
       = (Val.goes i a b c fl next ea cell).den ρ := by
   unfold targetS
   cases h : i.desc1 with
   | some d₁ => exact (targetOf_next h _ _ _ _ _).symm
   | none =>
-    simp only
-    split
-    · rfl
-    · rfl
-    · rfl
+    cases i with
+    | jmp t => rcases t with rel | (r | m) <;> rfl
+    | call t => rcases t with rel | (r | m) <;> rfl
+    | ret => rfl
+    | _ => rfl
 
 /-- **The checker's step, for any described instruction.** The bytes it
 reads are found, in a region the context holds or through a fact about a
@@ -309,7 +314,7 @@ def stepHeld (Γ : CtxS) (k : Nat) (next : BitVec 64) (i : Instr) : Option (CtxS
                 regs := setOuts (fun j => simpOut i j a b c Γ.flags next ea cell) i.outs 0 Γ.regs
                 flags := flagsOut i a b c Γ.flags next ea cell
                 held := held' },
-          targetS i next (.goes i a b c Γ.flags next ea cell))
+          targetS i next a b cell (.goes i a b c Γ.flags next ea cell))
       | none => none
     | none => none
   | none => none
