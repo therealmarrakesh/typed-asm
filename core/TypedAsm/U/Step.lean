@@ -69,8 +69,10 @@ theorem Reads.mono {Γ : Ctx} {a : BitVec 64} {n : Nat} {P P' : BitVec 64 → Ct
 /-- A region the context holds, as terms, is one it holds. -/
 theorem CtxS.held_den (ρ : Env) (Γ : CtxS) {j : Nat} {b : Val} {S : HeldS}
     (h : Γ.held[j]? = some (b, S)) : (Γ.den ρ).held[j]? = some (b.den ρ, S.den ρ) := by
-  show (Γ.held.map _)[j]? = _
-  rw [List.getElem?_map, h]
+  show ((Γ.held.map fun b => (b.1.den ρ, b.2.den ρ)) ++ restDen ρ Γ.rest)[j]? = _
+  have hj : j < (Γ.held.map fun b => (b.1.den ρ, b.2.den ρ)).length := by
+    rw [List.length_map]; exact (List.getElem?_eq_some_iff.mp h).1
+  rw [List.getElem?_append_left hj, List.getElem?_map, h]
   rfl
 
 /-- The term for the bytes an instruction reads, and what reading them
@@ -199,8 +201,12 @@ theorem writeCell_sound {ρ : Env} {Γ : CtxS} {next : BitVec 64} {v : Val}
             = { Γ.den ρ with
                 held := (Γ.den ρ).held.set j (b.den ρ, heldPut (S.den ρ) o n (v.den ρ)) } := by
           refine ctx_ext rfl rfl ?_ rfl
-          show (Γ.held.set j (b, S.put o n v)).map _ = (Γ.held.map _).set j _
-          rw [List.map_set, HeldS.put_den]
+          show (Γ.held.set j (b, S.put o n v)).map (fun b => (b.1.den ρ, b.2.den ρ))
+              ++ restDen ρ Γ.rest
+            = ((Γ.held.map fun b => (b.1.den ρ, b.2.den ρ)) ++ restDen ρ Γ.rest).set j _
+          have hj : j < (Γ.held.map fun b => (b.1.den ρ, b.2.den ρ)).length := by
+            rw [List.length_map]; exact (List.getElem?_eq_some_iff.mp hl).1
+          rw [List.set_append_left _ _ hj, List.map_set, HeldS.put_den]
         rw [e]
         exact hW
       · cases h

@@ -25,11 +25,12 @@ variable {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
 
 /-! ## Finding terms for a label's names -/
 
-def Inst.ofLists (vs : List (Nat × Val)) (fs : List (Nat × FlagsT)) (ts : List (Nat × TyS)) :
-    Inst where
+def Inst.ofLists (vs : List (Nat × Val)) (fs : List (Nat × FlagsT)) (ts : List (Nat × TyS))
+    (r : Option Nat := none) : Inst where
   val j := (vs.lookup j).getD (.lit 0)
   flags j := (fs.lookup j).getD (.lit Flags.unknown)
   ty j := (ts.lookup j).getD .any
+  rest _ := r
 
 /-- The term a name must be given for a pattern to be a value: the value,
 where the pattern is the name; the value less a number, where the pattern is
@@ -92,7 +93,7 @@ def matchCtx (Δ Γ : CtxS) : Inst :=
     match Γ.known.find? fun g => g.1.same (f.1.subst σ₂) with
     | some g => bindTy f.2 g.2
     | none => []
-  Inst.ofLists vs fs ts
+  Inst.ofLists vs fs ts Γ.rest
 
 /-! ## Naming what the context reached does not say -/
 
@@ -143,9 +144,17 @@ theorem CtxS.nameSlot_ok {n : Nat} {a : BitVec 64} {Γ Γ' : CtxS} {i o k : Nat}
           (congrArg CtxOf.val hΓ : (Γ.den (ρ.setVal k x)).val = (Γ.den ρ).val)
           (congrArg CtxOf.flags hΓ : (Γ.den (ρ.setVal k x)).flags = (Γ.den ρ).flags) ?_
           (congrArg CtxOf.known hΓ : (Γ.den (ρ.setVal k x)).known = (Γ.den ρ).known)
-        show (Γ.held.set i (b, ⟨S.size, (o, .var k) :: S.slots⟩)).map _ = _
-        rw [List.map_set, ← congrArg CtxOf.held hΓ]
-        congr 1
+        have hj : i < (Γ.held.map fun b =>
+            (b.1.den (ρ.setVal k x), b.2.den (ρ.setVal k x))).length := by
+          rw [List.length_map]; exact (List.getElem?_eq_some_iff.mp hi).1
+        show (Γ.held.set i (b, ⟨S.size, (o, .var k) :: S.slots⟩)).map
+              (fun b => (b.1.den (ρ.setVal k x), b.2.den (ρ.setVal k x)))
+            ++ restDen (ρ.setVal k x) Γ.rest = (Γ.den ρ).held.set i _
+        rw [← congrArg CtxOf.held hΓ]
+        show _ = ((Γ.held.map fun b => (b.1.den (ρ.setVal k x), b.2.den (ρ.setVal k x)))
+          ++ restDen (ρ.setVal k x) Γ.rest).set i _
+        rw [List.set_append_left _ _ hj, List.map_set]
+        congr 2
         show (b.den (ρ.setVal k x), (⟨S.size, (o, (ρ.setVal k x).val k) ::
           S.slots.map fun p => (p.1, p.2.den (ρ.setVal k x))⟩ : Held)) = _
         rw [Env.setVal_get_self, (Prod.mk.inj hb).1]

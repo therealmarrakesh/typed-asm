@@ -142,7 +142,10 @@ theorem CtxS.den_setVal (ρ : Env) (k : Nat) (x : BitVec 64) (Γ : CtxS) (h : Γ
   · funext r
     exact Val.den_setVal ρ k x _ (hreg r)
   · exact FlagsT.den_setVal ρ k x _ hf
-  · show Γ.held.map _ = Γ.held.map _
+  · show Γ.held.map _ ++ restDen (ρ.setVal k x) Γ.rest = Γ.held.map _ ++ restDen ρ Γ.rest
+    have hrest : restDen (ρ.setVal k x) Γ.rest = restDen ρ Γ.rest := by cases Γ.rest <;> rfl
+    rw [hrest]
+    congr 1
     refine List.map_congr_left fun b hb => ?_
     have hbk := hh b hb
     show (b.1.den _, HeldS.den _ b.2) = (b.1.den ρ, HeldS.den ρ b.2)

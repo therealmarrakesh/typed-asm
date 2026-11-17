@@ -234,6 +234,16 @@ example : checkProgram codeJ
      (5, { Γw with held := [(.var 16, ⟨64, []⟩)] })] 10 20 = false := by
   decide +kernel
 
+-- with a name for whatever else is held: the label may keep it, or give it
+-- up; and a label that names a rest is typed for any rest, so it may be
+-- reached holding none
+example : checkProgram codeJ [(0, { Γw with rest := some 0 }), (5, { Γw with rest := some 0 })]
+    10 20 = true := by decide +kernel
+example : checkProgram codeJ [(0, { Γw with rest := some 0 }), (5, Γw)] 10 20 = true := by
+  decide +kernel
+example : checkProgram codeJ [(0, Γw), (5, { Γw with rest := some 0 })] 10 20 = true := by
+  decide +kernel
+
 -- the frame loop again: the label may say the slot holds what `rdi` holds,
 -- which the body puts there, and may not say it holds what `rsi` holds
 example : checkProgram codeF [(0, { Γw with held := [(.var 16, ⟨64, [(16, .var 7)]⟩)] })] 10 20

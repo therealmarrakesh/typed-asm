@@ -19,12 +19,15 @@ structure Inst where
   val : Nat → Val
   flags : Nat → FlagsT
   ty : Nat → TyS
+  /-- The name each name for a rest of what is held is given, if any. -/
+  rest : Nat → Option Nat := fun _ => none
 
 /-- The setting of the names that the terms give. -/
 def Env.inst (ρ : Env) (σ : Inst) : Env where
   val j := (σ.val j).den ρ
   flags j := (σ.flags j).den ρ
   ty j := (σ.ty j).den ρ
+  frame j := restDen ρ (σ.rest j)
 
 mutual
 
@@ -142,6 +145,7 @@ def CtxS.subst (σ : Inst) (Γ : CtxS) : CtxS where
   flags := Γ.flags.subst σ
   held := Γ.held.map fun b => (b.1.subst σ, b.2.subst σ)
   known := Γ.known.map fun f => (f.1.subst σ, f.2.subst σ)
+  rest := Γ.rest.bind σ.rest
 
 /-- **It stands for what the context stood for in the setting the terms
 give.** -/
@@ -153,8 +157,12 @@ theorem CtxS.den_subst (ρ : Env) (σ : Inst) (Γ : CtxS) :
     rw [Regs.get_map]
     exact Val.den_subst ρ σ _
   · exact FlagsT.den_subst ρ σ _
-  · show (Γ.held.map _).map _ = Γ.held.map _
-    rw [List.map_map]
+  · show (Γ.held.map _).map _ ++ restDen ρ (Γ.rest.bind σ.rest)
+      = Γ.held.map _ ++ restDen (ρ.inst σ) Γ.rest
+    have hrest : restDen ρ (Γ.rest.bind σ.rest) = restDen (ρ.inst σ) Γ.rest := by
+      cases Γ.rest <;> rfl
+    rw [hrest, List.map_map]
+    congr 1
     exact List.map_congr_left fun b _ => by
       show ((b.1.subst σ).den ρ, (b.2.subst σ).den ρ) = _
       rw [Val.den_subst, HeldS.den_subst]

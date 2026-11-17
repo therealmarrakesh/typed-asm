@@ -71,10 +71,10 @@ theorem joinStep_regards (ρ : Env) {Γ Γ' : CtxS} (h : joinStep Γ = some Γ')
           (Γ := CtxS.den ρ { Γ with held := gi :: gj ::
             (Γ.held.eraseIdx (max i j)).eraseIdx (min i j) })
           (b := gi.1.den ρ) (S₁ := gi.2.den ρ) (S₂ := gj.2.den ρ)
-          (rest := ((Γ.held.eraseIdx (max i j)).eraseIdx (min i j)).map
-            fun b => (b.1.den ρ, b.2.den ρ))
+          (rest := (((Γ.held.eraseIdx (max i j)).eraseIdx (min i j)).map
+            fun b => (b.1.den ρ, b.2.den ρ)) ++ restDen ρ Γ.rest)
           (by
-            show (gi.1.den ρ, gi.2.den ρ) :: (gj.1.den ρ, gj.2.den ρ) :: _ = _
+            show (gi.1.den ρ, gi.2.den ρ) :: (gj.1.den ρ, gj.2.den ρ) :: _ ++ _ = _
             rw [offsetFrom_den hoff]
             rfl) hsz
         have e : CtxS.den ρ { Γ with held := (gi.1, gi.2.append gj.2) ::
@@ -82,11 +82,12 @@ theorem joinStep_regards (ρ : Env) {Γ Γ' : CtxS} (h : joinStep Γ = some Γ')
             = { CtxS.den ρ { Γ with held := gi :: gj ::
                   (Γ.held.eraseIdx (max i j)).eraseIdx (min i j) } with
                 held := (gi.1.den ρ, (gi.2.den ρ).append (gj.2.den ρ)) ::
-                  ((Γ.held.eraseIdx (max i j)).eraseIdx (min i j)).map
-                    fun b => (b.1.den ρ, b.2.den ρ) } := by
+                  ((((Γ.held.eraseIdx (max i j)).eraseIdx (min i j)).map
+                    fun b => (b.1.den ρ, b.2.den ρ)) ++ restDen ρ Γ.rest) } := by
           refine ctx_ext rfl rfl ?_ rfl
-          show (gi.1.den ρ, (gi.2.append gj.2).den ρ) :: _ = _
+          show (gi.1.den ρ, (gi.2.append gj.2).den ρ) :: _ ++ _ = _
           rw [HeldS.append_den]
+          rfl
         rw [e]
         exact hj
       · cases h

@@ -25,6 +25,8 @@ structure Env where
   /-- What is known of a value, where it is not written out as data: that
   it is code wanting some contexts, say. -/
   ty : Nat → Ty := fun _ => .any
+  /-- Regions held that are not written out: whatever else a caller holds. -/
+  frame : Nat → List Region := fun _ => []
 
 mutual
 

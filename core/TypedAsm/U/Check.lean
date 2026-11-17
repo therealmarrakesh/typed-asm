@@ -29,14 +29,21 @@ structure CtxS where
   held : List (Val × HeldS) := []
   /-- What is known of values. -/
   known : List (Val × TyS) := []
+  /-- A name for whatever else is held, where there may be more. -/
+  rest : Option Nat := none
 
 def HeldS.den (ρ : Env) (S : HeldS) : Held := ⟨S.size, S.slots.map fun p => (p.1, p.2.den ρ)⟩
+
+/-- The regions a name for the rest stands for. -/
+def restDen (ρ : Env) : Option Nat → List Region
+  | some j => ρ.frame j
+  | none => []
 
 /-- The context a context written as terms stands for. -/
 def CtxS.den (ρ : Env) (Γ : CtxS) : Ctx where
   val r := (Γ.regs.get r).den ρ
   flags := Γ.flags.den ρ
-  held := Γ.held.map fun b => (b.1.den ρ, b.2.den ρ)
+  held := (Γ.held.map fun b => (b.1.den ρ, b.2.den ρ)) ++ restDen ρ Γ.rest
   known := Γ.known.map fun f => (f.1.den ρ, f.2.den ρ)
 
 /-- The address a memory operand names, as a term. -/

@@ -14,7 +14,7 @@ turn, with the memory typing left as it is, that comes to this:
 * each thing the second knows is so whenever everything the first knows is:
   which covers a fact that follows from another, facts dropped, and facts
   that are so of any value;
-* each region the second holds is a **part** of one the first holds: it lies
+* each region the second holds, written out, is a **part** of one the first holds: it lies
   within it, and each value it says is there the first says is there, at
   that place; and parts of the same region do not overlap. Which covers the
   same regions, in any order, saying less of what they hold, fewer of them,
@@ -86,18 +86,19 @@ theorem partRegion_eq {E : List Region} {x : Part} {b : Region} (h : E[x.1]? = s
 /-- **One context may be regarded as another** that says the same of the
 registers and the flags, knows only what follows from what the first knows,
 and holds parts of what the first holds, apart from one another; with what
-else the first holds, `F`, held as it was. -/
-theorem Regards.parts {Γ Δ : Ctx} {E F : List Region} {L : List Part}
+else the first holds, `F`, held as it was, or some of it. -/
+theorem Regards.parts {Γ Δ : Ctx} {E F F' : List Region} {L : List Part}
     (hval : Δ.val = Γ.val) (hflags : Δ.flags = Γ.flags)
     (hknown : ∀ f ∈ Δ.known, ∀ (Ψ' : MemTy) (n : Nat),
       (∀ g ∈ Γ.known, HasTy fetch sys Ψ' n g.2 g.1) → HasTy fetch sys Ψ' n f.2 f.1)
-    (hΓ : Γ.held = E ++ F) (hΔ : Δ.held = L.map (partRegion E) ++ F)
+    (hΓ : Γ.held = E ++ F) (hΔ : Δ.held = L.map (partRegion E) ++ F') (hF' : F'.Sublist F)
     (hok : ∀ x ∈ L, PartOk E x) (hap : L.Pairwise PartsApart) :
     Regards fetch sys Ψ Γ Δ := by
   intro k Ψ' he hwf s hw
   refine ⟨Ψ', MemTy.Ext.refl _, hwf, ?_⟩
   have hE : ∀ b ∈ E, b ∈ Γ.held := fun b hb => by rw [hΓ]; exact List.mem_append_left _ hb
-  have hF : ∀ b ∈ F, b ∈ Γ.held := fun b hb => by rw [hΓ]; exact List.mem_append_right _ hb
+  have hF : ∀ b ∈ F', b ∈ Γ.held := fun b hb => by
+    rw [hΓ]; exact List.mem_append_right _ (hF'.subset hb)
   have hap0 : (E ++ F).Pairwise fun b c => Disjoint b.1 b.2.size c.1 c.2.size := by
     rw [← hΓ]; exact hw.held.apart
   obtain ⟨hapE, hapF, hapEF⟩ := List.pairwise_append.mp hap0
@@ -146,7 +147,7 @@ theorem Regards.parts {Γ Δ : Ctx} {E F : List Region} {L : List Part}
             exact (hw.held.heap b hb a l hl).part_left hle (hlt b hb) (hwf.size_lt a l hl)
           apart := by
             rw [hΔ]
-            refine List.pairwise_append.mpr ⟨?_, hapF, ?_⟩
+            refine List.pairwise_append.mpr ⟨?_, hapF.sublist hF', ?_⟩
             · refine List.pairwise_map.mpr (hap.imp_of_mem ?_)
               intro x y hx hy hxy
               obtain ⟨bx, hbx, hlex, _⟩ := hok x hx
@@ -175,7 +176,8 @@ theorem Regards.parts {Γ Δ : Ctx} {E F : List Region} {L : List Part}
               obtain ⟨b, hb, hle, _⟩ := hok x hx
               rw [partRegion_eq hb]
               have hbE := List.mem_of_getElem? hb
-              exact (hapEF b hbE f hf).part_left hle (hlt b (hE b hbE)) (hlt f (hF f hf)) } }
+              exact (hapEF b hbE f (hF'.subset hf)).part_left hle (hlt b (hE b hbE))
+                (hlt f (hF f hf)) } }
 
 /-- **The case where only what is known changes**: each thing known
 following from something known before of the same value. -/
@@ -186,7 +188,7 @@ theorem Regards.follows {Γ : Ctx} (fs : List Fact)
     (fun f hf Ψ' n hg =>
       let ⟨τ, hτ, hfol⟩ := h f hf
       hfol Ψ' n (hg _ hτ))
-    rfl rfl (fun _ hx => nomatch hx) .nil
+    rfl rfl (List.Sublist.refl _) (fun _ hx => nomatch hx) .nil
 
 /-! ## Naming what a region holds -/
 

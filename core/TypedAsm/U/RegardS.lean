@@ -275,19 +275,19 @@ def regardS (Γ Δ : CtxS) : Bool :=
     (match partsS Γ.held Δ.held with
      | some P => apartS P
      | none => false) &&
-    Δ.known.all (factFrom Γ.known)
+    Δ.known.all (factFrom Γ.known) && (Δ.rest == Γ.rest || Δ.rest == none)
 
 theorem regardS_sound (ρ : Env) {Γ Δ : CtxS} (h : regardS Γ Δ = true) :
     Regards fetch sys Ψ (Γ.den ρ) (Δ.den ρ) := by
   simp only [regardS, Bool.and_eq_true, List.all_eq_true, beq_iff_eq] at h
-  obtain ⟨⟨⟨hr, hf⟩, hh⟩, hk⟩ := h
+  obtain ⟨⟨⟨⟨hr, hf⟩, hh⟩, hk⟩, hrest⟩ := h
   cases hP : partsS Γ.held Δ.held with
   | none => rw [hP] at hh; cases hh
   | some P =>
     rw [hP] at hh
     obtain ⟨hmap, hok⟩ := partsS_den ρ Γ.held Δ.held P hP
-    refine Regards.parts (E := Γ.held.map (regionDen ρ)) (F := []) (L := P.map (partDen ρ))
-      ?_ ?_ ?_ (List.append_nil _).symm ?_ hok (apartS_den ρ P hh)
+    refine Regards.parts (E := Γ.held.map (regionDen ρ)) (F := restDen ρ Γ.rest)
+      (F' := restDen ρ Δ.rest) (L := P.map (partDen ρ)) ?_ ?_ ?_ rfl ?_ ?_ hok (apartS_den ρ P hh)
     · funext r
       exact (Val.same_den ρ (hr r (mem_allRegs r))).symm
     · show Δ.flags.den ρ = Γ.flags.den ρ
@@ -302,7 +302,10 @@ theorem regardS_sound (ρ : Env) {Γ Δ : CtxS} (h : regardS Γ Δ = true) :
         show HasTy fetch sys Ψ' n (g.2.den ρ) (g.1.den ρ)
         rw [← Val.same_den ρ hs]
         exact hsrc.sub (followsS_sub ρ _ _ _ hfo)
-    · rw [List.append_nil]
-      exact hmap
+    · show Δ.held.map (regionDen ρ) ++ restDen ρ Δ.rest = _
+      rw [hmap]
+    · rcases Bool.or_eq_true _ _ |>.mp hrest with h | h
+      · rw [beq_iff_eq.mp h]; exact List.Sublist.refl _
+      · rw [beq_iff_eq.mp h]; exact List.nil_sublist _
 
 end TypedAsm.U
