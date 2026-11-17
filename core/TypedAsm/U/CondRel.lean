@@ -201,4 +201,26 @@ theorem condTst_eval {n : Nat} (a b : BitVec n) (c : Cond) :
         try rw [pos_iff]
         generalize (r == 0) = x; generalize r.msb = y; cases x <;> cases y <;> rfl)
 
+/-- What each condition says where the zero flag says whether a number is
+zero and the other flags are clear. -/
+def condZero : Cond → Form
+  | .e | .be | .le => ⟨false, .tstz, false⟩
+  | .ne | .a | .g => ⟨true, .tstz, false⟩
+  | .s | .l | .b | .o => ⟨false, .never, false⟩
+  | .ns | .ge | .ae | .no => ⟨true, .never, false⟩
+
+theorem condZero_eval {n : Nat} (x : BitVec n) (c : Cond) :
+    c.eval ⟨some false, some (x == 0), some false, some false⟩
+      = some ((condZero c).eval x x) := by
+  have hz : Rel.eval .tstz x x = (x == 0) := by
+    show (x &&& x == 0) = _
+    rw [BitVec.and_self]
+  have hv : Rel.eval .never x x = false := rfl
+  show _ = some (if (condZero c).neg then !(if (condZero c).swap then (condZero c).rel.eval x x
+    else (condZero c).rel.eval x x) else (if (condZero c).swap then (condZero c).rel.eval x x
+    else (condZero c).rel.eval x x))
+  generalize (x == 0) = b at hz ⊢
+  cases c <;> simp only [condZero, Bool.false_eq_true, ↓reduceIte, hz, hv] <;>
+    first | rfl | (cases b <;> rfl)
+
 end TypedAsm.U

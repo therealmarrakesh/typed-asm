@@ -50,6 +50,20 @@ example : ((stepHeld Γ1 20 100 (.mov .w64 (.r_m .rax (.sib (some .rdi) none 8))
 example : (stepHeld Γ1 20 100 (.mov .w64 (.r_m .rax (.sib (some .rdi) none 16)))).isNone = true := by
   decide +kernel
 
+/-! ## Results read plainly -/
+
+-- `xor eax, eax` and `sub rax, rax`: nought, whatever the register held
+example : ((stepHeld Γ0 20 100 (.alu .xor .w32 (.rm_r (.reg .rax) .rax))).map fun r => r.1.regs.rax)
+    = some (.lit 0) := by decide +kernel
+example : ((stepHeld Γ0 20 100 (.alu .sub .w64 (.rm_r (.reg .rax) .rax))).map fun r => r.1.regs.rax)
+    = some (.lit 0) := by decide +kernel
+-- `xor eax, ebx`: not nought
+example : ((stepHeld Γ0 20 100 (.alu .xor .w32 (.rm_r (.reg .rax) .rbx))).map fun r =>
+    r.1.regs.rax == .lit 0) = some false := by decide +kernel
+-- `shl rdi, 3`: what `rdi` held, eight times over
+example : ((stepHeld Γ0 20 100 (.shift .shl .w64 (.reg .rdi) (.imm 3))).map fun r => r.1.regs.rdi)
+    = some (.shl (.var 7) 3) := by decide +kernel
+
 /-! ## Writing through a pointer -/
 
 /-- Whether a store through `rdi` is typed, `rdi` pointing at the start of
@@ -467,6 +481,28 @@ def codeS : List (BitVec 64 × Instr × BitVec 64) :=
 -- a shift leaves the zero flag that of its result: the jump after the
 -- comparison is seen to be impossible
 example : checkProgram codeS [lab 0 Pw] 10 0 = true := by decide +kernel
+
+/-- `popcnt rax, rdi; jne on; cmp rdi, 1; jae nowhere; on: exit`: not taking
+`jne` means `rdi` was zero. -/
+def codeP : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .popcnt .w64 .rax (.reg .rdi), 5), (5, .jcc .ne 6, 2),
+   (7, .alu .cmp .w64 (.rm_i (.reg .rdi) 1), 4), (11, .jcc .ae 187, 2),
+   (13, .mov .w32 (.rm_i (.reg .rax) 60), 5), (18, .syscall, 2)]
+
+example : checkProgram codeP [lab 0 Pw] 10 0 = true := by decide +kernel
+
+/-- `cmp rdi, rsi; adc rax, 0; je out; out: exit`: the comparison leaves the
+carry defined, so the addition with carry does not fault and leaves the
+flags defined, so the jump is decided. And a widening multiply, which never
+faults. -/
+def codeA : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .alu .cmp .w64 (.rm_r (.reg .rdi) .rsi), 3), (3, .alu .adc .w64 (.rm_i (.reg .rax) 0), 4),
+   (7, .jcc .e 3, 2), (9, .mulDiv .mul .w64 (.reg .rsi), 3),
+   (12, .mov .w32 (.rm_i (.reg .rax) 60), 5), (17, .syscall, 2)]
+
+example : checkProgram codeA [lab 0 Pw] 10 0 = true := by decide +kernel
+-- entered at the addition with carry, the carry is not known to be defined: refused
+example : checkProgram codeA [lab 3 Pw] 10 0 = false := by decide +kernel
 
 /-! ## Memory mapped, used and given back
 

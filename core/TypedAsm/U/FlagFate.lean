@@ -30,15 +30,19 @@ inductive Fate
   | keeps
   /-- It is defined. -/
   | defines
+  /-- It is defined, if another flag was: the one the instruction reads. -/
+  | definesIf (y : Flag)
   /-- Neither can be said. -/
   | lost
   deriving DecidableEq
 
-/-- What a fate says of a flag before and after. -/
-def Fate.Holds : Fate → Option Bool → Option Bool → Prop
-  | .keeps, old, new => new = old
-  | .defines, _, new => new.isSome = true
-  | .lost, _, _ => True
+/-- What a fate says of a flag before and after, given all the flags
+before. -/
+def Fate.Holds : Fate → Flags → Option Bool → Option Bool → Prop
+  | .keeps, _, old, new => new = old
+  | .defines, _, _, new => new.isSome = true
+  | .definesIf y, all, _, new => (all.get y).isSome = true → new.isSome = true
+  | .lost, _, _, _ => True
 
 /-- A shift or a rotation by a count written out. -/
 def shiftFate (op : ShiftOp) (n : Nat) (x : Flag) : Fate :=
@@ -56,7 +60,7 @@ def mulFate : Flag → Fate
 
 /-- **What each instruction does to each flag.** -/
 def _root_.TypedAsm.Instr.fate : Instr → Flag → Fate
-  | .alu .adc _ _, _ | .alu .sbb _ _, _ => .lost
+  | .alu .adc _ _, _ | .alu .sbb _ _, _ => .definesIf .cf
   | .alu _ _ _, _ => .defines
   | .test _ _ _, _ => .defines
   | .unary .neg _ _, _ => .defines
@@ -75,13 +79,18 @@ theorem rmSet_flags (x : RM) (v : BitVec 64) (f : Flags) (more : List (Reg × Bi
 
 theorem desc1_fate {i : Instr} {d : Desc1} (hd : i.desc1 = some d) (vals : List (BitVec 64))
     (fl : Flags) (a c : BitVec 64) (x : Flag) :
-    (i.fate x).Holds (fl.get x) ((d.run vals fl a c).flags.get x) := by
+    (i.fate x).Holds fl (fl.get x) ((d.run vals fl a c).flags.get x) := by
   cases i with
   | alu op w ops =>
     cases hd
     cases op <;> first
-      | exact trivial
       | (rcases ops with ⟨dst | m, src⟩ | ⟨dst, m⟩ | ⟨dst | m, imm⟩ <;> cases x <;> rfl)
+      | (intro hcf
+         obtain ⟨cf, zf, sf, of⟩ := fl
+         cases cf with
+         | none => cases hcf
+         | some c =>
+           rcases ops with ⟨dst | m, src⟩ | ⟨dst, m⟩ | ⟨dst | m, imm⟩ <;> cases x <;> rfl)
   | test w dst src => cases hd; cases x <;> rfl
   | unary op w dst =>
     cases op <;> cases hd
@@ -94,7 +103,7 @@ theorem desc1_fate {i : Instr} {d : Desc1} (hd : i.desc1 = some d) (vals : List 
     cases cnt with
     | cl => exact trivial
     | imm k =>
-      show (shiftFate op (k.toNat % w.bits) x).Holds (fl.get x)
+      show (shiftFate op (k.toNat % w.bits) x).Holds fl (fl.get x)
         (Flags.get (rmSet _ _ (op.eval fl _ (k.toNat % w.bits)).2 _).flags x)
       rw [rmSet_flags]
       generalize k.toNat % w.bits = n
@@ -132,7 +141,7 @@ theorem desc1_fate {i : Instr} {d : Desc1} (hd : i.desc1 = some d) (vals : List 
 is run on. -/
 theorem desc_fate {i : Instr} {d : Desc} (hd : i.desc = some d) (vals : List (BitVec 64))
     (fl : Flags) (next a c : BitVec 64) (x : Flag) :
-    (i.fate x).Holds (fl.get x) ((d.run vals fl next a c).flags.get x) := by
+    (i.fate x).Holds fl (fl.get x) ((d.run vals fl next a c).flags.get x) := by
   cases hi : i.desc1 with
   | some d₁ =>
     have e : d = d₁.toDesc := Option.some.inj ((desc_of_desc1 hi).symm.trans hd).symm

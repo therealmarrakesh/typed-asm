@@ -37,6 +37,7 @@ def FlagsT.defined : FlagsT → Flag → Bool
   | .out i _ _ _ fl _ _ _, x =>
     match i.fate x with
     | .defines => true
+    | .definesIf y => fl.defined y
     | .keeps => fl.defined x
     | .lost => false
 
@@ -56,6 +57,9 @@ theorem FlagsT.defined_den (ρ : Env) : (t : FlagsT) → (x : Flag) → t.define
         (ea.den ρ) (cell.den ρ) x
       cases hfate : i.fate x with
       | defines => rw [hfate] at hf; exact hf
+      | definesIf y =>
+        rw [hfate] at hf h
+        exact hf (FlagsT.defined_den ρ fl y h)
       | keeps =>
         rw [hfate] at hf h
         show (Flags.get (d.run _ _ _ _ _).flags x).isSome = true

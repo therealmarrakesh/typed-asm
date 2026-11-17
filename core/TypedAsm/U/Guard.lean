@@ -20,6 +20,7 @@ nothing where that is not all it needs. -/
 def _root_.TypedAsm.Instr.needs : Instr → Option (List Flag)
   | .alu .adc _ _ | .alu .sbb _ _ => some [.cf]
   | .cmov c _ _ _ | .setcc c _ | .jcc c _ => some c.uses
+  | .mulDiv .mul _ _ | .mulDiv .imul _ _ => some []
   | .mulDiv _ _ _ | .ud2 | .syscall => none
   | _ => some []
 
@@ -40,7 +41,12 @@ theorem desc1_needs {i : Instr} {d : Desc1} {xs : List Flag} (hn : i.needs = som
          show (Option.map _ fl.cf).isSome = true
          rw [hb]; rfl)
   | unary op w dst => cases op <;> cases hd <;> rfl
-  | mulDiv op w src => cases hn
+  | mulDiv op w src =>
+    cases op
+    · cases hd; rfl
+    · cases hd; rfl
+    · cases hn
+    · cases hn
   | cmov cnd w dst src => cases hd; cases hn; exact cnd.eval_isSome fl hfl
   | setcc cnd dst => cases hd; cases hn; exact cnd.eval_isSome fl hfl
   | jmp t => cases hd

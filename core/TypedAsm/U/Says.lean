@@ -43,9 +43,11 @@ def FlagKind.cond : FlagKind → Cond → Option Form
   | .res, .s => some ⟨false, .tstneg, false⟩
   | .res, .ns => some ⟨true, .tstneg, false⟩
   | .res, _ => none
+  | .zero, c => some (condZero c)
 
 theorem FlagKind.cond_eval {k : FlagKind} {w : Width} {x y : BitVec w.bits} {F : Flags}
-    (hF : k.Holds x y F) (hres : k = .res → y = x) {c : Cond} {f : Form}
+    (hF : k.Holds x y F) (hres : k = .res → y = x) (hzero : k = .zero → y = x) {c : Cond}
+    {f : Form}
     (h : k.cond c = some f) : c.eval F = some (f.eval x y) := by
   cases k with
   | sub => cases hF; exact condSub_eval w x y h
@@ -59,6 +61,11 @@ theorem FlagKind.cond_eval {k : FlagKind} {w : Width} {x y : BitVec w.bits} {F :
     · show F.zf.map (!·) = some (!(x &&& x == 0)); rw [hand, hz]; rfl
     · show F.sf = some (x &&& x).msb; rw [hand]; exact hs
     · show F.sf.map (!·) = some (!(x &&& x).msb); rw [hand, hs]; rfl
+  | zero =>
+    cases hF
+    cases hzero rfl
+    cases h
+    exact condZero_eval x c
 
 /-- An operand of an instruction, as a term. -/
 def Opnd.term (i : Instr) (a b c : Val) (fl : FlagsT) (next : BitVec 64) (ea cell : Val) :
@@ -86,6 +93,24 @@ theorem Opnd.term_den (ρ : Env) (i : Instr) (a b c : Val) (fl : FlagsT) (next :
     · show (0 : BitVec w.bits) = BitVec.setWidth w.bits 0
       simp
   | _ => rfl
+
+theorem flagSrc_zero {i : Instr} {w : Width} {A B : Opnd}
+    (h : i.flagSrc = some (.zero, w, A, B)) : B = A := by
+  cases i with
+  | alu op w' ops => cases op <;> cases h
+  | test w' dst src => cases src <;> cases h
+  | unary op w' dst => cases op <;> cases h
+  | popcnt w' dst src => cases h; rfl
+  | shift op w' dst cnt =>
+    cases cnt with
+    | cl => cases h
+    | imm c =>
+      by_cases hc : c.toNat % w'.bits = 0
+      · simp only [Instr.flagSrc, hc, ↓reduceIte] at h
+        cases h
+      · simp only [Instr.flagSrc, hc, ↓reduceIte] at h
+        cases op <;> cases h
+  | _ => cases h
 
 theorem flagSrc_res {i : Instr} {w : Width} {A B : Opnd} (h : i.flagSrc = some (.res, w, A, B)) :
     B = A := by
@@ -137,8 +162,10 @@ theorem FlagsT.says_den (ρ : Env) {t : FlagsT} {cnd : Cond} {p : CmpT} (h : t.s
         cases h
         show cnd.eval (effectOf i _ (fl.den ρ) next _ _).flags = some (f.eval _ _)
         rw [Opnd.term_den, Opnd.term_den]
-        refine FlagKind.cond_eval (flagSrc_sound hs _ _ _ _ _ _ _) (fun hk => ?_) hc
-        subst hk
-        rw [flagSrc_res hs]
+        refine FlagKind.cond_eval (flagSrc_sound hs _ _ _ _ _ _ _) (fun hk => ?_) (fun hk => ?_) hc
+        · subst hk
+          rw [flagSrc_res hs]
+        · subst hk
+          rw [flagSrc_zero hs]
 
 end TypedAsm.U

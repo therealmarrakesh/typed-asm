@@ -39,6 +39,8 @@ inductive FlagKind
   | tst
   /-- The zero and sign flags are the first's; of the others nothing is said. -/
   | res
+  /-- The zero flag says whether the first is zero; the others are clear. -/
+  | zero
   deriving DecidableEq
 
 def rmOpnd (x : RM) (j : Nat) : Opnd :=
@@ -65,6 +67,7 @@ def _root_.TypedAsm.Instr.flagSrc : Instr → Option (FlagKind × Width × Opnd 
   | .test w dst (.reg _) => some (.tst, w, rmOpnd dst 0, .arg (rmRegs dst).length)
   | .test w dst (.imm i) => some (.tst, w, rmOpnd dst 0, .imm i)
   | .unary .neg w dst => some (.sub, w, .zero, rmOpnd dst 0)
+  | .popcnt w _ src => some (.zero, w, rmOpnd src 0, rmOpnd src 0)
   | .shift op w dst (.imm k) =>
     if k.toNat % w.bits = 0 then none
     else
@@ -87,6 +90,7 @@ def FlagKind.Holds {n : Nat} : FlagKind → BitVec n → BitVec n → Flags → 
   | .sub, x, y, F => F = (subBorrow x y false).2
   | .tst, x, y, F => F = Flags.ofResult (x &&& y) false false
   | .res, x, _, F => F.zf = some (x == 0) ∧ F.sf = some x.msb
+  | .zero, x, _, F => F = ⟨some false, some (x == 0), some false, some false⟩
 
 theorem wide_low (w : Width) (r : BitVec w.bits) : (wide r).setWidth w.bits = r := by
   cases w <;> simp [wide, Width.bits]
@@ -126,6 +130,7 @@ theorem flagSrc_sound {i : Instr} {k : FlagKind} {w : Width} {A B : Opnd}
     cases op
     · cases h; cases dst <;> rfl
     · cases h
+  | popcnt w' dst src => cases h; cases src <;> rfl
   | shift op w' dst cnt =>
     cases cnt with
     | cl => cases h
