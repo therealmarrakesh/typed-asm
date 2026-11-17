@@ -81,6 +81,12 @@ theorem hasTy_range {lo hi v : BitVec 64} :
     HasTy fetch sys Ψ n (.range lo hi) v ↔ v - lo ≤ hi - lo := by
   rw [HasTy]
 
+theorem hasTy_arr {count : BitVec 64} {τ : Ty} {v : BitVec 64} :
+    HasTy fetch sys Ψ n (.arr count τ) v ↔
+      ∃ a l off, Ψ a = some l ∧ v = a + BitVec.ofNat 64 off ∧
+        ∀ i, i < count.toNat → (off + 8 * i, τ) ∈ l.shape.vals := by
+  rw [HasTy]
+
 /-- What is known of a value at a step count is known at every smaller one. -/
 theorem HasTy.mono {m : Nat} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys Ψ n τ v)
     (hle : m ≤ n) : HasTy fetch sys Ψ m τ v := by
@@ -99,6 +105,7 @@ theorem HasTy.mono {m : Nat} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys Ψ n
     rw [hasTy_code] at h ⊢
     exact fun x k hk => h x k (by omega)
   | range lo hi => exact hasTy_range.mpr (hasTy_range.mp h)
+  | arr count τ => exact hasTy_arr.mpr (hasTy_arr.mp h)
 termination_by sizeOf τ
 
 /-- And stays known when the memory typing grows. -/
@@ -125,6 +132,9 @@ theorem HasTy.ext {Ψ' : MemTy} {τ : Ty} {v : BitVec 64} (h : HasTy fetch sys �
     rw [hasTy_code] at h ⊢
     exact fun x k hk Ψ'' he' => h x k hk Ψ'' (he.trans he')
   | range lo hi => exact hasTy_range.mpr (hasTy_range.mp h)
+  | arr count τ =>
+    obtain ⟨a, l, off, hl, h'⟩ := hasTy_arr.mp h
+    exact hasTy_arr.mpr ⟨a, l, off, he.blocks a l hl, h'⟩
 termination_by sizeOf τ
 
 /-- **What follows by `Sub` is so.** -/

@@ -74,6 +74,10 @@ inductive Ty
   | code (pre : Fam → CtxOf Ty)
   /-- It lies in a range: from `lo` round to `hi`, going up and wrapping. -/
   | range (lo hi : BitVec 64)
+  /-- It is the address of so many values in a row, eight bytes each, in a
+  block others may point into; and of each of them `τ` is known. How many
+  is a value: the count a program is handed with its arguments, say. -/
+  | arr (count : BitVec 64) (τ : Ty)
 
 abbrev Ctx := CtxOf Ty
 
@@ -229,6 +233,9 @@ def HasTy (fetch : Fetch) (sys : Syscall) : MemTy → Nat → Ty → BitVec 64 �
       s.rip = v → Matches (fun τ w => HasTy fetch sys Ψ' k τ w) Ψ' (pre x) s →
       SafeN fetch sys k s
   | _, _, .range lo hi, v => v - lo ≤ hi - lo
+  | Ψ, _, .arr count τ, v =>
+    ∃ a l off, Ψ a = some l ∧ v = a + BitVec.ofNat 64 off ∧
+      ∀ i, i < count.toNat → (off + 8 * i, τ) ∈ l.shape.vals
 termination_by _ n τ => (n, τ)
 
 /-- `WellTyped fetch sys Ψ n Γ s`: the state `s` matches the context `Γ`, at
