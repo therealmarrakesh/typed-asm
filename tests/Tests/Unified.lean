@@ -1,6 +1,7 @@
 import TypedAsm.U.Upper
 import TypedAsm.U.Loader
 import TypedAsm.U.Exits
+import TypedAsm.U.Writes
 import TypedAsm.U.Labels
 import TypedAsm.U.Open
 
@@ -897,6 +898,41 @@ example : checkProgram { code := codeX .nop, pre := preExits (· == 0) } [lab 0 
     = false := by decide +kernel
 -- with nothing asked of how it ends, the same program is typed: it is safe
 example : checkProgram (codeX .nop) [lab 0 Pw] 10 0 = true := by decide +kernel
+
+/-! ## What a program writes -/
+
+/-- The bytes of `Hi` and a new line. -/
+def msg : List (BitVec 8) := [72, 105, 10]
+
+/-- `mov eax, 1; mov edi, <fd>; lea rsi, [0x2000]; mov edx, <len>; syscall;
+mov eax, 60; xor edi, edi; syscall`: write so many bytes of a message, and
+end. -/
+def codeHi (fd len : BitVec 32) : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .mov .w32 (.rm_i (.reg .rax) 1), 5), (5, .mov .w32 (.rm_i (.reg .rdi) fd), 5),
+   (10, .lea .w64 .rsi (.rip 8175), 7), (17, .mov .w32 (.rm_i (.reg .rdx) len), 5),
+   (22, .syscall, 2), (24, .mov .w32 (.rm_i (.reg .rax) 60), 5),
+   (29, .alu .xor .w32 (.rm_r (.reg .rdi) .rdi), 2), (31, .syscall, 2)]
+
+/-- It is to end with status nought, and to write these bytes to descriptor
+1; the block at `0x2000` says it holds the message. -/
+def want (bs : List (BitVec 8)) : CtxS → Bool :=
+  preOut [(0x2000, msg)] (· == 0) (fun fd b => fd == 1 && b == bs)
+
+-- the three bytes offered are the message, to descriptor 1; and it ends with nought
+example : checkProgram { code := codeHi 1 3, pre := want msg } [lab 0 Pw] 12 0 = true := by
+  decide +kernel
+-- a fourth byte is past what the block says: refused
+example : checkProgram { code := codeHi 1 4, pre := want msg } [lab 0 Pw] 12 0 = false := by
+  decide +kernel
+-- to another descriptor: refused
+example : checkProgram { code := codeHi 2 3, pre := want msg } [lab 0 Pw] 12 0 = false := by
+  decide +kernel
+-- the message, where other bytes are wanted: refused
+example : checkProgram { code := codeHi 1 3, pre := want [72, 105] } [lab 0 Pw] 12 0 = false := by
+  decide +kernel
+-- its first two bytes, where those are wanted
+example : checkProgram { code := codeHi 1 2, pre := want [72, 105] } [lab 0 Pw] 12 0 = true := by
+  decide +kernel
 
 /-! ## All the memory a first state has -/
 
