@@ -17,7 +17,7 @@ namespace Rejected
 example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i14) Γ := by ty_step
 
 /-- error: no context allowed at label `needsSlot` accepts the current one
-• needsSlot: the stack, the free room or the flags do not match -/
+• needsSlot: the stack has 0 pieces written out where 1 are required -/
 #guard_msgs in
 example : BlockOk Φj jumpFetch linux Ψ (Asm.addr jumps 0 .start) bare := by ty_block
 

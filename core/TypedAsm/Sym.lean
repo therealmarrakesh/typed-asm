@@ -4531,6 +4531,72 @@ theorem subCtx_sound {ρ : Env} {Γ Δ : CtxS} {cs : List CondS} (h : subCtx Γ 
       · exact ownedConds_spec hown
   · cases h
 
+/-! ## Which part of a context a comparison is about
+
+A comparison of two contexts that does not come out is reported of the
+program: which register, or that it was the stack, the room, the flags or
+the blocks owned. The comparison is the one above; here each of its
+conditions is given the part it came from, in the same order. -/
+
+/-- A part of a context. -/
+inductive Part
+  | reg (r : Reg)
+  | stack
+  | room
+  | flags
+  | detached
+  | owned
+  deriving DecidableEq, Repr
+
+/-- The part each condition of `subCtx` is about, in the order `subCtx`
+gives them. -/
+def subParts (Γ Δ : CtxS) : Option (List Part) :=
+  if Γ.stackRest = Δ.stackRest then
+    (stackConds Γ.stack Δ.stack).map fun ss =>
+      (regList.flatMap fun r => (subConds (Γ.regs.get r) (Δ.regs.get r)).map fun _ => Part.reg r) ++
+        (ss.map (fun _ => Part.stack) ++ ((eqConds Γ.room Δ.room).map (fun _ => Part.room) ++
+          ((flagsConds Γ.flags Δ.flags).map (fun _ => Part.flags) ++
+            ((eqConds Γ.above Δ.above).map (fun _ => Part.detached) ++
+              (ownedConds Γ Δ).map (fun _ => Part.owned)))))
+  else none
+
+/-- There is a part for each condition, and no more. -/
+theorem subParts_length {Γ Δ : CtxS} {cs : List CondS} {ps : List Part}
+    (hc : subCtx Γ Δ = some cs) (hp : subParts Γ Δ = some ps) : ps.length = cs.length := by
+  unfold subCtx at hc
+  unfold subParts at hp
+  split at hc
+  · next he =>
+    simp only [he, ↓reduceIte] at hp
+    cases hs : stackConds Γ.stack Δ.stack with
+    | none => rw [hs] at hc; cases hc
+    | some ss =>
+      rw [hs] at hc hp; cases hc; cases hp
+      simp only [List.length_append, List.length_map, List.length_flatMap, regsConds]
+  · cases hc
+
+/-- Why two contexts do not compare at all: where `subCtx` has no answer. -/
+inductive NoCompare
+  /-- The two stacks go on as different things past what is written out. -/
+  | stackRest
+  /-- One stack has more pieces written out than the other: how many each. -/
+  | stackPieces (got want : Nat)
+  /-- The piece so many from the top is not of the form wanted. -/
+  | stackPiece (k : Nat) (got want : ShapeS)
+
+/-- The first piece of two stacks that does not compare, counted from `k`. -/
+def stackWhy : Nat → List ShapeS → List ShapeS → Option NoCompare
+  | _, [], [] => none
+  | k, S :: σ, T :: τ =>
+    match shapeConds S T with
+    | some _ => stackWhy (k + 1) σ τ
+    | none => some (.stackPiece k S T)
+  | k, σ, τ => some (.stackPieces (k + σ.length) (k + τ.length))
+
+/-- Why `subCtx` has no answer, where it has none. -/
+def subWhy (Γ Δ : CtxS) : Option NoCompare :=
+  if Γ.stackRest = Δ.stackRest then stackWhy 0 Γ.stack Δ.stack else some .stackRest
+
 /-! ## A walk through a block
 
 The checker taken through one instruction after another as in a run, and

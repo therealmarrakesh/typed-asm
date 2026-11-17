@@ -1083,6 +1083,42 @@ def explainCond (atoms : Sym.Atoms) (instr : Instr) (c : Sym.CondS) :
       before the divide. Otherwise the quotient may not fit, which is a divide error"
   | c => do return m!"needs `{← ppClean (← Sym.denCond atoms c)}`: it is needed among the hypotheses"
 
+/-- Says, of the program, which part of two contexts a comparison could not
+be shown of: the part is the one the checker gives the condition. -/
+def explainPart (atoms : Sym.Atoms) (p : Sym.Part) (c : Sym.CondS) : MetaM MessageData := do
+  match p, c with
+  | .reg r, .sub τ υ =>
+    return m!"`{r.name64}` has type `{← ppTy (← Sym.denTy atoms τ)}`, but \
+      `{← ppTy (← Sym.denTy atoms υ)}` is required"
+  | .stack, .sub τ υ =>
+    return m!"a slot of the stack holds `{← ppTy (← Sym.denTy atoms τ)}`, but \
+      `{← ppTy (← Sym.denTy atoms υ)}` is required there"
+  | .stack, _ => return m!"the pieces of the stack are not of the sizes required"
+  | .room, .eqN a b =>
+    return m!"the free room on the stack is `{← ppClean (← Sym.denNum atoms a)}`, but \
+      `{← ppClean (← Sym.denNum atoms b)}` is required"
+  | .flags, _ => return m!"what is known of the flags is not what is required"
+  | .detached, _ => return m!"the bytes detached from the stack are not those required"
+  | .owned, _ =>
+    return m!"the blocks owned do not match: a block taken here must be given back or frozen \
+      before control goes there"
+  | _, c => return m!"needs `{← ppClean (← Sym.denCond atoms c)}`"
+
+/-- Says why two contexts do not compare at all. -/
+def explainNoCompare (atoms : Sym.Atoms) : Sym.NoCompare → MetaM MessageData
+  | .stackRest => return m!"the stack does not go on as the one required does"
+  | .stackPieces got want =>
+    return m!"the stack has {got} pieces written out where {want} are required"
+  | .stackPiece k got want => do
+    return m!"the piece of the stack {k} from the top is `{← ppShape (← Sym.denShape atoms got)}`, \
+      but `{← ppShape (← Sym.denShape atoms want)}` is required"
+
+/-- Whether a context is declared for a label. -/
+def ctorIsFor (kName lName : Name) : MetaM Bool := do
+  forallTelescope (← inferType (mkConst kName)) fun _ body => do
+    let args := body.getAppArgs
+    pure (args.size ≥ 2 && args[args.size - 2]!.isConstOf lName)
+
 /-- What a walk through a block does at each move: gives a value a name,
 opens a pointer to a block of a kind, or steps over an instruction, with the
 context it was come to with and what the step left to be shown. -/
@@ -1806,7 +1842,8 @@ def labelProof (Φ : Expr) (lName kName : Name) (params : Array Expr) (t : Nat)
 found is allowed there, with what it demands shown from what is known; and
 each thing the comparison left is shown. Fails if anything is left over. -/
 def solveLeaf (g : MVarId) (Φ : Expr) (lName kName : Name) (params : Array Expr)
-    (t : Nat) (Δ : Sym.CtxS) (cs : List Sym.CondS) (atoms : Sym.Atoms) : TacticM Unit :=
+    (t : Nat) (Δ : Sym.CtxS) (cs : List Sym.CondS) (atoms : Sym.Atoms)
+    (parts : List Sym.Part := []) : TacticM Unit :=
     g.withContext do
   let env ← getEnv
   let lctx ← getLCtx
@@ -1821,22 +1858,41 @@ def solveLeaf (g : MVarId) (Φ : Expr) (lName kName : Name) (params : Array Expr
       evalTactic (← `(tactic| first | assumption | omega | decide | ty_arith))
     unless left.isEmpty do
       trace[TypedAsm.fast] "a premise of `{kName}` is left over: {m}"
-      throwError "left over"
-  -- what the comparison left
+      throwError "what the context demands is not known here: \
+        `{← ppClean (← instantiateMVars (← m.getType))}`"
+  -- what the comparison left, each with the part of the contexts it is about
   let mut hn := mkConst ``True.intro
   let mut allE := mkConst ``True
   arithLeft.set #[]
+  let partOf (i : Nat) : Option Sym.Part := if parts.length == cs.length then parts[i]? else none
+  let mut i := cs.length
   for c in cs.reverse do
+    i := i - 1
     let leaf ← Sym.denCond atoms c
     let h ← try closeNeeds env lctx kwhnf pure #[] leaf
       catch e =>
         trace[TypedAsm.fast] "handing over to `{kName}` leaves: {leaf}"
-        throw e
+        match partOf i with
+        | some p => throwError (← explainPart atoms p c)
+        | none => throw e
     hn := mkApp4 (mkConst ``And.intro) leaf allE h hn
     allE := mkApp2 (mkConst ``And) leaf allE
   try closeArithLeft
   catch e =>
     trace[TypedAsm.fast] "handing over to `{kName}` leaves arithmetic: {(← arithLeft.get).map mkMVar}"
+    -- the first comparison of numbers the arithmetic did not settle
+    let mut j := 0
+    for c in cs do
+      if (c matches .eqN .. | .le .. | .lt ..) then
+        if let some p := partOf j then
+          let leaf ← Sym.denCond atoms c
+          let g ← mkFreshExprSyntheticOpaqueMVar leaf
+          let ok ← try
+              let l ← runOn g.mvarId! (do evalTactic (← `(tactic| first | omega | bv_omega | ty_side)))
+              pure l.isEmpty
+            catch _ => pure false
+          unless ok do throwError (← explainPart atoms p c)
+      j := j + 1
     throw e
   g.assign (mkApp4 (mkConst ``And.intro) (mkApp P ΔE) allE pf2 (← instantiateMVars hn))
   setGoals goals
@@ -1846,14 +1902,14 @@ going that way says is brought in first, and a side the flags rule out needs
 nothing more. -/
 def solveSide (g : MVarId) (branch? : Option (Sym.FlagsS × Cond × Bool)) (Φ : Expr)
     (lName kName : Name) (params : Array Expr) (t : Nat) (Δ : Sym.CtxS) (cs : List Sym.CondS)
-    (atoms : Sym.Atoms) : TacticM Unit := do
+    (atoms : Sym.Atoms) (parts : List Sym.Part := []) : TacticM Unit := do
   if branch?.isNone then
-    solveLeaf g Φ lName kName params t Δ cs atoms
+    solveLeaf g Φ lName kName params t Δ cs atoms parts
     return
   let goals ← getGoals
   let [g₁] ← runOn g introBranch | throwError "unexpected goals"
   unless ← closeIfImpossible g₁ do
-    solveLeaf g₁ Φ lName kName params t Δ cs atoms
+    solveLeaf g₁ Φ lName kName params t Δ cs atoms parts
   setGoals goals
 
 /-- Looks for a context allowed at the label at `t` that the context reached
@@ -1861,9 +1917,13 @@ may stand for, with everything that takes shown: tried here with the values
 the walk names standing as variables, so that the walk can be given the
 context before it is made. -/
 def findEnter (Φ : Expr) (atoms : Sym.Atoms) (named : Array (Nat × Reg))
-    (cur : Sym.CtxS) (at' t : Nat) (branch? : Option (Sym.FlagsS × Cond × Bool) := none) :
+    (cur : Sym.CtxS) (at' t : Nat) (branch? : Option (Sym.FlagsS × Cond × Bool) := none)
+    (why? : Option (IO.Ref (Array MessageData)) := none) :
     TacticM (Option (EnterInfo × Sym.Atoms)) := do
   if ← enterOff.get then return none
+  -- why a context declared at the label is not one to hand over to
+  let note (k : Name) (m : MessageData) : TacticM Unit := do
+    if let some r := why? then r.modify (·.push m!"{k.components.getLast!}: {m}")
   let some (_, _, T, labels) ← labelInfo Φ | return none
   let some (_, lName) := labels.find? (·.1 == t) | return none
   let .const tn _ := T.getAppFn | return none
@@ -1885,7 +1945,11 @@ def findEnter (Φ : Expr) (atoms : Sym.Atoms) (named : Array (Nat × Reg))
     for kName in info.ctors do
       let s ← saveState
       let r ← try (do
-          let some (params, Δ0) ← matchCtor kName lName ΓE | return none
+          let some (params, Δ0) ← matchCtor kName lName ΓE
+            | do
+              if ← ctorIsFor kName lName then
+                note kName m!"nothing here settles the parameters its context is declared with"
+              return none
           let some ΔN ← normalCtx Δ0
             | do trace[TypedAsm.fast] "{kName}: its context is not written out"; return none
           let (Δ?, atoms'') ← (Sym.reifyCtx ΔN).run atoms'
@@ -1916,11 +1980,16 @@ def findEnter (Φ : Expr) (atoms : Sym.Atoms) (named : Array (Nat × Reg))
             | some c => castCtx.set (some c); pure c
             | none => pure cur)
           let some cs := Sym.subCtx cur Δ
-            | do trace[TypedAsm.fast] "{kName}: the contexts do not compare"; return none
+            | do
+              trace[TypedAsm.fast] "{kName}: the contexts do not compare"
+              if let some w := Sym.subWhy cur Δ then note kName (← explainNoCompare atoms'' w)
+              return none
+          let parts := (Sym.subParts cur Δ).getD []
           let g ← mkFreshExprSyntheticOpaqueMVar (← sideType Φ atoms'' t Δ cs branch?)
-          try solveSide g.mvarId! branch? Φ lName kName params t Δ cs atoms''
+          try solveSide g.mvarId! branch? Φ lName kName params t Δ cs atoms'' parts
           catch e =>
             trace[TypedAsm.fast] "{kName}: {e.toMessageData}"
+            note kName e.toMessageData
             throw e
           keepLeaf named g
           let info : EnterInfo := ⟨at', t, Δ, lName, kName, params, (named.map (·.1)).zip temps⟩
@@ -3692,8 +3761,19 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         | .name k r => some (k, r)
         | _ => none
       castRef.set (some ready)
-      let found ← try findEnter Φ atoms named cur at' t finally castRef.set none
-      let some (info, atoms') := found | return none
+      let why ← IO.mkRef #[]
+      let found ← try findEnter Φ atoms named cur at' t (why? := some why)
+        finally castRef.set none
+      let some (info, atoms') := found
+        | do
+          -- no context declared there is one to hand over to: why not, of each
+          let some (_, _, _, labels) ← labelInfo Φ | return none
+          let some (_, lName) := labels.find? (·.1 == t) | return none
+          let mut reasons : MessageData := m!""
+          for r in ← why.get do reasons := reasons ++ m!"\n• {r}"
+          refusal.set (some m!"no context allowed at label `{lName.components.getLast!}` \
+            accepts the current one{reasons}")
+          return none
       return some (info, atoms', .jump at' i len')
     -- A conditional jump to a label with contexts of its own: the side that
     -- jumps is handed over there, and the other is handed over at the next
