@@ -25,7 +25,8 @@ example : BlockOk Φ fetch linux Ψ (Asm.addr code 0 .i1) maybe := by ty_step
 #guard_msgs in
 example : BlockOk Φc callFetch linux Ψ (Asm.addr calls 0 .indirect) roomy := by ty_call plain
 
-/-- error: `jo 8`: the flags known here do not decide the condition. The processor leaves some flags undefined after some instructions, and which way this goes would then not be determined
+/-- error: at address 12: cannot type `jo 8` in the current context
+• the flags known here do not decide the condition. The processor leaves some flags undefined after some instructions, and which way this goes would then not be determined
 the flags were last set by `shl ecx, 3` at address 9 -/
 #guard_msgs in
 example : BlockOk Φf flaggedFetch linux Ψ (Asm.addr flagged 0 .overflow) bare := by ty_block

@@ -1070,10 +1070,14 @@ def explainCond (atoms : Sym.Atoms) (instr : Instr) (c : Sym.CondS) :
     return m!"the operation reads the carry flag, which is not known to be defined here. The \
       processor leaves it undefined after some instructions, and the result would then not be \
       determined"
-  | .decides _ _ =>
+  | .decides .any _ =>
     return m!"the flags are not known here, so they do not decide the condition. The \
       processor leaves them undefined after some instructions, and what this one does would \
       then not be determined"
+  | .decides _ _ =>
+    return m!"the flags known here do not decide the condition. The processor leaves some \
+      flags undefined after some instructions, and which way this goes would then not be \
+      determined"
   | .nonzeroW _ v => do
     return m!"the divisor, `{← ppClean (← Sym.denVal atoms v)}`, is not known to be \
       non-zero: a check is needed before the divide. Dividing by zero is a divide error"

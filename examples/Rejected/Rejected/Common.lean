@@ -144,7 +144,14 @@ def flagged : List (Asm Flagged) := [
 
 def flaggedFetch : Fetch := Asm.fetch 0 flagged
 
-def Φf : CodeTy := .ofLabels flagged 0 (fun _ Δ => Δ = bare)
+/-- Every label allows the context that knows nothing. -/
+inductive AtFlagged : Flagged → Ctx → Prop
+  | zero : AtFlagged .zero bare
+  | overflow : AtFlagged .overflow bare
+  | carry : AtFlagged .carry bare
+  | out : AtFlagged .out bare
+
+def Φf : CodeTy := .ofLabels flagged 0 AtFlagged
 
 /-! ## System calls
 
@@ -490,8 +497,10 @@ def exact : List (Asm Exact) := [
 def exactFetch : Fetch := Asm.fetch 0 exact
 
 /-- At `out`, `rsi` is exactly `8 + 3 * 8 + 1`. -/
-def Φe : CodeTy := .ofLabels exact 0
-  (fun _ Δ => Δ = ⟨fun r => if r = .rsi then .eq 33 else .int, [], 0, Flags.Any, [], 0⟩)
+inductive AtExact : Exact → Ctx → Prop
+  | out : AtExact .out ⟨fun r => if r = .rsi then .eq 33 else .int, [], 0, Flags.Any, [], 0⟩
+
+def Φe : CodeTy := .ofLabels exact 0 AtExact
 
 /-! A divisor loaded from memory, checked, and then used. The loaded value
 is only an integer until it is given a name; the test then says something
