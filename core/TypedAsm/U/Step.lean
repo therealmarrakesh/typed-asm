@@ -1,5 +1,6 @@
 import TypedAsm.U.FindFact
 import TypedAsm.U.FlagsS
+import TypedAsm.U.RegardS
 
 /-!
 # The checker's step
@@ -167,15 +168,57 @@ theorem readCell_sound {ρ : Env} {Γ : CtxS} {k : Nat} {next : BitVec 64} {cell
         · exact (congrArg CtxOf.known hΓ).symm
       · cases h
 
-/-- What the context holds once an instruction has written its bytes: the
-region they are in holds the value written there. -/
+/-- Whether each typed value of a block keeps clear of the `n` bytes written
+at `o`, or is the eight bytes written, with a value that is of its type:
+of itself, or by something known of it. -/
+def valsOkS (Γ : CtxS) (v : Val) (o n : Nat) : ValsS → Bool
+  | .nil => true
+  | .cons q τ rest =>
+    (decide (q + 8 ≤ o) || decide (o + n ≤ q) ||
+      (n == 8 && q == o &&
+        (outright v τ || Γ.known.any fun g => g.1.same v && followsS g.2 τ))) &&
+    valsOkS Γ v o n rest
+
+theorem valsOkS_sound (ρ : Env) {Γ : CtxS} {v : Val} {o n : Nat} :
+    (vs : ValsS) → valsOkS Γ v o n vs = true → ∀ q ∈ vs.den ρ,
+    (q.1 + 8 ≤ o ∨ o + n ≤ q.1) ∨
+      (n = 8 ∧ q.1 = o ∧ ∀ (Ψ' : MemTy) (k : Nat),
+        (∀ g ∈ (Γ.den ρ).known, HasTy fetch sys Ψ' k g.2 g.1) →
+        HasTy fetch sys Ψ' k q.2 (v.den ρ))
+  | .nil, _, q, hq => nomatch hq
+  | .cons q₀ τ rest, h, q, hq => by
+    simp only [valsOkS, Bool.and_eq_true] at h
+    rcases List.mem_cons.mp hq with rfl | hq
+    · have h1 := h.1
+      simp only [Bool.or_eq_true, decide_eq_true_eq, Bool.and_eq_true, beq_iff_eq,
+        List.any_eq_true] at h1
+      rcases h1 with (h1 | h1) | ⟨⟨h8, hqo⟩, hty⟩
+      · exact .inl (.inl h1)
+      · exact .inl (.inr h1)
+      · refine .inr ⟨h8, hqo, fun Ψ' k hg => ?_⟩
+        rcases hty with hout | ⟨g, hgm, hsame, hfol⟩
+        · exact outright_hasTy ρ Ψ' k v τ hout
+        · have hsrc := hg (g.1.den ρ, g.2.den ρ) (List.mem_map.mpr ⟨g, hgm, rfl⟩)
+          show HasTy fetch sys Ψ' k (τ.den ρ) (v.den ρ)
+          rw [← Val.same_den ρ hsame]
+          exact hsrc.sub (followsS_sub ρ _ _ _ hfol)
+    · exact valsOkS_sound ρ rest h.2 q hq
+
+/-- What the context holds once an instruction has written its bytes. In a
+region held: the region holds the value written there. In a block a value
+is known to point into, through a pointer that may be written through: what
+is held is as it was, the block still holding what its shape says. -/
 def writeCell (Γ : CtxS) (next : BitVec 64) (v : Val) :
     Option (Mem × Nat) → Option (List (Val × HeldS))
   | none => some Γ.held
   | some (m, n) =>
     match findHeld (eaS Γ.regs next m) n Γ.held 0 with
     | some (j, b, S, o) => if n ≤ 8 then some (Γ.held.set j (b, S.put o n v)) else none
-    | none => none
+    | none =>
+      match findFact (eaS Γ.regs next m) n Γ.known with
+      | some (_, Sh, w, _, o) =>
+        if w && decide (n ≤ 8) && valsOkS Γ v o n Sh.vals then some Γ.held else none
+      | none => none
 
 theorem writeCell_sound {ρ : Env} {Γ : CtxS} {next : BitVec 64} {v : Val}
     {held' : List (Val × HeldS)} :
@@ -214,7 +257,25 @@ theorem writeCell_sound {ρ : Env} {Γ : CtxS} {next : BitVec 64} {v : Val}
         rw [e]
         exact hW
       · cases h
-    · cases h
+    · split at h
+      · next p Sh w off o hfind =>
+        split at h
+        · next hc =>
+          cases h
+          simp only [Bool.and_eq_true, decide_eq_true_eq] at hc
+          obtain ⟨⟨hw, hn⟩, hvals⟩ := hc
+          subst hw
+          obtain ⟨hmem, hin, ha⟩ := findFact_spec (ρ := ρ) Γ.known hfind
+          have hf : (p.den ρ, Ty.ptr (Sh.den ρ) true off) ∈ (Γ.den ρ).known :=
+            List.mem_map.mpr ⟨(p, .ptr Sh true off), hmem, rfl⟩
+          have haddr : eaOf (Γ.den ρ).val next m + BitVec.ofNat 64 off
+              = p.den ρ + BitVec.ofNat 64 o := by
+            rw [← eaS_den]; exact ha
+          show Writes fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n (v.den ρ) (Γ.den ρ)
+          exact Writes.shared (v.den ρ) hf haddr (by rw [ShapeS.den_size]; exact hin) hn
+            (by rw [ShapeS.den_vals]; exact valsOkS_sound ρ Sh.vals hvals)
+        · cases h
+      · cases h
 
 /-- The term for the address an instruction uses as a number. -/
 def eaTerm (Γ : CtxS) (next : BitVec 64) : Option Mem → Val

@@ -192,13 +192,15 @@ theorem Reads.shared {Γ : Ctx} {p a : BitVec 64} {Sh : Shape} {w : Bool} {off o
 
 /-- **And to be written**, if the pointer may be written through and each
 typed value of the block either keeps clear of the bytes or is the eight
-bytes written, with a value known to be of its type. The context is as it
-was: the block still holds what its type says. -/
+bytes written, with a value that is of its type whenever what the context
+knows is so. The context is as it was: the block still holds what its type
+says. -/
 theorem Writes.shared {Γ : Ctx} {p a : BitVec 64} {Sh : Shape} {off o n : Nat} (v : BitVec 64)
     (hf : (p, Ty.ptr Sh true off) ∈ Γ.known)
     (ha : a + BitVec.ofNat 64 off = p + BitVec.ofNat 64 o) (hin : o + n ≤ Sh.size) (hn : n ≤ 8)
     (hv : ∀ q ∈ Sh.vals, (q.1 + 8 ≤ o ∨ o + n ≤ q.1) ∨
-      (n = 8 ∧ q.1 = o ∧ ∃ τ', (v, τ') ∈ Γ.known ∧ Sub v τ' q.2)) :
+      (n = 8 ∧ q.1 = o ∧ ∀ (Ψ' : MemTy) (k : Nat),
+        (∀ g ∈ Γ.known, HasTy fetch sys Ψ' k g.2 g.1) → HasTy fetch sys Ψ' k q.2 v)) :
     Writes fetch sys Ψ Γ a n v Γ := by
   refine ⟨rfl, rfl, fun j Ψ' he hwf s hw => ?_⟩
   obtain ⟨base, l, hl, hsh, hlw, hp⟩ := hasTy_ptr.mp (hw.known _ hf)
@@ -211,13 +213,13 @@ theorem Writes.shared {Γ : Ctx} {p a : BitVec 64} {Sh : Shape} {off o n : Nat} 
     (storeN_flags _ _ _ _) (storeN_perm _ _ _ _)
     (fun y hy => storeN_load64_out _ _ _ _ _ hn hy)
     (fun x hx => storeN_mem_out _ _ _ _ _ hn hx) (fun q hq => ?_)
-  rcases hv q hq with hout | ⟨h8, hqo, τ', hτ', hsubτ⟩
+  rcases hv q hq with hout | ⟨h8, hqo, hcons⟩
   · exact .inl hout
   · subst h8
     rw [hqo]
     exact .inr (by
       rw [show storeN s 8 (base + BitVec.ofNat 64 o) v = s.store64 _ v from rfl,
         TypedAsm.State.load64_store64_same]
-      exact (hw.known _ hτ').sub hsubτ)
+      exact hcons Ψ' j hw.known)
 
 end TypedAsm.U

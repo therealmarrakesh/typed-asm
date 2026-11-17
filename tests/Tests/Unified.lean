@@ -50,6 +50,33 @@ example : ((stepHeld Γ1 20 100 (.mov .w64 (.r_m .rax (.sib (some .rdi) none 8))
 example : (stepHeld Γ1 20 100 (.mov .w64 (.r_m .rax (.sib (some .rdi) none 16)))).isNone = true := by
   decide +kernel
 
+/-! ## Writing through a pointer -/
+
+/-- Whether a store through `rdi` is typed, `rdi` pointing at the start of
+a block of sixteen bytes whose second eight hold a value that may be null. -/
+def mayStore (writable : Bool) (i : Instr) : Bool :=
+  (stepHeld { Γ0 with known := [(.var 7, .ptr (.mk 16 (.cons 8 (.nullable (.atom 0)) .nil))
+    writable 0)] } 20 100 i).isSome
+
+-- eight plain bytes written: typed
+example : mayStore true (.mov .w64 (.rm_r (.mem (.sib (some .rdi) none 0)) .rsi)) = true := by
+  decide +kernel
+-- through a pointer that may not be written through: refused
+example : mayStore false (.mov .w64 (.rm_r (.mem (.sib (some .rdi) none 0)) .rsi)) = false := by
+  decide +kernel
+-- the typed eight bytes written with a value nothing is known of: refused
+example : mayStore true (.mov .w64 (.rm_r (.mem (.sib (some .rdi) none 8)) .rsi)) = false := by
+  decide +kernel
+-- written with zero, which may be null whatever else: typed
+example : mayStore true (.mov .w64 (.rm_i (.mem (.sib (some .rdi) none 8)) 0)) = true := by
+  decide +kernel
+-- eight bytes written across the start of the typed value: refused
+example : mayStore true (.mov .w64 (.rm_r (.mem (.sib (some .rdi) none 4)) .rsi)) = false := by
+  decide +kernel
+-- past the end of the block: refused
+example : mayStore true (.mov .w64 (.rm_r (.mem (.sib (some .rdi) none 16)) .rsi)) = false := by
+  decide +kernel
+
 /-! ## A few instructions -/
 
 def Γw : CtxS where
