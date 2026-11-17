@@ -1,5 +1,6 @@
 import TypedAsm.U.Fill
 import TypedAsm.U.CondRel
+import TypedAsm.U.RangeBase
 
 /-!
 # Terms built as plainly as they can be
@@ -25,19 +26,23 @@ theorem wide_low (w : Width) (r : BitVec w.bits) : (wide r).setWidth w.bits = r 
 
 /-! ## One operand -/
 
+/-- An operator on one value: worked out, of a number written out; and the
+value itself, where the operator only cuts to a range the value is already
+known by its own operator to lie in. -/
 def mkUn (o : Un) (a : Val) : Val :=
-  match o, a with
-  | .trunc .w64, a => a
-  | o, .lit v => .lit (o.eval v)
-  | o, a => .un o a
+  match a with
+  | .lit v => .lit (o.eval v)
+  | a => if o.cuts && a.bound.within o.bound then a else .un o a
 
 theorem mkUn_den (ρ : Env) (o : Un) (a : Val) : (mkUn o a).den ρ = o.eval (a.den ρ) := by
   unfold mkUn
   split
-  · show a.den ρ = BitVec.setWidth 64 (BitVec.setWidth 64 (a.den ρ))
-    simp
   · rfl
-  · rfl
+  · split
+    · next h =>
+      rw [Bool.and_eq_true] at h
+      exact (Un.cut_eval h.1 (Range.within_has h.2 (Val.bound_has ρ a))).symm
+    · rfl
 
 /-! ## Two operands -/
 

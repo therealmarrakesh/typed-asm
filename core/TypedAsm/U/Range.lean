@@ -2,6 +2,7 @@ import TypedAsm.U.Says
 import TypedAsm.U.Check
 import TypedAsm.U.CondRel
 import TypedAsm.U.Norm
+import TypedAsm.U.RangeBase
 
 /-!
 # The values a comparison leaves
@@ -15,26 +16,6 @@ that it is not null or not an error number, is such a range too.
 namespace TypedAsm.U
 
 open TypedAsm
-
-/-- The values from `lo` round to `hi`, going up and wrapping. -/
-structure Range where
-  lo : BitVec 64
-  hi : BitVec 64
-  deriving DecidableEq
-
-def Range.has (r : Range) (v : BitVec 64) : Prop := v - r.lo ≤ r.hi - r.lo
-
-/-- Whether every value of the first is one of the second. -/
-def Range.within (r s : Range) : Bool :=
-  r.lo - s.lo ≤ r.hi - s.lo && r.hi - s.lo ≤ s.hi - s.lo
-
-theorem Range.within_has {r s : Range} (h : r.within s = true) {v : BitVec 64} (hv : r.has v) :
-    s.has v := by
-  obtain ⟨rl, rh⟩ := r
-  obtain ⟨sl, sh⟩ := s
-  simp only [Range.within, Bool.and_eq_true, decide_eq_true_eq] at h
-  simp only [Range.has] at hv ⊢
-  bv_omega
 
 /-- Less with sign is below without, once both are moved up by half the range. -/
 theorem slt64 (a b : BitVec 64) :
