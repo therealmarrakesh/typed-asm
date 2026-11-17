@@ -155,8 +155,8 @@ def Pw : CtxS where
   flags := .bvar 0
   held := [(.bvar 0 16, ⟨64, []⟩)]
 
-/-- A label whose family ranges over twenty values. -/
-def lab (a : BitVec 64) (P : CtxS) : Label := ⟨a, 20, P⟩
+/-- A label. -/
+def lab (a : BitVec 64) (P : CtxS) : Label := ⟨a, P⟩
 
 /-- `start: mov ecx, 5; loop: sub rcx, 1; jne loop; mov eax, 60; syscall`. -/
 def codeL : List (BitVec 64 × Instr × BitVec 64) :=

@@ -450,10 +450,9 @@ theorem ok_of_open {n : Nat} {a : BitVec 64} {E : CtxS} {k : Nat} (hE : E.under 
 /-! ## Labels -/
 
 /-- A label of a program: an address, and the family of contexts its code
-wants, with how many values the family ranges over. -/
+wants. -/
 structure Label where
   addr : BitVec 64
-  m : Nat
   pat : CtxS
 
 /-- The context a label's code is walked from: the member of its family at
@@ -630,9 +629,10 @@ def CtxS.bmax (Γ : CtxS) : Nat :=
     (max (heldBmax 0 Γ.held) (Γ.known.foldl (fun m f => max m (max (f.1.bmax 0) (f.2.bmax 0))) 0))
 
 /-- How many names a member of the family takes when given names of its
-own: one for each value, and one at least, for its flags and for whatever
-else is held. -/
-def CtxS.width (Γ : CtxS) : Nat := Γ.bmax + 1
+own: one for each value, and one at least, since its flags and whatever
+else is held take the first. It is only where the walk's new names start
+from: that they are new is checked each time, by computing. -/
+def CtxS.width (Γ : CtxS) : Nat := max Γ.bmax 1
 
 /-- **Whether an address is code wanting a family**, in at most so many
 goes: it is a label, and each member of the family may be regarded as a
@@ -693,12 +693,12 @@ the walk gets somewhere and leaves nothing to be shown. -/
 def checkProgram (code : List (BitVec 64 × Instr × BitVec 64)) (labels : List Label)
     (fuel k : Nat) : Bool :=
   labels.all fun l =>
-    l.pat.under k && (l.start k).under (k + l.m) &&
-      (let W := walk code (fun a => labels.any fun l' => l'.addr == a) true fuel (k + l.m) l.addr
+    l.pat.under k && (l.start k).under (k + l.pat.width) &&
+      (let W := walk code (fun a => labels.any fun l' => l'.addr == a) true fuel (k + l.pat.width) l.addr
         (l.start k)
        W.moved &&
         W.closes (closeCtx (justifyF code labels (fun a => labels.any fun l' => l'.addr == a)
-          fuel fuel)) labels (k + l.m))
+          fuel fuel)) labels (k + l.pat.width))
 
 /-- **A program that checks is typed at every label, for every member of
 the label's family, for any number of steps**: on any machine that fetches
@@ -723,7 +723,7 @@ theorem program_ok {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
     have hcc := closeCtx_sound (justifyF_sound hD hkind hpre
       (stops := fun a => labels.any fun l' => l'.addr == a) (fuelW := fuel) hcode ih fuel)
     refine ok_of_open (k := k) hfree (fun ρ' => ?_) ρ fam
-    exact (walk_sound hD hkind hpre code _ hcode true fuel (k + l.m) l.addr (l.start k) ρ' hu
-      (Walk.holds_of_closes hcc ih _ (k + l.m) ρ' hc)).2 hm
+    exact (walk_sound hD hkind hpre code _ hcode true fuel (k + l.pat.width) l.addr (l.start k) ρ' hu
+      (Walk.holds_of_closes hcc ih _ (k + l.pat.width) ρ' hc)).2 hm
 
 end TypedAsm.U
