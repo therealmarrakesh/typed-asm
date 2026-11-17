@@ -49,19 +49,12 @@ inductive Walk
   /-- The context reached is one no state matches: nothing is left. -/
   | vacuous
 
-/-- That an instruction does not fault for a reason of its own, in a
-context, whatever it reads. -/
-def GuardOk (ρ : Env) (Γ : CtxS) (next : BitVec 64) (i : Instr) : Prop :=
-  ∀ d, i.desc = some d → ∀ x : BitVec 64,
-    d.guard (d.srcs.map (Γ.den ρ).val) (Γ.den ρ).flags next
-      ((d.ea.map (eaOf (Γ.den ρ).val next)).getD 0) x = true
-
 /-- What a walk leaves to be shown, of what its terms stand for: `P` of
 where it stopped, `A` of where control goes to a value. -/
 def Walk.holds (P A : BitVec 64 → Ctx → Prop) : Walk → Env → Prop
   | .stop a Γ, ρ => P a (Γ.den ρ)
   | .arrive t Γ, ρ => A (t.den ρ) (Γ.den ρ)
-  | .step i Γ next k rest, ρ => GuardOk ρ Γ next i ∧ ∀ x, rest.holds P A (ρ.setVal k x)
+  | .step _ _ _ k rest, ρ => ∀ x, rest.holds P A (ρ.setVal k x)
   | .sys k rest, ρ => ∀ x, rest.holds P A (ρ.setVal k x)
   | .sys2 k a b, ρ => ∀ x, a.holds P A (ρ.setVal k x) ∧ b.holds P A (ρ.setVal k x)
   | .ends, _ => True
@@ -295,14 +288,13 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
           split at hW
           · next hu' =>
             have key : ∀ (rest : Walk),
-                (GuardOk ρ Γ (e + len) i ∧ ∀ x, rest.holds (Ok fetch sys Ψ n)
-                  (Arrives fetch sys Ψ n) (ρ.setVal k x)) →
+                (∀ x, rest.holds (Ok fetch sys Ψ n) (Arrives fetch sys Ψ n) (ρ.setVal k x)) →
                 (∀ x, rest.holds (Ok fetch sys Ψ n) (Arrives fetch sys Ψ n) (ρ.setVal k x) →
                   Arrives fetch sys Ψ n (t.den (ρ.setVal k x)) (Γ'.den (ρ.setVal k x))) →
                 Ok fetch sys Ψ n e (Γ.den ρ) ∧ Ok fetch sys Ψ (n + 1) e (Γ.den ρ) := by
-              intro rest ⟨hg, hrest⟩ harr
+              intro rest hrest harr
               refine both fun m hm => ?_
-              refine Ok.step hf (stepHeld_sound hstep hu hg) ?_
+              refine Ok.step hf (stepHeld_sound hstep hu) ?_
               rintro t' Δ ⟨x, rfl, rfl⟩
               exact (harr x (hrest x)).mono hm
             split at hW

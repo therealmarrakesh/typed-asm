@@ -485,7 +485,7 @@ def Walk.closes (cc : CtxS → CtxS → Nat → Option (CtxS × OpenL)) (labels 
          | some (Γ', _) => Γ'.known.contains (tv, .code regs flags held known rest)
          | none => false)
     | _ => false
-  | _, .step i Γ _ k rest => guardS i Γ.flags && rest.closes cc labels (k + 1)
+  | _, .step _ _ _ k rest => rest.closes cc labels (k + 1)
   | _, .sys k rest => rest.closes cc labels (k + 1)
   | _, .sys2 k a b => a.closes cc labels (k + 1) && b.closes cc labels (k + 1)
   | _, .ends => true
@@ -545,10 +545,7 @@ theorem Walk.holds_of_closes {n : Nat} {labels : List Label}
           exact List.mem_map.mpr ⟨_, h, rfl⟩
         exact Arrives.code _ hf hreg
     · cases h
-  | .step i Γ next k rest, _, ρ, h => by
-    simp only [Walk.closes, Bool.and_eq_true] at h
-    exact ⟨fun d hd x => guardS_den ρ h.1 hd _ _ _ _,
-      fun x => Walk.holds_of_closes hcc H rest _ _ h.2⟩
+  | .step i Γ next k rest, _, ρ, h => fun x => Walk.holds_of_closes hcc H rest _ _ h
   | .sys k rest, _, ρ, h => fun x => Walk.holds_of_closes hcc H rest _ _ h
   | .sys2 k a b, _, ρ, h => by
     simp only [Walk.closes, Bool.and_eq_true] at h

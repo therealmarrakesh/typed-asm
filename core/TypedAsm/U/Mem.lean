@@ -144,7 +144,7 @@ theorem foldl_setReg_rip (l : List (Reg × BitVec 64)) (t : State) :
 /-- **Every instruction typed by one statement**, whether it goes on to the
 next or passes control elsewhere. Where the context provides the bytes the
 instruction reads, and then those it writes, and the instruction does not
-fault for a reason of its own whatever it reads, it takes the context to
+fault for a reason of its own, given what is read and what is then known, it takes the context to
 one in which the registers it writes hold the values its function gives of
 the registers it uses, the flags and the bytes read, and the flags
 likewise; at the place its description says control goes. -/
@@ -158,7 +158,8 @@ theorem Steps.desc {i : Instr} {d : Desc} {next : BitVec 64} {Γ : Ctx}
       | some (m, n) => Writes fetch sys Ψ Γr (eaOf Γ.val next m) n
           (d.run (d.srcs.map Γ.val) Γ.flags next ((d.ea.map (eaOf Γ.val next)).getD 0) x).store Γw
       | none => Γw = Γr)
-    (hg : ∀ x Γr, R x Γr →
+    (hg : ∀ x Γr, R x Γr → ∀ (Ψ' : MemTy) (n : Nat),
+      (∀ f ∈ Γr.known, HasTy fetch sys Ψ' n f.2 f.1) →
       d.guard (d.srcs.map Γ.val) Γ.flags next ((d.ea.map (eaOf Γ.val next)).getD 0) x = true) :
     Steps fetch sys Ψ i next Γ fun t Γ' => ∃ x Γr Γw, R x Γr ∧ W x Γr Γw ∧
       Γ' = Γw.apply (d.run (d.srcs.map Γ.val) Γ.flags next ((d.ea.map (eaOf Γ.val next)).getD 0) x) ∧
@@ -205,7 +206,7 @@ theorem Steps.desc {i : Instr} {d : Desc} {next : BitVec 64} {Γ : Ctx}
   have hguard : d.guarded s = true := by
     unfold Desc.guarded
     rw [hvals, hw.flags, heaOf, hrip]
-    exact hg _ Γr hR
+    exact hg _ Γr hR Ψ' n hwΓr.known
   -- the bytes written
   obtain ⟨Γw, hW, hwrite⟩ := hwr _ Γr hR
   have hstore : (∀ m n, d.wr = some (m, n) → s.canWrite (s.ea m) n = true) ∧

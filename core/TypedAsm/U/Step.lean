@@ -2,6 +2,7 @@ import TypedAsm.U.FindFact
 import TypedAsm.U.FlagsS
 import TypedAsm.U.RegardS
 import TypedAsm.U.Bridge
+import TypedAsm.U.Guard
 
 /-!
 # The checker's step
@@ -372,6 +373,7 @@ def stepHeld (Γ : CtxS) (k : Nat) (next : BitVec 64) (i : Instr) : Option (CtxS
     | some (cell, extra) =>
       let Γ₁ : CtxS := { Γ with known := extra ++ Γ.known }
       let σ := fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell
+      if !s.guard.okS Γ₁ Γ.flags (s.ga.fillN σ) (s.gb.fillN σ) (s.gc.fillN σ) then none else
       match writeCell Γ₁ next (s.store.fillN σ) s.wr with
       | some held' =>
         some ({ Γ₁ with
@@ -386,10 +388,7 @@ def stepHeld (Γ : CtxS) (k : Nat) (next : BitVec 64) (i : Instr) : Option (CtxS
   | none => none
 
 theorem stepHeld_sound {ρ : Env} {Γ Γ' : CtxS} {k : Nat} {next : BitVec 64} {i : Instr} {t : Val}
-    (h : stepHeld Γ k next i = some (Γ', t)) (hu : Γ.under k = true)
-    (hg : ∀ d, i.desc = some d → ∀ x : BitVec 64,
-      d.guard (d.srcs.map (Γ.den ρ).val) (Γ.den ρ).flags next
-        ((d.ea.map (eaOf (Γ.den ρ).val next)).getD 0) x = true) :
+    (h : stepHeld Γ k next i = some (Γ', t)) (hu : Γ.under k = true) :
     Steps fetch sys Ψ i next (Γ.den ρ) fun t' Δ =>
       ∃ x, t' = t.den (ρ.setVal k x) ∧ Δ = Γ'.den (ρ.setVal k x) := by
   unfold stepHeld at h
@@ -401,9 +400,22 @@ theorem stepHeld_sound {ρ : Env} {Γ Γ' : CtxS} {k : Nat} {next : BitVec 64} {
     have hd : i.desc = some s.toDesc := by rw [← sem_desc, hsem]; rfl
     have hso := sem_slotOnly hsem
     simp only [Sem.slotOnly, Bool.and_eq_true] at hso
-    obtain ⟨⟨⟨⟨_, houts⟩, hflags⟩, hstore⟩, hgoes⟩ := hso
+    obtain ⟨⟨⟨⟨⟨⟨hga, hgb⟩, hgc⟩, houts⟩, hflags⟩, hstore⟩, hgoes⟩ := hso
     split at h
     · next cell extra hrc =>
+      have hgd : s.guard.okS { Γ with known := extra ++ Γ.known } Γ.flags
+          (s.ga.fillN (fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell))
+          (s.gb.fillN (fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell))
+          (s.gc.fillN (fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell)) = true := by
+        cases hq : s.guard.okS { Γ with known := extra ++ Γ.known } Γ.flags
+          (s.ga.fillN (fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell))
+          (s.gb.fillN (fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell))
+          (s.gc.fillN (fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell)) with
+        | true => rfl
+        | false =>
+          simp only [hq, Bool.not_false, ↓reduceIte] at h
+          cases h
+      simp only [hgd, Bool.not_true, Bool.false_eq_true, ↓reduceIte] at h
       split at h
       · next held' hwc =>
         cases h
@@ -443,8 +455,14 @@ theorem stepHeld_sound {ρ : Env} {Γ Γ' : CtxS} {k : Nat} {next : BitVec 64} {
             rw [hwr] at hW
             rw [(fill_den s next hΓ hx).1 _ hstore, hval] at hW
             exact hW
-        · intro x Γr _
-          exact hg _ hd x
+        · rintro x Γr ⟨rfl, hx⟩ Ψ' n hk
+          have hΓ : Γ.den (ρ.setVal k x) = Γ.den ρ := CtxS.den_setVal ρ k x Γ hu
+          have hfill := fill_den s next hΓ hx
+          have hok := GuardE.okS_den (ρ := ρ.setVal k x) hgd hk
+          rw [hfill.1 _ hga, hfill.1 _ hgb, hfill.1 _ hgc] at hok
+          have hfl : Γ.flags.den (ρ.setVal k x) = (Γ.den ρ).flags := congrArg CtxOf.flags hΓ
+          rw [hfl] at hok
+          exact hok
         · rintro t' Δ ⟨x, Γr, Γw, ⟨rfl, hx⟩, rfl, rfl, rfl⟩
           have hΓ : Γ.den (ρ.setVal k x) = Γ.den ρ := CtxS.den_setVal ρ k x Γ hu
           have hfill := fill_den s next hΓ hx

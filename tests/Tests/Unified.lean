@@ -490,6 +490,36 @@ example : (Val.un (.trunc .w32) (.var 3)).bound = ⟨0, 0xffffffff⟩ := by deci
 example : (Val.un .low8 (.var 3)).bound = ⟨0, 0xff⟩ := by decide +kernel
 example : (Val.fop (.condByte .e) (.var 0) (.lit 0) (.lit 0)).bound = ⟨0, 1⟩ := by decide +kernel
 
+/-! ## Divides -/
+
+/-- `test rcx, rcx; je out; xor edx, edx; div rcx; out: exit`: the divisor is
+known not to be nought, and the high half is nought, so the divide does not
+fault. -/
+def codeD : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .test .w64 (.reg .rcx) (.reg .rcx), 3), (3, .jcc .e 5, 2),
+   (5, .alu .xor .w32 (.rm_r (.reg .rdx) .rdx), 2), (7, .mulDiv .div .w64 (.reg .rcx), 3),
+   (10, .mov .w32 (.rm_i (.reg .rax) 60), 5), (15, .syscall, 2)]
+
+example : checkProgram codeD [lab 0 Pw] 10 0 = true := by decide +kernel
+-- entered past the test, the divisor may be nought: refused
+example : checkProgram codeD [lab 5 Pw] 10 0 = false := by decide +kernel
+-- entered past the clearing of the high half, the quotient may not fit: refused
+example : checkProgram codeD [lab 0 Pw, lab 7 Pw] 10 0 = false := by decide +kernel
+
+/-- `cmp rcx, 1; jl out; cqo; idiv rcx; out: exit`: the divisor is at least
+one, and the high half is the sign of the low, so the signed divide does not
+fault. -/
+def codeI : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .alu .cmp .w64 (.rm_i (.reg .rcx) 1), 4), (4, .jcc .l 5, 2),
+   (6, .cqo, 2), (8, .mulDiv .idiv .w64 (.reg .rcx), 3),
+   (11, .mov .w32 (.rm_i (.reg .rax) 60), 5), (16, .syscall, 2)]
+
+example : checkProgram codeI [lab 0 Pw] 10 0 = true := by decide +kernel
+-- entered past the comparison, the divisor may be nought or minus one: refused
+example : checkProgram codeI [lab 6 Pw] 10 0 = false := by decide +kernel
+-- without the sign carried into the high half: refused
+example : checkProgram codeI [lab 0 Pw, lab 8 Pw] 10 0 = false := by decide +kernel
+
 /-- `shr rdi, 1; jne on; cmp rdi, 1; jae nowhere; on: exit`: after the
 shift, not taking `jne` means the result is zero, so it is not at least one. -/
 def codeS : List (BitVec 64 × Instr × BitVec 64) :=
