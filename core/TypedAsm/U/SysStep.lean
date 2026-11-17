@@ -265,7 +265,9 @@ theorem sysFills_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
 /-! ## Calls with two outcomes -/
 
 /-- **A call for fresh memory, as a step on terms**: where the call number
-and the length are written out and no address is asked for, the two
+and the length are written out, no address is asked for, and the memory
+asked for is to be read and written, private and of no file (`rdx` three,
+`r10` 0x22: the one form of the call the kernel is modelled in), the two
 contexts it may return in, with the name `k` for what it hands back: one in
 which that is an error number and nothing more is held, and one in which it
 is the address of so many bytes, now held. With them, the size. -/
@@ -275,9 +277,11 @@ def sysMap (Γ : CtxS) (k : Nat) (next : BitVec 64) : Option (CtxS × CtxS × Na
     match linuxKind nr with
     | some .map =>
       if di = 0 then
-        some (Γ.afterSys (.var k) next,
-          CtxS.afterSys { Γ with held := (.var k, ⟨pages len, []⟩) :: Γ.held } (.var k) next,
-          pages len)
+        if Γ.regs.rdx.lit? = some 3 ∧ Γ.regs.r10.lit? = some 0x22 then
+          some (Γ.afterSys (.var k) next,
+            CtxS.afterSys { Γ with held := (.var k, ⟨pages len, []⟩) :: Γ.held } (.var k) next,
+            pages len)
+        else none
       else none
     | _ => none
   | _, _, _ => none
@@ -296,6 +300,9 @@ theorem sysMap_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linu
     · next hk =>
       split at h
       · next hd0 =>
+        split at h
+        rotate_left
+        · cases h
         cases h
         have hrax : (Γ.den ρ).val .rax = nr := Val.lit?_den hnr
         have hrdi : (Γ.den ρ).val .rdi = 0 := by rw [← hd0]; exact Val.lit?_den hdi

@@ -811,6 +811,10 @@ example : checkProgram codeA [lab 3 Pw] 10 0 = false := by decide +kernel
 hands back zero, or an error number with the memory held still. The
 program's own tests of what is handed back tell the cases apart. -/
 
+/-- The stack, and `rdx` and `r10` as `mmap` is asked for memory to read and
+write, private and of no file. -/
+def Pm : CtxS := { Pw with regs := (Pw.regs.set .rdx (.lit 3)).set .r10 (.lit 0x22) }
+
 /-- `top: mmap(0, 4096); if error goto out; store rdi there;` then `tail`;
 `out: exit`. -/
 def codeM (tail : List (BitVec 64 × Instr × BitVec 64)) : List (BitVec 64 × Instr × BitVec 64) :=
@@ -826,31 +830,41 @@ def unmapIt : List (BitVec 64 × Instr × BitVec 64) :=
    (36, .syscall, 2)]
 
 -- mapped, used, given back, and the program ends: typed
-example : checkProgram (codeM (unmapIt ++ [(38, .jmp (.rel 57), 5)])) [lab 0 Pw] 20 0 = true := by
+example : checkProgram (codeM (unmapIt ++ [(38, .jmp (.rel 57), 5)])) [lab 0 Pm] 20 0 = true := by
   decide +kernel
 -- mapped, used, and the program ends holding it: typed. A program may end
 -- holding memory
-example : checkProgram (codeM [(28, .jmp (.rel 67), 5)]) [lab 0 Pw] 20 0 = true := by
+example : checkProgram (codeM [(28, .jmp (.rel 67), 5)]) [lab 0 Pm] 20 0 = true := by
   decide +kernel
 -- mapped, used, and round again without giving it back: refused. The label
 -- at the top holds no such memory
-example : checkProgram (codeM [(28, .jmp (.rel (-33)), 5)]) [lab 0 Pw] 20 0 = false := by
+example : checkProgram (codeM [(28, .jmp (.rel (-33)), 5)]) [lab 0 Pm] 20 0 = false := by
   decide +kernel
 -- given back, and round again without asking whether it was: refused. If
 -- `munmap` refused, the memory is held still
-example : checkProgram (codeM (unmapIt ++ [(38, .jmp (.rel (-43)), 5)])) [lab 0 Pw] 20 0
+example : checkProgram (codeM (unmapIt ++ [(38, .jmp (.rel (-43)), 5)])) [lab 0 Pm] 20 0
     = false := by decide +kernel
 -- given back, the result tested, and round again only if it was: typed
 example : checkProgram (codeM (unmapIt ++
     [(38, .test .w64 (.reg .rax) (.reg .rax), 3), (41, .jcc .ne 57, 2),
-     (43, .jmp (.rel (-48)), 5)])) [lab 0 Pw] 20 0 = true := by decide +kernel
+     (43, .jmp (.rel (-48)), 5)])) [lab 0 Pm] 20 0 = true := by decide +kernel
 -- the store made without asking whether memory was handed back: refused
 example : checkProgram
     (prog [(0, .mov .w32 (.rm_i (.reg .rax) 9), 5), (5, .mov .w32 (.rm_i (.reg .rdi) 0), 5),
       (10, .mov .w32 (.rm_i (.reg .rsi) 4096), 5), (15, .syscall, 2),
       (17, .mov .w64 (.rm_r (.mem (.sib (some .rax) none 0)) .rdi), 3),
       (20, .mov .w32 (.rm_i (.reg .rax) 60), 5), (25, .syscall, 2)])
-    [lab 0 Pw] 20 0 = false := by decide +kernel
+    [lab 0 Pm] 20 0 = false := by decide +kernel
+-- asked for without saying it is to be read and written, private and of no
+-- file: refused. The kernel is modelled for that one form of the call only
+example : checkProgram (codeM [(28, .jmp (.rel 67), 5)]) [lab 0 Pw] 20 0 = false := by
+  decide +kernel
+-- asked for at an address of the program's choosing: refused
+example : checkProgram
+    (prog [(0, .mov .w32 (.rm_i (.reg .rax) 9), 5), (5, .mov .w32 (.rm_i (.reg .rdi) 0x10000), 5),
+      (10, .mov .w32 (.rm_i (.reg .rsi) 4096), 5), (15, .syscall, 2),
+      (17, .mov .w32 (.rm_i (.reg .rax) 60), 5), (22, .syscall, 2)])
+    [lab 0 Pm] 20 0 = false := by decide +kernel
 
 /-! ## A call that stores bytes -/
 
@@ -1060,6 +1074,54 @@ example : checkProgram (codeRow 16) [lab 0 Prow] 10 0 = false := by decide +kern
 example : checkProgram (codeRow 8)
     [lab 0 { Pw with known := [(.bvar 0 3, .arr (.bvar 0 2) .any)] }] 10 0 = false := by
   decide +kernel
+
+/-! ## More that is refused
+
+What a program may not do, each on its own: with the stack, with control,
+with the flags, and at a system call. -/
+
+/-- A context with no stack at all. -/
+def Pn : CtxS :=
+  { regs := ⟨.bvar 0 0, .bvar 0 1, .bvar 0 2, .bvar 0 3, .bvar 0 4, .bvar 0 5, .bvar 0 6,
+      .bvar 0 7, .bvar 0 8, .bvar 0 9, .bvar 0 10, .bvar 0 11, .bvar 0 12, .bvar 0 13,
+      .bvar 0 14, .bvar 0 15⟩
+    flags := .bvar 0 }
+
+/-- Code that ends the program, at an address. -/
+def exitAt (a : BitVec 64) : List (BitVec 64 × Instr × BitVec 64) :=
+  [(a, .mov .w32 (.rm_i (.reg .rax) 60), 5), (a + 5, .syscall, 2)]
+
+-- a push with no stack held: refused
+example : checkProgram (prog ([(0, .push .rax, 1)] ++ exitAt 1)) [lab 0 Pn] 10 0 = false := by
+  decide +kernel
+-- a return where nothing says what is at the stack pointer: refused
+example : checkProgram (prog [(0, .ret, 1)]) [lab 0 Pw] 10 0 = false := by decide +kernel
+-- the stack pointer given a value nothing is known of, and then pushed through: refused
+example : checkProgram
+    (prog ([(0, .mov .w64 (.rm_r (.reg .rsp) .rax), 3), (3, .push .rbx, 1)] ++ exitAt 4))
+    [lab 0 Pw] 10 0 = false := by decide +kernel
+-- a jump on a flag nothing is known of: refused
+example : checkProgram (prog ([(0, .jcc .o 0, 2)] ++ exitAt 2)) [lab 0 Pw] 10 0 = false := by
+  decide +kernel
+-- a move on a condition nothing is known of: refused
+example : checkProgram (prog ([(0, .cmov .g .w32 .rax (.reg .rcx), 3)] ++ exitAt 3))
+    [lab 0 Pw] 10 0 = false := by decide +kernel
+-- a system call whose number is not known: refused
+example : checkProgram (prog [(0, .syscall, 2)]) [lab 0 Pw] 10 0 = false := by decide +kernel
+-- a call through a register nothing is known of: refused
+example : checkProgram (prog ([(0, .call (.ind (.reg .rax)), 2)] ++ exitAt 2))
+    [lab 0 Pw] 10 0 = false := by decide +kernel
+-- an instruction that is not one: refused
+example : checkProgram (prog [(0, .ud2, 2)]) [lab 0 Pw] 10 0 = false := by decide +kernel
+-- a jump back to an address that is no label: the walk has no end. Refused
+example : checkProgram (prog [(0, .nop, 1), (1, .nop, 1), (2, .jmp (.rel (-6)), 5)])
+    [lab 0 Pw] 20 0 = false := by decide +kernel
+-- a `read` of as many bytes as a register nothing is known of says: refused
+example : checkProgram
+    (prog ([(0, .alu .xor .w32 (.rm_r (.reg .rax) .rax), 2),
+      (2, .alu .xor .w32 (.rm_r (.reg .rdi) .rdi), 2),
+      (4, .lea .w64 .rsi (.sib (some .rsp) none 0), 4), (8, .syscall, 2)] ++ exitAt 10))
+    [lab 0 Pw] 10 0 = false := by decide +kernel
 
 /-! ## All the memory a first state has -/
 
