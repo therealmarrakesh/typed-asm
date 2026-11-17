@@ -67,6 +67,7 @@ theorem TyS.strip_follows (ρ : Env) {nz ne : Bool} {v : BitVec 64} (hnz : nz = 
   | .atom _ => Follows.refl _ _
   | .code .. => Follows.refl _ _
   | .range _ _ => Follows.refl _ _
+  | .arr _ _ => Follows.refl _ _
 
 /-- Whether a context knows of a value a range that lies within a given
 one. -/

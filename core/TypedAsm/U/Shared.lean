@@ -206,6 +206,29 @@ theorem Reads.sharedAt {Γ : Ctx} {p a : BitVec 64} {τ : Ty} {Sh : Shape} {w : 
   have hsub : o + n ≤ l.size := by simp only [Layout.size]; omega
   exact ⟨State.canRead_sub (hw.heapPerm base l hl).1 hsub, _, rfl, rfl, rfl, hw⟩
 
+/-- **A context provides a value of a row of values a pointer is known to
+be the address of, to be read**: the one so many along, where that is fewer
+than there are; and what is read is known to be of the type the row's
+values are. -/
+theorem Reads.arr {Γ : Ctx} {p a c : BitVec 64} {τ : Ty} {i : Nat}
+    (hf : (p, Ty.arr c τ) ∈ Γ.known) (ha : a = p + BitVec.ofNat 64 (8 * i)) (hi : i < c.toNat) :
+    Reads fetch sys Ψ Γ a 8 (fun x Γr => Γr = { Γ with known := (x, τ) :: Γ.known }) := by
+  intro j Ψ' he hwf s hw
+  obtain ⟨base, l, off, hl, hp, hall⟩ := hasTy_arr.mp (hw.known _ hf)
+  have hmem := hall i hi
+  have hfit := hwf.fits base l hl _ hmem
+  have hp' : p = base + BitVec.ofNat 64 off := hp
+  have hab : a = base + BitVec.ofNat 64 (off + 8 * i) := by
+    rw [ha, hp', BitVec.add_assoc, ← BitVec.ofNat_add]
+  subst hab
+  have hsub : off + 8 * i + 8 ≤ l.size := by
+    simp only [Layout.size]
+    omega
+  refine ⟨State.canRead_sub (hw.heapPerm base l hl).1 hsub, _, rfl, rfl, rfl, ?_⟩
+  refine hw.addKnown [(_, τ)] (fun f hf' => ?_)
+  rw [List.mem_singleton.mp hf']
+  exact hw.heap base l hl _ hmem
+
 /-- **And to be written**, if the pointer may be written through and each
 typed value of the block either keeps clear of the bytes or is the eight
 bytes written, with a value that is of its type whenever what the context

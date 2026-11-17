@@ -614,6 +614,7 @@ def TyS.bmax (d : Nat) : TyS → Nat
   | .nullable τ => τ.bmax d
   | .orErr τ => τ.bmax d
   | .str c => c.bmax d
+  | .arr c τ => max (c.bmax d) (τ.bmax d)
   | .code regs flags held known _ =>
     max (max (allRegs.foldl (fun m r => max m ((regs.get r).bmax (d + 1))) 0) (flags.bmax (d + 1)))
       (max (heldBmax (d + 1) held) (known.bmax (d + 1)))
