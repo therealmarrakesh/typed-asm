@@ -159,7 +159,8 @@ def tagFacts (b : BitVec 64) : Option Nat → List Fact
 
 /-- **A held region becomes a block others may point into**, of any shape
 of its size: where the shape gives a type, the region holds a value there
-that is known to be of it, or the type asks nothing. The region is no
+that is of it wherever what the context knows is so, or the type asks
+nothing. The region is no
 longer held; its address is known to point to the block, and to a block of
 the kind, if it is made one of a kind. The whole region becomes the block:
 a part of it is first taken as a region of its own. -/
@@ -167,7 +168,8 @@ theorem Publishes.region {Γ : Ctx} {k : Nat} {b : BitVec 64} {S : Held} {K : Sh
     (tag : Option Nat) (hk : Γ.held[k]? = some (b, S)) (hne : 0 < K.size)
     (hKS : K.size = S.size) (hfit : ∀ q ∈ K.vals, q.1 + 8 ≤ K.size)
     (hvals : ∀ q ∈ K.vals, q.2 = .any ∨
-      ∃ v τ', (q.1, v) ∈ S.vals ∧ (v, τ') ∈ Γ.known ∧ Sub v τ' q.2)
+      ∃ v, (q.1, v) ∈ S.vals ∧ ∀ (Ψ' : MemTy) (n : Nat),
+        (∀ g ∈ Γ.known, HasTy fetch sys Ψ' n g.2 g.1) → HasTy fetch sys Ψ' n q.2 v)
     (hkind : ∀ t, tag = some t → Ψ.kinds t = some K) :
     Publishes fetch sys Ψ Γ
       { Γ with
@@ -192,10 +194,10 @@ theorem Publishes.region {Γ : Ctx} {k : Nat} {b : BitVec 64} {S : Held} {K : Sh
   have hpmK : s.canWrite b K.size = true := Linux.canWrite_le hpm hle
   have hB := h.toBlock (a := b) (L := ⟨K, true, tag, 0, none⟩) hk (by rw [hsize]; exact hKS) hN
     (fun q hq => by
-      rcases hvals q hq with hany | ⟨v, τ', hv, hτ', hsub⟩
+      rcases hvals q hq with hany | ⟨v, hv, hty⟩
       · rw [hany]; exact HasTy.any _
       · rw [h.held.vals _ hin (q.1, v) hv]
-        exact (h.known _ hτ').sub hsub)
+        exact hty Ψ' j h.known)
     rfl rfl
   have hwf' : (Ψ'.add b ⟨K, true, tag, 0, none⟩).WF :=
     MemTy.add_wf hwf (by rw [hsize]; omega) (by rw [hsize]; omega)

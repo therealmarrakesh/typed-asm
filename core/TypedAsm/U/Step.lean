@@ -262,8 +262,7 @@ def valsOkS (Γ : CtxS) (v : Val) (o n : Nat) : ValsS → Bool
   | .nil => true
   | .cons q τ rest =>
     (decide (q + 8 ≤ o) || decide (o + n ≤ q) ||
-      (n == 8 && q == o &&
-        (outright v τ || Γ.known.any fun g => g.1.same v && followsS g.2 τ))) &&
+      (n == 8 && q == o && factFrom Γ.known (v, τ))) &&
     valsOkS Γ v o n rest
 
 theorem valsOkS_sound (ρ : Env) {Γ : CtxS} {v : Val} {o n : Nat} :
@@ -277,18 +276,11 @@ theorem valsOkS_sound (ρ : Env) {Γ : CtxS} {v : Val} {o n : Nat} :
     simp only [valsOkS, Bool.and_eq_true] at h
     rcases List.mem_cons.mp hq with rfl | hq
     · have h1 := h.1
-      simp only [Bool.or_eq_true, decide_eq_true_eq, Bool.and_eq_true, beq_iff_eq,
-        List.any_eq_true] at h1
+      simp only [Bool.or_eq_true, decide_eq_true_eq, Bool.and_eq_true, beq_iff_eq] at h1
       rcases h1 with (h1 | h1) | ⟨⟨h8, hqo⟩, hty⟩
       · exact .inl (.inl h1)
       · exact .inl (.inr h1)
-      · refine .inr ⟨h8, hqo, fun Ψ' k hg => ?_⟩
-        rcases hty with hout | ⟨g, hgm, hsame, hfol⟩
-        · exact outright_hasTy ρ Ψ' k v τ hout
-        · have hsrc := hg (g.1.den ρ, g.2.den ρ) (List.mem_map.mpr ⟨g, hgm, rfl⟩)
-          show HasTy fetch sys Ψ' k (τ.den ρ) (v.den ρ)
-          rw [← Val.same_den ρ hsame]
-          exact hsrc.sub (followsS_sub ρ _ _ _ hfol)
+      · exact .inr ⟨h8, hqo, fun Ψ' k hg => factFrom_hasTy ρ hty Ψ' k hg⟩
     · exact valsOkS_sound ρ rest h.2 q hq
 
 /-- What the context holds once an instruction has written its bytes. In a

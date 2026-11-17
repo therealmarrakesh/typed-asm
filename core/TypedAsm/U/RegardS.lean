@@ -361,6 +361,19 @@ the same value. -/
 def factFrom (G : List (Val × TyS)) (f : Val × TyS) : Bool :=
   outright f.1 f.2 || G.any fun g => g.1.same f.1 && followsS g.2 f.2
 
+/-- **What is so of itself, or follows from something known of the same
+value, is so wherever what is known is.** -/
+theorem factFrom_hasTy (ρ : Env) {G : List (Val × TyS)} {f : Val × TyS}
+    (h : factFrom G f = true) (Ψ' : MemTy) (n : Nat)
+    (hg : ∀ g ∈ G.map (fun g => (g.1.den ρ, g.2.den ρ)), HasTy fetch sys Ψ' n g.2 g.1) :
+    HasTy fetch sys Ψ' n (f.2.den ρ) (f.1.den ρ) := by
+  simp only [factFrom, Bool.or_eq_true, List.any_eq_true, Bool.and_eq_true] at h
+  rcases h with hout | ⟨g₀, hg₀, hs, hfo⟩
+  · exact outright_hasTy ρ Ψ' n f.1 f.2 hout
+  · have hsrc := hg (g₀.1.den ρ, g₀.2.den ρ) (List.mem_map.mpr ⟨g₀, hg₀, rfl⟩)
+    rw [← Val.same_den ρ hs]
+    exact hsrc.sub (followsS_sub ρ _ _ _ hfo)
+
 /-! ## The whole -/
 
 /-- **Whether the first context may be regarded as the second.** -/
@@ -390,14 +403,7 @@ theorem regardS_sound (ρ : Env) {Γ Δ : CtxS} (h : regardS Γ Δ = true) :
       rw [hf]
     · intro f hf' Ψ' n hg
       obtain ⟨g, hg', rfl⟩ := List.mem_map.mp hf'
-      have := hk g hg'
-      simp only [factFrom, Bool.or_eq_true, List.any_eq_true, Bool.and_eq_true] at this
-      rcases this with hout | ⟨g₀, hg₀, hs, hfo⟩
-      · exact outright_hasTy ρ Ψ' n g.1 g.2 hout
-      · have hsrc := hg (g₀.1.den ρ, g₀.2.den ρ) (List.mem_map.mpr ⟨g₀, hg₀, rfl⟩)
-        show HasTy fetch sys Ψ' n (g.2.den ρ) (g.1.den ρ)
-        rw [← Val.same_den ρ hs]
-        exact hsrc.sub (followsS_sub ρ _ _ _ hfo)
+      exact factFrom_hasTy ρ (hk g hg') Ψ' n hg
     · show Δ.held.map (regionDen ρ) ++ restDen ρ Δ.rest = _
       rw [hmap, hrest]
 
