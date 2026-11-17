@@ -292,11 +292,16 @@ def jumpsForward : Instr → Bool
   | _ => false
 
 /-- Whether a code typing is made from a family of contexts given label by
-label, so that the labels with a context of their own can be read off it. -/
+label, so that the labels with a context of their own can be read off it;
+or allows no context at all, so that there are none. -/
 def declaresByLabel (Φ : Expr) : MetaM Bool := do
   let mut f := Φ
   for _ in [0:4] do
     if f.isAppOf ``CodeTy.ofLabels then break
+    -- a typing that allows no context anywhere: its labels are known, and
+    -- there are none
+    if let .lam _ _ (.lam _ _ b _) _ := f then
+      if b.isConstOf ``False then return true
     let some f' ← unfoldDefinition? f | return false
     f := f'.headBeta
   unless f.isAppOf ``CodeTy.ofLabels && f.getAppNumArgs ≥ 3 do return false
@@ -919,6 +924,8 @@ elab "ty_block_core" : tactic => do
     let goal ← getMainGoal
     -- a step that told two cases apart left the other case behind this one
     work := (← getGoals).drop 1 ++ work
+    if endWhy.isNone then
+      trace[TypedAsm.fast] "unasked, an ending not typed within the walk: {instr.toAsm}"
     match ← finishBlock goal instr endWhy with
     | .done l => left := left ++ l
     | .continues rest l =>
