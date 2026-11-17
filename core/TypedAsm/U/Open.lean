@@ -73,8 +73,6 @@ def Val.open (o : Opening) (n : Nat) : Val → Val
   | .lit v => .lit v
   | .var i => .var i
   | .bvar d i => if d = n then o.b i else if n < d then .bvar (d - 1) i else .bvar d i
-  | .add x y => .add (x.open o n) (y.open o n)
-  | .shl x k => .shl (x.open o n) k
   | .slot s => .slot s
   | .un u x => .un u (x.open o n)
   | .bin u x y => .bin u (x.open o n) (y.open o n)
@@ -113,9 +111,6 @@ theorem Val.den_open (ρ : Env) (o : Opening) (ho : o.Closed) (pre zs : List Fam
       · have h3 : pre.length < d := by omega
         simp only [h1, h2, h3, ↓reduceIte]
         rfl
-  | .add x y => by
-    simp only [Val.open, Val.den, Val.den_open ρ o ho pre zs x, Val.den_open ρ o ho pre zs y]
-  | .shl x s => by simp only [Val.open, Val.den, Val.den_open ρ o ho pre zs x]
   | .slot _ => rfl
   | .un u x => by simp only [Val.open, Val.den, Val.den_open ρ o ho pre zs x]
   | .bin u x y => by

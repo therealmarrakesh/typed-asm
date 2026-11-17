@@ -33,21 +33,25 @@ theorem sumDen_append (ρ : Env) (l₁ l₂ : List Val) :
   | nil => simp [sumDen]
   | cons t ts ih => simp only [List.cons_append, sumDen, ih, BitVec.add_assoc]
 
+theorem sumDen_one (ρ : Env) (t : Val) : t.den ρ = sumDen ρ [t] + 0 := by
+  show t.den ρ = t.den ρ + 0 + 0
+  simp
+
 /-- A term is the sum of what it is taken apart into. -/
 theorem Val.summands_den (ρ : Env) : (a : Val) → a.den ρ = sumDen ρ a.summands.1 + a.summands.2
   | .lit v => by simp [Val.summands, sumDen, Val.den]
-  | .add a b => by
-    simp only [Val.summands, Val.den, sumDen_append]
-    rw [Val.summands_den ρ a, Val.summands_den ρ b]
+  | .bin .add a b => by
+    show a.den ρ + b.den ρ = sumDen ρ (a.summands.1 ++ b.summands.1) + (a.summands.2 + b.summands.2)
+    rw [sumDen_append, Val.summands_den ρ a, Val.summands_den ρ b]
     bv_omega
-  | .var i => by simp [Val.summands, sumDen]
-  | .bvar d i => by simp [Val.summands, sumDen]
-  | .slot .. => by simp [Val.summands, sumDen]
-  | .un .. => by simp [Val.summands, sumDen]
-  | .bin .. => by simp [Val.summands, sumDen]
-  | .tri .. => by simp [Val.summands, sumDen]
-  | .fop .. => by simp [Val.summands, sumDen]
-  | .shl a k => by simp [Val.summands, sumDen]
+  | .bin (.shift ..) a b => sumDen_one ρ _
+  | .bin (.imul _) a b => sumDen_one ρ _
+  | .var i => sumDen_one ρ _
+  | .bvar d i => sumDen_one ρ _
+  | .slot .. => sumDen_one ρ _
+  | .un .. => sumDen_one ρ _
+  | .tri .. => sumDen_one ρ _
+  | .fop .. => sumDen_one ρ _
 
 /-- How far an address is past another, where the two are sums of the same
 terms: the difference of the numbers added. -/

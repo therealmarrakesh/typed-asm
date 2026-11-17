@@ -43,9 +43,6 @@ inductive Val
   /-- One of the values a family of contexts ranges over: of the family
   `d` out from here, the `i`th. -/
   | bvar (d i : Nat)
-  | add (a b : Val)
-  /-- A value shifted left by so many bits: an index scaled. -/
-  | shl (a : Val) (k : Nat)
   /-- A thing an instruction computes with: in an instruction's description
   only, where the terms of a context are to be put. -/
   | slot (s : Slot)
@@ -70,6 +67,12 @@ end
 
 deriving instance DecidableEq for Val, FlagsT
 
+/-- A sum. -/
+@[match_pattern] abbrev Val.add (a b : Val) : Val := .bin .add a b
+
+/-- A value shifted left by so many bits: an index scaled. -/
+@[match_pattern] abbrev Val.shl (a : Val) (k : Nat) : Val := .un (.shl k) a
+
 mutual
 
 /-- The value a term stands for. -/
@@ -77,8 +80,6 @@ def Val.den (ρ : Env) : Val → BitVec 64
   | .lit v => v
   | .var i => ρ.val i
   | .bvar d i => (ρ.bound.getD d {}).vals i
-  | .add a b => a.den ρ + b.den ρ
-  | .shl a k => a.den ρ <<< k
   | .slot s => ρ.slot s
   | .un o a => o.eval (a.den ρ)
   | .bin o a b => o.eval (a.den ρ) (b.den ρ)

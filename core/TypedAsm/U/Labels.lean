@@ -583,8 +583,6 @@ def Val.bmax (d : Nat) : Val → Nat
   | .lit _ => 0
   | .var _ => 0
   | .bvar d' j => if d' = d then j + 1 else 0
-  | .add a b => max (a.bmax d) (b.bmax d)
-  | .shl a _ => a.bmax d
   | .slot _ => 0
   | .un _ a => a.bmax d
   | .bin _ a b => max (a.bmax d) (b.bmax d)

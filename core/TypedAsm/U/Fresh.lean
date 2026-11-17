@@ -58,8 +58,6 @@ def Val.under (k : Nat) : Val → Bool
   | .lit _ => true
   | .var i => decide (i < k)
   | .bvar _ _ => true
-  | .add a b => a.under k && b.under k
-  | .shl a _ => a.under k
   | .slot _ => true
   | .un _ a => a.under k
   | .bin _ a b => a.under k && b.under k
@@ -85,12 +83,6 @@ theorem Val.under_mono {k k' : Nat} (hk : k ≤ k') : (a : Val) → a.under k = 
     simp only [Val.under, decide_eq_true_eq] at h ⊢
     omega
   | .bvar _ _, _ => rfl
-  | .add a b, h => by
-    simp only [Val.under, Bool.and_eq_true] at h ⊢
-    exact ⟨Val.under_mono hk a h.1, Val.under_mono hk b h.2⟩
-  | .shl a _, h => by
-    simp only [Val.under] at h ⊢
-    exact Val.under_mono hk a h
   | .slot _, _ => rfl
   | .un _ a, h => by
     simp only [Val.under] at h ⊢
@@ -133,12 +125,6 @@ theorem Val.den_under {k : Nat} {ρ₁ ρ₂ : Env} (hs : Env.SameBelow k ρ₁ 
   | .bvar d i, _ => by
     show (ρ₁.bound.getD d {}).vals i = (ρ₂.bound.getD d {}).vals i
     rw [hs.bound]
-  | .add a b, h => by
-    simp only [Val.under, Bool.and_eq_true] at h
-    simp only [Val.den, Val.den_under hs a h.1, Val.den_under hs b h.2]
-  | .shl a s, h => by
-    simp only [Val.under] at h
-    simp only [Val.den, Val.den_under hs a h]
   | .slot s, _ => by
     show ρ₁.slot s = ρ₂.slot s
     rw [hs.slot]

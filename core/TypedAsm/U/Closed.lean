@@ -24,8 +24,6 @@ def Val.closedAt (n : Nat) : Val → Bool
   | .lit _ => true
   | .var _ => true
   | .bvar d _ => decide (d < n)
-  | .add a b => a.closedAt n && b.closedAt n
-  | .shl a _ => a.closedAt n
   | .slot _ => true
   | .un _ a => a.closedAt n
   | .bin _ a b => a.closedAt n && b.closedAt n
@@ -64,12 +62,6 @@ theorem Val.den_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n zs 
     simp only [Val.closedAt, decide_eq_true_eq] at h
     show (zs.getD d {}).vals i = (zs'.getD d {}).vals i
     rw [hz d h]
-  | .add a b, h => by
-    simp only [Val.closedAt, Bool.and_eq_true] at h
-    simp only [Val.den, Val.den_agree ρ n zs zs' hz a h.1, Val.den_agree ρ n zs zs' hz b h.2]
-  | .shl a s, h => by
-    simp only [Val.closedAt] at h
-    simp only [Val.den, Val.den_agree ρ n zs zs' hz a h]
   | .slot _, _ => rfl
   | .un o a, h => by
     simp only [Val.closedAt] at h

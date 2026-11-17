@@ -32,8 +32,6 @@ def Val.fill (σ : Filling) : Val → Val
   | .lit v => .lit v
   | .var i => .var i
   | .bvar d i => .bvar d i
-  | .add a b => .add (a.fill σ) (b.fill σ)
-  | .shl a k => .shl (a.fill σ) k
   | .slot s => σ.slot s
   | .un o a => .un o (a.fill σ)
   | .bin o a b => .bin o (a.fill σ) (b.fill σ)
@@ -58,8 +56,6 @@ theorem Val.den_fill (ρ : Env) (σ : Filling) : (a : Val) → (a.fill σ).den �
   | .var _ => rfl
   | .bvar _ _ => rfl
   | .slot _ => rfl
-  | .add a b => by simp only [Val.fill, Val.den, Val.den_fill ρ σ a, Val.den_fill ρ σ b]
-  | .shl a k => by simp only [Val.fill, Val.den, Val.den_fill ρ σ a]
   | .un o a => by simp only [Val.fill, Val.den, Val.den_fill ρ σ a]
   | .bin o a b => by simp only [Val.fill, Val.den, Val.den_fill ρ σ a, Val.den_fill ρ σ b]
   | .tri o a b c => by
@@ -128,8 +124,6 @@ theorem Val.den_slots {ρ₁ ρ₂ : Env} (hs : ρ₁.slot = ρ₂.slot) (ho : �
       Val.den_slots hs ho b h.2]
   | .var _, h => nomatch h
   | .bvar _ _, h => nomatch h
-  | .add _ _, h => nomatch h
-  | .shl _ _, h => nomatch h
 
 theorem FlagsT.den_slots {ρ₁ ρ₂ : Env} (hs : ρ₁.slot = ρ₂.slot) (ho : ρ₁.old = ρ₂.old) :
     (f : FlagsT) → f.slotOnly = true → f.den ρ₁ = f.den ρ₂

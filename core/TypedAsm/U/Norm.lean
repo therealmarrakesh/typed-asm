@@ -46,13 +46,9 @@ def mkBin (o : Bin) (a b : Val) : Val :=
   | some x, some y => .lit (o.eval x y)
   | _, some n =>
     match o with
-    | .add => .add a b
     | .shift .shl .w64 => .shl a (n.toNat % 64)
     | o => .bin o a b
-  | _, none =>
-    match o with
-    | .add => .add a b
-    | o => .bin o a b
+  | _, none => .bin o a b
 
 theorem shl64 (fl : Flags) (a : BitVec 64) (n : Nat) : (ShiftOp.eval .shl fl a n).1 = a <<< n := by
   unfold ShiftOp.eval
@@ -69,14 +65,13 @@ theorem mkBin_den (ρ : Env) (o : Bin) (a b : Val) :
     rw [Val.lit?_den ha, Val.lit?_den hb]
   · next n hb _ =>
     split
-    · rfl
     · show a.den ρ <<< (n.toNat % 64)
         = BitVec.setWidth 64 (ShiftOp.eval .shl Flags.unknown (BitVec.setWidth 64 (a.den ρ))
             ((b.den ρ).toNat % 64)).1
       rw [shl64, Val.lit?_den hb]
       simp
     · rfl
-  · split <;> rfl
+  · rfl
 
 /-! ## Three operands -/
 
@@ -223,7 +218,5 @@ theorem Val.den_fillN (ρ : Env) (σ : Filling) : (a : Val) → (a.fillN σ).den
   | .lit v => Val.den_fill ρ σ (.lit v)
   | .var j => Val.den_fill ρ σ (.var j)
   | .bvar d j => Val.den_fill ρ σ (.bvar d j)
-  | .add a b => Val.den_fill ρ σ (.add a b)
-  | .shl a n => Val.den_fill ρ σ (.shl a n)
 
 end TypedAsm.U
