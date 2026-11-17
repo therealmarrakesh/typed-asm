@@ -924,91 +924,15 @@ elab "ty_block_core" : tactic => do
     let goal ← getMainGoal
     -- a step that told two cases apart left the other case behind this one
     work := (← getGoals).drop 1 ++ work
-    if endWhy.isNone then
-      trace[TypedAsm.fast] "unasked, an ending not typed within the walk: {instr.toAsm}"
-    match ← finishBlock goal instr endWhy with
-    | .done l => left := left ++ l
-    | .continues rest l =>
-      left := left ++ l
-      work := rest :: work
-    | .forks blocks l =>
-      left := left ++ l
-      work := blocks ++ work
-    | .needsHelp _ =>
-      -- A direct call is typed with the signature the function's own label
-      -- declares, where that settles everything; where it leaves something
-      -- open, such as which of a family of signatures is meant, the call is
-      -- left for `ty_call` to be told.
-      let before ← saveState
-      let auto ← match instr with
-        | .call (.rel _) =>
-          try
-            setGoals [goal]
-            Tactic.withoutRecover do evalTactic (← `(tactic| ty_call_auto))
-            let gs ← getGoals
-            -- Which of a family of signatures is meant may be settled by what
-            -- the argument registers hold: a register holding exactly 5 meets
-            -- the member that asks for exactly `n` only when `n` is 5. What
-            -- that leaves known is then proved as it would have been.
-            let mut settled := false
-            for g in gs do
-              if ← g.isAssigned then continue
-              let ty ← instantiateMVars (← g.getType)
-              unless ty.isAppOfArity ``Sub 2 && ty.hasExprMVar do continue
-              try
-                discard <| runOn g (do evalTactic (← `(tactic| exact Sub.refl _)))
-                settled := true
-              catch _ => pure ()
-            let mut rest : List MVarId := []
-            for g in gs do
-              if ← g.isAssigned then continue
-              let ty ← instantiateMVars (← g.getType)
-              if (← isProp ty) && !ty.hasExprMVar then
-                -- a fact the callee's context asks, left when it was not yet
-                -- known which member it was about
-                let after ← try
-                    runOn g (do
-                      evalTactic (← `(tactic|
-                        first | assumption | decide | omega | exact Sub.refl _ | ty_side | sub_regs)))
-                  catch _ => pure [g]
-                rest := rest ++ after
-              else rest := rest ++ [g]
-            let mut open_ := false
-            for g in rest do
-              unless ← isProp (← g.getType) do open_ := true
-            if open_ || (settled && !rest.isEmpty) then before.restore; pure none
-            else pure (some rest)
-          catch _ =>
-            before.restore
-            pure none
-        -- a call through a pointer to a function is typed with the signature
-        -- the pointer's type gives
-        | .call (.ind rm) =>
-          try
-            match ← pointerSig goal rm with
-            | none => pure none
-            | some sig =>
-              setGoals [goal]
-              let stx ← Term.exprToSyntax sig
-              Tactic.withoutRecover do evalTactic (← `(tactic| ty_call_with $stx))
-              let gs ← getGoals
-              let mut open_ := false
-              for g in gs do
-                unless ← isProp (← g.getType) do open_ := true
-              if open_ then before.restore; pure none else pure (some gs)
-          catch _ =>
-            before.restore
-            pure none
-        | _ => pure none
-      -- a direct call to a function that chooses a value as it returns: the
-      -- function's label says its signature, and the label after the call
-      -- the context for each value
-      let auto ← match auto, instr with
-        | none, .call (.rel _) => autoCallEx goal
-        | a, _ => pure a
-      match auto with
-      | some gs => left := left ++ gs
-      | none => stuck := stuck ++ (← getGoals)
+    -- An ending the checker's walk did not type is not typed here: there is
+    -- no other way. Where the walk found why it is refused, that is the
+    -- error; otherwise the block is left where it stands, for what the
+    -- author says next of it.
+    match endWhy with
+    | some _ => discard <| finishBlock goal instr endWhy
+    | none =>
+      trace[TypedAsm.fast] "an ending left to be said: {instr.toAsm}"
+      stuck := stuck ++ [goal]
   setGoals (stuck ++ (← closeArith left) ++ others)
 
 
