@@ -1116,6 +1116,13 @@ example : checkProgram (prog [(0, .ud2, 2)]) [lab 0 Pw] 10 0 = false := by decid
 -- a jump back to an address that is no label: the walk has no end. Refused
 example : checkProgram (prog [(0, .nop, 1), (1, .nop, 1), (2, .jmp (.rel (-6)), 5)])
     [lab 0 Pw] 20 0 = false := by decide +kernel
+-- a call the kernel is not modelled for (`mprotect`, 10): refused. The model
+-- would answer that there is no such call, which is not what the kernel does
+example : checkProgram (prog ([(0, .mov .w32 (.rm_i (.reg .rax) 10), 5), (5, .syscall, 2)] ++
+    exitAt 7)) [lab 0 Pw] 10 0 = false := by decide +kernel
+-- one it is modelled for that touches nothing of the program's (`getpid`, 39): typed
+example : checkProgram (prog ([(0, .mov .w32 (.rm_i (.reg .rax) 39), 5), (5, .syscall, 2)] ++
+    exitAt 7)) [lab 0 Pw] 10 0 = true := by decide +kernel
 -- a `read` of as many bytes as a register nothing is known of says: refused
 example : checkProgram
     (prog ([(0, .alu .xor .w32 (.rm_r (.reg .rax) .rax), 2),

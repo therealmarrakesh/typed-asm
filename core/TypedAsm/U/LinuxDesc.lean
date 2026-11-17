@@ -12,8 +12,10 @@ what they ask of the state to let a call through.
 
 namespace TypedAsm.U
 
-/-- What the Linux call of each number does to the program. A
-number that is no call's is refused by the kernel, which is to do nothing. -/
+/-- What the Linux call of each number does to the program, for the calls
+the kernel is modelled for. Of any other number nothing is said: the model
+answers such a call as one there is none of, which is not what the kernel
+does with the calls it has, so a program that makes one is not typed. -/
 def linuxKind (nr : BitVec 64) : Option SysKind :=
   if nr = 60 ∨ nr = 231 then some .ends
   else if nr = 0 then some (.fills .rsi (.inl .rdx))
@@ -22,7 +24,8 @@ def linuxKind (nr : BitVec 64) : Option SysKind :=
   else if nr = 318 then some (.fills .rdi (.inl .rsi))
   else if nr = 9 then some .map
   else if nr = 11 then some .unmap
-  else some .world
+  else if nr = 1 ∨ nr = 3 ∨ nr = 8 ∨ nr = 257 ∨ nr = 74 ∨ nr = 75 ∨ nr = 39 then some .world
+  else none
 
 def linuxDesc : SysDesc := { kind := linuxKind }
 
@@ -92,6 +95,9 @@ theorem linux_describes : Describes linux linuxDesc := by
                 cases hk
                 exact ⟨Linux.munmap s, by simp [linux, h11], munmap_unmaps s⟩
               · next h11 =>
+                split at hk
+                rotate_left
+                · cases hk
                 cases hk
                 have h60' : s.getReg .rax ≠ 60 := fun e => h60 (.inl e)
                 have h231 : s.getReg .rax ≠ 231 := fun e => h60 (.inr e)
