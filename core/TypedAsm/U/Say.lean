@@ -99,6 +99,14 @@ def cutSeg (g : Nat × Perm × List Byte) : Nat → List (BitVec 64 × Layout) �
       [(BitVec.ofNat 64 cur, plainBlock (x.1.toNat - cur) g.2.1.writable)] else []) ++
       x :: cutSeg g (x.1.toNat + x.2.size) xs
 
+/-- A block of text that is not written: the bytes given, which are to end
+in one of nought, and are said. -/
+def textBlock (bytes : List Byte) : Layout := ⟨⟨0, []⟩, false, none, bytes.length, some bytes⟩
+
+/-- What a program says of text in one of its blocks: that its address is
+that of the text's first byte, with more after it. -/
+def staticText (a : BitVec 64) : List (Val × TyS) := [(.lit a, .str (.lit 1))]
+
 variable {L : Type} [DecidableEq L]
 
 /-- **A program's first blocks, some of them said**: each segment's pages
