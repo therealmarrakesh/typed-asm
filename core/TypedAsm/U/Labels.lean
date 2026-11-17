@@ -1,6 +1,7 @@
 import TypedAsm.U.Walk
 import TypedAsm.U.JoinS
 import TypedAsm.U.Open
+import TypedAsm.U.Laws
 
 /-!
 # Addresses known to be code
@@ -27,18 +28,6 @@ namespace TypedAsm.U
 open TypedAsm
 
 variable {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
-
-theorem lookup_mem {α : Type} : (l : List (Nat × α)) → (j : Nat) → (v : α) →
-    l.lookup j = some v → (j, v) ∈ l
-  | [], _, _, h => nomatch h
-  | (i, w) :: rest, j, v, h => by
-    unfold List.lookup at h
-    split at h
-    · next heq =>
-      cases h
-      rw [beq_iff_eq.mp heq]
-      exact List.mem_cons_self
-    · exact List.mem_cons_of_mem _ (lookup_mem rest j v h)
 
 /-! ## Naming what the context reached does not say -/
 
@@ -158,44 +147,6 @@ theorem nameSlots_ok (Q : Ctx → Prop)
 
 /-! ## Terms for the values of a family -/
 
-/-- The term a value of the nearest family must be given for a pattern to
-be a value: where the pattern is a number and the name, or a number less
-the name, what that makes the name. -/
-def bindB (pat got : Val) : List (Nat × Val) :=
-  match pat.lin with
-  | ⟨[(c, .bvar 0 j)], k⟩ =>
-    if c = 1 then [(j, if k = 0 then got else .add got (.lit (-k)))]
-    else if c = -1 then [(j, .add (.lit k) (.un (.neg .w64) got))]
-    else []
-  | _ => []
-
-/-- What a member of a family is, as terms in lists. -/
-structure OpenL where
-  bs : List (Nat × Val) := []
-  f : FlagsT := .lit Flags.unknown
-  rest : List (Val × HeldS) := []
-  tail : RestS := .none
-
-def OpenL.opening (l : OpenL) : Opening :=
-  { b := fun j => (l.bs.lookup j).getD (.lit 0), f := l.f, rest := l.rest, tail := l.tail }
-
-def OpenL.closed (l : OpenL) : Bool :=
-  (l.bs.all fun p => p.2.closedAt 0) && l.f.closedAt 0 && heldClosedAt 0 l.rest &&
-    l.tail.closedAt 0
-
-theorem OpenL.closed_opening {l : OpenL} (h : l.closed = true) : l.opening.Closed := by
-  simp only [OpenL.closed, Bool.and_eq_true, List.all_eq_true] at h
-  obtain ⟨⟨⟨hb, hf⟩, hr⟩, ht⟩ := h
-  constructor
-  · intro j
-    show ((l.bs.lookup j).getD (.lit 0)).closedAt 0 = true
-    cases hl : l.bs.lookup j with
-    | none => rfl
-    | some v => exact hb _ (lookup_mem _ _ _ hl)
-  · exact hf
-  · exact hr
-  · exact ht
-
 /-- A list of pieces of a region, by where they start, as far as what is
 known shows which starts first. -/
 def insertPiece (K : List (Val × TyS)) (x : Val × Val) : List (Val × Val) → List (Val × Val)
@@ -271,8 +222,8 @@ def wantedCode (P Γ : CtxS) : List (Nat × Val) :=
 /-- `JustSound n j`: wherever `j` says an address is code wanting a family,
 the code there is typed for every member of the family, for `n` steps. -/
 def JustSound (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (n : Nat)
-    (j : Nat → BitVec 64 → CtxS → Bool) : Prop :=
-  ∀ k a E, j k a E = true → ∀ (ρ : Env) (fam : Fam),
+    (fns : Nat → BitVec 64 → BitVec 64 → BitVec 64) (j : Nat → BitVec 64 → CtxS → Bool) : Prop :=
+  ∀ k a E, j k a E = true → ∀ (ρ : Env) (fam : Fam), ρ.fn = fns →
     Ok fetch sys Ψ n a (E.den { ρ with bound := fam :: ρ.bound })
 
 /-- The things a member of a family knows of addresses written out, that
@@ -321,14 +272,14 @@ family names and it does not, named; and the addresses the member knows to
 be code and it does not, known to be so where that is justified. Nothing
 unless it may then be regarded as the member found, which is given with it.
 `k` is a name no term yet mentions. -/
-def closeCtx (ent : Nat → TyS → TyS → Bool) (justify : Nat → BitVec 64 → CtxS → Bool)
-    (P Γ : CtxS) (k : Nat) :
+def closeCtx (sm : List (Val × TyS) → Val → Val → Bool) (ent : Nat → TyS → TyS → Bool)
+    (justify : Nat → BitVec 64 → CtxS → Bool) (P Γ : CtxS) (k : Nat) :
     Option (CtxS × OpenL) :=
   if (joinAll Γ.held.length Γ).under k then
     match nameSlots (joinAll Γ.held.length Γ) (wantedCode P (joinAll Γ.held.length Γ)) k with
     | some Γ' =>
       if (matchOpen P Γ').closed &&
-          regardS (ent (k + (wantedCode P (joinAll Γ.held.length Γ)).length))
+          regardWith sm (ent (k + (wantedCode P (joinAll Γ.held.length Γ)).length))
             (Γ'.addKnown (learnedFacts justify
               (k + (wantedCode P (joinAll Γ.held.length Γ)).length) Γ'
               (P.open (matchOpen P Γ').opening)))
@@ -347,6 +298,7 @@ the context may be regarded as; when it holds whatever value a region holds
 at bytes the context says nothing of; and when it holds with more known
 that is so wherever what the context knows is. -/
 def CloseSound (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (n : Nat)
+    (fns : Nat → BitVec 64 → BitVec 64 → BitVec 64)
     (cc : CtxS → CtxS → Nat → Option (CtxS × OpenL)) : Prop :=
   ∀ (Q : Ctx → Prop),
     (∀ {Γ : Ctx} {i : Nat} {b : BitVec 64} {S : Held}, Γ.held[i]? = some (b, S) →
@@ -358,16 +310,22 @@ def CloseSound (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (n : Nat)
       (∀ f ∈ fs, ∀ k, k ≤ n + 1 → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF →
         (∀ g ∈ Γ.known, HasTy fetch sys Ψ' k g.2 g.1) → HasTy fetch sys Ψ' k f.2 f.1) →
       Q { Γ with known := fs ++ Γ.known } → Q Γ) →
-    ∀ {P Γ Γ' : CtxS} {o : OpenL} {k : Nat}, cc P Γ k = some (Γ', o) → ∀ ρ : Env,
+    ∀ {P Γ Γ' : CtxS} {o : OpenL} {k : Nat}, cc P Γ k = some (Γ', o) → ∀ ρ : Env, ρ.fn = fns →
     (∀ ρ', Env.SameBelow k ρ' ρ →
       Regards fetch sys Ψ (Γ'.den ρ') (P.den { ρ' with bound := famOf ρ' o.opening :: ρ'.bound }) →
       Q (Γ'.den ρ')) →
     Q (Γ.den ρ)
 
-theorem closeCtx_sound {n : Nat} {ent : Nat → TyS → TyS → Bool}
+theorem closeCtx_sound {n : Nat} {fns : Nat → BitVec 64 → BitVec 64 → BitVec 64}
+    {sm : List (Val × TyS) → Val → Val → Bool}
+    (hsm : ∀ (ρ : Env), ρ.fn = fns → ∀ (K : List (Val × TyS)) (Ψ' : MemTy) (m : Nat),
+      (∀ g ∈ K, HasTy fetch sys Ψ' m (g.2.den ρ) (g.1.den ρ)) →
+      ∀ a b, sm K a b = true → a.den ρ = b.den ρ)
+    {ent : Nat → TyS → TyS → Bool}
     (he : ∀ kf, EntSound fetch sys (ent kf)) {justify : Nat → BitVec 64 → CtxS → Bool}
-    (hj : JustSound fetch sys Ψ n justify) : CloseSound fetch sys Ψ n (closeCtx ent justify) := by
-  intro Q hname hreg hlearn P Γ Γ'' o k h ρ hQ
+    (hj : JustSound fetch sys Ψ n fns justify) :
+    CloseSound fetch sys Ψ n fns (closeCtx sm ent justify) := by
+  intro Q hname hreg hlearn P Γ Γ'' o k h ρ hfn hQ
   unfold closeCtx at h
   split at h
   · next hu =>
@@ -394,7 +352,7 @@ theorem closeCtx_sound {n : Nat} {ent : Nat → TyS → TyS → Bool}
           show HasTy fetch sys Ψ' k' (x.2.2.2.den ρ') (x.2.2.1.den ρ')
           rw [Val.lit?_den hlit, hty, code_den, hasTy_code, ← hE]
           intro z j hjlt Ψ'' he' hwf' s hs hw
-          refine hj _ _ _ hx2 ρ' z j (by omega) Ψ'' (he.trans he') hwf' s hs ?_
+          refine hj _ _ _ hx2 ρ' z (hag.fn.trans hfn) j (by omega) Ψ'' (he.trans he') hwf' s hs ?_
           have e : CtxS.den { ρ' with bound := z :: ρ'.bound } (x.2.1.addKnown (carried Γ₁))
               = { x.2.1.den { ρ' with bound := z :: ρ'.bound } with known :=
                   ((carried Γ₁).map fun f => (f.1.den { ρ' with bound := z :: ρ'.bound },
@@ -422,7 +380,8 @@ theorem closeCtx_sound {n : Nat} {ent : Nat → TyS → TyS → Bool}
           rw [← e]
           refine hQ ρ' hag ?_
           rw [← CtxS.den_open ρ' _ (OpenL.closed_opening hc.1)]
-          exact regardS_sound (he _) ρ' hc.2
+          exact regardWith_sound (he _) ρ'
+            (fun Ψ' m hg a b hs => hsm ρ' (hag.fn.trans hfn) _ Ψ' m hg a b hs) hc.2
       · cases h
   · cases h
 
@@ -464,9 +423,11 @@ theorem sameBelow_withFam (ρ : Env) (k : Nat) (fam : Fam) :
 /-- **Code typed from a member of a family at names of its own, whatever
 those stand for, is typed for every member of the family.** -/
 theorem ok_of_open {n : Nat} {a : BitVec 64} {E : CtxS} {k : Nat} (hE : E.under k = true)
-    (h : ∀ ρ', Ok fetch sys Ψ n a ((E.open (freshOpening k)).den ρ')) (ρ : Env) (fam : Fam) :
+    {fns : Nat → BitVec 64 → BitVec 64 → BitVec 64}
+    (h : ∀ ρ', ρ'.fn = fns → Ok fetch sys Ψ n a ((E.open (freshOpening k)).den ρ')) (ρ : Env)
+    (fam : Fam) (hfn : ρ.fn = fns) :
     Ok fetch sys Ψ n a (E.den { ρ with bound := fam :: ρ.bound }) := by
-  have h1 := h (ρ.withFam k fam)
+  have h1 := h (ρ.withFam k fam) hfn
   rw [show (E.open (freshOpening k)).den (ρ.withFam k fam)
       = E.den { ρ.withFam k fam with bound := famOf (ρ.withFam k fam) (freshOpening k) ::
           (ρ.withFam k fam).bound } from
@@ -526,12 +487,13 @@ def Walk.closes (cc : CtxS → CtxS → Nat → Option (CtxS × OpenL)) (labels 
 /-- Such a walk holds, where the code at each label is typed for every
 member of the label's family. -/
 theorem Walk.holds_of_closes {n : Nat} {labels : List Label}
-    {cc : CtxS → CtxS → Nat → Option (CtxS × OpenL)} (hcc : CloseSound fetch sys Ψ n cc)
-    (H : ∀ l ∈ labels, ∀ (ρ' : Env) (fam : Fam),
+    {fns : Nat → BitVec 64 → BitVec 64 → BitVec 64}
+    {cc : CtxS → CtxS → Nat → Option (CtxS × OpenL)} (hcc : CloseSound fetch sys Ψ n fns cc)
+    (H : ∀ l ∈ labels, ∀ (ρ' : Env) (fam : Fam), ρ'.fn = fns →
       Ok fetch sys Ψ n l.addr (l.pat.den { ρ' with bound := fam :: ρ'.bound })) :
-    (W : Walk) → (k : Nat) → (ρ : Env) → W.closes cc labels k = true →
+    (W : Walk) → (k : Nat) → (ρ : Env) → ρ.fn = fns → W.closes cc labels k = true →
     W.holds (Ok fetch sys Ψ n) (Arrives fetch sys Ψ n) ρ
-  | .stop a Γ, k, ρ, h => by
+  | .stop a Γ, k, ρ, hfn, h => by
     unfold Walk.closes at h
     cases hfind : labels.find? fun l => l.addr == a with
     | none => rw [hfind] at h; cases h
@@ -543,12 +505,12 @@ theorem Walk.holds_of_closes {n : Nat} {labels : List Label}
       show Ok fetch sys Ψ n a (Γ.den ρ)
       refine hcc (Ok fetch sys Ψ n a) (fun hi _ ho h => Ok.nameSlot hi ho h)
         (fun hr hΔ => Ok.regard hr hΔ)
-        (fun fs hfs h => Ok.learnRel fs (fun f hf k hk => hfs f hf k (by omega)) h) hc ρ
-        fun ρ' _ hreg => ?_
+        (fun fs hfs h => Ok.learnRel fs (fun f hf k hk => hfs f hf k (by omega)) h) hc ρ hfn
+        fun ρ' hag hreg => ?_
       refine Ok.regard hreg ?_
       rw [← ha]
-      exact H l hmem ρ' _
-  | .arrive t Γ, k, ρ, h => by
+      exact H l hmem ρ' _ (hag.fn.trans hfn)
+  | .arrive t Γ, k, ρ, hfn, h => by
     unfold Walk.closes at h
     split at h
     · next tv regs flags held known rest hfind =>
@@ -567,7 +529,7 @@ theorem Walk.holds_of_closes {n : Nat} {labels : List Label}
         simp only [List.contains_iff_mem] at h
         refine hcc (Arrives fetch sys Ψ n (tv.den ρ))
           (fun hi _ ho h => Arrives.nameSlot hi ho h) (fun hr hΔ => Arrives.regard hr hΔ)
-          (fun fs hfs h => Arrives.learnRel fs hfs h) hc ρ fun ρ' hag hreg => ?_
+          (fun fs hfs h => Arrives.learnRel fs hfs h) hc ρ hfn fun ρ' hag hreg => ?_
         rw [← Val.den_under hag tv htv]
         have hf : (tv.den ρ', Ty.code fun z => (codeCtx regs flags held known rest).den
             { ρ' with bound := z :: ρ'.bound }) ∈ (Γ'.den ρ').known := by
@@ -575,31 +537,33 @@ theorem Walk.holds_of_closes {n : Nat} {labels : List Label}
           exact List.mem_map.mpr ⟨_, h, rfl⟩
         exact Arrives.code _ hf hreg
     · cases h
-  | .step i Γ next k rest, _, ρ, h => fun x => Walk.holds_of_closes hcc H rest _ _ h
-  | .sys k rest, _, ρ, h => fun x => Walk.holds_of_closes hcc H rest _ _ h
-  | .sys2 k a b, _, ρ, h => by
+  | .step i Γ next k rest, _, ρ, hfn, h => fun x => Walk.holds_of_closes hcc H rest _ _ hfn h
+  | .sys k rest, _, ρ, hfn, h => fun x => Walk.holds_of_closes hcc H rest _ _ hfn h
+  | .sys2 k a b, _, ρ, hfn, h => by
     simp only [Walk.closes, Bool.and_eq_true] at h
-    exact fun x => ⟨Walk.holds_of_closes hcc H a _ _ h.1, Walk.holds_of_closes hcc H b _ _ h.2⟩
-  | .ends, _, _, _ => trivial
-  | .vacuous, _, _, _ => trivial
-  | .branch c fl taken fall, k, ρ, h => by
+    exact fun x => ⟨Walk.holds_of_closes hcc H a _ _ hfn h.1,
+      Walk.holds_of_closes hcc H b _ _ hfn h.2⟩
+  | .ends, _, _, _, _ => trivial
+  | .vacuous, _, _, _, _ => trivial
+  | .branch c fl taken fall, k, ρ, hfn, h => by
     simp only [Walk.closes, Bool.and_eq_true] at h
     exact ⟨FlagsT.decides_den ρ fl c h.1.1,
-      fun _ => Walk.holds_of_closes hcc H taken k ρ h.1.2,
-      fun _ => Walk.holds_of_closes hcc H fall k ρ h.2⟩
+      fun _ => Walk.holds_of_closes hcc H taken k ρ hfn h.1.2,
+      fun _ => Walk.holds_of_closes hcc H fall k ρ hfn h.2⟩
 
 /-- Nothing justified of any address. -/
 def noJustify : Nat → BitVec 64 → CtxS → Bool := fun _ _ _ => false
 
 /-- A walk in a program with no labels, nothing justified of any address:
 every way through ends the program or goes to a value known to be code. -/
-def Walk.auto (W : Walk) : Bool := W.closes (closeCtx (fun _ => noEnt) noJustify) [] 0
+def Walk.auto (W : Walk) : Bool := W.closes (closeCtx sameK (fun _ => noEnt) noJustify) [] 0
 
 theorem Walk.holds_of_auto {n : Nat} (W : Walk) (ρ : Env) (h : W.auto = true) :
     W.holds (Ok fetch sys Ψ n) (Arrives fetch sys Ψ n) ρ :=
-  Walk.holds_of_closes (closeCtx_sound (fun _ => noEnt_sound) (justify := noJustify)
-    fun _ _ _ hj => by cases hj)
-    (fun _ hm => (List.not_mem_nil hm).elim) W 0 ρ h
+  Walk.holds_of_closes (fns := ρ.fn)
+    (closeCtx_sound (fun ρ' _ _ _ _ _ _ _ hs => Val.same_den ρ' hs) (fun _ => noEnt_sound)
+      (justify := noJustify) fun _ _ _ hj => by cases hj)
+    (fun _ hm => (List.not_mem_nil hm).elim) W 0 ρ rfl h
 
 /-! ## Justifying that an address is code -/
 
@@ -703,7 +667,7 @@ def entF : Nat → Nat → TyS → TyS → Bool
   | 0, _, _, _ => false
   | f + 1, K, .code r fl h kn rs, .code r' fl' h' kn' rs' =>
     (codeCtx r fl h kn rs).under K && (codeCtx r' fl' h' kn' rs').under K &&
-      (closeCtx (entF f) noJustify (codeCtx r fl h kn rs)
+      (closeCtx sameK (entF f) noJustify (codeCtx r fl h kn rs)
         ((codeCtx r' fl' h' kn' rs').open (freshOpening K))
         (K + (codeCtx r' fl' h' kn' rs').width)).isSome
   | _ + 1, _, _, _ => false
@@ -722,6 +686,7 @@ theorem entF_sound : (f : Nat) → ∀ K, EntSound fetch sys (entF f K)
         rw [code_den, hasTy_code] at hP ⊢
         intro x k hk Ψ₂ he hwf s hrip hw
         have key := closeCtx_sound (fetch := fetch) (sys := sys) (Ψ := Ψ₂) (n := k)
+          (fns := ρ.fn) (sm := sameK) (fun ρ' _ _ _ _ _ _ _ hs => Val.same_den ρ' hs)
           (ent := entF f) (justify := noJustify) (entF_sound f) (fun _ _ _ hj => by cases hj)
           (fun C => ∀ s : State, s.rip = v → WellTyped fetch sys Ψ₂ k C s → SafeN fetch sys k s)
           (fun hi _ ho hall s hrip hw => hall _ s hrip (hw.nameSlot hi (ho _ _ hw.known)))
@@ -729,7 +694,7 @@ theorem entF_sound : (f : Nat) → ∀ K, EntSound fetch sys (entF f K)
           (fun fs hfs hQ s hrip hw => hQ s hrip
             (hw.addKnown fs fun f hf =>
               hfs f hf k (Nat.le_succ k) Ψ₂ (MemTy.Ext.refl _) hwf hw.known))
-          hcc (ρ.withFam K x)
+          hcc (ρ.withFam K x) rfl
           (fun ρ' hag hreg s hrip hw => by
             have hs : Env.SameBelow K ρ' ρ :=
               (hag.mono (Nat.le_add_right K _)).trans (sameBelow_withFam ρ K x)
@@ -753,29 +718,32 @@ def justifyF (pg : Prog) (labels : List Label)
     E.under k && ((E.open (freshOpening k)).addKnown pg.statics).under (k + E.width) &&
       ((match labels.find? fun l => l.addr == a with
         | some l =>
-          (closeCtx (entF fuelW) (justifyF pg labels stops fuelW f) l.pat ((E.open (freshOpening k)).addKnown pg.statics)
-            (k + E.width)).isSome
+          (closeCtx (sameBy pg.fns pg.laws) (entF fuelW) (justifyF pg labels stops fuelW f) l.pat
+            ((E.open (freshOpening k)).addKnown pg.statics) (k + E.width)).isSome
         | none => false) ||
-       (walk pg stops true fuelW (k + E.width) a ((E.open (freshOpening k)).addKnown pg.statics)).closes
-          (closeCtx (entF fuelW) (justifyF pg labels stops fuelW f)) labels (k + E.width))
+       (walk pg stops true fuelW (k + E.width) a
+          (evalFor pg.fns ((E.open (freshOpening k)).addKnown pg.statics) (k + E.width))).closes
+          (closeCtx (sameBy pg.fns pg.laws) (entF fuelW) (justifyF pg labels stops fuelW f)) labels
+          (k + E.width))
 
 theorem justifyF_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
     {n : Nat} {pg : Prog} (hpre : PreSound fetch sys Ψ D pg.pre)
     {labels : List Label} {stops : BitVec 64 → Bool} {fuelW : Nat}
     (hcode : ∀ e ∈ pg.code, fetch e.1 = some (e.2.1, e.2.2)) (hk : KindsOk Ψ pg.kinds)
-    (hst : StaticsOk fetch sys Ψ pg.statics)
-    (H : ∀ l ∈ labels, ∀ (ρ' : Env) (fam : Fam),
+    (hst : StaticsOk fetch sys Ψ pg.statics) (hlaws : LawsHold pg.fns pg.laws)
+    (H : ∀ l ∈ labels, ∀ (ρ' : Env) (fam : Fam), ρ'.fn = pg.fns →
       Ok fetch sys Ψ n l.addr (l.pat.den { ρ' with bound := fam :: ρ'.bound })) :
-    (f : Nat) → JustSound fetch sys Ψ n (justifyF pg labels stops fuelW f)
+    (f : Nat) → JustSound fetch sys Ψ n pg.fns (justifyF pg labels stops fuelW f)
   | 0 => fun _ _ _ hj => nomatch hj
   | f + 1 => by
-    intro k a E hj ρ fam
-    have hcc := closeCtx_sound (entF_sound fuelW)
-      (justifyF_sound hD hkind hpre (stops := stops) (fuelW := fuelW) hcode hk hst H f)
+    intro k a E hj ρ fam hfn
+    have hcc := closeCtx_sound (sm := sameBy pg.fns pg.laws)
+      (fun ρ' hfn' _ _ _ hg _ _ hs => sameBy_den hfn' hlaws hg hs) (entF_sound fuelW)
+      (justifyF_sound hD hkind hpre (stops := stops) (fuelW := fuelW) hcode hk hst hlaws H f)
     unfold justifyF at hj
     simp only [Bool.and_eq_true, Bool.or_eq_true] at hj
     obtain ⟨⟨hE, hΔ⟩, hor⟩ := hj
-    refine ok_of_open hE (fun ρ' => ok_statics hst ρ' ?_) ρ fam
+    refine ok_of_open hE (fun ρ' hfn' => ok_statics hst ρ' ?_) ρ fam hfn
     rcases hor with hl | hw
     · cases hfind : labels.find? fun l => l.addr == a with
       | none => rw [hfind] at hl; cases hl
@@ -786,13 +754,15 @@ theorem justifyF_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
         obtain ⟨⟨Γ', o⟩, hc⟩ := Option.isSome_iff_exists.mp hl
         refine hcc (Ok fetch sys Ψ n a) (fun hi _ ho h => Ok.nameSlot hi ho h)
           (fun hr hΔ => Ok.regard hr hΔ)
-          (fun fs hfs h => Ok.learnRel fs (fun f hf k hk => hfs f hf k (by omega)) h) hc ρ'
-          fun ρ'' _ hreg => ?_
+          (fun fs hfs h => Ok.learnRel fs (fun f hf k hk => hfs f hf k (by omega)) h) hc ρ' hfn'
+          fun ρ'' hag hreg => ?_
         refine Ok.regard hreg ?_
         rw [← ha]
-        exact H l hmem ρ'' _
-    · exact (walk_sound hD hkind pg hpre stops hcode hk true fuelW (k + E.width) a
-        ((E.open (freshOpening k)).addKnown pg.statics) ρ' hΔ (Walk.holds_of_closes hcc H _ (k + E.width) ρ' hw)).1
+        exact H l hmem ρ'' _ (hag.fn.trans hfn')
+    · exact Ok.regard (evalFor_regards hfn' _ _)
+        (walk_sound hD hkind pg hpre stops hcode hk true fuelW (k + E.width) a
+          (evalFor pg.fns ((E.open (freshOpening k)).addKnown pg.statics) (k + E.width)) ρ'
+          (evalFor_under hΔ) (Walk.holds_of_closes hcc H _ (k + E.width) ρ' hfn' hw)).1
 
 /-! ## A program -/
 
@@ -804,10 +774,11 @@ def checkProgram (pg : Prog) (labels : List Label)
   labels.all fun l =>
     l.pat.under k && ((l.start k).addKnown pg.statics).under (k + l.pat.width) &&
       (let W := walk pg (fun a => labels.any fun l' => l'.addr == a) true fuel (k + l.pat.width) l.addr
-        ((l.start k).addKnown pg.statics)
+        (evalFor pg.fns ((l.start k).addKnown pg.statics) (k + l.pat.width))
        W.moved &&
-        W.closes (closeCtx (entF fuel) (justifyF pg labels (fun a => labels.any fun l' => l'.addr == a)
-          fuel fuel)) labels (k + l.pat.width))
+        W.closes (closeCtx (sameBy pg.fns pg.laws) (entF fuel)
+          (justifyF pg labels (fun a => labels.any fun l' => l'.addr == a) fuel fuel)) labels
+          (k + l.pat.width))
 
 /-- **A program that checks is typed at every label, for every member of
 the label's family, for any number of steps**: on any machine that fetches
@@ -817,24 +788,28 @@ theorem program_ok {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
     {pg : Prog} (hpre : PreSound fetch sys Ψ D pg.pre)
     {labels : List Label} {fuel k : Nat}
     (hcode : ∀ e ∈ pg.code, fetch e.1 = some (e.2.1, e.2.2)) (hk : KindsOk Ψ pg.kinds)
-    (hst : StaticsOk fetch sys Ψ pg.statics)
+    (hst : StaticsOk fetch sys Ψ pg.statics) (hlaws : LawsHold pg.fns pg.laws)
     (h : checkProgram pg labels fuel k = true) :
-    ∀ n, ∀ l ∈ labels, ∀ (ρ : Env) (fam : Fam),
+    ∀ n, ∀ l ∈ labels, ∀ (ρ : Env) (fam : Fam), ρ.fn = pg.fns →
       Ok fetch sys Ψ n l.addr (l.pat.den { ρ with bound := fam :: ρ.bound }) := by
   intro n
   induction n with
-  | zero => exact fun _ _ _ _ => Ok.zero _ _
+  | zero => exact fun _ _ _ _ _ => Ok.zero _ _
   | succ n ih =>
-    intro l hl ρ fam
+    intro l hl ρ fam hfn
     unfold checkProgram at h
     have := List.all_eq_true.mp h l hl
     simp only [Bool.and_eq_true] at this
     obtain ⟨⟨hfree, hu⟩, hm, hc⟩ := this
-    have hcc := closeCtx_sound (entF_sound fuel) (justifyF_sound hD hkind hpre
-      (stops := fun a => labels.any fun l' => l'.addr == a) (fuelW := fuel) hcode hk hst ih fuel)
-    refine ok_of_open (k := k) hfree (fun ρ' => ok_statics hst ρ' ?_) ρ fam
-    exact (walk_sound hD hkind pg hpre _ hcode hk true fuel (k + l.pat.width) l.addr
-      ((l.start k).addKnown pg.statics) ρ' hu
-      (Walk.holds_of_closes hcc ih _ (k + l.pat.width) ρ' hc)).2 hm
+    have hcc := closeCtx_sound (sm := sameBy pg.fns pg.laws)
+      (fun ρ' hfn' _ _ _ hg _ _ hs => sameBy_den hfn' hlaws hg hs) (entF_sound fuel)
+      (justifyF_sound hD hkind hpre
+        (stops := fun a => labels.any fun l' => l'.addr == a) (fuelW := fuel) hcode hk hst hlaws
+        ih fuel)
+    refine ok_of_open (k := k) hfree (fun ρ' hfn' => ok_statics hst ρ' ?_) ρ fam hfn
+    exact Ok.regard (evalFor_regards hfn' _ _)
+      ((walk_sound hD hkind pg hpre _ hcode hk true fuel (k + l.pat.width) l.addr
+        (evalFor pg.fns ((l.start k).addKnown pg.statics) (k + l.pat.width)) ρ' (evalFor_under hu)
+        (Walk.holds_of_closes hcc ih _ (k + l.pat.width) ρ' hfn' hc)).2 hm)
 
 end TypedAsm.U

@@ -117,6 +117,7 @@ theorem Starts.safe {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linux
     (hwf : (MemTy.ofList blocks kinds).WF)
     (h : checkProgram pg labels fuel k = true)
     {l : Label} (hl : l ∈ labels) {s : State} (hrip : s.rip = l.addr) (ρ : Env) (fam : Fam)
+    (hfn : ρ.fn = pg.fns) (hlaws : LawsHold pg.fns pg.laws)
     (hs : Starts blocks kinds (l.pat.den { ρ with bound := fam :: ρ.bound }) s)
     (hnd : blocks.Pairwise fun x y => x.1 ≠ y.1)
     (hknown : ∀ n, ∀ f ∈ (l.pat.den { ρ with bound := fam :: ρ.bound }).known,
@@ -124,7 +125,7 @@ theorem Starts.safe {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linux
     (hheap : ∀ n, ∀ x ∈ blocks, ∀ p ∈ x.2.shape.vals,
       HasTy fetch sys (MemTy.ofList blocks kinds) n p.2 (s.load64 (x.1 + BitVec.ofNat 64 p.1))) :
     Safe fetch sys s :=
-  safe_of_checked hD hkind hpre hcode hk hst hwf h hl hrip ρ fam fun n _ =>
+  safe_of_checked hD hkind hpre hcode hk hst hwf hlaws h hl hrip ρ fam hfn fun n _ =>
     hs.matches hnd (hknown n) (hheap n)
 
 end TypedAsm.U

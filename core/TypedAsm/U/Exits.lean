@@ -85,7 +85,8 @@ theorem exits_of_checked {Q : BitVec 32 → Prop} {q : BitVec 32 → Bool}
     (hst : StaticsOk fetch (linux.exitsOnly Q) Ψ pg.statics) (hwf : Ψ.WF)
     (h : checkProgram pg labels fuel k = true)
     {l : Label} (hl : l ∈ labels) {s : State} (hrip : s.rip = l.addr) (ρ : Env) (fam : Fam)
-    (hw : ∀ n, (∀ l' ∈ labels, ∀ (ρ' : Env) (fam' : Fam),
+    (hfn : ρ.fn = pg.fns) (hlaws : LawsHold pg.fns pg.laws)
+    (hw : ∀ n, (∀ l' ∈ labels, ∀ (ρ' : Env) (fam' : Fam), ρ'.fn = pg.fns →
         Ok fetch (linux.exitsOnly Q) Ψ n l'.addr
           (l'.pat.den { ρ' with bound := fam' :: ρ'.bound })) →
       WellTyped fetch (linux.exitsOnly Q) Ψ n
@@ -95,6 +96,6 @@ theorem exits_of_checked {Q : BitVec 32 → Prop} {q : BitVec 32 → Bool}
         linux { s' with rip := s'.rip + len } = .exit c → Q c :=
   Safe.of_exitsOnly
     (safe_of_checked (D := exitsDesc Q) (linux_describes.exitsOnly Q) rfl
-      (by rw [hpg]; exact preExits_sound hq) hcode hk hst hwf h hl hrip ρ fam hw)
+      (by rw [hpg]; exact preExits_sound hq) hcode hk hst hwf hlaws h hl hrip ρ fam hfn hw)
 
 end TypedAsm.U

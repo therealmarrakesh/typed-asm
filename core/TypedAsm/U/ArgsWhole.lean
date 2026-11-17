@@ -232,7 +232,7 @@ structure ArgsFacts (code : List (Asm L)) (l : L) (ks : List (Nat × ShapeS))
   loaded : Loaded (Asm.fetch (Asm.base code) code) (startArgs code l args w)
   typed : ∀ (fetch : Fetch) (sys : Syscall) (k : Nat),
     WellTyped fetch sys (psiArgs ks bs args) k
-      (entryArgs.den { ({} : Env) with
+      (entryArgs.den { ({ fn := pg.fns } : Env) with
         bound := Fam.ofArgs (startArgs code l args w) (argCount args) :: [] })
       (startArgs code l args w)
 
@@ -311,7 +311,7 @@ theorem wholeArgs_facts {code : List (Asm L)} {l : L} {ks : List (Nat × ShapeS)
     ⟨fun a l' hl => MemTy.ofList_of_mem _ hnd (a, l')
       (List.mem_append_left _ (MemTy.mem_of_ofList hl)), rfl⟩
   have hst := starts_argsState (Asm.load State.init (Asm.base code) code l)
-    (Asm.addr code (Asm.base code) l) args w ({} : Env) (kinds := kindsDen ks) hB
+    (Asm.addr code (Asm.base code) l) args w ({ fn := pg.fns } : Env) (kinds := kindsDen ks) hB
     (said_in hsegs hmemOn hin) (text_in hsegs hmemOn hin) hBbelow hcov
   refine ⟨by rw [hpc]; exact hcode_of_tableOk htab, wf_args args hwfBs hndB hBbelow,
     kindsOk_of_check hkc _,
@@ -329,7 +329,8 @@ theorem wholeArgs_facts {code : List (Asm L)} {l : L} {ks : List (Nat × ShapeS)
     rw [e, show (startArgs code l args w).getReg .rsp = argBase from argsState_rsp _ _ _ _]
     exact argv_known args k hΨv
   · rcases List.mem_append.mp hy with hy | hy
-    · exact (heap_of_check hmemOn hndB hvals k (fun _ _ hh => Bool.noConfusion hh) y hy q hq).ext
+    · exact (heap_of_check (fns := fun _ _ _ => 0) hmemOn hndB hvals k
+        (fun _ _ hh => Bool.noConfusion hh) y hy q hq).ext
         hext
     · rcases argBlocks_mem args hy with rfl | rfl
       · exact argv_heap _ _ args w k hΨv q hq
@@ -340,27 +341,29 @@ that decodes its instructions from memory: whatever its arguments, and
 whatever the world outside it holds.** -/
 theorem whole_args_safe {code : List (Asm L)} {l : L} {ks : List (Nat × ShapeS)}
     {bs : List (BitVec 64 × LayoutS)} {pg : Prog} {labels : List Label} {fuel : Nat}
-    (h : wholeArgsOk code l ks bs pg labels fuel = true) (hpk : pg.kinds = kindsOf ks) :
+    (h : wholeArgsOk code l ks bs pg labels fuel = true) (hpk : pg.kinds = kindsOf ks)
+    (hlaws : LawsHold pg.fns pg.laws) :
     ∀ args w, SafeMem linux (startArgs code l args w) := fun args w =>
   have f := wholeArgs_facts h args w
   SafeMem.of_safe linux_frame f.loaded
     (safe_of_checked linux_describes rfl (PreSound.all (fun _ => trivial) _) f.hcode
-      (hpk ▸ f.kindsOk) (f.statics _ _) f.wf f.check f.entry rfl {}
-      (Fam.ofArgs (startArgs code l args w) (argCount args)) fun k _ => f.typed _ _ k)
+      (hpk ▸ f.kindsOk) (f.statics _ _) f.wf hlaws f.check f.entry rfl { fn := pg.fns }
+      (Fam.ofArgs (startArgs code l args w) (argCount args)) rfl fun k _ => f.typed _ _ k)
 
 /-- **And where it checks against the wanted status, ends only with it.** -/
 theorem whole_args_exits {code : List (Asm L)} {l : L} {ks : List (Nat × ShapeS)}
     {bs : List (BitVec 64 × LayoutS)} {pg : Prog} {labels : List Label} {fuel : Nat}
     (h : wholeArgsOk code l ks bs pg labels fuel = true)
     {Q : BitVec 32 → Prop} {q : BitVec 32 → Bool} (hq : ∀ c, q c = true → Q c)
-    (hpg : pg.pre = preExits q) (hpk : pg.kinds = kindsOf ks) :
+    (hpg : pg.pre = preExits q) (hpk : pg.kinds = kindsOf ks) (hlaws : LawsHold pg.fns pg.laws) :
     ∀ args w, SafeMem linux (startArgs code l args w) ∧
       ∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startArgs code l args w) s' →
         ∀ len c, Asm.fetch (Asm.base code) code s'.rip = some (.syscall, len) →
         linux { s' with rip := s'.rip + len } = .exit c → Q c := fun args w =>
   have f := wholeArgs_facts h args w
   have r := exits_of_checked hq hpg f.hcode (hpk ▸ f.kindsOk) (f.statics _ _) f.wf f.check f.entry
-    rfl {} (Fam.ofArgs (startArgs code l args w) (argCount args)) fun k _ => f.typed _ _ k
+    rfl { fn := pg.fns } (Fam.ofArgs (startArgs code l args w) (argCount args)) rfl hlaws
+    fun k _ => f.typed _ _ k
   ⟨SafeMem.of_safe linux_frame f.loaded r.1, r.2⟩
 
 end TypedAsm.U

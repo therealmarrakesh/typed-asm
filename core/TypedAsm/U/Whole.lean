@@ -113,7 +113,7 @@ structure WholeFacts (code : List (Asm L)) (l : L) (n : Nat) (ks : List (Nat × 
   wf : (MemTy.ofList (denBlocks bs) (kindsDen ks)).WF
   nd : (denBlocks bs).Pairwise fun x y => x.1 ≠ y.1
   heap : ∀ (fetch : Fetch) (sys : Syscall) (w : World) (k : Nat),
-    (∀ a E, codeJ pg labels fuel a E = true → ∀ (ρ : Env) (fam : Fam),
+    (∀ a E, codeJ pg labels fuel a E = true → ∀ (ρ : Env) (fam : Fam), ρ.fn = pg.fns →
       Ok fetch sys (MemTy.ofList (denBlocks bs) (kindsDen ks)) k a
         (E.den { ρ with bound := fam :: ρ.bound })) →
     ∀ x ∈ denBlocks bs, ∀ p ∈ x.2.shape.vals,
@@ -179,50 +179,52 @@ theorem WholeFacts.wellTyped {code : List (Asm L)} {l : L} {n : Nat} {ks : List 
     (hkind : D.kind = linuxKind)
     (hpre : PreSound fetch sys (MemTy.ofList (denBlocks bs) (kindsDen ks)) D pg.pre)
     (hcode : ∀ e ∈ pg.code, fetch e.1 = some (e.2.1, e.2.2)) (hpk : pg.kinds = kindsOf ks)
-    (w : World) (k : Nat)
-    (H : ∀ l' ∈ labels, ∀ (ρ' : Env) (fam' : Fam),
+    (hlaws : LawsHold pg.fns pg.laws) (w : World) (k : Nat)
+    (H : ∀ l' ∈ labels, ∀ (ρ' : Env) (fam' : Fam), ρ'.fn = pg.fns →
       Ok fetch sys (MemTy.ofList (denBlocks bs) (kindsDen ks)) k l'.addr
         (l'.pat.den { ρ' with bound := fam' :: ρ'.bound })) :
     WellTyped fetch sys (MemTy.ofList (denBlocks bs) (kindsDen ks)) k
-      ((entryOf n).den { ({} : Env) with bound := entryFam code l n :: [] }) (startIn code l n w) :=
-  (f.starts w {}).matches f.nd
+      ((entryOf n).den { ({ fn := pg.fns } : Env) with bound := entryFam code l n :: [] }) (startIn code l n w) :=
+  (f.starts w { fn := pg.fns }).matches f.nd
     (fun g hg => by
-      have hk : ((entryOf n).den { ({} : Env) with bound := entryFam code l n :: [] }).known = [] := by
+      have hk : ((entryOf n).den { ({ fn := pg.fns } : Env) with bound := entryFam code l n :: [] }).known = [] := by
         unfold entryOf
         split <;> rfl
       rw [hk] at hg
       cases hg)
-    (f.heap fetch sys w k fun a E hj ρ fam =>
-      justifyF_sound hD hkind hpre hcode (hpk ▸ f.kindsOk) (f.statics _ _) H fuel 0 a E hj ρ fam)
+    (f.heap fetch sys w k fun a E hj ρ fam hfn =>
+      justifyF_sound hD hkind hpre hcode (hpk ▸ f.kindsOk) (f.statics _ _) hlaws H fuel 0 a E hj ρ
+        fam hfn)
 
 /-- **A program that checks is safe, on the machine that decodes its
 instructions from memory.** -/
 theorem whole_safe {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat × ShapeS)}
     {bs : List (BitVec 64 × LayoutS)} {pg : Prog} {labels : List Label}
     {fuel : Nat} (h : wholeOkWith code l n ks bs pg labels fuel = true)
-    (hpk : pg.kinds = kindsOf ks) :
+    (hpk : pg.kinds = kindsOf ks) (hlaws : LawsHold pg.fns pg.laws) :
     ∀ w, SafeMem linux (startIn code l n w) := fun w =>
   have f := wholeOk_facts h
   SafeMem.of_safe linux_frame (f.loaded w)
     (safe_of_checked linux_describes rfl (PreSound.all (fun _ => trivial) _) f.hcode (hpk ▸ f.kindsOk)
-      (f.statics _ _) f.wf f.check f.entry rfl {} (entryFam code l n) fun k H =>
-        f.wellTyped linux_describes rfl (PreSound.all (fun _ => trivial) _) f.hcode hpk w k H)
+      (f.statics _ _) f.wf hlaws f.check f.entry rfl { fn := pg.fns } (entryFam code l n) rfl
+      fun k H =>
+        f.wellTyped linux_describes rfl (PreSound.all (fun _ => trivial) _) f.hcode hpk hlaws w k H)
 
 /-- **And where it checks against the wanted status, ends only with it.** -/
 theorem whole_exits {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat × ShapeS)}
     {bs : List (BitVec 64 × LayoutS)} {pg : Prog} {labels : List Label}
     {fuel : Nat} (h : wholeOkWith code l n ks bs pg labels fuel = true)
     {Q : BitVec 32 → Prop} {q : BitVec 32 → Bool} (hq : ∀ c, q c = true → Q c)
-    (hpg : pg.pre = preExits q) (hpk : pg.kinds = kindsOf ks) :
+    (hpg : pg.pre = preExits q) (hpk : pg.kinds = kindsOf ks) (hlaws : LawsHold pg.fns pg.laws) :
     ∀ w, SafeMem linux (startIn code l n w) ∧
       ∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startIn code l n w) s' →
         ∀ len c, Asm.fetch (Asm.base code) code s'.rip = some (.syscall, len) →
         linux { s' with rip := s'.rip + len } = .exit c → Q c := fun w =>
   have f := wholeOk_facts h
   have r := exits_of_checked hq hpg f.hcode (hpk ▸ f.kindsOk) (f.statics _ _) f.wf f.check f.entry
-    rfl {} (entryFam code l n) fun k H =>
+    rfl { fn := pg.fns } (entryFam code l n) rfl hlaws fun k H =>
       f.wellTyped (D := exitsDesc Q) (linux_describes.exitsOnly Q) rfl
-        (by rw [hpg]; exact preExits_sound hq) f.hcode hpk w k H
+        (by rw [hpg]; exact preExits_sound hq) f.hcode hpk hlaws w k H
   ⟨SafeMem.of_safe linux_frame (f.loaded w) r.1, r.2⟩
 
 /-- **And against the wanted status and the wanted writes: both.** -/
@@ -233,7 +235,7 @@ theorem whole_outputs {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat ×
     {R : BitVec 64 → List (BitVec 8) → Prop} {r : BitVec 64 → List (BitVec 8) → Bool}
     (hr : ∀ fd bs, r fd bs = true → R fd bs) {said : List (BitVec 64 × List (BitVec 8))}
     (hsaid : saidCheck (denBlocks bs) said = true) (hpg : pg.pre = preOut said q r)
-    (hpk : pg.kinds = kindsOf ks) :
+    (hpk : pg.kinds = kindsOf ks) (hlaws : LawsHold pg.fns pg.laws) :
     ∀ w, SafeMem linux (startIn code l n w) ∧
       (∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startIn code l n w) s' →
         ∀ len c, Asm.fetch (Asm.base code) code s'.rip = some (.syscall, len) →
@@ -243,9 +245,10 @@ theorem whole_outputs {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat ×
         s'.getReg .rax = 1 → R (s'.getReg .rdi) s'.offered) := fun w =>
   have f := wholeOk_facts h
   have o := outputs_of_checked hq hr (saidOk_of_check f.nd hsaid) hpg f.hcode (hpk ▸ f.kindsOk)
-    (f.statics _ _) f.wf f.check f.entry rfl {} (entryFam code l n) fun k H =>
+    (f.statics _ _) f.wf f.check f.entry rfl { fn := pg.fns } (entryFam code l n) rfl hlaws
+    fun k H =>
       f.wellTyped (D := outDesc Q R) ((linux_describes.exitsOnly Q).writesOnly R) rfl
-        (by rw [hpg]; exact preOut_sound hq hr (saidOk_of_check f.nd hsaid)) f.hcode hpk w k H
+        (by rw [hpg]; exact preOut_sound hq hr (saidOk_of_check f.nd hsaid)) f.hcode hpk hlaws w k H
   ⟨SafeMem.of_safe linux_frame (f.loaded w) o.1, o.2.1, o.2.2⟩
 
 end TypedAsm.U

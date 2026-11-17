@@ -35,15 +35,17 @@ with `safe`, the theorem `exits`.
 are; where it is left out, each segment is one block of plain bytes.
 `kinds ks` gives the program's kinds of block, which `pg` is to have too.
 `fuel k` gives how many instructions a walk from a label may take; forty
-where it is left out. -/
+where it is left out. `laws h`, last, gives the proof that the laws `pg`
+states of the functions its author defines are so (`LawsHold pg.fns
+pg.laws`); it is needed only where `pg` states any. -/
 syntax "asm_checked " ident &" start " term:max &" stack " term:max &" program " term:max
   &" labels " term:max (&" blocks " term:max)? (&" kinds " term:max)? (&" fuel " term:max)?
-  (&" exits " term:max)? : command
+  (&" exits " term:max)? (&" laws " term:max)? : command
 
 macro_rules
   | `(asm_checked $code start $l stack $n program $pg labels $ls $[blocks $bs?]? $[kinds $ks?]?
       $[fuel $k?]?
-      $[exits $q?]?) => do
+      $[exits $q?]? $[laws $lw?]?) => do
     let checked := mkIdent `checked
     let startEq := mkIdent `start_eq
     let safeIn := mkIdent `safe_in
@@ -64,6 +66,9 @@ macro_rules
     let ks ← match ks? with
       | some ks => pure ks
       | none => `(([] : List (Nat × ShapeS)))
+    let lw ← match lw? with
+      | some lw => pure lw
+      | none => `((LawsHold.nil _))
     let mut cmds : Array (TSyntax `command) := #[]
     cmds := cmds.push (← `(/-- **The check**: the labels' code is typed, and the state the
       program is loaded into starts as its entry asks. -/
@@ -81,7 +86,7 @@ macro_rules
       cmds := cmds.push (← `(/-- **The program is safe, on the machine that decodes its
         instructions from memory, whatever the world outside it holds.** -/
         theorem $safeIn (w : World) : SafeMem linux (startIn $code $l $n w) :=
-          whole_safe $checked rfl w))
+          whole_safe $checked rfl $lw w))
       cmds := cmds.push (← `(/-- So the program as it is run is safe. -/
         theorem $safe : SafeMem linux $start := $startEq ▸ $safeIn ($start).world))
     | some q =>
@@ -92,7 +97,7 @@ macro_rules
             SafeMem linux (startIn $code $l $n w) ∧
               ExitsOnly $fetch (fun c => $q c = true) (startIn $code $l $n w) :=
           whole_exits $checked (Q := fun c => $q c = true) (q := $q) (fun _ h => h) rfl
-            rfl w))
+            rfl $lw w))
       cmds := cmds.push (← `(/-- So the program as it is run is safe. -/
         theorem $safe : SafeMem linux $start := $startEq ▸ ($safeExitsIn ($start).world).1))
       cmds := cmds.push (← `(/-- And it ends only with a status that is as said. -/
@@ -124,14 +129,14 @@ arguments on it. It states
 * `safe`: so as it is run, with any arguments.
 
 With `exits q` it states `safe_exits_in`, `safe` and `exits` instead, as
-`asm_checked` does. `blocks`, `kinds` and `fuel` are as there. -/
+`asm_checked` does. `blocks`, `kinds`, `fuel` and `laws` are as there. -/
 syntax "asm_checked_args " ident &" start " term:max &" program " term:max &" labels " term:max
-  (&" blocks " term:max)? (&" kinds " term:max)? (&" fuel " term:max)? (&" exits " term:max)? :
-  command
+  (&" blocks " term:max)? (&" kinds " term:max)? (&" fuel " term:max)? (&" exits " term:max)?
+  (&" laws " term:max)? : command
 
 macro_rules
   | `(asm_checked_args $code start $l program $pg labels $ls $[blocks $bs?]? $[kinds $ks?]?
-      $[fuel $k?]? $[exits $q?]?) => do
+      $[fuel $k?]? $[exits $q?]? $[laws $lw?]?) => do
     let checked := mkIdent `checked
     let startEq := mkIdent `start_eq
     let safeIn := mkIdent `safe_in
@@ -152,6 +157,9 @@ macro_rules
     let ks ← match ks? with
       | some ks => pure ks
       | none => `(([] : List (Nat × ShapeS)))
+    let lw ← match lw? with
+      | some lw => pure lw
+      | none => `((LawsHold.nil _))
     let mut cmds : Array (TSyntax `command) := #[]
     cmds := cmds.push (← `(/-- **The check**: the labels' code is typed, and whatever the
       arguments, the state the program is loaded into starts as its entry asks. -/
@@ -169,7 +177,7 @@ macro_rules
         holds.** -/
         theorem $safeIn (args : List (List Byte)) (w : World) :
             SafeMem linux (TypedAsm.U.startArgs $code $l args w) :=
-          whole_args_safe $checked rfl args w))
+          whole_args_safe $checked rfl $lw args w))
       cmds := cmds.push (← `(/-- So the program as it is run, with any arguments, is safe. -/
         theorem $safe (args : List (List Byte)) : SafeMem linux ($startArgs args) :=
           $startEq args ▸ $safeIn args ($startArgs args).world))
@@ -181,7 +189,7 @@ macro_rules
             SafeMem linux (TypedAsm.U.startArgs $code $l args w) ∧
               ExitsOnly $fetch (fun c => $q c = true) (TypedAsm.U.startArgs $code $l args w) :=
           whole_args_exits $checked (Q := fun c => $q c = true) (q := $q) (fun _ h => h) rfl rfl
-            args w))
+            $lw args w))
       cmds := cmds.push (← `(/-- So the program as it is run, with any arguments, is safe. -/
         theorem $safe (args : List (List Byte)) : SafeMem linux ($startArgs args) :=
           $startEq args ▸ ($safeExitsIn args ($startArgs args).world).1))

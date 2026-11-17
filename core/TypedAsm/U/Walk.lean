@@ -3,6 +3,7 @@ import TypedAsm.U.SysStep
 import TypedAsm.U.Guard
 import TypedAsm.U.Learn
 import TypedAsm.U.PublishS
+import TypedAsm.U.Laws
 
 /-!
 # A block walked
@@ -47,6 +48,11 @@ structure Prog where
   system asks for the call to be let through. A system that lets every call
   through asks nothing. -/
   pre : CtxS → Bool := fun _ => true
+  /-- The functions its author defines, by number: what each gives of two
+  values. -/
+  fns : Nat → BitVec 64 → BitVec 64 → BitVec 64 := fun _ _ _ => 0
+  /-- What its author has proved of them: terms that are the same value. -/
+  laws : List LawS := []
 
 instance : Coe (List (BitVec 64 × Instr × BitVec 64)) Prog := ⟨fun c => { code := c }⟩
 

@@ -64,7 +64,8 @@ def tyHolds (j : BitVec 64 → CtxS → Bool) (bs : List (BitVec 64 × LayoutS))
   | .any, _ => true
   | .range lo hi, v => decide (v - lo ≤ hi - lo)
   | .nullable τ, v => v == 0 || tyHolds j bs τ v
-  | .code regs flags held known rest, v => j v (codeCtx regs flags held known rest)
+  | .code regs flags held known rest, v =>
+    (TyS.code regs flags held known rest).plain && j v (codeCtx regs flags held known rest)
   | .arr (.lit c) τ, v => bs.any fun b =>
       (List.range c.toNat).all fun i =>
         b.2.shape.vals.toList.contains ((v - b.1).toNat + 8 * i, τ)
@@ -77,7 +78,8 @@ def tyHolds (j : BitVec 64 → CtxS → Bool) (bs : List (BitVec 64 × LayoutS))
 theorem tyHolds_hasTy {j : BitVec 64 → CtxS → Bool} {bs : List (BitVec 64 × LayoutS)}
     {kinds : Nat → Option Shape}
     (hnd : (denBlocks bs).Pairwise fun x y => x.1 ≠ y.1) (n : Nat)
-    (hj : ∀ a E, j a E = true → ∀ (ρ : Env) (fam : Fam),
+    {fns : Nat → BitVec 64 → BitVec 64 → BitVec 64}
+    (hj : ∀ a E, j a E = true → ∀ (ρ : Env) (fam : Fam), ρ.fn = fns →
       Ok fetch sys (MemTy.ofList (denBlocks bs) kinds) n a
         (E.den { ρ with bound := fam :: ρ.bound })) :
     (τ : TyS) → (v : BitVec 64) → tyHolds j bs τ v = true →
@@ -142,9 +144,14 @@ theorem tyHolds_hasTy {j : BitVec 64 → CtxS → Bool} {bs : List (BitVec 64 ×
   | .arr (.fop _ _ _ _) _, _, h => nomatch h
   | .upTo .., _, h => nomatch h
   | .code regs flags held known rest, v, h => by
-    rw [code_den, hasTy_code]
+    simp only [tyHolds, Bool.and_eq_true] at h
+    -- a type with no function of the author's in it is the same whatever the functions are
+    have e : (TyS.code regs flags held known rest).den {}
+        = (TyS.code regs flags held known rest).den ({ fn := fns } : Env) :=
+      TyS.den_bare { fn := fns } _ h.1
+    rw [e, code_den, hasTy_code]
     intro x k hk Ψ' he hwf s hs hw
-    exact hj v _ h {} x k (Nat.le_of_lt hk) Ψ' he hwf s hs hw
+    exact hj v _ h.2 { fn := fns } x rfl k (Nat.le_of_lt hk) Ψ' he hwf s hs hw
 
 /-- Whether each typed value of each block is so of the eight bytes the
 block's segment has there. -/
@@ -163,7 +170,8 @@ theorem heap_of_check {segs : List (Nat × Perm × List Byte)}
     {t : State} (hmem : MemOn segs t)
     {j : BitVec 64 → CtxS → Bool} {bs : List (BitVec 64 × LayoutS)} {kinds : Nat → Option Shape}
     (hnd : (denBlocks bs).Pairwise fun x y => x.1 ≠ y.1) (h : valsHold j segs bs = true) (n : Nat)
-    (hj : ∀ a E, j a E = true → ∀ (ρ : Env) (fam : Fam),
+    {fns : Nat → BitVec 64 → BitVec 64 → BitVec 64}
+    (hj : ∀ a E, j a E = true → ∀ (ρ : Env) (fam : Fam), ρ.fn = fns →
       Ok fetch sys (MemTy.ofList (denBlocks bs) kinds) n a
         (E.den { ρ with bound := fam :: ρ.bound })) :
     ∀ x ∈ denBlocks bs, ∀ p ∈ x.2.shape.vals,
@@ -219,7 +227,8 @@ theorem staticsOk_of_holds {bs : List (BitVec 64 × LayoutS)} {kinds : Nat → O
     | lit v =>
       simp only [Bool.and_eq_true] at hc
       rw [TyS.den_ground ρ {} τ hc.1]
-      exact (tyHolds_hasTy (j := fun _ _ => false) hnd n (fun _ _ h => Bool.noConfusion h) τ v
+      exact (tyHolds_hasTy (j := fun _ _ => false) (fns := fun _ _ _ => 0) hnd n
+        (fun _ _ h => Bool.noConfusion h) τ v
         hc.2).ext hext
     | _ => cases hc
   · exact staticsOk_of_check (st := [f]) hnd (by simp only [List.all_cons, hc, List.all_nil,

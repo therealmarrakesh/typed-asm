@@ -57,9 +57,9 @@ def explain (pg : Prog) (labels : List Label) (fuel : Nat) (k : Nat := 0) : List
       [⟨l.addr, l.addr, "the label mentions a name it may not"⟩]
     else
       let W := walk pg (fun a => labels.any fun l' => l'.addr == a) true fuel (k + l.pat.width)
-        l.addr ((l.start k).addKnown pg.statics)
+        l.addr (evalFor pg.fns ((l.start k).addKnown pg.statics) (k + l.pat.width))
       (if W.moved then [] else [⟨l.addr, l.addr, "the walk does not leave the label"⟩]) ++
-        W.faults (closeCtx (entF fuel) (justifyF pg labels
+        W.faults (closeCtx (sameBy pg.fns pg.laws) (entF fuel) (justifyF pg labels
           (fun a => labels.any fun l' => l'.addr == a) fuel fuel)) labels l.addr (k + l.pat.width)
 
 end TypedAsm.U

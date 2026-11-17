@@ -24,16 +24,18 @@ do. -/
 theorem safe_of_checked {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
     {pg : Prog} (hpre : PreSound fetch sys Ψ D pg.pre) {labels : List Label} {fuel k : Nat}
     (hcode : ∀ e ∈ pg.code, fetch e.1 = some (e.2.1, e.2.2)) (hk : KindsOk Ψ pg.kinds)
-    (hst : StaticsOk fetch sys Ψ pg.statics) (hwf : Ψ.WF)
+    (hst : StaticsOk fetch sys Ψ pg.statics) (hwf : Ψ.WF) (hlaws : LawsHold pg.fns pg.laws)
     (h : checkProgram pg labels fuel k = true)
     {l : Label} (hl : l ∈ labels) {s : State} (hrip : s.rip = l.addr) (ρ : Env) (fam : Fam)
-    (hw : ∀ n, (∀ l' ∈ labels, ∀ (ρ' : Env) (fam' : Fam),
+    (hfn : ρ.fn = pg.fns)
+    (hw : ∀ n, (∀ l' ∈ labels, ∀ (ρ' : Env) (fam' : Fam), ρ'.fn = pg.fns →
         Ok fetch sys Ψ n l'.addr (l'.pat.den { ρ' with bound := fam' :: ρ'.bound })) →
       WellTyped fetch sys Ψ n (l.pat.den { ρ with bound := fam :: ρ.bound }) s) :
     Safe fetch sys s :=
   safe_of_safeN fun n =>
-    program_ok hD hkind hpre hcode hk hst h n l hl ρ fam n (Nat.le_refl n) Ψ (MemTy.Ext.refl Ψ)
-      hwf s hrip (hw n fun l' hl' ρ' fam' => program_ok hD hkind hpre hcode hk hst h n l' hl' ρ' fam')
+    program_ok hD hkind hpre hcode hk hst hlaws h n l hl ρ fam hfn n (Nat.le_refl n) Ψ
+      (MemTy.Ext.refl Ψ) hwf s hrip
+      (hw n fun l' hl' ρ' fam' => program_ok hD hkind hpre hcode hk hst hlaws h n l' hl' ρ' fam')
 
 /-- **And safe on the machine that decodes its instructions from memory**,
 where the program is loaded and the system changes nothing a program's
@@ -41,13 +43,14 @@ instructions are read from. -/
 theorem safeMem_of_checked {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
     {pg : Prog} (hpre : PreSound fetch sys Ψ D pg.pre) {labels : List Label} {fuel k : Nat}
     (hcode : ∀ e ∈ pg.code, fetch e.1 = some (e.2.1, e.2.2)) (hk : KindsOk Ψ pg.kinds)
-    (hst : StaticsOk fetch sys Ψ pg.statics) (hwf : Ψ.WF)
+    (hst : StaticsOk fetch sys Ψ pg.statics) (hwf : Ψ.WF) (hlaws : LawsHold pg.fns pg.laws)
     (h : checkProgram pg labels fuel k = true)
     {l : Label} (hl : l ∈ labels) {s : State} (hrip : s.rip = l.addr) (ρ : Env) (fam : Fam)
-    (hw : ∀ n, (∀ l' ∈ labels, ∀ (ρ' : Env) (fam' : Fam),
+    (hfn : ρ.fn = pg.fns)
+    (hw : ∀ n, (∀ l' ∈ labels, ∀ (ρ' : Env) (fam' : Fam), ρ'.fn = pg.fns →
         Ok fetch sys Ψ n l'.addr (l'.pat.den { ρ' with bound := fam' :: ρ'.bound })) →
       WellTyped fetch sys Ψ n (l.pat.den { ρ with bound := fam :: ρ.bound }) s)
     (hsys : ∀ s, (sys s).All (Frame s)) (hload : Loaded fetch s) : SafeMem sys s :=
-  SafeMem.of_safe hsys hload (safe_of_checked hD hkind hpre hcode hk hst hwf h hl hrip ρ fam hw)
+  SafeMem.of_safe hsys hload (safe_of_checked hD hkind hpre hcode hk hst hwf hlaws h hl hrip ρ fam hfn hw)
 
 end TypedAsm.U

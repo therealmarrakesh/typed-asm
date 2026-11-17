@@ -56,11 +56,12 @@ walk from `start` stops at `loop`, the walk from `loop` comes back to it or
 ends the program, and each context reached is decided to be one the label
 asks. The kernel runs the whole check. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
-    (hcode : ∀ e ∈ codeL, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (fam : Fam) (n : Nat) :
+    (hcode : ∀ e ∈ codeL, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (fam : Fam) (n : Nat)
+    (hρ : ρ.fn = fun _ _ _ => 0) :
     Ok fetch sys Ψ n 0 (Pw.den { ρ with bound := fam :: ρ.bound }) :=
   program_ok hD rfl (PreSound.all (fun _ => trivial) _) (pg := ↑codeL) hcode (KindsOk.none _) StaticsOk.nil
-    (labels := labelsL) (fuel := 10) (k := 0)
-    (by decide +kernel) n (lab 0 Pw) (List.mem_cons_self ..) ρ fam
+    (LawsHold.nil _) (labels := labelsL) (fuel := 10) (k := 0)
+    (by decide +kernel) n (lab 0 Pw) (List.mem_cons_self ..) ρ fam hρ
 
 /-- A label asking that `rcx` be five is not one the loop comes back to. -/
 def labelsBad : List Label :=
@@ -81,11 +82,12 @@ def codeF : List (BitVec 64 × Instr × BitVec 64) :=
 /-- **Typed as a loop on one label**: the stack pointer is back where it
 was, as the sums show, so the context reached is the label's again. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
-    (hcode : ∀ e ∈ codeF, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (fam : Fam) (n : Nat) :
+    (hcode : ∀ e ∈ codeF, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (fam : Fam) (n : Nat)
+    (hρ : ρ.fn = fun _ _ _ => 0) :
     Ok fetch sys Ψ n 0 (Pw.den { ρ with bound := fam :: ρ.bound }) :=
   program_ok hD rfl (PreSound.all (fun _ => trivial) _) (pg := ↑codeF) hcode (KindsOk.none _) StaticsOk.nil
-    (labels := [lab 0 Pw]) (fuel := 10) (k := 0)
-    (by decide +kernel) n (lab 0 Pw) (List.mem_cons_self ..) ρ fam
+    (LawsHold.nil _) (labels := [lab 0 Pw]) (fuel := 10) (k := 0)
+    (by decide +kernel) n (lab 0 Pw) (List.mem_cons_self ..) ρ fam hρ
 
 /-! ## What one context being regarded as another comes to
 
@@ -307,13 +309,13 @@ example : callOk movRaxRdi (fExit (.bvar 1 7) (.bvar 1)) Pw = true := by decide 
 what the kernel checked, as a theorem of the machine. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
     (hcode : ∀ e ∈ codeCall movRaxRdi, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (fam : Fam)
-    (n : Nat) :
+    (n : Nat) (hρ : ρ.fn = fun _ _ _ => 0) :
     Ok fetch sys Ψ n 100
       ((fEntry (fExit (.bvar 1 7) (.bvar 1))).den { ρ with bound := fam :: ρ.bound }) :=
   program_ok hD rfl (PreSound.all (fun _ => trivial) _) (pg := ↑(codeCall movRaxRdi)) hcode
-    (KindsOk.none _) StaticsOk.nil
+    (KindsOk.none _) StaticsOk.nil (LawsHold.nil _)
     (labels := [lab 0 Pw, lab 100 (fEntry (fExit (.bvar 1 7) (.bvar 1)))]) (fuel := 10) (k := 0)
-    (by decide +kernel) n _ (List.mem_cons_of_mem _ (List.mem_cons_self ..)) ρ fam
+    (by decide +kernel) n _ (List.mem_cons_of_mem _ (List.mem_cons_self ..)) ρ fam hρ
 
 -- a body that changes `rbx`, which the exit says is as it was: refused
 example : callOk (.mov .w64 (.rm_r (.reg .rbx) .rdi)) (fExit (.bvar 1 7) (.bvar 1)) Pw = false := by

@@ -123,7 +123,8 @@ theorem outputs_of_checked {Q : BitVec 32 → Prop} {q : BitVec 32 → Bool}
     (hst : StaticsOk fetch ((linux.exitsOnly Q).writesOnly R) Ψ pg.statics) (hwf : Ψ.WF)
     (h : checkProgram pg labels fuel k = true)
     {l : Label} (hl : l ∈ labels) {s : State} (hrip : s.rip = l.addr) (ρ : Env) (fam : Fam)
-    (hw : ∀ n, (∀ l' ∈ labels, ∀ (ρ' : Env) (fam' : Fam),
+    (hfn : ρ.fn = pg.fns) (hlaws : LawsHold pg.fns pg.laws)
+    (hw : ∀ n, (∀ l' ∈ labels, ∀ (ρ' : Env) (fam' : Fam), ρ'.fn = pg.fns →
         Ok fetch ((linux.exitsOnly Q).writesOnly R) Ψ n l'.addr
           (l'.pat.den { ρ' with bound := fam' :: ρ'.bound })) →
       WellTyped fetch ((linux.exitsOnly Q).writesOnly R) Ψ n
@@ -135,7 +136,7 @@ theorem outputs_of_checked {Q : BitVec 32 → Prop} {q : BitVec 32 → Bool}
         s'.getReg .rax = 1 → R (s'.getReg .rdi) s'.offered) :=
   have hW := Safe.of_writesOnly
     (safe_of_checked (D := outDesc Q R) ((linux_describes.exitsOnly Q).writesOnly R) rfl
-      (by rw [hpg]; exact preOut_sound hq hr hsaid) hcode hk hst hwf h hl hrip ρ fam hw)
+      (by rw [hpg]; exact preOut_sound hq hr hsaid) hcode hk hst hwf hlaws h hl hrip ρ fam hfn hw)
   have hE := Safe.of_exitsOnly hW.1
   ⟨hE.1, hE.2, fun s' hs' len hf hax => hW.2 s' hs'.exitsOnly len hf hax⟩
 
