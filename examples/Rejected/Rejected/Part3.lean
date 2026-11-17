@@ -114,9 +114,7 @@ def Φz : CodeTy := .ofLabels ending 0 (fun _ Δ => Δ = bare)
 example : BlockOk Φz endingFetch (linux.exitsOnly (· = 3)) Ψ (Asm.addr ending 0 .known) bare := by
   ty_block
 
-/-- error: unsolved goals
-case status
-⊢ BitVec.setWidth 32 3#64 = 4 -/
+/-- error: `syscall`: the program would end here with a status that is not shown to be as wanted: `BitVec.setWidth 32 3#64 = 4` is needed -/
 #guard_msgs in
 example : BlockOk Φz endingFetch (linux.exitsOnly (· = 4)) Ψ (Asm.addr ending 0 .known) bare := by
   ty_block

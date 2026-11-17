@@ -4645,7 +4645,8 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
             catch _ => pure [m.mvarId!]
           unless left.isEmpty do
             trace[TypedAsm.fast] "the status is not shown to be as wanted within the walk"
-            enterOff.set true
+            refusal.set (some m!"`syscall`: the program would end here with a status that is \
+              not shown to be as wanted: `{← ppClean want}` is needed")
             throwError "the status is not shown to be as wanted"
           trace[TypedAsm.fast] "ended within the walk"
           let some' ← mkAppM ``Option.some #[val]
