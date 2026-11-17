@@ -12,8 +12,7 @@ what they ask of the state to let a call through.
 
 namespace TypedAsm.U
 
-/-- What the Linux call of each number does to the program. `munmap` takes
-memory away, and is described by itself. A
+/-- What the Linux call of each number does to the program. A
 number that is no call's is refused by the kernel, which is to do nothing. -/
 def linuxKind (nr : BitVec 64) : Option SysKind :=
   if nr = 60 ∨ nr = 231 then some .ends
@@ -22,7 +21,7 @@ def linuxKind (nr : BitVec 64) : Option SysKind :=
   else if nr = 228 then some (.fills .rsi (.inr 16))
   else if nr = 318 then some (.fills .rdi (.inl .rsi))
   else if nr = 9 then some .map
-  else if nr = 11 then none
+  else if nr = 11 then some .unmap
   else some .world
 
 def linuxDesc : SysDesc := { kind := linuxKind }
@@ -41,6 +40,15 @@ theorem mmap_maps (s : State) : Maps s (pages (s.getReg .rsi)) (Linux.mmap s) :=
         split
         · next hok => exact .inr ⟨a, _, hok.1, hok.2.2.1, hok.2.2.2, rfl⟩
         · exact .inl ⟨_, _, by decide, rfl⟩
+
+/-- The model's `munmap` refuses, or makes whole pages inaccessible. -/
+theorem munmap_unmaps (s : State) :
+    Unmaps s (s.getReg .rdi) (pages (s.getReg .rsi)) (Linux.munmap s) := by
+  unfold Linux.munmap
+  simp only
+  split
+  · next hok => exact .inr ⟨hok.1, hok.2.2.1, _, rfl⟩
+  · exact .inl ⟨_, rfl⟩
 
 /-- **The Linux model does what it is described to do.** -/
 theorem linux_describes : Describes linux linuxDesc := by
@@ -80,7 +88,9 @@ theorem linux_describes : Describes linux linuxDesc := by
               exact ⟨Linux.mmap s, by simp [linux, h9, hdi], mmap_maps s⟩
             · next h9 =>
               split at hk
-              · cases hk
+              · next h11 =>
+                cases hk
+                exact ⟨Linux.munmap s, by simp [linux, h9, h11, h60, h0], munmap_unmaps s⟩
               · next h11 =>
                 cases hk
                 have h60' : s.getReg .rax ≠ 60 := fun e => h60 (.inl e)
@@ -120,6 +130,9 @@ theorem Describes.exitsOnly {sys : Syscall} {D : SysDesc} (h : Describes sys D)
   | map =>
     intro hdi
     obtain ⟨t, ht, hm⟩ := this hdi
+    exact ⟨t, Syscall.exitsOnly_next ht, hm⟩
+  | unmap =>
+    obtain ⟨t, ht, hm⟩ := this
     exact ⟨t, Syscall.exitsOnly_next ht, hm⟩
 
 /-- And one that lets through only writes whose bytes are as wanted,

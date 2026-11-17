@@ -61,6 +61,9 @@ inductive SysKind
   /-- It hands back fresh memory, of as many whole pages as the length in
   `rsi` comes to, or an error number. -/
   | map
+  /-- It takes back the memory at the address in `rdi`, of as many whole
+  pages as the length in `rsi` comes to; or refuses. -/
+  | unmap
 
 /-- A system, described: what the call of each number does, and what the
 system asks of the state for a call to be let through. -/
@@ -89,6 +92,12 @@ def Maps (s : State) (size : Nat) (t : State) : Prop :=
   ∃ a w, a.toNat % 4096 = 0 ∧ a.toNat + size ≤ addrTop ∧ s.unmapped a size = true ∧
     t = Linux.ret { s.mapZero a size with world := w } a
 
+/-- `t` is `s` after a call that refused and touched nothing, or made the
+`size` bytes at `a` inaccessible, `a` being the start of a page. -/
+def Unmaps (s : State) (a : BitVec 64) (size : Nat) (t : State) : Prop :=
+  (∃ v, t = Linux.ret s v) ∨
+  (a.toNat % 4096 = 0 ∧ a.toNat + size ≤ addrTop ∧ ∃ v, t = Linux.ret (s.unmap a size) v)
+
 /-- `Describes sys D`: the system does what `D` says, for every call `D`
 describes that it lets through. -/
 def Describes (sys : Syscall) (D : SysDesc) : Prop :=
@@ -98,6 +107,7 @@ def Describes (sys : Syscall) (D : SysDesc) : Prop :=
     | .fills b room => ∃ t, sys s = .next t ∧ Linux.Fills s (s.getReg b) (roomOf s room) t
     | .ends => ∃ c, sys s = .exit c
     | .map => s.getReg .rdi = 0 → ∃ t, sys s = .next t ∧ Maps s (pages (s.getReg .rsi)) t
+    | .unmap => ∃ t, sys s = .next t ∧ Unmaps s (s.getReg .rdi) (pages (s.getReg .rsi)) t
 
 /-- **A call that does nothing to the program** returns with a value in
 `rax`, of which nothing is known. -/
