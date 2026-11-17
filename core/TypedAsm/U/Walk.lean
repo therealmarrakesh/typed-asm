@@ -1,5 +1,6 @@
 import TypedAsm.U.Step
-import TypedAsm.U.Program
+import TypedAsm.U.SysStep
+import TypedAsm.U.Guard
 
 /-!
 # A block walked
@@ -30,6 +31,11 @@ inductive Walk
   for whatever it read that the context did not say: it does not fault of
   itself, and the rest holds whatever `k` stands for. -/
   | step (i : Instr) (Γ : CtxS) (next : BitVec 64) (k : Nat) (rest : Walk)
+  /-- A system call that returns was stepped over, the name `k` standing for
+  what it hands back: the rest holds whatever that is. -/
+  | sys (k : Nat) (rest : Walk)
+  /-- A system call ends the program: nothing is left. -/
+  | ends
 
 /-- That an instruction does not fault for a reason of its own, in a
 context, whatever it reads. -/
@@ -44,6 +50,14 @@ def Walk.holds (P A : BitVec 64 → Ctx → Prop) : Walk → Env → Prop
   | .stop a Γ, ρ => P a (Γ.den ρ)
   | .arrive t Γ, ρ => A (t.den ρ) (Γ.den ρ)
   | .step i Γ next k rest, ρ => GuardOk ρ Γ next i ∧ ∀ x, rest.holds P A (ρ.setVal k x)
+  | .sys k rest, ρ => ∀ x, rest.holds P A (ρ.setVal k x)
+  | .ends, _ => True
+
+/-- Whether the walk got anywhere: it stepped over an instruction or a call,
+or the program ended. -/
+def Walk.moved : Walk → Bool
+  | .step .. | .sys .. | .ends => true
+  | _ => false
 
 /-- **The checker walked from an address**, for at most so many
 instructions, `k` being a name no term yet mentions. -/
@@ -53,14 +67,22 @@ def walk (code : List (BitVec 64 × Instr × BitVec 64)) : Nat → Nat → BitVe
     match code.find? fun e => e.1 = a with
     | none => .stop a Γ
     | some (_, i, len) =>
-      match stepHeld Γ k (a + len) i with
-      | none => .stop a Γ
-      | some (Γ', t) =>
-        if Γ'.under (k + 1) then
-          match t.lit? with
-          | some t' => .step i Γ (a + len) k (walk code fuel (k + 1) t' Γ')
-          | none => .step i Γ (a + len) k (.arrive t Γ')
-        else .stop a Γ
+      if i = .syscall then
+        if sysEnds Γ then .ends
+        else
+          match sysWorld Γ k (a + len) with
+          | some Γ' =>
+            if Γ'.under (k + 1) then .sys k (walk code fuel (k + 1) (a + len) Γ') else .stop a Γ
+          | none => .stop a Γ
+      else
+        match stepHeld Γ k (a + len) i with
+        | none => .stop a Γ
+        | some (Γ', t) =>
+          if Γ'.under (k + 1) then
+            match t.lit? with
+            | some t' => .step i Γ (a + len) k (walk code fuel (k + 1) t' Γ')
+            | none => .step i Γ (a + len) k (.arrive t Γ')
+          else .stop a Γ
 
 theorem Ok.zero (a : BitVec 64) (Γ : Ctx) : Ok fetch sys Ψ 0 a Γ := by
   intro k hk Ψ' _ _ s _ _
@@ -73,91 +95,102 @@ theorem Arrives.mono {n m : Nat} {t : BitVec 64} {Γ : Ctx} (h : Arrives fetch s
   fun k hk => h k (Nat.le_trans hk hle)
 
 /-- **A walk whose leaves hold types the block it started at**, for as many
-steps as the code where it stopped is typed for. -/
-theorem walk_sound {n : Nat} (code : List (BitVec 64 × Instr × BitVec 64))
+steps as the code where it stopped is typed for; and for one step more
+where the walk got anywhere, which is what a program's labels are typed by,
+each for one step more than all are assumed typed for. -/
+theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
+    (hpre : ∀ s, D.pre s) {n : Nat} (code : List (BitVec 64 × Instr × BitVec 64))
     (hcode : ∀ e ∈ code, fetch e.1 = some (e.2.1, e.2.2)) :
     (fuel k : Nat) → (a : BitVec 64) → (Γ : CtxS) → (ρ : Env) → Γ.under k = true →
     (walk code fuel k a Γ).holds (Ok fetch sys Ψ n) (Arrives fetch sys Ψ n) ρ →
-    Ok fetch sys Ψ n a (Γ.den ρ)
-  | 0, _, _, _, _, _, h => h
+    Ok fetch sys Ψ n a (Γ.den ρ) ∧
+      ((walk code fuel k a Γ).moved = true → Ok fetch sys Ψ (n + 1) a (Γ.den ρ))
+  | 0, _, _, _, _, _, h => ⟨h, fun hm => nomatch hm⟩
   | fuel + 1, k, a, Γ, ρ, hu, h => by
-    unfold walk at h
-    split at h
-    · exact h
+    generalize hW : walk code (fuel + 1) k a Γ = W at h ⊢
+    unfold walk at hW
+    split at hW
+    · subst hW; exact ⟨h, fun hm => nomatch hm⟩
     · next e i len hfind =>
       have hmem := List.mem_of_find?_eq_some hfind
       have ha : e = a := by simpa using List.find?_some hfind
       subst ha
       have hf : fetch e = some (i, len) := hcode _ hmem
-      split at h
-      · exact h
-      · next Γ' t hstep =>
-        split at h
-        · next hu' =>
-          -- the instruction is typed, and the machine arrives wherever it leaves it
-          have key : ∀ (rest : Walk),
-              (GuardOk ρ Γ (e + len) i ∧ ∀ x, rest.holds (Ok fetch sys Ψ n) (Arrives fetch sys Ψ n)
-                (ρ.setVal k x)) →
-              (∀ x, rest.holds (Ok fetch sys Ψ n) (Arrives fetch sys Ψ n) (ρ.setVal k x) →
-                Arrives fetch sys Ψ n (t.den (ρ.setVal k x)) (Γ'.den (ρ.setVal k x))) →
-              Ok fetch sys Ψ n e (Γ.den ρ) := by
-            intro rest ⟨hg, hrest⟩ harr
-            cases n with
-            | zero => exact Ok.zero _ _
-            | succ m =>
+      -- an instruction or a call typed, with the machine arriving where it is left
+      have both : (∀ m, m ≤ n → Ok fetch sys Ψ (m + 1) e (Γ.den ρ)) →
+          Ok fetch sys Ψ n e (Γ.den ρ) ∧ Ok fetch sys Ψ (n + 1) e (Γ.den ρ) := fun hall =>
+        ⟨by
+          cases n with
+          | zero => exact Ok.zero _ _
+          | succ m => exact hall m (Nat.le_succ m), hall n (Nat.le_refl n)⟩
+      split at hW
+      · next hsys =>
+        subst hsys
+        split at hW
+        · next hends =>
+          exact ⟨sysEnds_sound hD hkind hpre hends hf n, fun _ =>
+            sysEnds_sound hD hkind hpre hends hf (n + 1)⟩
+        · split at hW
+          · next Γ' hw =>
+            split at hW
+            · next hu' =>
+              subst hW
+              have ih := fun x => (walk_sound hD hkind hpre code hcode fuel (k + 1) (e + len) Γ'
+                (ρ.setVal k x) hu' (h x)).1
+              have hb := both fun m hm => by
+                refine Ok.step hf (sysWorld_sound hD hkind hpre hw hu) ?_
+                rintro t Δ ⟨x, rfl, rfl⟩
+                exact ((ih x).mono hm).arrives
+              exact ⟨hb.1, fun _ => hb.2⟩
+            · subst hW; exact ⟨h, fun hm => nomatch hm⟩
+          · subst hW; exact ⟨h, fun hm => nomatch hm⟩
+      · split at hW
+        · subst hW; exact ⟨h, fun hm => nomatch hm⟩
+        · next Γ' t hstep =>
+          split at hW
+          · next hu' =>
+            have key : ∀ (rest : Walk),
+                (GuardOk ρ Γ (e + len) i ∧ ∀ x, rest.holds (Ok fetch sys Ψ n)
+                  (Arrives fetch sys Ψ n) (ρ.setVal k x)) →
+                (∀ x, rest.holds (Ok fetch sys Ψ n) (Arrives fetch sys Ψ n) (ρ.setVal k x) →
+                  Arrives fetch sys Ψ n (t.den (ρ.setVal k x)) (Γ'.den (ρ.setVal k x))) →
+                Ok fetch sys Ψ n e (Γ.den ρ) ∧ Ok fetch sys Ψ (n + 1) e (Γ.den ρ) := by
+              intro rest ⟨hg, hrest⟩ harr
+              refine both fun m hm => ?_
               refine Ok.step hf (stepHeld_sound hstep hu hg) ?_
               rintro t' Δ ⟨x, rfl, rfl⟩
-              exact (harr x (hrest x)).mono (Nat.le_succ m)
-          split at h
-          · next t' ht =>
-            refine key _ h (fun x hx => ?_)
-            rw [Val.lit?_den ht]
-            exact (walk_sound code hcode fuel (k + 1) t' Γ' (ρ.setVal k x) hu' hx).arrives
-          · exact key _ h (fun x hx => hx)
-        · exact h
+              exact (harr x (hrest x)).mono hm
+            split at hW
+            · next t' ht =>
+              subst hW
+              have hb := key _ h (fun x hx => by
+                rw [Val.lit?_den ht]
+                exact (walk_sound hD hkind hpre code hcode fuel (k + 1) t' Γ' (ρ.setVal k x) hu'
+                  hx).1.arrives)
+              exact ⟨hb.1, fun _ => hb.2⟩
+            · subst hW
+              have hb := key _ h (fun x hx => hx)
+              exact ⟨hb.1, fun _ => hb.2⟩
+          · subst hW; exact ⟨h, fun hm => nomatch hm⟩
 
-/-- **And for one step more**, where the walk stepped over at least one
-instruction: which is what a program's labels are typed by, each for one
-step more than all are assumed typed for. -/
-theorem walk_sound_succ {n : Nat} (code : List (BitVec 64 × Instr × BitVec 64))
-    (hcode : ∀ e ∈ code, fetch e.1 = some (e.2.1, e.2.2)) (fuel k : Nat) (a : BitVec 64)
-    (Γ : CtxS) (ρ : Env) (hu : Γ.under k = true) {i : Instr} {Γ₀ : CtxS} {nx : BitVec 64}
-    {k' : Nat} {rest : Walk} (hw : walk code (fuel + 1) k a Γ = .step i Γ₀ nx k' rest)
-    (h : (walk code (fuel + 1) k a Γ).holds (Ok fetch sys Ψ n) (Arrives fetch sys Ψ n) ρ) :
-    Ok fetch sys Ψ (n + 1) a (Γ.den ρ) := by
-  unfold walk at h hw
-  split at h
-  · rw [‹List.find? _ code = none›] at hw; cases hw
-  · next e i' len hfind =>
-    rw [hfind] at hw
-    simp only at hw
-    have hmem := List.mem_of_find?_eq_some hfind
-    have ha : e = a := by simpa using List.find?_some hfind
-    subst ha
-    have hf : fetch e = some (i', len) := hcode _ hmem
-    split at h
-    · next hnone => rw [hnone] at hw; cases hw
-    · next Γ' t hstep =>
-      rw [hstep] at hw
-      simp only at hw
-      split at h
-      · next hu' =>
-        have key : ∀ (rest : Walk),
-            (GuardOk ρ Γ (e + len) i' ∧ ∀ x, rest.holds (Ok fetch sys Ψ n) (Arrives fetch sys Ψ n)
-              (ρ.setVal k x)) →
-            (∀ x, rest.holds (Ok fetch sys Ψ n) (Arrives fetch sys Ψ n) (ρ.setVal k x) →
-              Arrives fetch sys Ψ n (t.den (ρ.setVal k x)) (Γ'.den (ρ.setVal k x))) →
-            Ok fetch sys Ψ (n + 1) e (Γ.den ρ) := by
-          intro rest ⟨hg, hrest⟩ harr
-          refine Ok.step hf (stepHeld_sound hstep hu hg) ?_
-          rintro t' Δ ⟨x, rfl, rfl⟩
-          exact harr x (hrest x)
-        split at h
-        · next t' ht =>
-          refine key _ h (fun x hx => ?_)
-          rw [Val.lit?_den ht]
-          exact (walk_sound code hcode fuel (k + 1) t' Γ' (ρ.setVal k x) hu' hx).arrives
-        · exact key _ h (fun x hx => hx)
-      · next hnu => simp only [hnu] at hw; cases hw
+/-- Whether a walk leaves nothing to be shown: every instruction it stepped
+over cannot fault of itself, and every way through it ends the program. -/
+def Walk.auto : Walk → Bool
+  | .step i _ _ _ rest => i.noGuard && rest.auto
+  | .sys _ rest => rest.auto
+  | .ends => true
+  | _ => false
+
+/-- Such a walk holds. -/
+theorem Walk.holds_of_auto (P A : BitVec 64 → Ctx → Prop) :
+    (W : Walk) → (ρ : Env) → W.auto = true → W.holds P A ρ
+  | .step i Γ next k rest, ρ, h => by
+    simp only [Walk.auto, Bool.and_eq_true] at h
+    exact ⟨fun d hd x => desc_noGuard h.1 hd _ _ _ _ _,
+      fun x => Walk.holds_of_auto P A rest _ h.2⟩
+  | .sys k rest, ρ, h => fun x => Walk.holds_of_auto P A rest _ h
+  | .ends, _, _ => trivial
+  | .stop _ _, _, h => nomatch h
+  | .arrive _ _, _, h => nomatch h
 
 end TypedAsm.U

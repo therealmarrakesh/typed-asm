@@ -76,4 +76,25 @@ example : (match walk codeW 10 20 0 Γw with
         ((Γ.held.head?.map fun b => b.2.slots.map (·.2)).getD []).head?.map (·.summands) |>.getD ([], 0)
     | _ => ([], 1)) := by decide +kernel
 
+/-! ## A whole program -/
+
+/-- `mov eax, 60; mov edi, 0; syscall`: a program that ends at once. -/
+def codeE : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .mov .w32 (.rm_i (.reg .rax) 60), 5), (5, .mov .w32 (.rm_i (.reg .rdi) 0), 5),
+   (10, .syscall, 2)]
+
+-- the walk steps over the two moves and sees that the call ends the program
+example : (match walk codeE 10 20 0 Γw with
+    | .step _ _ _ _ (.step _ _ _ _ .ends) => true
+    | _ => false) = true := by decide +kernel
+
+/-- **The program is typed, and so safe to enter**, on any machine that
+fetches those instructions at those addresses, under any system that does
+what Linux is described to do: by the walk alone, which the kernel runs. -/
+example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
+    (hcode : ∀ e ∈ codeE, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (n : Nat) :
+    Ok fetch sys Ψ (n + 1) 0 (Γw.den ρ) :=
+  (walk_sound hD rfl (fun _ => trivial) codeE hcode 10 20 0 Γw ρ (by decide +kernel)
+    (Walk.holds_of_auto _ _ _ ρ (by decide +kernel))).2 (by decide +kernel)
+
 end Tests.Unified

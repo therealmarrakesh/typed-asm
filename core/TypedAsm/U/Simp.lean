@@ -65,6 +65,8 @@ def simpOut (i : Instr) (k : Nat) (a b c : Val) (fl : FlagsT) (next : BitVec 64)
   | .mov .w64 (.rm_r (.reg _) _), 0 => a
   | .mov .w64 (.r_m _ _), 0 => cell
   | .movAbs _ imm, 0 => .lit imm
+  | .mov .w64 (.rm_i (.reg _) imm), 0 => .lit (imm.signExtend 64)
+  | .mov .w32 (.rm_i (.reg _) imm), 0 => .lit ((imm.signExtend 32).setWidth 64)
   | .lea .w64 _ _, 0 => ea
   | .push _, 0 => .add b (.lit (-8))
   | .pop _, 0 => .add a (.lit 8)
@@ -91,6 +93,18 @@ theorem effectOf_load64 (d : Reg) (m : Mem) (va vb vc : BitVec 64) (fl : Flags)
 theorem effectOf_movAbs (d : Reg) (imm va vb vc : BitVec 64) (fl : Flags)
     (next ea cell : BitVec 64) :
     ((effectOf (.movAbs d imm) [va, vb, vc] fl next ea cell).regs.getD 0 (.rax, 0)).2 = imm := rfl
+
+theorem effectOf_movImm64 (d : Reg) (imm : BitVec 32) (va vb vc : BitVec 64) (fl : Flags)
+    (next ea cell : BitVec 64) :
+    ((effectOf (.mov .w64 (.rm_i (.reg d) imm)) [va, vb, vc] fl next ea cell).regs.getD 0
+      (.rax, 0)).2 = imm.signExtend 64 := by
+  show BitVec.setWidth 64 (imm.signExtend 64) = imm.signExtend 64
+  simp
+
+theorem effectOf_movImm32 (d : Reg) (imm : BitVec 32) (va vb vc : BitVec 64) (fl : Flags)
+    (next ea cell : BitVec 64) :
+    ((effectOf (.mov .w32 (.rm_i (.reg d) imm)) [va, vb, vc] fl next ea cell).regs.getD 0
+      (.rax, 0)).2 = (imm.signExtend 32).setWidth 64 := rfl
 
 theorem effectOf_lea64 (d : Reg) (m : Mem) (va vb vc : BitVec 64) (fl : Flags)
     (next ea cell : BitVec 64) :
@@ -124,6 +138,8 @@ theorem simpOut_den (ρ : Env) (i : Instr) (k : Nat) (a b c : Val) (fl : FlagsT)
   · exact (effectOf_mov64 _ _ _ _ _ _ _ _ _).symm
   · exact (effectOf_load64 _ _ _ _ _ _ _ _ _).symm
   · exact (effectOf_movAbs _ _ _ _ _ _ _ _ _).symm
+  · exact (effectOf_movImm64 _ _ _ _ _ _ _ _ _).symm
+  · exact (effectOf_movImm32 _ _ _ _ _ _ _ _ _).symm
   · exact (effectOf_lea64 _ _ _ _ _ _ _ _ _).symm
   · exact (effectOf_push _ _ _ _ _ _ _ _).symm
   · exact (effectOf_pop0 _ _ _ _ _ _ _ _).symm
