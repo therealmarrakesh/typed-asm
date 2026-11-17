@@ -90,7 +90,7 @@ theorem linux_describes : Describes linux linuxDesc := by
               split at hk
               · next h11 =>
                 cases hk
-                exact ⟨Linux.munmap s, by simp [linux, h9, h11, h60, h0], munmap_unmaps s⟩
+                exact ⟨Linux.munmap s, by simp [linux, h11], munmap_unmaps s⟩
               · next h11 =>
                 cases hk
                 have h60' : s.getReg .rax ≠ 60 := fun e => h60 (.inl e)

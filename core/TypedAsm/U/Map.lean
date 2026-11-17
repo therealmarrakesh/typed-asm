@@ -114,7 +114,7 @@ theorem WellTyped.mapZero_held {a : BitVec 64} {size : Nat}
     (hsz4 : size % 4096 = 0) (hfit64 : a.toNat + size ≤ addrTop)
     (hlt : size < 2 ^ 64) (hun : s.unmapped a size = true) :
     WellTyped fetch sys Ψ n { Γ with held := (a, ⟨size, []⟩) :: Γ.held } (s.mapZero a size) :=
-  h.mapZero hΨ hal hsz4 hfit64 hlt fun x hx => Linux.perm_of_unmapped hal hfit64 hun hx
+  h.mapZero hΨ hal hsz4 hfit64 hlt fun _ hx => Linux.perm_of_unmapped hal hfit64 hun hx
 
 /-- **A call that hands back fresh memory** returns with an error number in
 `rax`, or with the address of whole pages that the context then holds, as

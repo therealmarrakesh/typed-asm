@@ -102,7 +102,7 @@ theorem Val.den_open (ρ : Env) (o : Opening) (ho : o.Closed) (pre zs : List Fam
     rw [insert_getD]
     by_cases h1 : d = pre.length
     · have h2 : ¬ d < pre.length := by omega
-      simp only [h1, h2, ↓reduceIte, Nat.lt_irrefl]
+      simp only [h1, ↓reduceIte, Nat.lt_irrefl]
       exact Val.den_bound ρ _ _ (ho.b i)
     · by_cases h2 : d < pre.length
       · have h3 : ¬ pre.length < d := by omega
@@ -134,7 +134,7 @@ theorem FlagsT.den_open (ρ : Env) (o : Opening) (ho : o.Closed) (pre zs : List 
     rw [insert_getD]
     by_cases h1 : d = pre.length
     · have h2 : ¬ d < pre.length := by omega
-      simp only [h1, h2, ↓reduceIte, Nat.lt_irrefl]
+      simp only [h1, ↓reduceIte, Nat.lt_irrefl]
       exact FlagsT.den_bound ρ _ _ ho.f
     · by_cases h2 : d < pre.length
       · have h3 : ¬ pre.length < d := by omega
@@ -200,7 +200,7 @@ theorem restDen_open (ρ : Env) (o : Opening) (ho : o.Closed) (pre zs : List Fam
     rw [insert_getD]
     by_cases h1 : d = pre.length
     · have h2 : ¬ d < pre.length := by omega
-      simp only [h1, h2, ↓reduceIte, Nat.lt_irrefl]
+      simp only [h1, ↓reduceIte, Nat.lt_irrefl]
       rw [heldDen_bound ρ _ _ ho.rest, RestS.den_bound ρ _ _ ho.tail]
       rfl
     · by_cases h2 : d < pre.length
