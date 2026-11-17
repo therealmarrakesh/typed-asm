@@ -56,8 +56,8 @@ theorem hasTy_fn {sig : Sig} {v : BitVec 64} :
     HasTy fetch sys Ψ n (.fn sig) v ↔
       ∀ k, k < n → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF →
         ∀ (p : Seq) (saved : Reg → BitVec 64) (lo : BitVec 64) (m : Nat) (ra : BitVec 64)
-          (frame : List Region) (s : State), s.rip = v →
-        WellTyped fetch sys Ψ' k (sig.entry p saved lo m ra frame) s → SafeN fetch sys k s := by
+          (frame : List Region) (fl : Flags) (s : State), s.rip = v →
+        WellTyped fetch sys Ψ' k (sig.entry p saved lo m ra frame fl) s → SafeN fetch sys k s := by
   rw [HasTy]
 
 /-- What is known of a value at a step count is known at every smaller one. -/

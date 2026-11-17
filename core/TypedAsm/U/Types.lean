@@ -3,7 +3,7 @@ import TypedAsm.Types
 /-!
 # Types, on one model of values and one of memory
 
-A context says the value each register holds. A value of which nothing is
+A context says the value each register holds, and the flags. A value of which nothing is
 known is still a value: it has a name, and anything computed from it is a
 term in that name. What is known is known of values, not of the places that
 hold them: a context lists facts, each saying something of a value. So a
@@ -32,8 +32,8 @@ known of a value. -/
 structure CtxOf (τ : Type) where
   /-- The value each register holds. -/
   val : Reg → BitVec 64
-  /-- What is known about the flags. -/
-  flags : Flags → Prop
+  /-- The flags, each as it is or undefined. -/
+  flags : Flags
   /-- The regions of memory this code holds alone: where each is, how many
   bytes long, and at which of its bytes it holds a value, and which. Bytes
   that hold no such value are plain. -/
@@ -176,20 +176,48 @@ inductive Sub : BitVec 64 → Ty → Ty → Prop
 
 /-! ## A function's entry and what it returns with -/
 
+/-- The flags a value stands for: two bits for each, nothing, clear or set.
+Every setting of the flags is what some value stands for, so a family of
+contexts over values is one over the flags too. -/
+def flagsOf (v : BitVec 64) : Flags :=
+  let one (k : Nat) : Option Bool :=
+    if (v >>> (2 * k)) &&& 3 = 0 then none else some ((v >>> (2 * k)) &&& 3 ≠ 1)
+  ⟨one 0, one 1, one 2, one 3⟩
+
+/-- A value that stands for given flags. -/
+def _root_.TypedAsm.Flags.bits (f : Flags) : BitVec 64 :=
+  let one (b : Option Bool) : BitVec 64 :=
+    match b with
+    | none => 0
+    | some false => 1
+    | some true => 2
+  one f.cf ||| (one f.zf <<< 2) ||| (one f.sf <<< 4) ||| (one f.of <<< 6)
+
+theorem flagsOf_bits (f : Flags) : flagsOf f.bits = f := by
+  obtain ⟨cf, zf, sf, of⟩ := f
+  rcases cf with _ | _ | _ <;> rcases zf with _ | _ | _ <;> rcases sf with _ | _ | _ <;>
+    rcases of with _ | _ | _ <;> decide
+
 namespace SigOf
 
 /-- What a function returns with: the stack pointer above the return
 address, the preserved registers as they were, the others as the signature
-says for the values chosen; held, the stack region it was entered with, now
-plain, the regions it gives, and whatever its caller held besides; and
+says for the values chosen, and the flags as they happen to be; held, the
+stack region it was entered with, now plain, the regions it gives, and whatever its caller held besides; and
 known, what the signature says is learnt. -/
 def exit (sig : Sig) (p : Seq) (saved : Reg → BitVec 64) (lo : BitVec 64) (m : Nat)
-    (frame : List Region) (y : Seq) : Ctx where
+    (frame : List Region) (fl : Flags) (y : Seq) : Ctx where
   val r := if r = .rsp then lo + BitVec.ofNat 64 (m + sig.need + 8)
     else if sig.preserved r then saved r else sig.results p y r
-  flags := Flags.Any
+  flags := fl
   held := (lo, ⟨m + sig.need + 8, []⟩) :: (sig.gives p y ++ frame)
   known := sig.learns p y
+
+/-- The contexts a function may return in, as one family over values: the
+first stands for the flags, the rest are the values the function chooses. -/
+def exits (sig : Sig) (p : Seq) (saved : Reg → BitVec 64) (lo : BitVec 64) (m : Nat)
+    (frame : List Region) : Seq → Ctx :=
+  fun z => sig.exit p saved lo m frame (flagsOf (z 0)) (fun i => z (i + 1))
 
 /-- What a function is entered with, from a caller that keeps `saved` in the
 preserved registers, holds `frame` besides, and has a stack region at `lo`
@@ -197,12 +225,12 @@ with `m` bytes more than the function needs: the return address `ra` is the
 value at the top of that region, and is known to be code wanting what the
 function returns with. -/
 def entry (sig : Sig) (p : Seq) (saved : Reg → BitVec 64) (lo : BitVec 64) (m : Nat)
-    (ra : BitVec 64) (frame : List Region) : Ctx where
+    (ra : BitVec 64) (frame : List Region) (fl : Flags) : Ctx where
   val r := if r = .rsp then lo + BitVec.ofNat 64 (m + sig.need)
     else if sig.preserved r then saved r else sig.args p r
-  flags := Flags.Any
+  flags := fl
   held := (lo, ⟨m + sig.need + 8, [(m + sig.need, ra)]⟩) :: (sig.takes p ++ frame)
-  known := (ra, .code (sig.exit p saved lo m frame)) :: sig.knows p
+  known := (ra, .code (sig.exits p saved lo m frame)) :: sig.knows p
 
 end SigOf
 
@@ -226,7 +254,8 @@ structure Matches (H : Ty → BitVec 64 → Prop) (Ψ : MemTy) (Γ : Ctx) (s : S
   val : ∀ r, s.getReg r = Γ.val r
   /-- What the context says is known of values, is so. -/
   known : ∀ f ∈ Γ.known, H f.2 f.1
-  flags : Γ.flags s.flags
+  /-- The flags are the ones the context says. -/
+  flags : s.flags = Γ.flags
   /-- Each memory block is readable, and writable if its layout says so. -/
   heapPerm : ∀ a l, Ψ a = some l →
     s.canRead a l.size = true ∧ (l.writable = true → s.canWrite a l.size = true)
@@ -262,8 +291,8 @@ def HasTy (fetch : Fetch) (sys : Syscall) : MemTy → Nat → Ty → BitVec 64 �
   | Ψ, n, .fn sig, v =>
     ∀ k, (hk : k < n) → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF →
       ∀ (p : Seq) (saved : Reg → BitVec 64) (lo : BitVec 64) (m : Nat) (ra : BitVec 64)
-        (frame : List Region) (s : State), s.rip = v →
-      Matches (fun τ w => HasTy fetch sys Ψ' k τ w) Ψ' (SigOf.entry sig p saved lo m ra frame) s →
+        (frame : List Region) (fl : Flags) (s : State), s.rip = v →
+      Matches (fun τ w => HasTy fetch sys Ψ' k τ w) Ψ' (SigOf.entry sig p saved lo m ra frame fl) s →
       SafeN fetch sys k s
 termination_by _ n τ => (n, τ)
 
