@@ -48,6 +48,8 @@ inductive FlagsT
 
 end
 
+deriving instance DecidableEq for Val, FlagsT
+
 /-- What an instruction leaves, on given inputs: its description's, run on
 as many of the inputs as it uses registers; and nothing where it has none. -/
 def effectOf (i : Instr) (vals : List (BitVec 64)) (fl : Flags) (next ea cell : BitVec 64) :
