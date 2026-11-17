@@ -109,4 +109,89 @@ theorem WellTyped.apply {n : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch sy
           heap := h.held.heap
           apart := h.held.apart } }
 
+/-- `Access … Γ a n rd wr ok P`: the context `Γ` provides the `n` bytes at
+`a` to an instruction that reads them (`rd`), writes them (`wr`), or both.
+In every state matching `Γ` they may be so used; and for the value `x` they
+hold and any value `v` that may be written there (`ok v`), the state, with
+`v` written if anything is, matches a context `Γ₁` with `P x v Γ₁`, whose
+registers and flags are `Γ`'s. -/
+def Access (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (Γ : Ctx) (a : BitVec 64) (n : Nat)
+    (rd wr : Bool) (ok : BitVec 64 → Prop) (P : BitVec 64 → BitVec 64 → Ctx → Prop) : Prop :=
+  ∀ k, ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, WellTyped fetch sys Ψ' k Γ s →
+    (rd = true → s.canRead a n = true) ∧ (wr = true → s.canWrite a n = true) ∧
+    ∀ v, ok v → ∃ Γ₁, P (loadN s n a) v Γ₁ ∧ Γ₁.val = Γ.val ∧ Γ₁.flags = Γ.flags ∧
+      WellTyped fetch sys Ψ' k Γ₁ (if wr then storeN s n a v else s)
+
+/-- An instruction that touches no memory is provided for by any context. -/
+theorem Access.none (Γ : Ctx) (a : BitVec 64) (n : Nat) :
+    Access fetch sys Ψ Γ a n false false (fun _ => True) (fun _ _ Γ₁ => Γ₁ = Γ) := by
+  intro k Ψ' he hwf s hw
+  refine ⟨fun h => Bool.noConfusion h, fun h => Bool.noConfusion h, fun v _ => ?_⟩
+  exact ⟨Γ, rfl, rfl, rfl, hw⟩
+
+theorem storeN_rip (s : State) (n : Nat) (a v : BitVec 64) : (storeN s n a v).rip = s.rip := by
+  unfold storeN
+  split <;> rfl
+
+theorem Desc.after_rip (d : Desc) (s : State) : (d.after s).rip = s.rip := by
+  have key : ∀ (l : List (Reg × BitVec 64)) (t : State),
+      (l.foldl (fun t p => t.setReg p.1 p.2) t).rip = t.rip := by
+    intro l
+    induction l with
+    | nil => exact fun _ => rfl
+    | cons p l ih => exact fun t => ih _
+  unfold Desc.after
+  show (List.foldl (fun (t : State) (p : Reg × BitVec 64) => t.setReg p.1 p.2) _ _).rip = _
+  rw [key]
+  split
+  · exact storeN_rip _ _ _ _
+  · rfl
+
+/-- **Every instruction that goes on to the next, typed by one statement.**
+Where the context provides the bytes the instruction touches, and the
+instruction does not fault for a reason of its own whatever those bytes
+hold, it takes the context to one in which the registers it writes hold the
+values its function gives of the registers it uses, the flags and those
+bytes; and the flags likewise. -/
+theorem Steps.desc {i : Instr} {d : Desc} {next : BitVec 64} {Γ : Ctx}
+    {ok : BitVec 64 → Prop} {P : BitVec 64 → BitVec 64 → Ctx → Prop} (hd : i.desc = some d)
+    (hacc : Access fetch sys Ψ Γ ((d.addr.map (eaOf Γ.val next)).getD 0) d.bytes d.reads d.writes
+      ok P)
+    (hok : ∀ x, ok (d.run (d.srcs.map Γ.val) Γ.flags ((d.addr.map (eaOf Γ.val next)).getD 0) x).store)
+    (hg : ∀ x Γ₁,
+      P x (d.run (d.srcs.map Γ.val) Γ.flags ((d.addr.map (eaOf Γ.val next)).getD 0) x).store Γ₁ →
+      d.guard (d.srcs.map Γ.val) Γ.flags ((d.addr.map (eaOf Γ.val next)).getD 0) x = true) :
+    Steps fetch sys Ψ i next Γ fun Γ' => ∃ x Γ₁,
+      P x (d.run (d.srcs.map Γ.val) Γ.flags ((d.addr.map (eaOf Γ.val next)).getD 0) x).store Γ₁ ∧
+      Γ' = Γ₁.apply (d.run (d.srcs.map Γ.val) Γ.flags ((d.addr.map (eaOf Γ.val next)).getD 0) x) := by
+  intro n Ψ' he hwf s hrip hw
+  -- what the description reads of the state is what the context says
+  have haddr : d.addrOf s = (d.addr.map (eaOf Γ.val next)).getD 0 := by
+    unfold Desc.addrOf
+    cases d.addr with
+    | none => rfl
+    | some m =>
+      show s.ea m = eaOf Γ.val next m
+      rw [ea_eq hw.val m, hrip]
+  have hvals : d.vals s = d.srcs.map Γ.val := by
+    unfold Desc.vals
+    exact List.map_congr_left fun r _ => hw.val r
+  obtain ⟨hr, hwr, hP⟩ := hacc n Ψ' he hwf s hw
+  have heff : d.effect s = d.run (d.srcs.map Γ.val) Γ.flags
+      ((d.addr.map (eaOf Γ.val next)).getD 0) (loadN s d.bytes ((d.addr.map (eaOf Γ.val next)).getD 0)) := by
+    unfold Desc.effect Desc.cell
+    rw [hvals, hw.flags, haddr]
+  obtain ⟨Γ₁, hP₁, hval, hfl, hw₁⟩ := hP _ (hok (loadN s d.bytes _))
+  have hguard : d.guarded s = true := by
+    unfold Desc.guarded Desc.cell
+    rw [hvals, hw.flags, haddr]
+    exact hg _ Γ₁ hP₁
+  refine ⟨d.after s, exec_desc sys s hd (by rw [haddr]; exact hr) (by rw [haddr]; exact hwr) hguard,
+    d.after_rip s, Ψ', MemTy.Ext.refl _, hwf, _, ⟨_, Γ₁, hP₁, rfl⟩, ?_⟩
+  have := hw₁.apply (d.run (d.srcs.map Γ.val) Γ.flags ((d.addr.map (eaOf Γ.val next)).getD 0)
+    (loadN s d.bytes ((d.addr.map (eaOf Γ.val next)).getD 0)))
+  unfold Desc.after
+  rw [heff, haddr]
+  exact this
+
 end TypedAsm.U
