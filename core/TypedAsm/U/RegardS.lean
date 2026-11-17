@@ -186,6 +186,7 @@ def followsS (τ : TyS) : TyS → Bool
        | _ => false)
   | .str more => τ == .str more || τ == .str true
   | .atom i => τ == .atom i
+  | .code r f h k rest => τ == .code r f h k rest
 
 theorem followsS_sub (ρ : Env) (v : BitVec 64) :
     (υ τ : TyS) → followsS τ υ = true → Sub v (τ.den ρ) (υ.den ρ)
@@ -225,6 +226,10 @@ theorem followsS_sub (ρ : Env) (v : BitVec 64) :
     simp only [followsS, beq_iff_eq] at h
     subst h
     exact .refl _ _
+  | .code r f hd k rest, τ, h => by
+    simp only [followsS, beq_iff_eq] at h
+    subst h
+    exact .refl _ _
 
 /-- Whether a thing is so of a value whatever else is known: that nothing
 is; that zero may be null; that an error number may be one. -/
@@ -261,6 +266,7 @@ theorem outright_hasTy (ρ : Env) (Ψ' : MemTy) (n : Nat) (v : Val) :
   | .ref _ _ _, h => nomatch h
   | .str _, h => nomatch h
   | .atom _, h => nomatch h
+  | .code .., h => nomatch h
 
 /-- Whether a thing known is so of itself, or follows from one of a list, of
 the same value. -/

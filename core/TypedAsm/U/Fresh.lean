@@ -101,66 +101,145 @@ theorem FlagsT.den_setVal (ρ : Env) (k : Nat) (x : BitVec 64) :
 
 end
 
+/-- Every entry of a table of sixteen. -/
+def allTrue : Regs Bool :=
+  ⟨true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true⟩
+
+theorem Regs.all_get {k : Nat} (regs : Regs Val)
+    (h : (regs.map (·.under k) == allTrue) = true) (r : Reg) : (regs.get r).under k = true := by
+  have h1 : (regs.map (·.under k)).get r = (regs.get r).under k := Regs.get_map _ _ r
+  rw [← h1, beq_iff_eq.mp h]
+  cases r <;> rfl
+
+/-- Whether the regions of a list mention only names below `k`. -/
+def heldUnder (k : Nat) (held : List (Val × HeldS)) : Bool :=
+  held.all fun b => b.1.under k && b.2.slots.all fun p => p.2.under k
+
+theorem heldDen_setVal (ρ : Env) (k : Nat) (x : BitVec 64) (held : List (Val × HeldS))
+    (h : heldUnder k held = true) :
+    (held.map fun b => (b.1.den (ρ.setVal k x), b.2.den (ρ.setVal k x)))
+      = held.map fun b => (b.1.den ρ, b.2.den ρ) := by
+  refine List.map_congr_left fun b hb => ?_
+  have hbk := List.all_eq_true.mp h b hb
+  rw [Bool.and_eq_true] at hbk
+  show (b.1.den _, (⟨b.2.size, b.2.slots.map fun p => (p.1, p.2.den (ρ.setVal k x))⟩ : Held))
+    = (b.1.den ρ, ⟨b.2.size, b.2.slots.map fun p => (p.1, p.2.den ρ)⟩)
+  rw [Val.den_setVal ρ k x _ hbk.1]
+  congr 2
+  exact List.map_congr_left fun p hp => by
+    rw [Val.den_setVal ρ k x _ (List.all_eq_true.mp hbk.2 p hp)]
+
+theorem restDen_setVal (ρ : Env) (k : Nat) (x : BitVec 64) (rest : Option Nat) :
+    restDen (ρ.setVal k x) rest = restDen ρ rest := by
+  cases rest <;> rfl
+
 mutual
 
-/-- What is known of a value, as data, mentions no value: it stands for
-the same whatever a value's name is given. -/
+/-- Whether what is known mentions only names below `k`. -/
+def TyS.under (k : Nat) : TyS → Bool
+  | .ptr S _ _ => S.under k
+  | .nullable τ => τ.under k
+  | .orErr τ => τ.under k
+  | .code regs flags held known _ =>
+    (regs.map (·.under k) == allTrue) && flags.under k && heldUnder k held && known.under k
+  | _ => true
+
+def ShapeS.under (k : Nat) : ShapeS → Bool
+  | .mk _ vals => vals.under k
+
+def ValsS.under (k : Nat) : ValsS → Bool
+  | .nil => true
+  | .cons _ τ rest => τ.under k && rest.under k
+
+def FactsS.under (k : Nat) : FactsS → Bool
+  | .nil => true
+  | .cons v τ rest => v.under k && τ.under k && rest.under k
+
+end
+
+mutual
+
+/-- What is known, mentioning only names below `k`, stands for the same
+whatever the `k`th is given. -/
 theorem TyS.den_setVal (ρ : Env) (k : Nat) (x : BitVec 64) :
-    (τ : TyS) → τ.den (ρ.setVal k x) = τ.den ρ
-  | .any => rfl
-  | .ptr S w off => by simp only [TyS.den, ShapeS.den_setVal ρ k x S]
-  | .ref _ _ _ => rfl
-  | .nullable τ => by simp only [TyS.den, TyS.den_setVal ρ k x τ]
-  | .orErr τ => by simp only [TyS.den, TyS.den_setVal ρ k x τ]
-  | .str _ => rfl
-  | .atom _ => rfl
+    (τ : TyS) → τ.under k = true → τ.den (ρ.setVal k x) = τ.den ρ
+  | .any, _ => rfl
+  | .ptr S w off, h => by
+    simp only [TyS.den, ShapeS.den_setVal ρ k x S (by simpa only [TyS.under] using h)]
+  | .ref _ _ _, _ => rfl
+  | .nullable τ, h => by
+    simp only [TyS.den, TyS.den_setVal ρ k x τ (by simpa only [TyS.under] using h)]
+  | .orErr τ, h => by
+    simp only [TyS.den, TyS.den_setVal ρ k x τ (by simpa only [TyS.under] using h)]
+  | .str _, _ => rfl
+  | .atom _, _ => rfl
+  | .code regs flags held known rest, h => by
+    simp only [TyS.under, Bool.and_eq_true] at h
+    obtain ⟨⟨⟨hr, hf⟩, hh⟩, hkn⟩ := h
+    show Ty.code _ = Ty.code _
+    congr 1
+    funext z
+    have e : ({ ρ.setVal k x with bound := z } : Env) = ({ ρ with bound := z } : Env).setVal k x :=
+      rfl
+    have h1 : (fun r => (regs.get r).den { ρ.setVal k x with bound := z })
+        = fun r => (regs.get r).den { ρ with bound := z } := by
+      funext r
+      rw [e]
+      exact Val.den_setVal _ k x _ (Regs.all_get regs hr r)
+    have h2 : flags.den { ρ.setVal k x with bound := z } = flags.den { ρ with bound := z } := by
+      rw [e]
+      exact FlagsT.den_setVal _ k x _ hf
+    have h3 : (held.map fun b => (b.1.den { ρ.setVal k x with bound := z },
+          b.2.den { ρ.setVal k x with bound := z })) ++ restDen { ρ.setVal k x with bound := z } rest
+        = (held.map fun b => (b.1.den { ρ with bound := z }, b.2.den { ρ with bound := z }))
+          ++ restDen { ρ with bound := z } rest := by
+      rw [e, heldDen_setVal _ k x held hh, restDen_setVal]
+    have h4 : known.den { ρ.setVal k x with bound := z } = known.den { ρ with bound := z } := by
+      rw [e]
+      exact FactsS.den_setVal _ k x known hkn
+    show CtxOf.mk _ _ _ _ = CtxOf.mk _ _ _ _
+    rw [h1, h2, h3, h4]
 
 theorem ShapeS.den_setVal (ρ : Env) (k : Nat) (x : BitVec 64) :
-    (S : ShapeS) → S.den (ρ.setVal k x) = S.den ρ
-  | .mk size vals => by simp only [ShapeS.den, ValsS.den_setVal ρ k x vals]
+    (S : ShapeS) → S.under k = true → S.den (ρ.setVal k x) = S.den ρ
+  | .mk size vals, h => by
+    simp only [ShapeS.den, ValsS.den_setVal ρ k x vals (by simpa only [ShapeS.under] using h)]
 
 theorem ValsS.den_setVal (ρ : Env) (k : Nat) (x : BitVec 64) :
-    (vs : ValsS) → vs.den (ρ.setVal k x) = vs.den ρ
-  | .nil => rfl
-  | .cons o τ rest => by
-    simp only [ValsS.den, TyS.den_setVal ρ k x τ, ValsS.den_setVal ρ k x rest]
+    (vs : ValsS) → vs.under k = true → vs.den (ρ.setVal k x) = vs.den ρ
+  | .nil, _ => rfl
+  | .cons o τ rest, h => by
+    simp only [ValsS.under, Bool.and_eq_true] at h
+    simp only [ValsS.den, TyS.den_setVal ρ k x τ h.1, ValsS.den_setVal ρ k x rest h.2]
+
+theorem FactsS.den_setVal (ρ : Env) (k : Nat) (x : BitVec 64) :
+    (fs : FactsS) → fs.under k = true → fs.den (ρ.setVal k x) = fs.den ρ
+  | .nil, _ => rfl
+  | .cons v τ rest, h => by
+    simp only [FactsS.under, Bool.and_eq_true] at h
+    simp only [FactsS.den, Val.den_setVal ρ k x v h.1.1, TyS.den_setVal ρ k x τ h.1.2,
+      FactsS.den_setVal ρ k x rest h.2]
 
 end
 
 /-- Whether a context mentions only names below `k`. -/
 def CtxS.under (k : Nat) (Γ : CtxS) : Bool :=
-  (Γ.regs.map (·.under k)) == ⟨true, true, true, true, true, true, true, true, true, true, true,
-    true, true, true, true, true⟩ && Γ.flags.under k &&
-  (Γ.held.all fun b => b.1.under k && b.2.slots.all fun p => p.2.under k) &&
-  Γ.known.all fun f => f.1.under k
+  (Γ.regs.map (·.under k) == allTrue) && Γ.flags.under k && heldUnder k Γ.held &&
+  Γ.known.all fun f => f.1.under k && f.2.under k
 
 theorem CtxS.den_setVal (ρ : Env) (k : Nat) (x : BitVec 64) (Γ : CtxS) (h : Γ.under k = true) :
     Γ.den (ρ.setVal k x) = Γ.den ρ := by
-  simp only [CtxS.under, Bool.and_eq_true, beq_iff_eq, List.all_eq_true] at h
+  simp only [CtxS.under, Bool.and_eq_true, List.all_eq_true] at h
   obtain ⟨⟨⟨hr, hf⟩, hh⟩, hkn⟩ := h
-  have hreg : ∀ r, (Γ.regs.get r).under k = true := fun r => by
-    have h1 : (Γ.regs.map (·.under k)).get r = (Γ.regs.get r).under k := Regs.get_map _ _ r
-    rw [← h1, hr]
-    cases r <;> rfl
   refine ctx_ext ?_ ?_ ?_ ?_
   · funext r
-    exact Val.den_setVal ρ k x _ (hreg r)
+    exact Val.den_setVal ρ k x _ (Regs.all_get Γ.regs hr r)
   · exact FlagsT.den_setVal ρ k x _ hf
   · show Γ.held.map _ ++ restDen (ρ.setVal k x) Γ.rest = Γ.held.map _ ++ restDen ρ Γ.rest
-    have hrest : restDen (ρ.setVal k x) Γ.rest = restDen ρ Γ.rest := by cases Γ.rest <;> rfl
-    rw [hrest]
-    congr 1
-    refine List.map_congr_left fun b hb => ?_
-    have hbk := hh b hb
-    show (b.1.den _, HeldS.den _ b.2) = (b.1.den ρ, HeldS.den ρ b.2)
-    rw [Val.den_setVal ρ k x _ hbk.1]
-    congr 1
-    unfold HeldS.den
-    congr 1
-    exact List.map_congr_left fun p hp => by rw [Val.den_setVal ρ k x _ (hbk.2 p hp)]
+    rw [heldDen_setVal ρ k x Γ.held hh, restDen_setVal]
   · show Γ.known.map _ = Γ.known.map _
     refine List.map_congr_left fun f hf' => ?_
     show (f.1.den _, f.2.den _) = (f.1.den ρ, f.2.den ρ)
-    rw [Val.den_setVal ρ k x _ (hkn f hf'), TyS.den_setVal]
+    rw [Val.den_setVal ρ k x _ (hkn f hf').1, TyS.den_setVal ρ k x _ (hkn f hf').2]
 
 end TypedAsm.U

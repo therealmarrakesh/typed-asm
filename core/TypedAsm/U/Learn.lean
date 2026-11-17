@@ -62,6 +62,7 @@ theorem TyS.strip_follows (ρ : Env) {nz ne : Bool} {v : BitVec 64} (hnz : nz = 
   | .ref _ _ _ => Follows.refl _ _
   | .str _ => Follows.refl _ _
   | .atom _ => Follows.refl _ _
+  | .code .. => Follows.refl _ _
 
 /-- Whether the values a comparison leaves a value lie within a range. -/
 def CmpT.leaves (p : CmpT) (b : Bool) (v : Val) (R : Range) : Bool :=
@@ -93,11 +94,33 @@ theorem CtxS.learn_regards {ρ : Env} {p : CmpT} {b : Bool} (Γ : CtxS) (hp : p.
     TyS.strip_follows ρ (fun h => Range.nonZero_has (CmpT.leaves_has h hp))
       (fun h => Range.noErr_has (CmpT.leaves_has h hp)) g₀.2⟩
 
-theorem CtxS.learn_under (p : CmpT) (b : Bool) (Γ : CtxS) (k : Nat) :
-    (Γ.learn p b).under k = Γ.under k := by
-  unfold CtxS.under CtxS.learn
-  simp only [List.all_map]
-  rfl
+theorem TyS.strip_under (k : Nat) (nz ne : Bool) :
+    (τ : TyS) → τ.under k = true → (τ.strip nz ne).under k = true
+  | .nullable τ, h => by
+    have ih := TyS.strip_under k nz ne τ (by simpa only [TyS.under] using h)
+    unfold TyS.strip
+    split
+    · exact ih
+    · simpa only [TyS.under] using ih
+  | .orErr τ, h => by
+    have ih := TyS.strip_under k nz ne τ (by simpa only [TyS.under] using h)
+    unfold TyS.strip
+    split
+    · exact ih
+    · simpa only [TyS.under] using ih
+  | .any, h => h
+  | .ptr _ _ _, h => h
+  | .ref _ _ _, h => h
+  | .str _, h => h
+  | .atom _, h => h
+  | .code .., h => h
+
+theorem CtxS.learn_under (p : CmpT) (b : Bool) (Γ : CtxS) (k : Nat) (h : Γ.under k = true) :
+    (Γ.learn p b).under k = true := by
+  simp only [CtxS.under, CtxS.learn, Bool.and_eq_true, List.all_eq_true] at h ⊢
+  refine ⟨h.1, fun f hf => ?_⟩
+  obtain ⟨g, hg, rfl⟩ := List.mem_map.mp hf
+  exact ⟨(h.2 g hg).1, TyS.strip_under k _ _ g.2 (h.2 g hg).2⟩
 
 /-- **The context on one side of a conditional jump**: knowing what the
 condition's being so, or not, teaches, where the flags say what comparison
@@ -107,12 +130,12 @@ def CtxS.side (Γ : CtxS) (c : Cond) (b : Bool) : CtxS :=
   | some p => Γ.learn p b
   | none => Γ
 
-theorem CtxS.side_under (Γ : CtxS) (c : Cond) (b : Bool) (k : Nat) :
-    (Γ.side c b).under k = Γ.under k := by
+theorem CtxS.side_under (Γ : CtxS) (c : Cond) (b : Bool) (k : Nat) (h : Γ.under k = true) :
+    (Γ.side c b).under k = true := by
   unfold CtxS.side
   split
-  · exact CtxS.learn_under _ _ _ _
-  · rfl
+  · exact CtxS.learn_under _ _ _ _ h
+  · exact h
 
 theorem CtxS.side_regards {ρ : Env} (Γ : CtxS) {c : Cond} {b : Bool}
     (h : c.eval (Γ.flags.den ρ) = some b) :

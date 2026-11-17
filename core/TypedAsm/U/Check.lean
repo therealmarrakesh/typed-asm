@@ -16,12 +16,6 @@ namespace TypedAsm.U
 
 open TypedAsm
 
-/-- A region held alone, as terms: its size, and the values in it. -/
-structure HeldS where
-  size : Nat
-  slots : List (Nat × Val)
-  deriving DecidableEq
-
 /-- A context, as terms. -/
 structure CtxS where
   regs : Regs Val
@@ -32,12 +26,6 @@ structure CtxS where
   /-- A name for whatever else is held, where there may be more. -/
   rest : Option Nat := none
 
-def HeldS.den (ρ : Env) (S : HeldS) : Held := ⟨S.size, S.slots.map fun p => (p.1, p.2.den ρ)⟩
-
-/-- The regions a name for the rest stands for. -/
-def restDen (ρ : Env) : Option Nat → List Region
-  | some j => ρ.frame j
-  | none => []
 
 /-- The context a context written as terms stands for. -/
 def CtxS.den (ρ : Env) (Γ : CtxS) : Ctx where

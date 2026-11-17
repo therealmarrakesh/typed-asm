@@ -32,6 +32,45 @@ def Inst.ofLists (vs : List (Nat × Val)) (fs : List (Nat × FlagsT)) (ts : List
   ty j := (ts.lookup j).getD .any
   rest _ := r
 
+/-- Terms for names, as lists. -/
+structure InstL where
+  vs : List (Nat × Val) := []
+  fs : List (Nat × FlagsT) := []
+  ts : List (Nat × TyS) := []
+  r : Option Nat := none
+
+def InstL.inst (l : InstL) : Inst := Inst.ofLists l.vs l.fs l.ts l.r
+
+/-- Whether the terms mention none of a family's values. -/
+def InstL.closed (l : InstL) : Bool :=
+  (l.vs.all fun p => p.2.closed) && l.fs.all fun p => p.2.closed
+
+theorem lookup_mem {α : Type} : (l : List (Nat × α)) → (j : Nat) → (v : α) →
+    l.lookup j = some v → (j, v) ∈ l
+  | [], _, _, h => nomatch h
+  | (i, w) :: rest, j, v, h => by
+    unfold List.lookup at h
+    split at h
+    · next heq =>
+      cases h
+      rw [beq_iff_eq.mp heq]
+      exact List.mem_cons_self
+    · exact List.mem_cons_of_mem _ (lookup_mem rest j v h)
+
+theorem InstL.closed_inst {l : InstL} (h : l.closed = true) : l.inst.Closed := by
+  simp only [InstL.closed, Bool.and_eq_true, List.all_eq_true] at h
+  constructor
+  · intro j
+    show ((l.vs.lookup j).getD (.lit 0)).closed = true
+    cases hl : l.vs.lookup j with
+    | none => rfl
+    | some v => exact h.1 _ (lookup_mem _ _ _ hl)
+  · intro j
+    show ((l.fs.lookup j).getD (.lit Flags.unknown)).closed = true
+    cases hl : l.fs.lookup j with
+    | none => rfl
+    | some v => exact h.2 _ (lookup_mem _ _ _ hl)
+
 /-- The term a name must be given for a pattern to be a value: the value,
 where the pattern is the name; the value less a number, where the pattern is
 the name and that number more. -/
@@ -72,7 +111,7 @@ end
 /-- **Terms for a label's names**, read off the context reached: from the
 registers, then from the regions at the addresses those give, then from
 what is known of the values those give. -/
-def matchCtx (Δ Γ : CtxS) : Inst :=
+def matchCtx (Δ Γ : CtxS) : InstL :=
   let vs₁ := regInst Δ Γ
   let σ₁ := Inst.ofLists vs₁ [] []
   let vs₂ := Δ.held.flatMap fun d =>
@@ -93,7 +132,7 @@ def matchCtx (Δ Γ : CtxS) : Inst :=
     match Γ.known.find? fun g => g.1.same (f.1.subst σ₂) with
     | some g => bindTy f.2 g.2
     | none => []
-  Inst.ofLists vs fs ts Γ.rest
+  ⟨vs, fs, ts, Γ.rest⟩
 
 /-! ## Naming what the context reached does not say -/
 
@@ -205,7 +244,8 @@ def Walk.closes (labels : List (BitVec 64 × CtxS)) : Nat → Walk → Bool
     | some e =>
       (joinAll Γ.held.length Γ).under k &&
         (match nameSlots (joinAll Γ.held.length Γ) (wanted e.2 (joinAll Γ.held.length Γ)) k with
-         | some Γ' => regardS Γ' (e.2.subst (matchCtx e.2 Γ'))
+         | some Γ' =>
+           (matchCtx e.2 Γ').closed && regardS Γ' (e.2.subst (matchCtx e.2 Γ').inst)
          | none => false)
     | none => false
   | _, .arrive _ _ => false
@@ -237,9 +277,10 @@ theorem Walk.holds_of_closes {n : Nat} {labels : List (BitVec 64 × CtxS)}
         rw [hn] at h
         refine Ok.regard (joinAll_regards ρ Γ.held.length Γ) ?_
         refine nameSlots_ok _ _ Γ' k hn hu (fun ρ' => ?_) ρ
-        have hok := H e hmem (ρ'.inst (matchCtx e.2 Γ'))
-        rw [← CtxS.den_subst, ha] at hok
-        exact Ok.regard (regardS_sound ρ' h) hok
+        simp only [Bool.and_eq_true] at h
+        have hok := H e hmem (ρ'.inst (matchCtx e.2 Γ').inst)
+        rw [← CtxS.den_subst _ _ (InstL.closed_inst h.1), ha] at hok
+        exact Ok.regard (regardS_sound ρ' h.2) hok
   | .arrive _ _, _, _, h => nomatch h
   | .step i Γ next k rest, _, ρ, h => by
     simp only [Walk.closes, Bool.and_eq_true] at h

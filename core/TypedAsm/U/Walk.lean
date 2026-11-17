@@ -197,9 +197,9 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
             refine Ok.step hf (jcc_steps (Γ := Γ.den ρ) hdec) ?_
             rintro t Δ ⟨rfl, ⟨hc, rfl⟩ | ⟨hc, rfl⟩⟩
             · exact ((Ok.regard (Γ.side_regards hc) (walk_sound hD hkind hpre code stops hcode false fuel k _
-                _ ρ (by rw [CtxS.side_under]; exact hu) (htk hc)).1).mono hm).arrives
+                _ ρ (CtxS.side_under _ _ _ _ hu) (htk hc)).1).mono hm).arrives
             · exact ((Ok.regard (Γ.side_regards hc) (walk_sound hD hkind hpre code stops hcode false fuel k _
-                _ ρ (by rw [CtxS.side_under]; exact hu) (hfl hc)).1).mono hm).arrives
+                _ ρ (CtxS.side_under _ _ _ _ hu) (hfl hc)).1).mono hm).arrives
           exact ⟨hb.1, fun _ => hb.2⟩
         · split at hW
           · subst hW; exact ⟨h, fun hm => nomatch hm⟩
