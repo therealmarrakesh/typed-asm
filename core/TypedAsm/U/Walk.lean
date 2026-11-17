@@ -160,11 +160,11 @@ theorem jcc_steps {Γ : Ctx} {next : BitVec 64} {c : Cond} {d : BitVec 32}
     refine ⟨CtxOf.apply_none _, ?_⟩
     cases b
     · refine .inr ⟨hb, ?_⟩
-      show (some (if (c.eval _).getD false = true then _ else _)).getD next = next
-      rw [hb]; rfl
+      show (some (FOp.eval (.cmov c .w64) Γw.flags next (next + d.signExtend 64))).getD next = next
+      rw [cmov64, hb]; rfl
     · refine .inl ⟨hb, ?_⟩
-      show (some (if (c.eval _).getD false = true then _ else _)).getD next = _
-      rw [hb]; rfl
+      show (some (FOp.eval (.cmov c .w64) Γw.flags next (next + d.signExtend 64))).getD next = _
+      rw [cmov64, hb]; rfl
 
 theorem Ok.zero (a : BitVec 64) (Γ : Ctx) : Ok fetch sys Ψ 0 a Γ := by
   intro k hk Ψ' _ _ s _ _

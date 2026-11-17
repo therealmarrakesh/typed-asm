@@ -1,4 +1,5 @@
-import TypedAsm.U.Desc
+import TypedAsm.U.Table
+import TypedAsm.U.Unfold
 import TypedAsm.Memory
 
 /-!
@@ -90,87 +91,100 @@ theorem writeRM_ok {s : State} {w : Width} {x : RM} {v : BitVec w.bits}
     rw [write_ok (h m rfl), Result.through_next]
     rfl
 
-namespace Desc1
+namespace Desc
 
-/-- The address a described instruction uses, in a state. -/
-def addrOf (d : Desc1) (s : State) : BitVec 64 :=
-  match d.addr with
+/-- The values a described instruction computes with, in a state. -/
+def vals (d : Desc) (s : State) : List (BitVec 64) := d.srcs.map s.getReg
+
+/-- The address it uses as a number. -/
+def eaOf (d : Desc) (s : State) : BitVec 64 :=
+  match d.ea with
   | some m => s.ea m
   | none => 0
 
-/-- The values it computes with. -/
-def vals (d : Desc1) (s : State) : List (BitVec 64) := d.srcs.map s.getReg
+/-- The bytes it reads. -/
+def cell (d : Desc) (s : State) : BitVec 64 :=
+  match d.rd with
+  | some (m, n) => loadN s n (s.ea m)
+  | none => 0
 
-/-- The bytes at its address. -/
-def cell (d : Desc1) (s : State) : BitVec 64 :=
-  if d.reads then
-    match d.addr with
-    | some m => loadN s d.bytes (s.ea m)
-    | none => 0
-  else 0
+def effect (d : Desc) (s : State) : Effect := d.run (d.vals s) s.flags s.rip (d.eaOf s) (d.cell s)
 
-/-- What it leaves, in a state. -/
-def effect (d : Desc1) (s : State) : Effect := d.run (d.vals s) s.flags (d.addrOf s) (d.cell s)
+def guarded (d : Desc) (s : State) : Bool :=
+  d.guard (d.vals s) s.flags s.rip (d.eaOf s) (d.cell s)
 
-/-- Whether it does not fault for a reason of its own, in a state. -/
-def guarded (d : Desc1) (s : State) : Bool := d.guard (d.vals s) s.flags (d.addrOf s) (d.cell s)
+def target (d : Desc) (s : State) : Option (BitVec 64) :=
+  d.goes (d.vals s) s.flags s.rip (d.eaOf s) (d.cell s)
 
-/-- The state it leaves. -/
-def after (d : Desc1) (s : State) : State :=
+/-- The state it leaves: its bytes written, at the address its operand
+named before anything changed; its registers and the flags given their
+values; and the instruction pointer where control goes. -/
+def after (d : Desc) (s : State) : State :=
   let e := d.effect s
-  let s₁ := if d.writes then
-      match d.addr with
-      | some m => storeN s d.bytes (s.ea m) e.store
-      | none => s
-    else s
-  { e.regs.foldl (fun t p => t.setReg p.1 p.2) s₁ with flags := e.flags }
+  let s₁ := match d.wr with
+    | some (m, n) => storeN s n (s.ea m) e.store
+    | none => s
+  let s₂ : State := { e.regs.foldl (fun t p => t.setReg p.1 p.2) s₁ with flags := e.flags }
+  match d.target s with
+  | some t => { s₂ with rip := t }
+  | none => s₂
 
-end Desc1
+end Desc
 
 theorem storeN_flags (s : State) (n : Nat) (a v : BitVec 64) :
     (storeN s n a v).flags = s.flags := by
   unfold storeN
-  split <;> rfl
+  split <;> simp only [State.store64, State.store32, State.store16, State.store8]
 
 theorem withFlags_self (t : State) (f : Flags) (h : t.flags = f) : { t with flags := f } = t := by
   cases t
   cases h
   rfl
 
-/-- A described instruction that writes no register and leaves the flags:
-what it leaves is its store. -/
-theorem Desc1.after_store (d : Desc1) (s : State) (m : Mem) (ha : d.addr = some m)
-    (hw : d.writes = true) (hregs : (d.effect s).regs = []) (hfl : (d.effect s).flags = s.flags) :
-    d.after s = storeN s d.bytes (s.ea m) (d.effect s).store := by
-  unfold Desc1.after
-  simp only [hw, ↓reduceIte, hregs, List.foldl_nil, hfl, ha]
+/-- A described instruction that writes no register, leaves the flags and
+goes on to the next: what it leaves is its store. -/
+theorem Desc.after_store (d : Desc) (s : State) (m : Mem) (n : Nat) (hw : d.wr = some (m, n))
+    (hregs : (d.effect s).regs = []) (hfl : (d.effect s).flags = s.flags)
+    (ht : d.target s = none) : d.after s = storeN s n (s.ea m) (d.effect s).store := by
+  unfold Desc.after
+  simp only [hw, hregs, List.foldl_nil, hfl, ht]
   exact withFlags_self _ _ (storeN_flags _ _ _ _)
 
 set_option linter.unusedSimpArgs false
 
+theorem add_neg (x y : BitVec 64) : x + -y = x - y := (BitVec.sub_eq_add_neg x y).symm
+
+/-- A count written in an instruction is itself. -/
+theorem count_toNat (k : BitVec 8) : (BitVec.ofNat 64 k.toNat).toNat = k.toNat := by
+  have := k.isLt
+  rw [BitVec.toNat_ofNat]
+  omega
+
+/-- A value at a width, widened and taken at the width again, is itself. -/
+theorem setWidth_wide (w : Width) (r : BitVec w.bits) :
+    BitVec.setWidth w.bits (BitVec.setWidth 64 r) = r := by
+  cases w <;> simp [Width.bits]
+
 theorem storeN_w' (s : State) (w : Width) (a : BitVec 64) (v : BitVec w.bits) :
     storeN s (wbytes w) a (v.setWidth 64) = s.store w a v := storeN_w s w a v
 
-open Lean.Parser.Tactic in
+attribute [desc_unfold]
+  Result.bind State.readRM State.writeRM State.readRI State.readNarrow State.writeRM8
+  State.shiftCount Operands.src Operands.dst Result.through_next Result.onStack_next
+  Result.ofOption Desc.after Desc.effect Desc.vals Desc.cell Desc.eaOf Desc.guarded Desc.target
+  Sem.toDesc Sem.give slotEnv Val.den FlagsT.den A rmV srcV immV countV Un.eval Bin.eval Tri.eval
+  FOp.eval FSrc.eval GuardE.eval Option.map_some Option.map_none setWidth_wide rmRegs srcRegs
+  opsMem rmMem wide List.map List.cons_append List.nil_append List.getD_cons_zero
+  List.getD_cons_succ List.length_cons List.length_nil Option.getD_some Option.isSome_none
+  Option.isSome_some Bool.false_and Bool.true_and Bool.and_true Bool.and_false List.foldl_cons
+  List.foldl_nil State.writeReg State.readReg Bool.false_eq_true loadN_w storeN_w storeN_w'
+
 /-- Unfolds the machine's step and a description's, on operands written out. -/
-syntax "desc_simp" (" [" term,* "]")? (" at " ident)? : tactic
-macro_rules
-  | `(tactic| desc_simp $[[$ts,*]]? $[at $h]?) => do
-    let extra : Array (Lean.TSyntax `term) := match ts with
-      | some ts => ts.getElems
-      | none => #[]
-    let loc ← match h with
-      | some h => `(Lean.Parser.Tactic.location| at $h:ident)
-      | none => `(Lean.Parser.Tactic.location| at ⊢)
-    `(tactic| simp only [exec, bind, Result.bind, pure, State.readRM, State.writeRM, State.readRI,
-      State.readNarrow, State.writeRM8, State.shiftCount, Operands.src, Operands.dst,
-      Result.through_next, Result.onStack_next, Result.ofOption,
-      Desc1.after, Desc1.effect, Desc1.vals, Desc1.cell, Desc1.addrOf, Desc1.guarded, rmRegs, srcRegs,
-      rmVal, srcVal, opsMem, rmMem, rmSet, wide, List.map, List.cons_append, List.nil_append,
-      List.getD_cons_zero, List.getD_cons_succ, List.length_cons, List.length_nil,
-      Option.getD_some, Option.isSome_none, Option.isSome_some, Bool.false_and, Bool.true_and,
-      Bool.and_true, Bool.and_false, List.foldl_cons, List.foldl_nil, State.writeReg,
-      State.readReg, ↓reduceIte, Bool.false_eq_true, loadN_w, storeN_w, storeN_w', $[$extra:term],*] $loc)
+macro "desc_simp" " [" ts:Lean.Parser.Tactic.simpLemma,* "]" " at " h:ident : tactic =>
+  `(tactic| simp only [desc_unfold, exec, bind, pure, ↓reduceIte, $ts,*] at $h:ident)
+macro "desc_simp" " at " h:ident : tactic => `(tactic| simp only [desc_unfold, exec, bind, pure, ↓reduceIte] at $h:ident)
+macro "desc_simp" " [" ts:Lean.Parser.Tactic.simpLemma,* "]" : tactic => `(tactic| simp only [desc_unfold, exec, bind, pure, ↓reduceIte, $ts,*])
+macro "desc_simp" : tactic => `(tactic| simp only [desc_unfold, exec, bind, pure, ↓reduceIte])
 
 theorem read8_ok {s : State} {a : BitVec 64} (h : s.canRead a 1 = true) :
     s.read8 a = .next (s.load8 a) := by
@@ -246,12 +260,27 @@ theorem ea_topMem (s : State) : s.ea topMem = s.getReg .rsp := by
   rw [this]
   bv_omega
 
-/-- **What the machine does with a described instruction**: where what it
+attribute [goes_unfold]
+  Result.bind State.readRM State.push64 State.pop64 Result.through_next Result.onStack_next
+  Result.ofOption Desc.after Desc.effect Desc.vals Desc.cell Desc.eaOf Desc.guarded Desc.target
+  Sem.toDesc Sem.give slotEnv Val.den FlagsT.den A rmV srcV immV countV Un.eval Bin.eval Tri.eval
+  FOp.eval FSrc.eval GuardE.eval Option.map_some Option.map_none setWidth_wide List.map
+  List.getD_cons_zero List.getD_cons_succ Option.getD_some Option.isSome_some List.foldl_cons
+  List.foldl_nil State.readReg loadN_8 storeN_8 ea_pushMem ea_topMem BitVec.setWidth_eq
+  Width.bits
+
+/-- Unfolds the machine's step and a description's, for an instruction that
+passes control elsewhere. -/
+macro "goes_simp" " [" ts:Lean.Parser.Tactic.simpLemma,* "]" : tactic => `(tactic| simp only [goes_unfold, exec, bind, pure, ↓reduceIte, $ts,*])
+macro "goes_simp" : tactic => `(tactic| simp only [goes_unfold, exec, bind, pure, ↓reduceIte])
+
+set_option maxRecDepth 4000 in
+/-- **What the machine does with any described instruction**: where what it
 reads may be read, what it writes may be written, and it does not fault for
 a reason of its own, it goes on to the state the description gives. -/
-theorem exec_desc1 (sys : Syscall) (s : State) {i : Instr} {d : Desc1} (hd : i.desc1 = some d)
-    (hr : d.reads = true → ∀ m, d.addr = some m → s.canRead (s.ea m) d.bytes = true)
-    (hw : d.writes = true → ∀ m, d.addr = some m → s.canWrite (s.ea m) d.bytes = true)
+theorem exec_desc (sys : Syscall) (s : State) {i : Instr} {d : Desc} (hd : i.desc = some d)
+    (hr : ∀ m n, d.rd = some (m, n) → s.canRead (s.ea m) n = true)
+    (hw : ∀ m n, d.wr = some (m, n) → s.canWrite (s.ea m) n = true)
     (hg : d.guarded s = true) : exec sys i s = .next (d.after s) := by
   cases i with
   | nop => cases hd; rfl
@@ -265,51 +294,51 @@ theorem exec_desc1 (sys : Syscall) (s : State) {i : Instr} {d : Desc1} (hd : i.d
     rcases dst with dst | m <;> rcases src with src | imm
     · desc_simp
     · desc_simp
-    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr rfl _ rfl
+    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr _ _ rfl
       desc_simp [read_ok hr']
-    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr rfl _ rfl
+    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr _ _ rfl
       desc_simp [read_ok hr']
   | unary op w dst =>
     cases op <;> cases hd <;> rcases dst with dst | m
     · desc_simp
-    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr rfl _ rfl
-      have hw' : s.canWrite (s.ea m) (wbytes w) = true := hw rfl _ rfl
+    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr _ _ rfl
+      have hw' : s.canWrite (s.ea m) (wbytes w) = true := hw _ _ rfl
       desc_simp [read_ok hr', write_ok hw']
     · desc_simp
       rfl
-    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr rfl _ rfl
-      have hw' : s.canWrite (s.ea m) (wbytes w) = true := hw rfl _ rfl
+    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr _ _ rfl
+      have hw' : s.canWrite (s.ea m) (wbytes w) = true := hw _ _ rfl
       desc_simp [read_ok hr', write_ok hw']
       congr 1
       exact (withFlags_self _ _ (State.flags_store _ _ _ _)).symm
   | shift op w dst c =>
     cases hd
     rcases dst with dst | m <;> rcases c with n | _
-    · desc_simp
-    · desc_simp
-    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr rfl _ rfl
-      have hw' : s.canWrite (s.ea m) (wbytes w) = true := hw rfl _ rfl
-      desc_simp [read_ok hr', write_ok hw']
-    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr rfl _ rfl
-      have hw' : s.canWrite (s.ea m) (wbytes w) = true := hw rfl _ rfl
-      desc_simp [read_ok hr', write_ok hw']
+    · desc_simp [shift_fst op s.flags, count_toNat]
+    · desc_simp [shift_fst op s.flags, count_toNat]
+    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr _ _ rfl
+      have hw' : s.canWrite (s.ea m) (wbytes w) = true := hw _ _ rfl
+      desc_simp [read_ok hr', write_ok hw', shift_fst op s.flags, count_toNat]
+    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr _ _ rfl
+      have hw' : s.canWrite (s.ea m) (wbytes w) = true := hw _ _ rfl
+      desc_simp [read_ok hr', write_ok hw', shift_fst op s.flags, count_toNat]
   | imul2 w dst src =>
     cases hd
     rcases src with src | m
     · desc_simp
-    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr rfl _ rfl
+    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr _ _ rfl
       desc_simp [read_ok hr']
   | imul3 w dst src imm =>
     cases hd
     rcases src with src | m
     · desc_simp
-    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr rfl _ rfl
+    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr _ _ rfl
       desc_simp [read_ok hr']
   | popcnt w dst src =>
     cases hd
     rcases src with src | m
     · desc_simp
-    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr rfl _ rfl
+    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr _ _ rfl
       desc_simp [read_ok hr']
   | mulDiv op w src =>
     cases hd
@@ -317,13 +346,13 @@ theorem exec_desc1 (sys : Syscall) (s : State) {i : Instr} {d : Desc1} (hd : i.d
     · desc_simp at hg
       desc_simp
       split at hg
-      · next x hx => obtain ⟨lo, hi, f⟩ := x; simp only [hx]; rfl
+      · next x hx => obtain ⟨lo, hi, f⟩ := x; simp only [hx] <;> rfl
       · cases hg
-    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr rfl _ rfl
+    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr _ _ rfl
       desc_simp at hg
       desc_simp [read_ok hr']
       split at hg
-      · next x hx => obtain ⟨lo, hi, f⟩ := x; simp only [hx]; rfl
+      · next x hx => obtain ⟨lo, hi, f⟩ := x; simp only [hx] <;> rfl
       · cases hg
   | cmov c w dst src =>
     cases hd
@@ -331,109 +360,164 @@ theorem exec_desc1 (sys : Syscall) (s : State) {i : Instr} {d : Desc1} (hd : i.d
     rcases src with src | m
     · desc_simp [hb]
       rfl
-    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr rfl _ rfl
+    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr _ _ rfl
       desc_simp [hb, read_ok hr']
       rfl
   | movsxd dst src =>
     cases hd
     rcases src with src | m
     · (desc_simp) <;> try rfl
-    · have hr' : s.canRead (s.ea m) (wbytes .w32) = true := hr rfl _ rfl
+    · have hr' : s.canRead (s.ea m) (wbytes .w32) = true := hr _ _ rfl
       (desc_simp [read_ok hr', loadN_4, State.load]) <;> try rfl
   | store8 dst src =>
     cases hd
-    have hw' : s.canWrite (s.ea dst) 1 = true := hw rfl _ rfl
+    have hw' : s.canWrite (s.ea dst) 1 = true := hw _ _ rfl
     (desc_simp [write8_ok hw', storeN_1]) <;> try rfl
   | store16 dst src =>
     cases hd
-    have hw' : s.canWrite (s.ea dst) 2 = true := hw rfl _ rfl
+    have hw' : s.canWrite (s.ea dst) 2 = true := hw _ _ rfl
     (desc_simp [write16_ok hw', storeN_2]) <;> try rfl
   | movzx w dst sw src =>
     cases hd
     rcases src with src | m
     · (desc_simp) <;> try rfl
     · cases sw
-      · have hr' : s.canRead (s.ea m) 1 = true := hr rfl _ rfl
+      · have hr' : s.canRead (s.ea m) 1 = true := hr _ _ rfl
         (desc_simp [read8_ok hr', loadN_1, nbytes, NarrowW.bits]) <;> try rfl
-      · have hr' : s.canRead (s.ea m) 2 = true := hr rfl _ rfl
+      · have hr' : s.canRead (s.ea m) 2 = true := hr _ _ rfl
         (desc_simp [read16_ok hr', loadN_2, nbytes, NarrowW.bits]) <;> try rfl
   | movsx w dst sw src =>
     cases hd
     rcases src with src | m
     · (desc_simp) <;> try rfl
     · cases sw
-      · have hr' : s.canRead (s.ea m) 1 = true := hr rfl _ rfl
+      · have hr' : s.canRead (s.ea m) 1 = true := hr _ _ rfl
         (desc_simp [read8_ok hr', loadN_1, nbytes, NarrowW.bits]) <;> try rfl
-      · have hr' : s.canRead (s.ea m) 2 = true := hr rfl _ rfl
+      · have hr' : s.canRead (s.ea m) 2 = true := hr _ _ rfl
         (desc_simp [read16_ok hr', loadN_2, nbytes, NarrowW.bits]) <;> try rfl
   | setcc c dst =>
     cases hd
-    obtain ⟨b, hb⟩ := Option.isSome_iff_exists.mp (show (c.eval s.flags).isSome = true from hg)
     rcases dst with dst | m
-    · (desc_simp [hb]) <;> try rfl
-    · have hw' : s.canWrite (s.ea m) 1 = true := hw rfl _ rfl
-      (desc_simp [hb, write8_ok hw', storeN_1]) <;> try rfl
+    · obtain ⟨b, hb⟩ := Option.isSome_iff_exists.mp (show (c.eval s.flags).isSome = true from hg)
+      (desc_simp [hb, condBit]) <;> try rfl
+    · obtain ⟨b, hb⟩ := Option.isSome_iff_exists.mp (show (c.eval s.flags).isSome = true from hg)
+      have hw' : s.canWrite (s.ea m) 1 = true := hw _ _ rfl
+      (desc_simp [hb, condBit, write8_ok hw', storeN_1]) <;> try rfl
   | push r =>
     cases hd
     have hw' : s.canWrite (s.getReg .rsp - 8) 8 = true := by
-      have this : s.canWrite (s.ea pushMem) 8 = true := hw rfl _ rfl
+      have this : s.canWrite (s.ea pushMem) 8 = true := hw pushMem 8 rfl
       rwa [ea_pushMem] at this
     have hw'' : (s.setReg .rsp (s.getReg .rsp - 8)).canWrite (s.getReg .rsp - 8) 8 = true := hw'
-    (desc_simp [State.push64, write64_ok hw'', ea_pushMem, storeN_8]) <;> try rfl
+    (desc_simp [State.push64, add_neg, write64_ok hw'', ea_pushMem, storeN_8]) <;> try rfl
   | pop r =>
     cases hd
     have hr' : s.canRead (s.getReg .rsp) 8 = true := by
-      have this : s.canRead (s.ea topMem) 8 = true := hr rfl _ rfl
+      have this : s.canRead (s.ea topMem) 8 = true := hr _ _ rfl
       rwa [ea_topMem] at this
     (desc_simp [State.pop64, read64_ok hr', ea_topMem, loadN_8]) <;> try rfl
   | alu op w ops =>
-    cases hd
-    rcases ops with ⟨dst | m, src⟩ | ⟨dst, m⟩ | ⟨dst | m, imm⟩
-    · desc_simp at hg
-      obtain ⟨⟨r, f⟩, he⟩ := Option.isSome_iff_exists.mp hg
-      cases hwd : op.writesDst <;> desc_simp [he, hwd]
-    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr rfl _ rfl
-      desc_simp at hg
-      obtain ⟨⟨r, f⟩, he⟩ := Option.isSome_iff_exists.mp hg
-      cases hwd : op.writesDst
-      · desc_simp [he, hwd, read_ok hr']
-      · have hw' : s.canWrite (s.ea m) (wbytes w) = true := hw (by desc_simp [hwd]) _ rfl
+    cases hwd : op.writesDst
+    · simp only [Instr.desc, Instr.sem, hwd, Bool.false_eq_true, ↓reduceIte, Option.map_some,
+        Option.some.injEq] at hd
+      subst hd
+      rcases ops with ⟨dst | m, src⟩ | ⟨dst, m⟩ | ⟨dst | m, imm⟩
+      · desc_simp at hg
+        obtain ⟨⟨r, f⟩, he⟩ := Option.isSome_iff_exists.mp hg
+        desc_simp [he, hwd]
+      · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr m (wbytes w) rfl
+        desc_simp at hg
+        obtain ⟨⟨r, f⟩, he⟩ := Option.isSome_iff_exists.mp hg
+        desc_simp [he, hwd, read_ok hr']
+      · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr m (wbytes w) rfl
+        desc_simp at hg
+        obtain ⟨⟨r, f⟩, he⟩ := Option.isSome_iff_exists.mp hg
+        desc_simp [he, hwd, read_ok hr']
+      · desc_simp at hg
+        obtain ⟨⟨r, f⟩, he⟩ := Option.isSome_iff_exists.mp hg
+        desc_simp [he, hwd]
+      · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr m (wbytes w) rfl
+        desc_simp at hg
+        obtain ⟨⟨r, f⟩, he⟩ := Option.isSome_iff_exists.mp hg
+        desc_simp [he, hwd, read_ok hr']
+    · simp only [Instr.desc, Instr.sem, hwd, Bool.false_eq_true, ↓reduceIte, Option.map_some,
+        Option.some.injEq] at hd
+      subst hd
+      rcases ops with ⟨dst | m, src⟩ | ⟨dst, m⟩ | ⟨dst | m, imm⟩
+      · desc_simp at hg
+        obtain ⟨⟨r, f⟩, he⟩ := Option.isSome_iff_exists.mp hg
+        desc_simp [he, hwd]
+      · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr m (wbytes w) rfl
+        have hw' : s.canWrite (s.ea m) (wbytes w) = true := hw m (wbytes w) rfl
+        desc_simp at hg
+        obtain ⟨⟨r, f⟩, he⟩ := Option.isSome_iff_exists.mp hg
         desc_simp [he, hwd, read_ok hr', write_ok hw']
-    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr rfl _ rfl
-      desc_simp at hg
-      obtain ⟨⟨r, f⟩, he⟩ := Option.isSome_iff_exists.mp hg
-      cases hwd : op.writesDst <;> desc_simp [he, hwd, read_ok hr']
-    · desc_simp at hg
-      obtain ⟨⟨r, f⟩, he⟩ := Option.isSome_iff_exists.mp hg
-      cases hwd : op.writesDst <;> desc_simp [he, hwd]
-    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr rfl _ rfl
-      desc_simp at hg
-      obtain ⟨⟨r, f⟩, he⟩ := Option.isSome_iff_exists.mp hg
-      cases hwd : op.writesDst
-      · desc_simp [he, hwd, read_ok hr']
-      · have hw' : s.canWrite (s.ea m) (wbytes w) = true := hw (by desc_simp [hwd]) _ rfl
+      · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr m (wbytes w) rfl
+        desc_simp at hg
+        obtain ⟨⟨r, f⟩, he⟩ := Option.isSome_iff_exists.mp hg
+        desc_simp [he, hwd, read_ok hr']
+      · desc_simp at hg
+        obtain ⟨⟨r, f⟩, he⟩ := Option.isSome_iff_exists.mp hg
+        desc_simp [he, hwd]
+      · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr m (wbytes w) rfl
+        have hw' : s.canWrite (s.ea m) (wbytes w) = true := hw m (wbytes w) rfl
+        desc_simp at hg
+        obtain ⟨⟨r, f⟩, he⟩ := Option.isSome_iff_exists.mp hg
         desc_simp [he, hwd, read_ok hr', write_ok hw']
   | mov w ops =>
     cases hd
     rcases ops with ⟨dst | m, src⟩ | ⟨dst, m⟩ | ⟨dst | m, imm⟩
     · rfl
-    · have hw' : s.canWrite (s.ea m) (wbytes w) = true := hw rfl _ rfl
+    · have hw' : s.canWrite (s.ea m) (wbytes w) = true := hw m (wbytes w) rfl
       show (s.write w (s.ea m) (s.readReg w src)).through m = _
-      rw [write_ok hw', Result.through_next, ← storeN_w, Desc1.after_store _ _ m rfl rfl rfl rfl]
+      rw [write_ok hw', Result.through_next, ← storeN_w, Desc.after_store _ _ m _ rfl rfl rfl rfl]
       rfl
-    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr rfl _ rfl
+    · have hr' : s.canRead (s.ea m) (wbytes w) = true := hr m (wbytes w) rfl
       show (do let v ← (s.read w (s.ea m)).through m; .next (s.writeReg w dst v)) = _
       rw [read_ok hr', Result.through_next, ← loadN_w]
       rfl
     · rfl
-    · have hw' : s.canWrite (s.ea m) (wbytes w) = true := hw rfl _ rfl
+    · have hw' : s.canWrite (s.ea m) (wbytes w) = true := hw m (wbytes w) rfl
       show (s.write w (s.ea m) (imm.signExtend w.bits)).through m = _
-      rw [write_ok hw', Result.through_next, ← storeN_w, Desc1.after_store _ _ m rfl rfl rfl rfl]
+      rw [write_ok hw', Result.through_next, ← storeN_w, Desc.after_store _ _ m _ rfl rfl rfl rfl]
       rfl
-  | jmp t => cases hd
-  | jcc c rel => cases hd
-  | call t => cases hd
-  | ret => cases hd
+  | jmp t =>
+    rcases t with rel | (r | m)
+    · cases hd; rfl
+    · cases hd
+      goes_simp
+    · cases hd
+      have hr' : s.canRead (s.ea m) (wbytes .w64) = true := hr m 8 rfl
+      goes_simp [read_ok hr', State.load]
+  | jcc c rel =>
+    cases hd
+    obtain ⟨b, hb⟩ := Option.isSome_iff_exists.mp (show (c.eval s.flags).isSome = true from hg)
+    goes_simp [hb]
+    cases b <;> rfl
+  | ret =>
+    cases hd
+    have hr' : s.canRead (s.getReg .rsp) 8 = true := by
+      have this : s.canRead (s.ea topMem) 8 = true := hr topMem 8 rfl
+      rwa [ea_topMem] at this
+    goes_simp [read64_ok hr']
+    rfl
+  | call t =>
+    have hw' : s.canWrite (s.getReg .rsp - 8) 8 = true := by
+      have this : s.canWrite (s.ea pushMem) 8 = true := by
+        rcases t with rel | (r | m) <;> cases hd <;> exact hw pushMem 8 rfl
+      rwa [ea_pushMem] at this
+    have hw'' : (s.setReg .rsp (s.getReg .rsp - 8)).canWrite (s.getReg .rsp - 8) 8 = true := hw'
+    rcases t with rel | (r | m)
+    · cases hd
+      goes_simp [add_neg, write64_ok hw'']
+      rfl
+    · cases hd
+      goes_simp [add_neg, write64_ok hw'']
+      rfl
+    · cases hd
+      have hr' : s.canRead (s.ea m) (wbytes .w64) = true := hr m 8 rfl
+      goes_simp [add_neg, read_ok hr', write64_ok hw'', State.load]
+      rfl
   | ud2 => cases hd
   | syscall => cases hd
 end TypedAsm.U

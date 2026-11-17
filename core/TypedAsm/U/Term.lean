@@ -1,4 +1,3 @@
-import TypedAsm.U.Instr
 import TypedAsm.U.Types
 import TypedAsm.U.Ops
 

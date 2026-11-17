@@ -1,4 +1,4 @@
-import TypedAsm.U.Instr
+import TypedAsm.U.Term
 
 /-!
 # What can be said of a flag after an operation

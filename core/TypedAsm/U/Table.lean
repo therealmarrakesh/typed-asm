@@ -263,4 +263,9 @@ def Sem.toDesc (s : Sem) : Desc where
       s.flags.den (slotEnv vals fl next ea cell), s.store.den (slotEnv vals fl next ea cell)⟩
   goes := fun vals fl next ea cell => s.goes.map fun t => t.den (slotEnv vals fl next ea cell)
 
+/-- **Each instruction, described**: what its data comes to. -/
+def _root_.TypedAsm.Instr.desc (i : Instr) : Option Desc := i.sem.map Sem.toDesc
+
+theorem sem_desc (i : Instr) : i.sem.map Sem.toDesc = i.desc := rfl
+
 end TypedAsm.U

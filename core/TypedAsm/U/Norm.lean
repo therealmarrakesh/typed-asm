@@ -179,6 +179,13 @@ theorem mkAlu_den (ρ : Env) (op : AluOp) (w : Width) (fl : FlagsT) (a b : Val) 
           · rfl
         · rfl
 
+/-- A choice between two whole values is the one or the other. -/
+theorem cmov64 (c : Cond) (fl : Flags) (a b : BitVec 64) :
+    FOp.eval (.cmov c .w64) fl a b = if (c.eval fl).getD false then b else a := by
+  show BitVec.setWidth 64 (if (c.eval fl).getD false = true then BitVec.setWidth 64 b
+    else BitVec.setWidth 64 a) = _
+  split <;> simp only [BitVec.setWidth_eq]
+
 def mkFop (o : FOp) (fl : FlagsT) (a b : Val) : Val :=
   match o with
   | .alu op w => mkAlu op w fl a b

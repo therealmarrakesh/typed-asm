@@ -1,5 +1,5 @@
 import TypedAsm.U.Sem
-import TypedAsm.U.Instr
+import TypedAsm.U.Exec
 
 /-!
 # One statement for every instruction that goes on to the next
