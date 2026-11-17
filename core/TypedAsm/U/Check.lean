@@ -3,17 +3,13 @@ import TypedAsm.U.Regs
 import TypedAsm.U.Mem
 
 /-!
-# The checker: contexts as terms, and one step for any instruction
+# Contexts as terms
 
 A context is written as data: the term each register holds, the term for
 the flags, and the regions held alone with the terms for the values in
-them. The checker's step for an instruction reads the instruction's
-description: it takes the terms of the registers the description uses, and
-gives each register the description writes the term for what the
-instruction makes of them. There is no case for any particular instruction.
-
-What the step concludes, it concludes of the machine: it is proved to be
-what the one statement that types every instruction gives.
+them. Here is what such a context stands for, the address an operand names
+as a term, and the terms an instruction is given and gives: those of the
+registers its description uses, and one for each register it writes.
 -/
 
 namespace TypedAsm.U
@@ -163,99 +159,5 @@ theorem Steps.mono {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {i : Instr} {nex
   intro n Ψ' he hwf s hrip hw
   obtain ⟨s', hex, Ψ'', he', hwf', Γ', hq, hw'⟩ := h n Ψ' he hwf s hrip hw
   exact ⟨s', hex, Ψ'', he', hwf', Γ', hQ _ _ hq, hw'⟩
-
-/-- **The checker's step for an instruction that touches no memory**: the
-context after, and where control goes. Each register the instruction writes
-holds the term for what the instruction gives it. -/
-def stepPure (Γ : CtxS) (next : BitVec 64) (i : Instr) : Option (CtxS × Val) :=
-  match i.desc with
-  | some d =>
-    if d.rd.isNone && d.wr.isNone then
-      let a := argAt Γ.regs d.srcs 0
-      let b := argAt Γ.regs d.srcs 1
-      let c := argAt Γ.regs d.srcs 2
-      let ea : Val := match d.ea with
-        | some m => eaS Γ.regs next m
-        | none => .lit 0
-      some ({ Γ with
-          regs := setOuts (fun k => .out i k a b c Γ.flags next ea (.lit 0)) i.outs 0 Γ.regs
-          flags := .out i a b c Γ.flags next ea (.lit 0) },
-        .goes i a b c Γ.flags next ea (.lit 0))
-    else none
-  | none => none
-
-/-- That an instruction does not fault for a reason of its own, in a
-context, reading nothing. -/
-def Guarded (ρ : Env) (Γ : CtxS) (next : BitVec 64) (i : Instr) : Prop :=
-  match i.desc with
-  | some d =>
-    d.guard (d.srcs.map (Γ.den ρ).val) (Γ.den ρ).flags next
-      ((d.ea.map (eaOf (Γ.den ρ).val next)).getD 0) 0 = true
-  | none => False
-
-theorem stepPure_sound {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env} {Γ Γ' : CtxS}
-    {next : BitVec 64} {i : Instr} {t : Val} (h : stepPure Γ next i = some (Γ', t))
-    (hg : Guarded ρ Γ next i) :
-    Steps fetch sys Ψ i next (Γ.den ρ) fun t' Δ => t' = t.den ρ ∧ Δ = Γ'.den ρ := by
-  unfold stepPure at h
-  unfold Guarded at hg
-  cases hd : i.desc with
-  | none => rw [hd] at h; cases h
-  | some d =>
-    rw [hd] at h hg
-    simp only at h hg
-    split at h
-    · next hno =>
-      cases h
-      simp only [Bool.and_eq_true, Option.isNone_iff_eq_none] at hno
-      have hea : (match d.ea with
-          | some m => eaS Γ.regs next m
-          | none => Val.lit 0).den ρ = (d.ea.map (eaOf (Γ.den ρ).val next)).getD 0 := by
-        cases d.ea with
-        | none => rfl
-        | some m => exact eaS_den ρ Γ next m
-      have hvals := args_den ρ Γ d.srcs (desc_srcs_le hd)
-      refine Steps.mono (Steps.desc (R := fun x Γr => x = 0 ∧ Γr = Γ.den ρ)
-        (W := fun _ Γr Γw => Γw = Γr) hd ?_ ?_ ?_) ?_
-      · rw [hno.1]; exact ⟨rfl, rfl⟩
-      · intro x Γr _
-        refine ⟨Γr, rfl, ?_⟩
-        rw [hno.2]
-      · rintro x Γr ⟨rfl, -⟩
-        exact hg
-      · rintro t' Δ ⟨x, Γr, Γw, ⟨rfl, rfl⟩, rfl, rfl, rfl⟩
-        refine ⟨?_, ?_⟩
-        · show _ = targetOf i _ _ _ _ _
-          unfold targetOf
-          rw [hd]
-          simp only [Val.den]
-          rw [hvals, hea]
-          rfl
-        · have he : effectOf i [(argAt Γ.regs d.srcs 0).den ρ, (argAt Γ.regs d.srcs 1).den ρ,
-              (argAt Γ.regs d.srcs 2).den ρ] (Γ.flags.den ρ) next
-              ((match d.ea with
-                | some m => eaS Γ.regs next m
-                | none => Val.lit 0).den ρ) 0
-              = d.run (d.srcs.map (Γ.den ρ).val) (Γ.den ρ).flags next
-                ((d.ea.map (eaOf (Γ.den ρ).val next)).getD 0) 0 := by
-            unfold effectOf
-            rw [hd]
-            simp only
-            rw [hvals, hea]
-            rfl
-          have houts := desc_outs hd (d.srcs.map (Γ.den ρ).val) (Γ.den ρ).flags next
-            ((d.ea.map (eaOf (Γ.den ρ).val next)).getD 0) 0
-          refine ctx_ext ?_ ?_ rfl rfl
-          · funext r
-            show List.foldl _ (Γ.den ρ).val _ r = ((setOuts _ i.outs 0 Γ.regs).get r).den ρ
-            rw [← houts]
-            refine (setOuts_den ρ _ _ 0 Γ.regs _ (fun _ => rfl) (fun j hj => ?_) r).symm
-            show ((effectOf i _ _ next _ 0).regs.getD (0 + j) (Reg.rax, 0)).2 = _
-            rw [he, Nat.zero_add, List.getD_eq_getElem?_getD, List.getElem?_eq_getElem hj]
-            rfl
-          · show _ = (effectOf i _ _ next _ 0).flags
-            rw [he]
-            rfl
-    · cases h
 
 end TypedAsm.U
