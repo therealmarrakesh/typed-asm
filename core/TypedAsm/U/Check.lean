@@ -20,6 +20,7 @@ open TypedAsm
 structure HeldS where
   size : Nat
   slots : List (Nat × Val)
+  deriving DecidableEq
 
 /-- A context, as terms. -/
 structure CtxS where

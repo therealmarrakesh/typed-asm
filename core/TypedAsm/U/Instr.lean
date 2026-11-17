@@ -230,8 +230,8 @@ theorem exec_desc (sys : Syscall) (s : State) {i : Instr} {d : Desc} (hd : i.des
     refine exec_desc1 sys s hi (fun hrd m hm => hr m _ ?_) (fun hwr m hm => hw m _ ?_)
       (by rw [← Desc1.toDesc_guarded]; exact hg)
     · show (if d₁.reads = true then d₁.addr.map (·, d₁.bytes) else none) = _
-      rw [if_pos hrd, hm]; rfl
+      simp only [hrd, ↓reduceIte, hm]; rfl
     · show (if d₁.writes = true then d₁.addr.map (·, d₁.bytes) else none) = _
-      rw [if_pos hwr, hm]; rfl
+      simp only [hwr, ↓reduceIte, hm]; rfl
 
 end TypedAsm.U
