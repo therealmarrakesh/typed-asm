@@ -38,6 +38,11 @@ def startOf (code : List (Asm L)) (l : L) (n : Nat) : State :=
         .rw).setReg .rsp 0x80000000 with
     rip := Asm.addr code (Asm.base code) l }
 
+/-- The same, in any outside world: whatever there is for the program to
+read. Nothing the check looks at is of the world. -/
+def startIn (code : List (Asm L)) (l : L) (n : Nat) (w : World) : State :=
+  { startOf code l n with world := w }
+
 /-- The context a program with so many slots of stack starts in. -/
 def entryOf (n : Nat) : CtxS := if n = 0 then entryPat else entryPatStack (stackSize n)
 
@@ -87,9 +92,9 @@ structure WholeFacts (code : List (Asm L)) (l : L) (n : Nat) (pg : Prog) (labels
   nd : (blocksOf code l).Pairwise fun x y => x.1 ≠ y.1
   check : checkProgram pg labels fuel 0 = true
   entry : (⟨Asm.addr code (Asm.base code) l, entryOf n⟩ : Label) ∈ labels
-  loaded : Loaded (Asm.fetch (Asm.base code) code) (startOf code l n)
-  starts : ∀ ρ : Env, Starts (blocksOf code l) (fun _ => none)
-    ((entryOf n).den { ρ with bound := entryFam code l n :: ρ.bound }) (startOf code l n)
+  loaded : ∀ w, Loaded (Asm.fetch (Asm.base code) code) (startIn code l n w)
+  starts : ∀ (w : World) (ρ : Env), Starts (blocksOf code l) (fun _ => none)
+    ((entryOf n).den { ρ with bound := entryFam code l n :: ρ.bound }) (startIn code l n w)
 
 theorem wholeOk_facts {code : List (Asm L)} {l : L} {n : Nat} {pg : Prog} {labels : List Label}
     {fuel : Nat} (h : wholeOk code l n pg labels fuel = true) :
@@ -97,10 +102,11 @@ theorem wholeOk_facts {code : List (Asm L)} {l : L} {n : Nat} {pg : Prog} {label
   simp only [wholeOk, Bool.and_eq_true, decide_eq_true_eq, List.any_eq_true] at h
   obtain ⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨hpc, x, hx, hxa, hxp⟩, hchk⟩, htab⟩, hwf⟩, hnd⟩, hsegs⟩, hfull⟩, hoff⟩,
     hholds⟩, hhead⟩, hoffp⟩, hlast⟩ := h
-  have hparts : ∀ g ∈ Asm.parts (Asm.base code) code, (startOf code l n).Holds g := fun g hg =>
-    (Asm.prepared_holds State.init (Asm.base code) code l (stackStretch n).1 (stackStretch n).2
-      0x80000000 hholds hhead hoffp g hg).congr rfl rfl
-  refine ⟨?_, blocksWf_wf hwf, hnd, hchk, ?_, Asm.loaded hparts, fun ρ => ?_⟩
+  have hparts : ∀ w, ∀ g ∈ Asm.parts (Asm.base code) code, (startIn code l n w).Holds g :=
+    fun w g hg =>
+      (Asm.prepared_holds State.init (Asm.base code) code l (stackStretch n).1 (stackStretch n).2
+        0x80000000 hholds hhead hoffp g hg).congr rfl rfl
+  refine ⟨?_, blocksWf_wf hwf, hnd, hchk, ?_, fun w => Asm.loaded (hparts w), fun w ρ => ?_⟩
   · rw [hpc]
     exact hcode_of_tableOk htab
   · obtain ⟨xa, xp⟩ := x
@@ -110,18 +116,18 @@ theorem wholeOk_facts {code : List (Asm L)} {l : L} {n : Nat} {pg : Prog} {label
   · by_cases hn : n = 0
     · subst hn
       simp only [↓reduceIte] at hlast
-      exact loaded_starts ρ (t := startOf code l 0) hsegs hfull hoff rfl rfl hlast
+      exact loaded_starts ρ (t := startIn code l 0 w) hsegs hfull hoff rfl rfl hlast
     · simp only [hn, ↓reduceIte, Bool.and_eq_true, decide_eq_true_eq] at hlast
       obtain ⟨⟨⟨⟨hb, htop⟩, hrsp⟩, hapart⟩, hc⟩ := hlast
       have e1 : entryOf n = entryPatStack (stackSize n) := by simp only [entryOf, hn, ↓reduceIte]
       have e2 : entryFam code l n = Fam.ofStack (startOf code l n) (stackBase n) := by
         simp only [entryFam, hn, ↓reduceIte]
       rw [e1, e2]
-      have hsp : (startOf code l n).getReg .rsp = (0x80000000 : BitVec 64) :=
+      have hsp : (startIn code l n w).getReg .rsp = (0x80000000 : BitVec 64) :=
         State.getReg_setReg_same
           ((Asm.load State.init (Asm.base code) code l).setPerm (stackStretch n).1
             (stackStretch n).2 .rw) .rsp 0x80000000
-      exact loaded_starts_stack ρ (t := startOf code l n) hsegs hfull hoff rfl rfl hb rfl htop
+      exact loaded_starts_stack ρ (t := startIn code l n w) hsegs hfull hoff rfl rfl hb rfl htop
         (hsp.trans hrsp) hapart hc
 
 /-- The memory typing a program starts under. -/
@@ -131,10 +137,10 @@ abbrev psi0 (code : List (Asm L)) (l : L) : MemTy := MemTy.ofList (blocksOf code
 the entry knows nothing of any value, and the blocks are of plain bytes. -/
 theorem WholeFacts.wellTyped {code : List (Asm L)} {l : L} {n : Nat} {pg : Prog}
     {labels : List Label} {fuel : Nat} (f : WholeFacts code l n pg labels fuel) (fetch : Fetch)
-    (sys : Syscall) (k : Nat) :
+    (sys : Syscall) (w : World) (k : Nat) :
     WellTyped fetch sys (psi0 code l) k
-      ((entryOf n).den { ({} : Env) with bound := entryFam code l n :: [] }) (startOf code l n) :=
-  (f.starts {}).matches f.nd
+      ((entryOf n).den { ({} : Env) with bound := entryFam code l n :: [] }) (startIn code l n w) :=
+  (f.starts w {}).matches f.nd
     (fun g hg => by
       have hk : ((entryOf n).den { ({} : Env) with bound := entryFam code l n :: [] }).known = [] := by
         unfold entryOf
@@ -151,11 +157,11 @@ theorem whole_safe {code : List (Asm L)} {l : L} {n : Nat} {pg : Prog} {labels :
     {fuel : Nat} (h : wholeOk code l n pg labels fuel = true)
     (hk : KindsOk (psi0 code l) pg.kinds)
     (hst : StaticsOk (Asm.fetch (Asm.base code) code) linux (psi0 code l) pg.statics) :
-    SafeMem linux (startOf code l n) :=
+    ∀ w, SafeMem linux (startIn code l n w) := fun w =>
   have f := wholeOk_facts h
-  SafeMem.of_safe linux_frame f.loaded
+  SafeMem.of_safe linux_frame (f.loaded w)
     (safe_of_checked linux_describes rfl (PreSound.all (fun _ => trivial) _) f.hcode hk hst f.wf
-      f.check f.entry rfl {} (entryFam code l n) (f.wellTyped _ _))
+      f.check f.entry rfl {} (entryFam code l n) (f.wellTyped _ _ w))
 
 /-- **And where it checks against the wanted status, ends only with it.** -/
 theorem whole_exits {code : List (Asm L)} {l : L} {n : Nat} {pg : Prog} {labels : List Label}
@@ -164,14 +170,14 @@ theorem whole_exits {code : List (Asm L)} {l : L} {n : Nat} {pg : Prog} {labels 
     (hpg : pg.pre = preExits q) (hk : KindsOk (psi0 code l) pg.kinds)
     (hst : StaticsOk (Asm.fetch (Asm.base code) code) (linux.exitsOnly Q) (psi0 code l)
       pg.statics) :
-    SafeMem linux (startOf code l n) ∧
-      ∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startOf code l n) s' →
+    ∀ w, SafeMem linux (startIn code l n w) ∧
+      ∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startIn code l n w) s' →
         ∀ len c, Asm.fetch (Asm.base code) code s'.rip = some (.syscall, len) →
-        linux { s' with rip := s'.rip + len } = .exit c → Q c :=
+        linux { s' with rip := s'.rip + len } = .exit c → Q c := fun w =>
   have f := wholeOk_facts h
   have r := exits_of_checked hq hpg f.hcode hk hst f.wf f.check f.entry rfl {} (entryFam code l n)
-    (f.wellTyped _ _)
-  ⟨SafeMem.of_safe linux_frame f.loaded r.1, r.2⟩
+    (f.wellTyped _ _ w)
+  ⟨SafeMem.of_safe linux_frame (f.loaded w) r.1, r.2⟩
 
 /-- **And against the wanted status and the wanted writes: both.** -/
 theorem whole_outputs {code : List (Asm L)} {l : L} {n : Nat} {pg : Prog} {labels : List Label}
@@ -183,16 +189,16 @@ theorem whole_outputs {code : List (Asm L)} {l : L} {n : Nat} {pg : Prog} {label
     (hk : KindsOk (psi0 code l) pg.kinds)
     (hst : StaticsOk (Asm.fetch (Asm.base code) code) ((linux.exitsOnly Q).writesOnly R)
       (psi0 code l) pg.statics) :
-    SafeMem linux (startOf code l n) ∧
-      (∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startOf code l n) s' →
+    ∀ w, SafeMem linux (startIn code l n w) ∧
+      (∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startIn code l n w) s' →
         ∀ len c, Asm.fetch (Asm.base code) code s'.rip = some (.syscall, len) →
         linux { s' with rip := s'.rip + len } = .exit c → Q c) ∧
-      (∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startOf code l n) s' →
+      (∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startIn code l n w) s' →
         ∀ len, Asm.fetch (Asm.base code) code s'.rip = some (.syscall, len) →
-        s'.getReg .rax = 1 → R (s'.getReg .rdi) s'.offered) :=
+        s'.getReg .rax = 1 → R (s'.getReg .rdi) s'.offered) := fun w =>
   have f := wholeOk_facts h
   have o := outputs_of_checked hq hr (saidOk_of_check f.nd hsaid) hpg f.hcode hk hst f.wf f.check
-    f.entry rfl {} (entryFam code l n) (f.wellTyped _ _)
-  ⟨SafeMem.of_safe linux_frame f.loaded o.1, o.2.1, o.2.2⟩
+    f.entry rfl {} (entryFam code l n) (f.wellTyped _ _ w)
+  ⟨SafeMem.of_safe linux_frame (f.loaded w) o.1, o.2.1, o.2.2⟩
 
 end TypedAsm.U
