@@ -32,6 +32,7 @@ mutual
 def Val.under (k : Nat) : Val → Bool
   | .lit _ => true
   | .var i => decide (i < k)
+  | .bvar _ => true
   | .add a b => a.under k && b.under k
   | .shl a _ => a.under k
   | .out _ _ a b c fl _ ea cell =>
@@ -44,6 +45,7 @@ def Val.under (k : Nat) : Val → Bool
 def FlagsT.under (k : Nat) : FlagsT → Bool
   | .lit _ => true
   | .var _ => true
+  | .bvar => true
   | .out _ a b c fl _ ea cell =>
     a.under k && b.under k && c.under k && fl.under k && ea.under k && cell.under k
 
@@ -56,6 +58,7 @@ whatever the `k`th is given. -/
 theorem Val.den_setVal (ρ : Env) (k : Nat) (x : BitVec 64) :
     (a : Val) → a.under k = true → a.den (ρ.setVal k x) = a.den ρ
   | .lit _, _ => rfl
+  | .bvar _, _ => rfl
   | .var i, h => by
     simp only [Val.under, decide_eq_true_eq] at h
     exact Env.setVal_get_lt ρ k x h
@@ -88,6 +91,7 @@ theorem FlagsT.den_setVal (ρ : Env) (k : Nat) (x : BitVec 64) :
     (f : FlagsT) → f.under k = true → f.den (ρ.setVal k x) = f.den ρ
   | .lit _, _ => rfl
   | .var _, _ => rfl
+  | .bvar, _ => rfl
   | .out i a b c fl next ea cell, h => by
     simp only [FlagsT.under, Bool.and_eq_true] at h
     obtain ⟨⟨⟨⟨⟨ha, hb⟩, hc⟩, hf⟩, he⟩, hcell⟩ := h

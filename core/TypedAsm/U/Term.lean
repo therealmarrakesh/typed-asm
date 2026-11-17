@@ -27,6 +27,9 @@ structure Env where
   ty : Nat → Ty := fun _ => .any
   /-- Regions held that are not written out: whatever else a caller holds. -/
   frame : Nat → List Region := fun _ => []
+  /-- The values a family of contexts ranges over, inside a value known to
+  be code wanting the family: the first stands for the flags. -/
+  bound : Seq := fun _ => 0
 
 mutual
 
@@ -34,6 +37,8 @@ mutual
 inductive Val
   | lit (v : BitVec 64)
   | var (i : Nat)
+  /-- One of the values a family of contexts ranges over. -/
+  | bvar (i : Nat)
   | add (a b : Val)
   /-- A value shifted left by so many bits: an index scaled. -/
   | shl (a : Val) (k : Nat)
@@ -48,6 +53,8 @@ inductive Val
 inductive FlagsT
   | lit (f : Flags)
   | var (i : Nat)
+  /-- The flags a family of contexts ranges over. -/
+  | bvar
   /-- The flags the instruction leaves. -/
   | out (i : Instr) (a b c : Val) (fl : FlagsT) (next : BitVec 64) (ea cell : Val)
 
@@ -76,6 +83,7 @@ mutual
 def Val.den (ρ : Env) : Val → BitVec 64
   | .lit v => v
   | .var i => ρ.val i
+  | .bvar i => ρ.bound (i + 1)
   | .add a b => a.den ρ + b.den ρ
   | .shl a k => a.den ρ <<< k
   | .out i k a b c fl next ea cell =>
@@ -90,6 +98,7 @@ def Val.den (ρ : Env) : Val → BitVec 64
 def FlagsT.den (ρ : Env) : FlagsT → Flags
   | .lit f => f
   | .var i => ρ.flags i
+  | .bvar => flagsOf (ρ.bound 0)
   | .out i a b c fl next ea cell =>
     (effectOf i [a.den ρ, b.den ρ, c.den ρ] (fl.den ρ) next (ea.den ρ) (cell.den ρ)).flags
 

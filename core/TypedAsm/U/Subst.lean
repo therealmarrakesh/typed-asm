@@ -28,12 +28,14 @@ def Env.inst (ρ : Env) (σ : Inst) : Env where
   flags j := (σ.flags j).den ρ
   ty j := (σ.ty j).den ρ
   frame j := restDen ρ (σ.rest j)
+  bound := ρ.bound
 
 mutual
 
 def Val.subst (σ : Inst) : Val → Val
   | .lit v => .lit v
   | .var i => σ.val i
+  | .bvar i => .bvar i
   | .add a b => .add (a.subst σ) (b.subst σ)
   | .shl a k => .shl (a.subst σ) k
   | .out i k a b c fl next ea cell =>
@@ -46,6 +48,7 @@ def Val.subst (σ : Inst) : Val → Val
 def FlagsT.subst (σ : Inst) : FlagsT → FlagsT
   | .lit f => .lit f
   | .var i => σ.flags i
+  | .bvar => .bvar
   | .out i a b c fl next ea cell =>
     .out i (a.subst σ) (b.subst σ) (c.subst σ) (fl.subst σ) next (ea.subst σ) (cell.subst σ)
 
@@ -56,6 +59,7 @@ mutual
 theorem Val.den_subst (ρ : Env) (σ : Inst) : (a : Val) → (a.subst σ).den ρ = a.den (ρ.inst σ)
   | .lit _ => rfl
   | .var _ => rfl
+  | .bvar _ => rfl
   | .add a b => by
     simp only [Val.subst, Val.den, Val.den_subst ρ σ a, Val.den_subst ρ σ b]
   | .shl a s => by simp only [Val.subst, Val.den, Val.den_subst ρ σ a]
@@ -76,6 +80,7 @@ theorem FlagsT.den_subst (ρ : Env) (σ : Inst) :
     (f : FlagsT) → (f.subst σ).den ρ = f.den (ρ.inst σ)
   | .lit _ => rfl
   | .var _ => rfl
+  | .bvar => rfl
   | .out i a b c fl next ea cell => by
     simp only [FlagsT.subst, FlagsT.den, Val.den_subst ρ σ a, Val.den_subst ρ σ b,
       Val.den_subst ρ σ c, FlagsT.den_subst ρ σ fl, Val.den_subst ρ σ ea,
