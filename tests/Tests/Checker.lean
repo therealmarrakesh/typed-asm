@@ -464,6 +464,24 @@ example : top (reg word .rcx (.eq (v 4))) (.store8 (.sib (some .rsp) none 0) .rc
 example : top (reg word .rcx .int) (.store8 (.sib (some .rsp) none 2) .rcx)
     = some [.mk (.lit 8) .nil] := by decide
 
+/-! ## Memory asked for as a new block of a declared kind -/
+
+/-- A kind of block: 80 bytes, a link that may be null first. -/
+def node : ShapeS := .mk (.lit 80) (.cons 0 (.nullable (.ref 1 true (.lit 0))) .nil)
+
+/-- What `rax` holds after an `mmap` of `len` bytes tried as a block of kind 1. -/
+def asKind (kinds : List (Nat × ShapeS)) (len : BitVec 64) : Option TyS :=
+  (sysMmapKind { kinds := kinds } (reg asking .rsi (.eq (.lit len))) 1).map (·.1.regs.get .rax)
+
+-- an error number, or a writable pointer to a block of the kind
+example : asKind [(1, node)] 80 = some (.orErr (.ref 1 true (.lit 0))) := by decide
+-- not where the kind does not fit in what was asked for
+example : asKind [(1, node)] 64 = none := by decide
+-- nor where a typed value of the kind does not admit zero, which is what fresh memory holds
+example : asKind [(1, .mk (.lit 80) (.cons 0 (.ref 1 true (.lit 0)) .nil))] 80 = none := by decide
+-- nor for a kind that is not declared
+example : asKind [] 80 = none := by decide
+
 /-! ## Why an instruction is refused -/
 
 def isReason (Γ : CtxS) (i : Instr) (p : Reject → Bool) : Bool :=

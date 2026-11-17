@@ -1538,6 +1538,29 @@ initialize castRef : IO.Ref (Option (Sym.CtxS → Sym.CtxS → Option Sym.CtxS))
 /-- The context the last search compared, where it was so made ready. -/
 initialize castCtx : IO.Ref (Option Sym.CtxS) ← IO.mkRef none
 
+/-- The kind of block an `mmap` is being tried as, where a block did not
+type with the memory its program's to own. -/
+initialize mmapKindRef : IO.Ref (Option Nat) ← IO.mkRef none
+
+/-- The kinds of block a memory typing declares. -/
+def declaredKinds (Ψ : Expr) : MetaM (Array Nat) := do
+  let mut Ψ' := Ψ
+  for _ in [0:4] do
+    if Ψ'.isAppOfArity ``MemTy.ofList 2 then break
+    let some u ← unfoldDefinition? Ψ' | break
+    Ψ' := u.headBeta
+  unless Ψ'.isAppOfArity ``MemTy.ofList 2 do return #[]
+  let mut l ← whnf Ψ'.appArg!
+  let mut out := #[]
+  for _ in [0:256] do
+    unless l.isAppOfArity ``List.cons 3 do break
+    let cell ← whnf l.getAppArgs[1]!
+    if cell.isAppOfArity ``Prod.mk 4 then
+      let t ← whnf cell.getAppArgs[2]!
+      if let some k := (t.nat? <|> t.rawNatLit?) then out := out.push k
+    l ← whnf l.getAppArgs[2]!
+  return out
+
 /-- What was shown where an ending was looked for, with what it is a proof
 of: the walk's leaf is the same statement wherever the walk names no value,
 and is then not shown a second time. -/
@@ -3313,6 +3336,7 @@ def typeStraight : TacticM Unit := deep <| withMainContext do
 refused, the error names the instruction and says why. -/
 elab "ty_straight" : tactic => typeStraight
 
+set_option maxHeartbeats 1000000 in
 /-- One instruction that goes on to the next, typed without the tactic
 framework where the checker covers it: the instruction is read from the
 program's table, the checker is run by the kernel's evaluator, and of the
@@ -3442,9 +3466,11 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           | .ref .. => true
           | .eq (.lit v) => decide (0x1000 ≤ v.toNat)
           | _ => false)
-      let prog? ← if listed && (ahead || held) then
+      let kind? ← mmapKindRef.get
+      let prog? ← if listed && (ahead || held || kind?.isSome) then
           Sym.reifyProg Ψ'.appFn!.appArg! Ψ'.appArg!
         else pure none
+      let prog? := prog?.map fun (Pr, lays, tagLays) => ({ Pr with mmapKind := kind? }, lays, tagLays)
       -- Where what the program writes is being shown, the address of a block
       -- that says its bytes is kept as the number it is: that is what says
       -- which bytes a `write` from there offers.
@@ -3524,6 +3550,16 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
             arrived := cur
             at' := next'
             continue
+          -- an `mmap` being tried as a new block of a declared kind
+          if let some tag := P.mmapKind then
+            if let some (S', cs) := Sym.sysMmapKind P cur tag then
+              moves := moves.push (.step at' i len' arrived cs)
+              steps := steps + 1
+              advanced := true
+              cur := S'
+              arrived := cur
+              at' := next'
+              continue
           let some (S', cs) := Sym.stepSys cur linux?.isSome | do
             if (Sym.exitAt cur i).isSome then break
             trace[TypedAsm.fast] "system call not stepped: rax {toExpr (cur.regs.get .rax)}, rsi {

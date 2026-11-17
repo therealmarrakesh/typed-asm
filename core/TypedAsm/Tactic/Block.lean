@@ -852,7 +852,7 @@ Goals are left for whatever needs an argument: facts a target context
 demands (with the branch condition available as `hcond`), and register types
 that do not obviously match. The tactic stops at a `call`, which needs
 `ty_call`. -/
-elab "ty_block" : tactic => do
+elab "ty_block_core" : tactic => do
   let others := (← getGoals).drop 1
   let mut left : List MVarId := []
   -- the blocks still to be typed: this one, and those a jump typed in place
@@ -997,6 +997,38 @@ elab "ty_block" : tactic => do
       | some gs => left := left ++ gs
       | none => stuck := stuck ++ (← getGoals)
   setGoals (stuck ++ (← closeArith left) ++ others)
+
+
+/-- Types a whole block, as `ty_block_core` does. Where that leaves
+something, and the program declares kinds of block, the block is tried again
+with an `mmap` in it making a new block of each kind in turn, in place of
+memory for the program to own: which it is to be is found, not said. -/
+elab "ty_block" : tactic => do
+  let goal ← getMainGoal
+  let before := (← getGoals).length
+  let start ← saveState
+  let attempt : TacticM (Option Exception) := do
+    try
+      evalTactic (← `(tactic| ty_block_core))
+      pure none
+    catch e => pure (some e)
+  let first ← attempt
+  if first.isNone && (← getGoals).length < before then return
+  -- only at the outermost block, and only where there are kinds to try
+  if (← mmapKindRef.get).isSome then
+    if let some e := first then throw e
+    return
+  let kinds ← start.restore *> goal.withContext (do
+    let ty := (← instantiateMVars (← goal.getType)).consumeMData
+    if ty.isAppOfArity ``BlockOk 6 then declaredKinds ty.getAppArgs[3]! else pure #[])
+  for k in kinds do
+    start.restore
+    mmapKindRef.set (some k)
+    let r ← try attempt finally mmapKindRef.set none
+    if r.isNone && (← getGoals).length < before then return
+  -- as it was the first time
+  start.restore
+  if let some e ← attempt then throw e
 
 /-- Types a conditional jump in the middle of a block. The side that jumps
 is settled as `ty_block` would settle it; the side that carries on is left

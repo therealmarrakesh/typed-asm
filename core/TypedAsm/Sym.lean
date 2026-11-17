@@ -4739,6 +4739,9 @@ structure Prog where
   /-- Whether what the program writes is being shown: a `write` is then
   typed for what it offers. -/
   offers : Bool := false
+  /-- The kind of block an `mmap` makes, where the memory is not the
+  program's to own but a new block of a declared kind. -/
+  mmapKind : Option Nat := none
   /-- The blocks whose address, once taken, is kept as the number it is and
   not made a pointer: those whose bytes are to be written out, where what a
   program writes is being shown. A pointer's type does not say which block
@@ -5455,6 +5458,81 @@ theorem sysUnmap_sound {fetch : Fetch} {sys : Syscall} [LikeLinuxNW sys] {Ψ : M
     · cases h
   · cases h
 
+/-- Whether zero is a value of a type, as far as the term says. -/
+def TyS.zeroOk : TyS → Bool
+  | .int => true
+  | .eq (.lit v) => decide (v = 0)
+  | .nullable _ => true
+  | .orErr τ => τ.zeroOk
+  | _ => false
+
+theorem TyS.den_zeroOk {ρ : Env} : (τ : TyS) → τ.zeroOk = true → (τ.den ρ).zeroOk = true
+  | .int, _ => rfl
+  | .eq (.lit v), h => h
+  | .nullable _, _ => rfl
+  | .orErr τ, h => TyS.den_zeroOk τ h
+  | .eq (.var _), h | .eq (.add _ _), h | .eq (.shl _ _), h | .eq (.app1 _ _), h
+  | .eq (.app2 _ _ _), h | .ptr _ _ _, h | .ref _ _ _, h | .str _, h | .atom _, h
+  | .shifted _ _, h => by cases h
+
+/-- Whether each typed value of a list lies within so many bytes and admits
+zero: what fresh memory, which is all zero, may be taken to hold. -/
+def ValsS.fresh (sz : Nat) : ValsS → Bool
+  | .nil => true
+  | .cons o τ rest => decide (o + 8 ≤ sz) && τ.zeroOk && rest.fresh sz
+
+theorem ValsS.den_fresh {ρ : Env} {sz : Nat} : (vs : ValsS) → vs.fresh sz = true →
+    ((vs.den ρ).all fun p => p.1 + 8 ≤ sz) = true ∧ ((vs.den ρ).all fun p => p.2.zeroOk) = true
+  | .nil, _ => ⟨rfl, rfl⟩
+  | .cons o τ rest, h => by
+    simp only [ValsS.fresh, Bool.and_eq_true, decide_eq_true_eq] at h
+    obtain ⟨h₁, h₂⟩ := ValsS.den_fresh (ρ := ρ) rest h.2
+    exact ⟨by simp only [ValsS.den, List.all_cons, h₁, Bool.and_true, decide_eq_true_eq]; exact h.1.1,
+      by simp only [ValsS.den, List.all_cons, h₂, Bool.and_true]; exact TyS.den_zeroOk τ h.1.2⟩
+
+/-- An `mmap` for a new block of a declared kind: the kind's shape fits in
+the length asked for and each of its typed values admits zero. The call
+hands back an error number or a writable pointer to a block of the kind. -/
+def sysMmapKind (P : Prog) (Γ : CtxS) (tag : Nat) : Option (CtxS × List CondS) :=
+  match Γ.regs.get .rax, Γ.regs.get .rsi, Γ.regs.get .rdx, Γ.regs.get .r10, Γ.regs.get .rdi with
+  | .eq (.lit nr), .eq (.lit len), .eq (.lit prot), .eq (.lit fl), .eq (.lit hint) =>
+    if nr = 9 ∧ prot = 3 ∧ fl = 0x22 ∧ hint = 0 then
+      match lookupNat P.kinds tag with
+      | some (.mk (.lit sz) vals) =>
+        if 0 < sz ∧ sz ≤ len.toNat ∧ vals.fresh sz = true then
+          some (Γ.afterSyscall.setReg .rax (.orErr (.ref tag true (.lit 0))), [])
+        else none
+      | _ => none
+    else none
+  | _, _, _, _, _ => none
+
+theorem sysMmapKind_sound {fetch : Fetch} {sys : Syscall} [LikeLinuxNW sys] {Ψ : MemTy} {ρ : Env}
+    {P : Prog} (hP : P.Ok Ψ ρ) {Γ : CtxS} {tag : Nat} {x : CtxS × List CondS}
+    (h : sysMmapKind P Γ tag = some x) :
+    SysReturns fetch sys Ψ (Γ.den ρ) (x.1.den ρ) := by
+  unfold sysMmapKind at h
+  split at h
+  · next nr len prot fl hint hax hsi hdx h10 hdi =>
+    split at h
+    · next hn =>
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := hn
+      split at h
+      · next sz vals hk =>
+        split at h
+        · next hc =>
+          cases h
+          have reg : ∀ {r : Reg} {v : BitVec 64}, Γ.regs.get r = .eq (.lit v) →
+              (Γ.den ρ).regs r = .eq v := fun hr => by rw [CtxS.den_regs, hr]; rfl
+          obtain ⟨hfit, hzero⟩ := ValsS.den_fresh (ρ := ρ) vals hc.2.2
+          rw [CtxS.den_setReg, CtxS.den_afterSyscall]
+          exact linux_mmap_kind (S := (ShapeS.mk (.lit sz) vals).den ρ) (reg hax)
+            (KindsOk.lookup _ hP.kinds hk) (reg hsi) (reg hdx) (reg h10) (reg hdi) hc.2.1 hc.1
+            hfit hzero
+        · cases h
+      · cases h
+    · cases h
+  · cases h
+
 /-- **The checker for a system call that returns**: the call is told by the
 number in `rax`, which must be written out. -/
 def stepSys (Γ : CtxS) (write : Bool := true) : Option (CtxS × List CondS) :=
@@ -5563,7 +5641,15 @@ theorem stepSys_sound {fetch : Fetch} {sys : Syscall} [LikeLinuxNW sys] {Ψ : Me
 
 /-- A system call stepped over, where the operating system is like Linux. -/
 def sysStep (P : Prog) (Γ : CtxS) : Instr → Option (CtxS × List CondS)
-  | .syscall => if P.linux then stepSys Γ P.plainWrite else none
+  | .syscall =>
+    if P.linux then
+      match P.mmapKind with
+      | some tag =>
+        match sysMmapKind P Γ tag with
+        | some x => some x
+        | none => stepSys Γ P.plainWrite
+      | none => stepSys Γ P.plainWrite
+    else none
   | _ => none
 
 /-- What a return leaves: the return address, whose type is a variable,
@@ -6061,7 +6147,7 @@ theorem exitAt_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} 
 the address of whole pages of plain bytes that the context then owns. -/
 def mmapAt (P : Prog) (k : Nat) (next : BitVec 64) (Γ : CtxS) : Instr → Option Walk
   | .syscall =>
-    if P.linux && Γ.under k then
+    if P.linux && Γ.under k && P.mmapKind.isNone then
       match Γ.regs.get .rax, Γ.regs.get .rsi, Γ.regs.get .rdx, Γ.regs.get .r10,
           Γ.regs.get .rdi with
       | .eq (.lit nr), .eq (.lit len), .eq (.lit prot), .eq (.lit fl), .eq (.lit hint) =>
@@ -6084,8 +6170,8 @@ theorem mmapAt_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} 
   · split at h
     · next hc =>
       simp only [Bool.and_eq_true] at hc
-      haveI := hsys hc.1
-      have hu := hc.2
+      haveI := hsys hc.1.1
+      have hu := hc.1.2
       split at h
       · next nr n prot fl hint hax hsi hdx h10 hdi =>
         split at h
@@ -6635,8 +6721,14 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
             · split at hs
               · next hlin =>
                 haveI := hsys hlin
-                exact .sys hfetch (stepSys_sound hw hs h.1)
-                  (walk_sound hsys hw hE hWr rest hrestOk fuel k (a + len) Γ' ρ hP h.2)
+                have hrest := walk_sound hsys hw hE hWr rest hrestOk fuel k (a + len) Γ' ρ hP h.2
+                split at hs
+                · split at hs
+                  · next y hy =>
+                    cases hs
+                    exact .sys hfetch (sysMmapKind_sound hP hy) hrest
+                  · exact .sys hfetch (stepSys_sound hw hs h.1) hrest
+                · exact .sys hfetch (stepSys_sound hw hs h.1) hrest
               · cases hs
             · cases hs
           next =>

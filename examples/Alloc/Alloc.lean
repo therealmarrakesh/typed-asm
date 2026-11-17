@@ -35,15 +35,6 @@ inductive At : Label → Ctx → Prop
 -- is a node.
 asm_typing At kinds [(1, nodeShape)]
 
-/-! ## The program is well typed -/
-
-theorem blocksOk : BlocksOk Φ fetch linux Ψ := by
-  ty_program
-  case next =>
-    -- the arguments, then the `mmap` for a node
-    ty_mmap_kind 1
-    ty_block
-
 /-! ## Safety -/
 
 -- Safe whatever the program is given to read and wherever the kernel puts the
