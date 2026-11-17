@@ -1,4 +1,5 @@
 import TypedAsm.U.Upper
+import TypedAsm.U.Loader
 import TypedAsm.U.Labels
 import TypedAsm.U.Open
 
@@ -872,5 +873,21 @@ def afterRead (keeps : Bool) : Bool :=
 -- what the bytes held is no longer known after the call: a label saying it is, refused
 example : afterRead true = false := by decide +kernel
 example : afterRead false = true := by decide +kernel
+
+/-! ## All the memory a first state has -/
+
+/-- Two pages that may be written, and one of code. -/
+def sLoad : State := (State.init.setPerm 0x10000 8192 .rw).setPerm 0x400000 4096 .rx
+
+theorem sLoad_within : PermsWithin sLoad [(0x400000, 4096), (0x10000, 8192)] :=
+  (PermsWithin.init.setPerm 0x10000 8192 .rw).setPerm 0x400000 4096 .rx
+
+-- every byte the machine can touch is in one of the two ranges of bytes
+example (a : BitVec 64) (ha : sLoad.perm a ≠ .none) :
+    ∃ c ∈ [((0x10000 : BitVec 64), 8192), (0x400000, 4096)], (a - c.1).toNat < c.2 :=
+  sLoad_within.covered (by decide +kernel) ha
+-- a range one page short does not cover the pages given: the check says so
+example : [((0x400000 : BitVec 64), (4096 : BitVec 64)), (0x10000, 8192)].all
+    (stretchIn [(0x10000, 4096), (0x400000, 4096)]) = false := by decide +kernel
 
 end Tests.Unified
