@@ -1,30 +1,41 @@
 import EchoProgram
-import TypedAsm.Tactic
+import TypedAsm.U.Checked
 
 /-!
 # Echo: typing and safety
 
-The program is in `EchoProgram.lean`. This file types it and proves it safe.
-It is kept separate so that running the program does not link the tactics.
+The program is in `EchoProgram.lean`. This file says what its labels want
+and checks it: one check, run by Lean's kernel, that the code is typed and
+that the state the kernel loads the program into starts as its entry asks.
+Nothing is proved by hand.
+
+The theorems hold whatever the world outside holds: so whatever the program
+is given to read.
+
+It is kept separate so that running the program does not link the checker.
 -/
 
-open TypedAsm
+open TypedAsm TypedAsm.U
 
 namespace Echo
 
-/-! ## The typing -/
+/-! ## What the labels want -/
 
-/-- The contexts allowed at each label: nothing is known about any register,
-and the program uses no stack. -/
-inductive At : Label → Ctx → Prop
-  | start : At .start (entryCtx 0)
+/-- The program for the checker: its instructions; that the buffer is in
+the segment it was written in; and that it is to end with status nought. -/
+def pg : Prog :=
+  { code := progCode (Asm.table base code)
+    statics := staticIn (blocksOf code .start) (Asm.addr code base .buffer)
+    pre := preExits (· == 0) }
 
-asm_typing At
+/-- One label: the start, which the program comes back to after each line
+it echoes, wanting nothing known. That what was read fits the buffer, and
+that no more is written than was read, follows from what the calls
+answer. -/
+def labels : List U.Label := [⟨entry, entryOf 0⟩]
 
-/-! ## Safety -/
+/-! ## The check, and what it shows -/
 
--- And it ends only with status 0, whatever it was given to read.
-asm_safety At.start exits (· = 0)
+asm_checked code start .start stack 0 program pg labels labels fuel 30 exits (· == 0)
 
 end Echo
-
