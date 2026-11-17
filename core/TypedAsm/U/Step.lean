@@ -242,6 +242,40 @@ theorem target_den (ρ : Env) (Γ : CtxS) (next : BitVec 64) {i : Instr} {d : De
   rw [args_den ρ Γ d.srcs (desc_srcs_le hd), eaTerm_den]
   rfl
 
+/-- An instruction with a single-cell description goes on to the next. -/
+theorem targetOf_next {i : Instr} {d₁ : Desc1} (h : i.desc1 = some d₁) (vals : List (BitVec 64))
+    (fl : Flags) (next ea cell : BitVec 64) : targetOf i vals fl next ea cell = next := by
+  unfold targetOf
+  rw [desc_of_desc1 h]
+  rfl
+
+/-- **Where control goes, as plainly as it can be said**: the next
+instruction, for one that goes on; the address jumped to or called, where
+the instruction names it; and otherwise the term for where the instruction
+sends it. -/
+def targetS (i : Instr) (next : BitVec 64) (t : Val) : Val :=
+  match i.desc1 with
+  | some _ => .lit next
+  | none =>
+    match i with
+    | .jmp (.rel d) => .lit (next + d.signExtend 64)
+    | .call (.rel d) => .lit (next + d.signExtend 64)
+    | _ => t
+
+theorem targetS_den (ρ : Env) (i : Instr) (a b c : Val) (fl : FlagsT) (next : BitVec 64)
+    (ea cell : Val) :
+    (targetS i next (.goes i a b c fl next ea cell)).den ρ
+      = (Val.goes i a b c fl next ea cell).den ρ := by
+  unfold targetS
+  cases h : i.desc1 with
+  | some d₁ => exact (targetOf_next h _ _ _ _ _).symm
+  | none =>
+    simp only
+    split
+    · rfl
+    · rfl
+    · rfl
+
 /-- **The checker's step, for any described instruction.** The bytes it
 reads are found, in a region the context holds or through a fact about a
 value, and are the value held there or a value given the name `k`; each
@@ -264,7 +298,7 @@ def stepHeld (Γ : CtxS) (k : Nat) (next : BitVec 64) (i : Instr) : Option (CtxS
                 regs := setOuts (fun j => simpOut i j a b c Γ.flags next ea cell) i.outs 0 Γ.regs
                 flags := .out i a b c Γ.flags next ea cell
                 held := held' },
-          .goes i a b c Γ.flags next ea cell)
+          targetS i next (.goes i a b c Γ.flags next ea cell))
       | none => none
     | none => none
   | none => none
@@ -328,7 +362,8 @@ theorem stepHeld_sound {ρ : Env} {Γ Γ' : CtxS} {k : Nat} {next : BitVec 64} {
         · rintro t' Δ ⟨x, Γr, Γw, ⟨rfl, hx⟩, rfl, rfl, rfl⟩
           have hΓ : Γ.den (ρ.setVal k x) = Γ.den ρ := CtxS.den_setVal ρ k x Γ hu
           refine ⟨x, ?_, ?_⟩
-          · show _ = targetOf i _ _ next _ (cell.den (ρ.setVal k x))
+          · rw [targetS_den]
+            show _ = targetOf i _ _ next _ (cell.den (ρ.setVal k x))
             rw [target_den (ρ.setVal k x) Γ next hd, hΓ, hx]
           · have he := effect_den (ρ.setVal k x) Γ next hd (cell.den (ρ.setVal k x))
             rw [hΓ, hx] at he
