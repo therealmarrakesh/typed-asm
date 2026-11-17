@@ -350,4 +350,69 @@ example : mayReturn (.add (.bvar 1 16) (.lit 40)) = true := by decide +kernel
 -- it wants the stack pointer where it was before the return: refused
 example : mayReturn (.add (.bvar 1 16) (.lit 32)) = false := by decide +kernel
 
+/-! ## A function called
+
+A function is code wanting its entry family: the registers as its caller
+has them, eight bytes of stack with the return address in them, and
+whatever else its caller holds. Of the return address the entry knows that
+it is code wanting what the function returns with: here, `rax` holding what
+`rdi` held, every other register as it was, the stack pointer past the
+return address, the eight bytes held, and whatever else was held, held. -/
+
+/-- What `f` returns with, written one family in from its entry: `own` the
+registers that are as they were at entry, `rest` what else is held. -/
+def fExit (rax : Val) (rest : RestS) : TyS :=
+  .code ⟨rax, .bvar 1 1, .bvar 1 2, .bvar 1 3, .add (.bvar 1 4) (.lit 8), .bvar 1 5, .bvar 1 6,
+      .bvar 1 7, .bvar 1 8, .bvar 1 9, .bvar 1 10, .bvar 1 11, .bvar 1 12, .bvar 1 13, .bvar 1 14,
+      .bvar 1 15⟩
+    (.bvar 0) [(.bvar 1 4, ⟨8, []⟩)] .nil rest
+
+/-- The entry family of `f`, its return address known to be code wanting
+the given exit. -/
+def fEntry (exit : TyS) : CtxS where
+  regs := anyRegs
+  flags := .bvar 0
+  held := [(.bvar 0 4, ⟨8, [(0, .bvar 0 16)]⟩)]
+  known := [(.bvar 0 16, exit)]
+  rest := .bvar 0
+
+/-- `start: call f; mov eax, 60; syscall` and `f:` two instructions. -/
+def codeCall (body : Instr) : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .call (.rel 95), 5), (5, .mov .w32 (.rm_i (.reg .rax) 60), 5), (10, .syscall, 2),
+   (100, body, 3), (103, .ret, 1)]
+
+/-- Whether the program is typed with `f` of the given body and exit. -/
+def callOk (body : Instr) (exit : TyS) (caller : CtxS) : Bool :=
+  checkProgram (codeCall body) [lab 0 caller, lab 100 (fEntry exit)] 10 0
+
+/-- `mov rax, rdi`. -/
+def movRaxRdi : Instr := .mov .w64 (.rm_r (.reg .rax) .rdi)
+
+-- `f` returns what it was given and keeps every other register; the caller
+-- calls it and ends the program: typed, the function and its caller both
+example : callOk movRaxRdi (fExit (.bvar 1 7) (.bvar 1)) Pw = true := by decide +kernel
+
+/-- **And so typed at both labels for every member of their families**:
+what the kernel checked, as a theorem of the machine. -/
+example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
+    (hcode : ∀ e ∈ codeCall movRaxRdi, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (fam : Fam)
+    (n : Nat) :
+    Ok fetch sys Ψ n 100
+      ((fEntry (fExit (.bvar 1 7) (.bvar 1))).den { ρ with bound := fam :: ρ.bound }) :=
+  program_ok hD rfl (fun _ => trivial) hcode
+    (labels := [lab 0 Pw, lab 100 (fEntry (fExit (.bvar 1 7) (.bvar 1)))]) (fuel := 10) (k := 0)
+    (by decide +kernel) n _ (List.mem_cons_of_mem _ (List.mem_cons_self ..)) ρ fam
+
+-- a body that changes `rbx`, which the exit says is as it was: refused
+example : callOk (.mov .w64 (.rm_r (.reg .rbx) .rdi)) (fExit (.bvar 1 7) (.bvar 1)) Pw = false := by
+  decide +kernel
+-- an exit that says `rax` holds what `rsi` held, which the body does not do: refused
+example : callOk movRaxRdi (fExit (.bvar 1 6) (.bvar 1)) Pw = false := by decide +kernel
+-- an exit that leaves out what else the caller held: refused. The function
+-- would return holding its caller's memory with nothing said of it
+example : callOk movRaxRdi (fExit (.bvar 1 7) .none) Pw = false := by decide +kernel
+-- a caller with no room below its stack pointer for the return address: refused
+example : callOk movRaxRdi (fExit (.bvar 1 7) (.bvar 1))
+    { Pw with regs := Pw.regs.set .rsp (.add (.bvar 0 16) (.lit 4)) } = false := by decide +kernel
+
 end Tests.Unified

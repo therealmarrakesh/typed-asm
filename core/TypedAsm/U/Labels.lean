@@ -629,6 +629,11 @@ def CtxS.bmax (Γ : CtxS) : Nat :=
   max (max (allRegs.foldl (fun m r => max m ((Γ.regs.get r).bmax 0)) 0) (Γ.flags.bmax 0))
     (max (heldBmax 0 Γ.held) (Γ.known.foldl (fun m f => max m (max (f.1.bmax 0) (f.2.bmax 0))) 0))
 
+/-- How many names a member of the family takes when given names of its
+own: one for each value, and one at least, for its flags and for whatever
+else is held. -/
+def CtxS.width (Γ : CtxS) : Nat := Γ.bmax + 1
+
 /-- **Whether an address is code wanting a family**, in at most so many
 goes: it is a label, and each member of the family may be regarded as a
 member of the label's; or the code there, walked from a member of the
@@ -637,14 +642,14 @@ def justifyF (code : List (BitVec 64 × Instr × BitVec 64)) (labels : List Labe
     (stops : BitVec 64 → Bool) (fuelW : Nat) : Nat → Nat → BitVec 64 → CtxS → Bool
   | 0, _, _, _ => false
   | f + 1, k, a, E =>
-    E.under k && (E.open (freshOpening k)).under (k + E.bmax) &&
+    E.under k && (E.open (freshOpening k)).under (k + E.width) &&
       ((match labels.find? fun l => l.addr == a with
         | some l =>
           (closeCtx (justifyF code labels stops fuelW f) l.pat (E.open (freshOpening k))
-            (k + E.bmax)).isSome
+            (k + E.width)).isSome
         | none => false) ||
-       (walk code stops true fuelW (k + E.bmax) a (E.open (freshOpening k))).closes
-          (closeCtx (justifyF code labels stops fuelW f)) labels (k + E.bmax))
+       (walk code stops true fuelW (k + E.width) a (E.open (freshOpening k))).closes
+          (closeCtx (justifyF code labels stops fuelW f)) labels (k + E.width))
 
 theorem justifyF_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
     (hpre : ∀ s, D.pre s) {n : Nat} {code : List (BitVec 64 × Instr × BitVec 64)}
@@ -677,8 +682,8 @@ theorem justifyF_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
         refine Ok.regard hreg ?_
         rw [← ha]
         exact H l hmem ρ'' _
-    · exact (walk_sound hD hkind hpre code stops hcode true fuelW (k + E.bmax) a
-        (E.open (freshOpening k)) ρ' hΔ (Walk.holds_of_closes hcc H _ (k + E.bmax) ρ' hw)).1
+    · exact (walk_sound hD hkind hpre code stops hcode true fuelW (k + E.width) a
+        (E.open (freshOpening k)) ρ' hΔ (Walk.holds_of_closes hcc H _ (k + E.width) ρ' hw)).1
 
 /-! ## A program -/
 
