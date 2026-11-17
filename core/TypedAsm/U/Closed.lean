@@ -147,12 +147,6 @@ theorem heldDen_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n zs 
   exact List.map_congr_left fun p hp => by
     rw [Val.den_agree ρ n zs zs' hz _ (List.all_eq_true.mp hbk.2 p hp)]
 
-theorem Regs.all_of_map {f : Val → Bool} (regs : Regs Val) (h : (regs.map f == allTrue) = true)
-    (r : Reg) : f (regs.get r) = true := by
-  have h1 : (regs.map f).get r = f (regs.get r) := Regs.get_map _ _ r
-  rw [← h1, beq_iff_eq.mp h]
-  cases r <;> rfl
-
 mutual
 
 /-- Whether what is known mentions only so many enclosing families. Code

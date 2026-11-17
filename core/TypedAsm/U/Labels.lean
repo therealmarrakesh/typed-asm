@@ -1,6 +1,6 @@
 import TypedAsm.U.Walk
 import TypedAsm.U.JoinS
-import TypedAsm.U.NameFree
+import TypedAsm.U.Open
 
 /-!
 # Addresses known to be code
@@ -352,7 +352,7 @@ theorem famOf_withFam (ρ : Env) (k : Nat) (fam : Fam) :
 
 /-- **A label's code typed from its starting context, whatever the names
 stand for, is typed for every member of its family.** -/
-theorem Label.ok_of_start {n : Nat} {l : Label} {k : Nat} (hfree : l.pat.nameFree = true)
+theorem Label.ok_of_start {n : Nat} {l : Label} {k : Nat} (hfree : l.pat.under 0 = true)
     (h : ∀ ρ', Ok fetch sys Ψ n l.addr ((l.start k).den ρ')) (ρ : Env) (fam : Fam) :
     Ok fetch sys Ψ n l.addr (l.pat.den { ρ with bound := fam :: ρ.bound }) := by
   have h1 := h (ρ.withFam k fam)
@@ -360,8 +360,10 @@ theorem Label.ok_of_start {n : Nat} {l : Label} {k : Nat} (hfree : l.pat.nameFre
       = l.pat.den { ρ.withFam k fam with bound := famOf (ρ.withFam k fam) (freshOpening k) ::
           (ρ.withFam k fam).bound } from
     CtxS.den_open _ _ (freshOpening_closed k) l.pat, famOf_withFam] at h1
-  rw [CtxS.den_nameFree (ρ₁ := { ρ with bound := fam :: ρ.bound })
-    (ρ₂ := { ρ.withFam k fam with bound := fam :: (ρ.withFam k fam).bound }) ⟨rfl, rfl⟩ l.pat hfree]
+  rw [CtxS.den_under (k := 0) (ρ₁ := { ρ with bound := fam :: ρ.bound })
+    (ρ₂ := { ρ.withFam k fam with bound := fam :: (ρ.withFam k fam).bound })
+    ⟨fun _ h => absurd h (Nat.not_lt_zero _), fun _ h => absurd h (Nat.not_lt_zero _),
+      fun _ h => absurd h (Nat.not_lt_zero _), rfl, rfl⟩ l.pat hfree]
   exact h1
 
 /-! ## A walk that leaves nothing to be shown -/
@@ -466,13 +468,14 @@ theorem Walk.holds_of_auto {n : Nat} (W : Walk) (ρ : Env) (h : W.auto = true) :
 
 /-! ## A program -/
 
-/-- **Whether a program is typed**: each label's family mentions no names,
+/-- **Whether a program is typed**: each label's family mentions no names
+(none is below nought),
 and from each label, started at names from the `k`th on, the walk gets
 somewhere and leaves nothing to be shown. -/
 def checkProgram (code : List (BitVec 64 × Instr × BitVec 64)) (labels : List Label)
     (fuel k : Nat) : Bool :=
   labels.all fun l =>
-    l.pat.nameFree && (l.start k).under (k + l.m) &&
+    l.pat.under 0 && (l.start k).under (k + l.m) &&
       (let W := walk code (fun a => labels.any fun l' => l'.addr == a) true fuel (k + l.m) l.addr
         (l.start k)
        W.moved && W.closes labels (k + l.m))

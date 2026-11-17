@@ -118,9 +118,9 @@ theorem TyS.strip_under (k : Nat) (nz ne : Bool) :
 theorem CtxS.learn_under (p : CmpT) (b : Bool) (Γ : CtxS) (k : Nat) (h : Γ.under k = true) :
     (Γ.learn p b).under k = true := by
   simp only [CtxS.under, CtxS.learn, Bool.and_eq_true, List.all_eq_true] at h ⊢
-  refine ⟨h.1, fun f hf => ?_⟩
+  refine ⟨⟨h.1.1, fun f hf => ?_⟩, h.2⟩
   obtain ⟨g, hg, rfl⟩ := List.mem_map.mp hf
-  exact ⟨(h.2 g hg).1, TyS.strip_under k _ _ g.2 (h.2 g hg).2⟩
+  exact ⟨(h.1.2 g hg).1, TyS.strip_under k _ _ g.2 (h.1.2 g hg).2⟩
 
 /-- **The context on one side of a conditional jump**: knowing what the
 condition's being so, or not, teaches, where the flags say what comparison

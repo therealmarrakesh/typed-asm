@@ -135,7 +135,7 @@ theorem readCell_sound {ρ : Env} {Γ : CtxS} {k : Nat} {next : BitVec 64} {cell
           -- the slot's term mentions no name from `k` on
           have hcu : v.under k = true := by
             simp only [CtxS.under, heldUnder, Bool.and_eq_true, List.all_eq_true] at hu
-            exact (hu.1.2 (b, S) (List.mem_of_getElem? hl)).2 (o, v) hm
+            exact (hu.1.1.2 (b, S) (List.mem_of_getElem? hl)).2 (o, v) hm
           exact key v (by rw [Val.den_setVal ρ k x _ hcu]; exact hx.symm) h
         · exact key (.var k) (Env.setVal_get_self ρ k x) h
       · exact key (.var k) (Env.setVal_get_self ρ k x) h
@@ -159,7 +159,7 @@ theorem readCell_sound {ρ : Env} {Γ : CtxS} {k : Nat} {next : BitVec 64} {cell
         have hSh : Sh.under k = true := by
           have hu' := hu
           simp only [CtxS.under, Bool.and_eq_true, List.all_eq_true] at hu'
-          simpa only [TyS.under] using (hu'.2 _ hmem).2
+          simpa only [TyS.under] using (hu'.1.2 _ hmem).2
         rw [List.map_append, readFactsS_den, ShapeS.den_setVal ρ k x Sh hSh]
         congr 1
         · show _ = readFacts (Sh.den ρ) o n ((Val.var k).den (ρ.setVal k x))
