@@ -93,11 +93,16 @@ end with 120. A function is typed once, for every caller its label allows:
 `examples/Double` one that takes a page and gives it back;
 `examples/Dispatch` calls through a table of pointers to functions.
 
+A program that is refused is told why in its own terms (`explainText pg
+labels fuel`): which instruction; what it reads or writes, and where; what
+the machine could do there if the program ran; what a register holds and
+which earlier instruction left it so; and, where a label or a return is
+reached in a context it does not allow, each thing wanted that is not so.
+The code a call returns to is looked into in the same way. It is worked
+out from the parts the check is made of, and nothing rests on it.
+
 What is not there:
 
-- A program is refused with the place its check stops and a short reason
-  (`explain`), not yet with an account in the program's own terms of what
-  the instruction would need.
 - What a program writes is followed for bytes its data says it holds and
   for bytes it made, not for bytes it read. A store of two or four bytes
   into a number it made leaves that number unknown; a store of one or of
