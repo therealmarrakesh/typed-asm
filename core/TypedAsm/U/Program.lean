@@ -35,6 +35,15 @@ theorem Ok.learn {n : Nat} {a : BitVec 64} {Γ : Ctx} (fs : List Fact)
   fun k hk Ψ' he hwf s hs hw =>
     h k hk Ψ' he hwf s hs (hw.addKnown fs fun f hf => hfs f hf k hk Ψ' he hwf)
 
+/-- The same of arriving: the state that arrives has what was known one
+step before, so the facts are to be so for one step more. -/
+theorem Arrives.learn {n : Nat} {t : BitVec 64} {Γ : Ctx} (fs : List Fact)
+    (hfs : ∀ f ∈ fs, ∀ k, k ≤ n + 1 → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF →
+      HasTy fetch sys Ψ' k f.2 f.1)
+    (h : Arrives fetch sys Ψ n t { Γ with known := fs ++ Γ.known }) : Arrives fetch sys Ψ n t Γ :=
+  fun k hk Ψ' he hwf s hs hw =>
+    h k hk Ψ' he hwf s hs (hw.addKnown fs fun f hf => hfs f hf (k + 1) (by omega) Ψ' he hwf)
+
 /-- Code typed in each of a family of contexts, at an address, makes the
 address a value known to be code wanting them. -/
 theorem hasTy_code_of_ok {n : Nat} {v : BitVec 64} {pre : Fam → Ctx}
