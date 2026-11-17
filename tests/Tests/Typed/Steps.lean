@@ -1,4 +1,4 @@
-import TypedAsm.U.Upper
+import TypedAsm.U.Span
 import TypedAsm.U.Loader
 import TypedAsm.U.Exits
 import TypedAsm.U.Writes
@@ -124,11 +124,8 @@ example : (match walk codeW (fun _ => false) true 10 20 0 Γw with
 
 -- after push, mov, pop: rbx holds what it held (the value pushed is the value popped)
 example : (match walk codeW (fun _ => false) true 10 20 0 Γw with
-    | .step _ _ _ _ (.step _ _ _ _ (.step _ _ _ _ (.stop _ Γ))) => Γ.regs.rbx.summands
-    | _ => ([], 0)) = (match walk codeW (fun _ => false) true 10 20 0 Γw with
-    | .step _ _ _ _ (.step _ _ _ _ (.step _ _ _ _ (.stop _ Γ))) =>
-        ((Γ.held.head?.map fun b => b.2.slots.map (·.2)).getD []).head?.map (·.summands) |>.getD ([], 0)
-    | _ => ([], 1)) := by decide +kernel
+    | .step _ _ _ _ (.step _ _ _ _ (.step _ _ _ _ (.stop _ Γ))) => Γ.regs.rbx.linSame (.var 3)
+    | _ => false) = true := by decide +kernel
 
 /-! ## A whole program -/
 

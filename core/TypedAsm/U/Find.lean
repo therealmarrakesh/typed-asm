@@ -16,44 +16,6 @@ size. Nothing is tried: the terms are compared.
 
 namespace TypedAsm.U
 
-/-- A term as the terms it is a sum of, other than numbers, and the number
-added to them. -/
-def Val.summands : Val → List Val × BitVec 64
-  | .lit v => ([], v)
-  | .add a b => (a.summands.1 ++ b.summands.1, a.summands.2 + b.summands.2)
-  | t => ([t], 0)
-
-/-- What a list of terms comes to, added up. -/
-def sumDen (ρ : Env) : List Val → BitVec 64
-  | [] => 0
-  | t :: ts => t.den ρ + sumDen ρ ts
-
-theorem sumDen_append (ρ : Env) (l₁ l₂ : List Val) :
-    sumDen ρ (l₁ ++ l₂) = sumDen ρ l₁ + sumDen ρ l₂ := by
-  induction l₁ with
-  | nil => simp [sumDen]
-  | cons t ts ih => simp only [List.cons_append, sumDen, ih, BitVec.add_assoc]
-
-theorem sumDen_one (ρ : Env) (t : Val) : t.den ρ = sumDen ρ [t] + 0 := by
-  show t.den ρ = t.den ρ + 0 + 0
-  simp
-
-/-- A term is the sum of what it is taken apart into. -/
-theorem Val.summands_den (ρ : Env) : (a : Val) → a.den ρ = sumDen ρ a.summands.1 + a.summands.2
-  | .lit v => by simp [Val.summands, sumDen, Val.den]
-  | .bin .add a b => by
-    show a.den ρ + b.den ρ = sumDen ρ (a.summands.1 ++ b.summands.1) + (a.summands.2 + b.summands.2)
-    rw [sumDen_append, Val.summands_den ρ a, Val.summands_den ρ b]
-    bv_omega
-  | .bin (.shift ..) a b => sumDen_one ρ _
-  | .bin (.imul _) a b => sumDen_one ρ _
-  | .var i => sumDen_one ρ _
-  | .bvar d i => sumDen_one ρ _
-  | .slot .. => sumDen_one ρ _
-  | .un .. => sumDen_one ρ _
-  | .tri .. => sumDen_one ρ _
-  | .fop .. => sumDen_one ρ _
-
 /-- How far an address is past another, where taking the one from the
 other leaves only a number, however the two are written. -/
 def offsetFrom (a base : Val) : Option Nat := (a.minus base).map (·.toNat)

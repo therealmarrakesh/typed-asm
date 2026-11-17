@@ -1,4 +1,4 @@
-import TypedAsm.U.Upper
+import TypedAsm.U.Span
 import TypedAsm.U.Loader
 import TypedAsm.U.Exits
 import TypedAsm.U.Writes
