@@ -1,22 +1,12 @@
 import TypedAsm.ArgText
 import TypedAsm.LinuxOld
 import TypedAsm.Output
+import TypedAsm.Runs
 
 /-!
-# From a typed program to a safe run
+# From a typed program to a safe run, in the old type system
 
-Everything in one step. A program whose blocks are typed, started in a state
-that meets its entry contract, is safe on the machine that fetches
-instructions by decoding the bytes in memory: it never gets stuck and never
-faults, whatever it reads, whatever the kernel answers, and however long it
-runs.
-
-There is one theorem for each entry contract: `Entry.safeMem` for a program
-that does not look at its arguments, `EntryArgs.safeMem` for one that goes
-through them as numbers, and `EntryTexts.safeMem` for one that reads their
-text. Each asks for the same things: the typing of the blocks, that the
-context allowed at the entry label is the one the contract provides, and
-that the data the program is loaded with has the types the blocks claim.
+It goes with the old core.
 -/
 
 namespace TypedAsm
@@ -114,19 +104,6 @@ theorem EntryTexts.safeMem
     SafeMem linux s :=
   .of_safe linux_frame (Asm.loaded h.choose_spec.1.loaded) (h.safe hty hkinds hstart hfields)
 
-/-! ## Safe, and ending only as wanted
-
-A program typed against the system that lets it end only with a status
-satisfying `Q` is safe under `linux`, and ends only with such a status:
-wherever it reaches a system call that ends it. One typing gives both. The
-second is said of the machine that looks instructions up in the program. -/
-
-/-- What it is for the program started in `s` to end only with a status
-satisfying `Q`. -/
-def ExitsOnly (fetch : Fetch) (Q : BitVec 32 → Prop) (s : State) : Prop :=
-  ∀ s', Steps fetch linux s s' → ∀ len c, fetch s'.rip = some (.syscall, len) →
-    linux { s' with rip := s'.rip + len } = .exit c → Q c
-
 theorem Entry.safeMem_exits {Q : BitVec 32 → Prop}
     (h : Entry (Asm.addr code base start) (Asm.parts base code) blocks room 0 s)
     (hty : BlocksOk (.ofLabels code base At) (Asm.fetch base code) (linux.exitsOnly Q)
@@ -160,9 +137,6 @@ theorem EntryTexts.safeMem_exits {Q : BitVec 32 → Prop}
   have hs := Safe.of_exitsOnly (h.safe hty hkinds hstart hfields)
   ⟨.of_safe linux_frame (Asm.loaded h.choose_spec.1.loaded) hs.1, hs.2⟩
 
-/-! These rest on Lean's three standard axioms and nothing else: no proof in
-the library is taken on trust from a solver or from compiled code. -/
-
 /-- info: 'TypedAsm.Entry.safeMem' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
 #print axioms Entry.safeMem
@@ -178,18 +152,6 @@ info: 'TypedAsm.EntryTexts.safeMem' depends on axioms: [propext, Classical.choic
 -/
 #guard_msgs in
 #print axioms EntryTexts.safeMem
-
-/-! ## Safe, and writing only as wanted
-
-A program typed against the system that refuses a `write` unless what is
-offered satisfies `R` is safe under `linux`, and offers only such writes:
-wherever it reaches one. -/
-
-/-- What it is for the program started in `s` to offer the kernel, at every
-`write` it reaches, a descriptor and bytes satisfying `R`. -/
-def WritesOnly (fetch : Fetch) (R : BitVec 64 → List (BitVec 8) → Prop) (s : State) : Prop :=
-  ∀ s', Steps fetch linux s s' → ∀ len, fetch s'.rip = some (.syscall, len) →
-    s'.getReg .rax = 1 → R (s'.getReg .rdi) s'.offered
 
 theorem Entry.safeMem_writes {R : BitVec 64 → List (BitVec 8) → Prop}
     (h : Entry (Asm.addr code base start) (Asm.parts base code) blocks room 0 s)
@@ -219,9 +181,6 @@ theorem Entry.safeMem_exits_writes {Q : BitVec 32 → Prop}
   have he := Safe.of_exitsOnly hw.1
   ⟨.of_safe linux_frame (Asm.loaded h.loaded) he.1, he.2,
     fun s' hs' len hf hax => hw.2 s' hs'.exitsOnly len hf hax⟩
-
-/-! The same for a program that looks at its arguments, as numbers or as
-text: for every number of them. -/
 
 theorem EntryArgs.safeMem_writes {R : BitVec 64 → List (BitVec 8) → Prop}
     (h : EntryArgs (Asm.addr code base start) (Asm.parts base code) blocks room s)
@@ -273,33 +232,5 @@ theorem EntryTexts.safeMem_exits_writes {Q : BitVec 32 → Prop}
   ⟨.of_safe linux_frame (Asm.loaded h.choose_spec.1.loaded) he.1, he.2,
     fun s' hs' len hf hax => hw.2 s' hs'.exitsOnly len hf hax⟩
 
-/-! ## Everything a program writes
-
-The record the world keeps of what was written, over a whole run. -/
-
-/-- **Everything a program has written.** Where every `write` the program
-reaches offers a descriptor and bytes satisfying `R`, each entry the run has
-added to the record of writes is the first so many bytes of something
-satisfying `R`: the kernel may take fewer bytes than it is offered, and
-nothing else is ever written. -/
-def OutputOnly (fetch : Fetch) (R : BitVec 64 → List (BitVec 8) → Prop) (s : State) : Prop :=
-  ∀ s', Steps fetch linux s s' → ∃ new, s'.world.writes = new ++ s.world.writes ∧
-    ∀ w ∈ new, ∃ fd bytes n, R fd bytes ∧ w = bytes.take n
-
-theorem WritesOnly.output {fetch : Fetch} {R : BitVec 64 → List (BitVec 8) → Prop} {s : State}
-    (h : WritesOnly fetch R s) : OutputOnly fetch R s := by
-  intro s' hs'
-  induction hs' with
-  | refl s => exact ⟨[], rfl, fun _ hw => by cases hw⟩
-  | @step s t u hst _ ih =>
-    obtain ⟨new, e, hall⟩ := ih (fun v hv => h v (.step hst hv))
-    rcases step_writes hst with e' | ⟨⟨len, hf⟩, hax, n, e'⟩
-    · exact ⟨new, by rw [e, e'], hall⟩
-    · refine ⟨new ++ [s.offered.take n], by rw [e, e', List.append_assoc]; rfl, fun w hw => ?_⟩
-      rcases List.mem_append.mp hw with hw | hw
-      · exact hall w hw
-      · rw [List.mem_singleton.mp hw]
-        exact ⟨_, _, n, h s (.refl s) len hf hax, rfl⟩
-
-
 end TypedAsm
+

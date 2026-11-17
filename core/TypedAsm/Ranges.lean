@@ -114,4 +114,39 @@ theorem State.canRead_apart {s s' : State} {a b : BitVec 64} {n m : Nat}
   · have hd' := hd.of_pos (by omega) (by omega)
     exact absurd hin (by bv_omega)
 
+/-- A range apart from each of two that lie end to end is apart from the two
+taken as one. -/
+theorem Disjoint.union_right {a b : BitVec 64} {n m₁ m₂ : Nat} (h₁ : Disjoint a n b m₁)
+    (h₂ : Disjoint a n (b + BitVec.ofNat 64 m₁) m₂) (hm : m₁ + m₂ < 2 ^ 64) :
+    Disjoint a n b (m₁ + m₂) := by
+  refine ⟨fun _ => ?_, fun hn0 => ?_⟩
+  · by_cases h10 : m₁ = 0
+    · subst h10
+      have := h₂.1 (by omega)
+      bv_omega
+    · exact h₁.1 h10
+  · have a₁ := h₁.2 hn0
+    have a₂ := h₂.2 hn0
+    bv_omega
+
+/-- A range apart from another is apart from any part of it. -/
+theorem Disjoint.sub_right {a b : BitVec 64} {n m p m' : Nat} (h : Disjoint a n b m)
+    (hp : p + m' ≤ m) (hn : n < 2 ^ 64) (hm : m < 2 ^ 64) :
+    Disjoint a n (b + BitVec.ofNat 64 p) m' := by
+  by_cases hn0 : n = 0
+  · subst hn0
+    exact ⟨fun _ => by bv_omega, fun h0 => absurd rfl h0⟩
+  · by_cases hm0 : m' = 0
+    · subst hm0
+      exact ⟨fun h0 => absurd rfl h0, fun _ => by bv_omega⟩
+    · have h' := h.of_pos hn0 (by omega)
+      refine ⟨fun _ => ?_, fun _ => ?_⟩ <;> bv_omega
+
+/-- A range apart from another has every beginning of it apart from that other. -/
+theorem Disjoint.prefix_left {a b : BitVec 64} {n n' m : Nat} (h : Disjoint a n b m)
+    (hle : n' ≤ n) (hn : n < 2 ^ 64) (hm : m < 2 ^ 64) : Disjoint a n' b m := by
+  have := h.symm.sub_right (p := 0) (m' := n') (by omega) hm hn
+  rw [show a + BitVec.ofNat 64 0 = a by simp] at this
+  exact this.symm
+
 end TypedAsm

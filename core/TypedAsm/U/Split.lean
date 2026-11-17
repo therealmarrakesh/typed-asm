@@ -1,5 +1,5 @@
 import TypedAsm.U.Regard
-import TypedAsm.Owned
+import TypedAsm.Ranges
 
 /-!
 # The regions held, seen another way

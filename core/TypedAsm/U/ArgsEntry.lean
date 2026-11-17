@@ -1,4 +1,4 @@
-import TypedAsm.ArgText
+import TypedAsm.ArgWords
 import TypedAsm.U.Blocks
 import TypedAsm.U.Stack
 

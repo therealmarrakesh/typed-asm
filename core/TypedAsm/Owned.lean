@@ -207,19 +207,6 @@ theorem BlockOk.freezeKind {a : BitVec 64} {Γ : Ctx} {r : Reg} {k : Nat} {base 
         simp⟩)
     ⟨Ψ₂, he, hwf, (), hw⟩) (fun _ => hrest)
 
-/-- A range apart from another is apart from any part of it. -/
-theorem Disjoint.sub_right {a b : BitVec 64} {n m p m' : Nat} (h : Disjoint a n b m)
-    (hp : p + m' ≤ m) (hn : n < 2 ^ 64) (hm : m < 2 ^ 64) :
-    Disjoint a n (b + BitVec.ofNat 64 p) m' := by
-  by_cases hn0 : n = 0
-  · subst hn0
-    exact ⟨fun _ => by bv_omega, fun h0 => absurd rfl h0⟩
-  · by_cases hm0 : m' = 0
-    · subst hm0
-      exact ⟨fun h0 => absurd rfl h0, fun _ => by bv_omega⟩
-    · have h' := h.of_pos hn0 (by omega)
-      refine ⟨fun _ => ?_, fun _ => ?_⟩ <;> bv_omega
-
 /-- **An owned block may be split in two** at any byte. The first `m` bytes
 stay a block where it was; the rest become a block of their own, `m` bytes
 on. A typed value that lay across the split is forgotten. Each part may then
@@ -311,21 +298,6 @@ theorem BlockOk.splitOwned {a : BitVec 64} {Γ : Ctx} {r : Reg} {k m : Nat} {bas
           (base + BitVec.ofNat 64 m, S.drop m) :: (base, S.take m) :: Γ.owned.eraseIdx k }) :
     BlockOk Φ fetch sys Ψ a Γ :=
   .weaken (fun _ _ hΨ₁ _ _ h => h.splitOwned hΨ₁ hk hm) hrest
-
-/-- A range apart from each of two that lie end to end is apart from the two
-taken as one. -/
-theorem Disjoint.union_right {a b : BitVec 64} {n m₁ m₂ : Nat} (h₁ : Disjoint a n b m₁)
-    (h₂ : Disjoint a n (b + BitVec.ofNat 64 m₁) m₂) (hm : m₁ + m₂ < 2 ^ 64) :
-    Disjoint a n b (m₁ + m₂) := by
-  refine ⟨fun _ => ?_, fun hn0 => ?_⟩
-  · by_cases h10 : m₁ = 0
-    · subst h10
-      have := h₂.1 (by omega)
-      bv_omega
-    · exact h₁.1 h10
-  · have a₁ := h₁.2 hn0
-    have a₂ := h₂.2 hn0
-    bv_omega
 
 /-- What is left of a list after two places are taken out is at neither. -/
 private theorem mem_eraseIdx_two {α : Type} {L : List α} {lo hi : Nat} {c : α} (hlt : lo < hi)
@@ -706,13 +678,6 @@ that was called has no business there. -/
 def stackBlocks (v : BitVec 64) : Nat → List Shape → List (BitVec 64 × Shape)
   | _, [] => []
   | off, S :: L => (v + BitVec.ofNat 64 off, S) :: stackBlocks v (off + S.size) L
-
-/-- A range apart from another has every beginning of it apart from that other. -/
-theorem Disjoint.prefix_left {a b : BitVec 64} {n n' m : Nat} (h : Disjoint a n b m)
-    (hle : n' ≤ n) (hn : n < 2 ^ 64) (hm : m < 2 ^ 64) : Disjoint a n' b m := by
-  have := h.symm.sub_right (p := 0) (m' := n') (by omega) hm hn
-  rw [show a + BitVec.ofNat 64 0 = a by simp] at this
-  exact this.symm
 
 /-- A state matching a context matches any context with the same parts. -/
 theorem WellTyped.recast {Γ' : Ctx} (h : WellTyped fetch sys Ψ n Γ s) (hregs : Γ'.regs = Γ.regs)

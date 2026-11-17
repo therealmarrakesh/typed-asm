@@ -1,6 +1,6 @@
 import TypedAsm.U.Say
 import TypedAsm.U.ArgsWhole
-import TypedAsm.EndToEnd
+import TypedAsm.Runs
 
 /-!
 # What every checked program states

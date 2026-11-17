@@ -1,6 +1,6 @@
 import TypedAsm.Image
 import TypedAsm.Elf
-import TypedAsm.Entry
+import TypedAsm.Data
 
 /-!
 # Where a program is loaded, and the file made of it
