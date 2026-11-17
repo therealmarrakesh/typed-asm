@@ -16,13 +16,21 @@ names of their own.
 
 namespace TypedAsm.U
 
-/-- A region held alone, as terms: its size, and the values in it. -/
+/-- A number written out is a term. -/
+instance (n : Nat) : OfNat Val n := ⟨.lit (BitVec.ofNat 64 n)⟩
+
+/-- A region held alone, as terms: its size, and the values in it, each
+with how far into the region it is. The size and how far in are terms too:
+a region may be as many bytes as a value says. -/
 structure HeldS where
-  size : Nat
-  slots : List (Nat × Val)
+  size : Val
+  slots : List (Val × Val)
   deriving DecidableEq
 
-def HeldS.den (ρ : Env) (S : HeldS) : Held := ⟨S.size, S.slots.map fun p => (p.1, p.2.den ρ)⟩
+/-- A cell of a region: how far in, as a number, and the value. -/
+def slotDen (ρ : Env) (p : Val × Val) : Nat × BitVec 64 := ((p.1.den ρ).toNat, p.2.den ρ)
+
+def HeldS.den (ρ : Env) (S : HeldS) : Held := ⟨(S.size.den ρ).toNat, S.slots.map (slotDen ρ)⟩
 
 /-- Whatever else is held, besides the regions written out: nothing; what a
 name stands for; or what the family `d` out ranges over. -/

@@ -150,9 +150,11 @@ theorem FlagsT.den_open (ρ : Env) (o : Opening) (ho : o.Closed) (pre zs : List 
 
 end
 
-/-- The regions of a list, opened. -/
+/-- The regions of a list, opened: their addresses, their sizes, and the
+values in them with how far in each is. -/
 def heldOpen (o : Opening) (n : Nat) (held : List (Val × HeldS)) : List (Val × HeldS) :=
-  held.map fun r => (r.1.open o n, ⟨r.2.size, r.2.slots.map fun p => (p.1, p.2.open o n)⟩)
+  held.map fun r => (r.1.open o n,
+    ⟨r.2.size.open o n, r.2.slots.map fun p => (p.1.open o n, p.2.open o n)⟩)
 
 theorem heldDen_open (ρ : Env) (o : Opening) (ho : o.Closed) (pre zs : List Fam)
     (held : List (Val × HeldS)) :
@@ -164,16 +166,19 @@ theorem heldDen_open (ρ : Env) (o : Opening) (ho : o.Closed) (pre zs : List Fam
   rw [List.map_map]
   refine List.map_congr_left fun r _ => ?_
   show ((r.1.open o pre.length).den { ρ with bound := pre ++ zs },
-      (⟨r.2.size, (r.2.slots.map fun p => (p.1, p.2.open o pre.length)).map
-        fun p => (p.1, p.2.den { ρ with bound := pre ++ zs })⟩ : Held))
+      (⟨((r.2.size.open o pre.length).den { ρ with bound := pre ++ zs }).toNat,
+        (r.2.slots.map fun p => (p.1.open o pre.length, p.2.open o pre.length)).map
+          (slotDen { ρ with bound := pre ++ zs })⟩ : Held))
     = (r.1.den { ρ with bound := pre ++ famOf ρ o :: zs },
-        (⟨r.2.size, r.2.slots.map fun p =>
-          (p.1, p.2.den { ρ with bound := pre ++ famOf ρ o :: zs })⟩ : Held))
-  rw [Val.den_open ρ o ho pre zs, List.map_map]
+        (⟨(r.2.size.den { ρ with bound := pre ++ famOf ρ o :: zs }).toNat,
+          r.2.slots.map (slotDen { ρ with bound := pre ++ famOf ρ o :: zs })⟩ : Held))
+  rw [Val.den_open ρ o ho pre zs, Val.den_open ρ o ho pre zs, List.map_map]
   congr 2
   exact List.map_congr_left fun p _ => by
-    show (p.1, (p.2.open o pre.length).den { ρ with bound := pre ++ zs }) = _
-    rw [Val.den_open ρ o ho pre zs]
+    show (((p.1.open o pre.length).den { ρ with bound := pre ++ zs }).toNat,
+      (p.2.open o pre.length).den { ρ with bound := pre ++ zs }) = _
+    rw [Val.den_open ρ o ho pre zs, Val.den_open ρ o ho pre zs]
+    rfl
 
 /-- Whatever else is held, opened: the regions to be written out, and what
 is left. -/

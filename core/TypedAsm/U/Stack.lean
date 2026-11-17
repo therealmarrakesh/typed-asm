@@ -20,7 +20,7 @@ def entryPatStack (size : Nat) : CtxS where
     .add (.bvar 0 16) (.lit (BitVec.ofNat 64 size)), .bvar 0 5, .bvar 0 6, .bvar 0 7,
     .bvar 0 8, .bvar 0 9, .bvar 0 10, .bvar 0 11, .bvar 0 12, .bvar 0 13, .bvar 0 14, .bvar 0 15⟩
   flags := .bvar 0
-  held := [(.bvar 0 16, ⟨size, []⟩)]
+  held := [(.bvar 0 16, ⟨litNat size, []⟩)]
   known := []
   rest := .none
 
@@ -29,6 +29,14 @@ def Fam.ofStack (s : State) (base : BitVec 64) : Fam where
   vals := fun i => if i = 16 then base else (Fam.ofState s).vals i
   flags := s.flags
   rest := []
+
+/-- What that context holds, of a member: the stack's region. -/
+theorem entryPatStack_held (ρ : Env) (s : State) (base : BitVec 64) {size : Nat}
+    (hsz : size < 18446744073709551616) :
+    ((entryPatStack size).den { ρ with bound := Fam.ofStack s base :: ρ.bound }).held
+      = [(base, ⟨size, []⟩)] := by
+  show [(base, (⟨(BitVec.ofNat 64 size).toNat, []⟩ : Held))] = _
+  rw [BitVec.toNat_ofNat, Nat.mod_eq_of_lt hsz]
 
 /-- **A state checked so starts as the entry context with a stack asks**:
 the stack's region may be written, the stack pointer is at its end, it is
@@ -60,8 +68,7 @@ theorem starts_stack {s : State} {blocks : List (BitVec 64 × Layout)} {kinds : 
   text := htext
   said := hsaid
   held := by
-    have hheld : ((entryPatStack size).den { ρ with bound := Fam.ofStack s base :: ρ.bound }).held
-        = [(base, ⟨size, []⟩)] := rfl
+    have hheld := entryPatStack_held ρ s base hsz
     refine ⟨fun b hb => ?_, fun b hb => ?_, fun b hb p hp => ?_, fun b hb p hp => ?_,
       fun b hb a l hl => ?_, ?_⟩
     · rw [hheld] at hb; cases List.mem_singleton.mp hb; exact hw
@@ -75,6 +82,6 @@ theorem starts_stack {s : State} {blocks : List (BitVec 64 × Layout)} {kinds : 
     · rw [hheld]; exact List.pairwise_singleton _ _
   complete := fun a ha =>
     hp.complete (Γ := (entryPatStack size).den { ρ with bound := Fam.ofStack s base :: ρ.bound })
-      (blocks := blocks) hc a ha
+      (blocks := blocks) (by rw [entryPatStack_held ρ s base hsz]; exact hc) a ha
 
 end TypedAsm.U

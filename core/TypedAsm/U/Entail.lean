@@ -291,11 +291,12 @@ theorem WellTyped.nameSlot {n : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch
 typed where the context says nothing of them.** The value is the state's,
 which no context before says: this is how a context comes to name it. -/
 theorem Ok.nameSlot {n : Nat} {a : BitVec 64} {Γ : Ctx} {i : Nat} {b : BitVec 64} {S : Held}
-    (hi : Γ.held[i]? = some (b, S)) {o : Nat} (ho : o + 8 ≤ S.size)
+    (hi : Γ.held[i]? = some (b, S)) {o : Nat}
+    (ho : ∀ (Ψ' : MemTy) (m : Nat), (∀ g ∈ Γ.known, HasTy fetch sys Ψ' m g.2 g.1) → o + 8 ≤ S.size)
     (h : ∀ x, Ok fetch sys Ψ n a
       { Γ with held := Γ.held.set i (b, ⟨S.size, (o, x) :: S.vals⟩) }) :
     Ok fetch sys Ψ n a Γ :=
-  fun k hk Ψ' he hwf s hs hw => h _ k hk Ψ' he hwf s hs (hw.nameSlot hi ho)
+  fun k hk Ψ' he hwf s hs hw => h _ k hk Ψ' he hwf s hs (hw.nameSlot hi (ho Ψ' _ hw.known))
 
 /-! ## The same of arriving -/
 
@@ -306,10 +307,11 @@ theorem Arrives.regard {n : Nat} {t : BitVec 64} {Γ Δ : Ctx} (h : Regards fetc
   fun k hk Ψ' he hwf s hs hw => hΔ k hk Ψ' he hwf s hs (h (k + 1) Ψ' he hwf s hw)
 
 theorem Arrives.nameSlot {n : Nat} {t : BitVec 64} {Γ : Ctx} {i : Nat} {b : BitVec 64} {S : Held}
-    (hi : Γ.held[i]? = some (b, S)) {o : Nat} (ho : o + 8 ≤ S.size)
+    (hi : Γ.held[i]? = some (b, S)) {o : Nat}
+    (ho : ∀ (Ψ' : MemTy) (m : Nat), (∀ g ∈ Γ.known, HasTy fetch sys Ψ' m g.2 g.1) → o + 8 ≤ S.size)
     (h : ∀ x, Arrives fetch sys Ψ n t
       { Γ with held := Γ.held.set i (b, ⟨S.size, (o, x) :: S.vals⟩) }) :
     Arrives fetch sys Ψ n t Γ :=
-  fun k hk Ψ' he hwf s hs hw => h _ k hk Ψ' he hwf s hs (hw.nameSlot hi ho)
+  fun k hk Ψ' he hwf s hs hw => h _ k hk Ψ' he hwf s hs (hw.nameSlot hi (ho Ψ' _ hw.known))
 
 end TypedAsm.U

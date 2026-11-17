@@ -277,6 +277,34 @@ theorem Writes.held {Γ : Ctx} {k : Nat} {b : BitVec 64} {S : Held} {o n : Nat} 
     · simp only [ShapeOf.clear, List.mem_filter] at hp
       exact .inl ⟨hp.1, by simpa [ShapeOf.clearOf] using hp.2⟩
 
+/-- **And to be written, the region then described anew**: by any values
+that were there and keep clear of the bytes written, and the value written
+where it is eight bytes. So of a region whose values are found to keep
+clear by what is known, which may be fewer than those that do. -/
+theorem Writes.heldTo {Γ : Ctx} {k : Nat} {b : BitVec 64} {S S' : Held} {o n : Nat} (v : BitVec 64)
+    (hk : Γ.held[k]? = some (b, S)) (hin : o + n ≤ S.size) (hn : n ≤ 8) (hS' : S'.size = S.size)
+    (hvals : ∀ p ∈ S'.vals, (p ∈ S.vals ∧ (p.1 + 8 ≤ o ∨ o + n ≤ p.1)) ∨ (n = 8 ∧ p = (o, v))) :
+    Writes fetch sys Ψ Γ (b + BitVec.ofNat 64 o) n v
+      { Γ with held := Γ.held.set k (b, S') } := by
+  refine ⟨rfl, rfl, fun j Ψ' he hwf s hw => ?_⟩
+  obtain ⟨hklt, hkeq⟩ := List.getElem?_eq_some_iff.mp hk
+  have hmem : (b, S) ∈ Γ.held := hkeq ▸ List.getElem_mem hklt
+  refine ⟨State.canWrite_sub (n := S.size) (hw.held.perm (b, S) hmem) hin, ?_⟩
+  refine hw.writeHeld (S' := S') (lo := o) (cnt := n) hwf hk hin hS' ?_
+    (storeN_regs _ _ _ _) (storeN_flags _ _ _ _)
+    (storeN_perm _ _ _ _) (fun y hy => storeN_load64_out _ _ _ _ _ hn hy)
+    (fun x hx => storeN_mem_out _ _ _ _ _ hn hx) ?_
+  · intro p hp
+    rw [hS']
+    rcases hvals p hp with ⟨hp', _⟩ | ⟨h8, rfl⟩
+    · exact hw.held.fits _ hmem p hp'
+    · show o + 8 ≤ S.size; omega
+  · intro p hp
+    rcases hvals p hp with hp' | ⟨h8, rfl⟩
+    · exact .inl hp'
+    · subst h8
+      exact .inr (TypedAsm.State.load64_store64_same _ _ _)
+
 /-- **And to be written somewhere within a stretch of the region**: the
 region then holds no value the stretch reaches into. So of a write at an
 address known only to lie so far in, give or take. -/

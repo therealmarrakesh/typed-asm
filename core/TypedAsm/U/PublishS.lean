@@ -38,9 +38,10 @@ def valsPub (Γ : CtxS) (S : HeldS) : ValsS → Bool
   | .nil => true
   | .cons o τ rest =>
     (τ == .any ||
-      (match S.slotAt o with
-       | some v => factFrom noEnt Γ.known (v, τ)
-       | none => false)) && valsPub Γ S rest
+      (decide (o < 2 ^ 64) &&
+        match S.slotAt (litNat o) with
+        | some v => factFrom noEnt Γ.known (v, τ)
+        | none => false)) && valsPub Γ S rest
 
 theorem valsPub_sound (ρ : Env) {Γ : CtxS} {S : HeldS} :
     (vs : ValsS) → valsPub Γ S vs = true → ∀ q ∈ vs.den ρ, q.2 = .any ∨
@@ -52,13 +53,16 @@ theorem valsPub_sound (ρ : Env) {Γ : CtxS} {S : HeldS} :
     rcases List.mem_cons.mp hq with rfl | hq
     · rcases h.1 with rfl | hs
       · exact .inl rfl
-      · cases hv : S.slotAt o with
+      · obtain ⟨hlt, hs⟩ := hs
+        have hlt := of_decide_eq_true hlt
+        cases hv : S.slotAt (litNat o) with
         | none => rw [hv] at hs; cases hs
         | some v =>
           rw [hv] at hs
           refine .inr ⟨v.den ρ, ?_, fun Ψ' n hg => factFrom_hasTy noEnt_sound ρ hs Ψ' n hg⟩
-          show (o, v.den ρ) ∈ S.slots.map _
-          exact List.mem_map.mpr ⟨(o, v), HeldS.slotAt_mem hv, rfl⟩
+          have := HeldS.slotAt_den ρ hv
+          rw [litNat_nat ρ hlt] at this
+          exact this
     · exact valsPub_sound ρ rest h.2 q hq
 
 /-- What is known of a block's address besides its shape, as terms. -/
@@ -77,14 +81,16 @@ shape**, and of a kind if one is given; nothing unless the region is held
 whole, is of that size, and holds what the shape says. -/
 def publishS (kinds : Nat → Option ShapeS) (Γ : CtxS) (b : Val) (K : ShapeS) (tag : Option Nat) :
     Option CtxS :=
-  match findHeld b 0 Γ.held 0 with
-  | some (j, base, S, o) =>
-    if o == 0 && K.size == S.size && decide (0 < K.size) && K.vals.fitsIn K.size &&
-        valsPub Γ S K.vals && tagOk kinds K tag then
-      some { Γ with
-        held := Γ.held.eraseIdx j
-        known := (base, .ptr K true 0) :: (tagFactsS base tag ++ Γ.known) }
-    else none
+  match findRegion b K.size Γ.held 0 with
+  | some j =>
+    match Γ.held[j]? with
+    | some (base, S) =>
+      if decide (0 < K.size) && K.vals.fitsIn K.size && valsPub Γ S K.vals && tagOk kinds K tag then
+        some { Γ with
+          held := Γ.held.eraseIdx j
+          known := (base, .ptr K true 0) :: (tagFactsS base tag ++ Γ.known) }
+      else none
+    | none => none
   | none => none
 
 theorem publishS_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk Ψ kinds)
@@ -93,15 +99,20 @@ theorem publishS_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
     Publishes fetch sys Ψ (Γ.den ρ) (Γ'.den ρ) := by
   unfold publishS at h
   split at h
-  · next j base S o hfind =>
+  · next j hfind =>
+    split at h
+    rotate_left
+    · cases h
+    next base S hl =>
     split at h
     · next hc =>
       cases h
-      simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at hc
-      obtain ⟨⟨⟨⟨⟨ho, hsz⟩, hpos⟩, hfit⟩, hvals⟩, htag⟩ := hc
-      obtain ⟨i, hi, hl, _, _⟩ := findHeld_spec (ρ := ρ) Γ.held 0 hfind
-      have hji : j = i := by omega
-      subst hji
+      simp only [Bool.and_eq_true, decide_eq_true_eq] at hc
+      obtain ⟨⟨⟨hpos, hfit⟩, hvals⟩, htag⟩ := hc
+      obtain ⟨g, hg, _, _, hsz'⟩ := findRegion_spec ρ Γ.held 0 j hfind
+      rw [Nat.sub_zero, hl] at hg
+      cases hg
+      have hsz : K.size = (S.den ρ).size := hsz'.symm
       have hjlt : j < (Γ.held.map fun b => (b.1.den ρ, b.2.den ρ)).length := by
         rw [List.length_map]; exact (List.getElem?_eq_some_iff.mp hl).1
       have hP := Publishes.region (fetch := fetch) (sys := sys) (Ψ := Ψ) (K := K.den ρ) tag

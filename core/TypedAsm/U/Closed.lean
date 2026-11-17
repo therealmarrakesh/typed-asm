@@ -115,7 +115,8 @@ theorem RestS.den_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n z
 
 /-- Whether the regions of a list mention only so many families. -/
 def heldClosedAt (n : Nat) (held : List (Val × HeldS)) : Bool :=
-  held.all fun b => b.1.closedAt n && b.2.slots.all fun p => p.2.closedAt n
+  held.all fun b => b.1.closedAt n && b.2.size.closedAt n &&
+    b.2.slots.all fun p => p.1.closedAt n && p.2.closedAt n
 
 theorem heldDen_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n zs zs')
     (held : List (Val × HeldS)) (h : heldClosedAt n held = true) :
@@ -123,13 +124,16 @@ theorem heldDen_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n zs 
       = held.map fun b => (b.1.den { ρ with bound := zs' }, b.2.den { ρ with bound := zs' }) := by
   refine List.map_congr_left fun b hb => ?_
   have hbk := List.all_eq_true.mp h b hb
-  rw [Bool.and_eq_true] at hbk
-  show (b.1.den _, (⟨b.2.size, b.2.slots.map fun p => (p.1, p.2.den { ρ with bound := zs })⟩ : Held))
-    = (b.1.den _, ⟨b.2.size, b.2.slots.map fun p => (p.1, p.2.den { ρ with bound := zs' })⟩)
-  rw [Val.den_agree ρ n zs zs' hz _ hbk.1]
+  simp only [Bool.and_eq_true] at hbk
+  show (b.1.den { ρ with bound := zs }, (⟨(b.2.size.den { ρ with bound := zs }).toNat, b.2.slots.map (slotDen { ρ with bound := zs })⟩ : Held))
+    = (b.1.den { ρ with bound := zs' }, ⟨(b.2.size.den { ρ with bound := zs' }).toNat, b.2.slots.map (slotDen { ρ with bound := zs' })⟩)
+  rw [Val.den_agree ρ n zs zs' hz _ hbk.1.1, Val.den_agree ρ n zs zs' hz _ hbk.1.2]
   congr 2
   exact List.map_congr_left fun p hp => by
-    rw [Val.den_agree ρ n zs zs' hz _ (List.all_eq_true.mp hbk.2 p hp)]
+    have hp' := List.all_eq_true.mp hbk.2 p hp
+    rw [Bool.and_eq_true] at hp'
+    show ((p.1.den { ρ with bound := zs }).toNat, p.2.den { ρ with bound := zs }) = ((p.1.den { ρ with bound := zs' }).toNat, p.2.den { ρ with bound := zs' })
+    rw [Val.den_agree ρ n zs zs' hz _ hp'.1, Val.den_agree ρ n zs zs' hz _ hp'.2]
 
 mutual
 

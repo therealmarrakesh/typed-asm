@@ -1,5 +1,6 @@
 import TypedAsm.U.Learn
 import TypedAsm.U.Know
+import TypedAsm.U.Size
 
 /-!
 # Between what numbers a value lies
@@ -179,16 +180,6 @@ theorem CtxS.upper_le {ρ : Env} {Γ : CtxS} {Ψ' : MemTy} {n : Nat}
     exact (CtxS.within_den hw hg).2
 
 /-! ## How far an address is past another -/
-
-/-- One term less another. -/
-def Val.less (a base : Val) : Val := .bin .add a (.un (.neg .w64) base)
-
-theorem Val.less_den (ρ : Env) (a base : Val) : (a.less base).den ρ = a.den ρ - base.den ρ := by
-  have e := Val.lin_den ρ (a.less base)
-  have e' : (a.less base).lin = Lin.addMul 1 (base.lin.scale (-1)) a.lin := rfl
-  rw [e', Lin.addMul_den, Lin.scale_den, Val.lin_den, Val.lin_den] at e
-  rw [← e]
-  grind
 
 /-- **How far an address is past another, within a stretch**: from so far,
 for at most so much more. -/

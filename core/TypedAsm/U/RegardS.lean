@@ -1,4 +1,5 @@
 import TypedAsm.U.Find
+import TypedAsm.U.Size
 import TypedAsm.U.Lin
 import TypedAsm.U.Know
 import TypedAsm.U.FindArr
@@ -49,100 +50,136 @@ theorem mem_allRegs (r : Reg) : r ∈ allRegs := by
 
 def regionDen (ρ : Env) (b : Val × HeldS) : Region := (b.1.den ρ, b.2.den ρ)
 
-/-! ## Regions as parts of regions -/
+/-! ## Regions as parts of regions
+
+How far into a region a part starts, and how large each is, are terms.
+Whether the part lies within the region, and whether two parts are apart,
+is asked of what is known of values. -/
 
 /-- Whether each value the part says is there lies within it, and is said
 by the region to be there, the part starting `o` bytes into the region. -/
-def slotsIn (o size : Nat) (gs ds : List (Nat × Val)) : Bool :=
-  ds.all fun d => d.1 + 8 ≤ size && gs.any fun g => g.1 == o + d.1 && g.2.same d.2
+def slotsIn (K : List (Val × TyS)) (o size : Val) (gs ds : List (Val × Val)) : Bool :=
+  ds.all fun d => fitsS K d.1 8 size && gs.any fun g => g.1.same (o.plus d.1) && g.2.same d.2
 
 /-- The first region of a list that a given region is a part of: its place,
-counted from `i`, and how far into it the part starts. -/
-def hostOf (d : Val × HeldS) : List (Val × HeldS) → Nat → Option (Nat × Nat)
+counted from `i`, and how far into it the part starts; among those whose
+address the part's is a number past (`plain`), or among the others. -/
+def hostOfP (plain : Bool) (K : List (Val × TyS)) (d : Val × HeldS) :
+    List (Val × HeldS) → Nat → Option (Nat × Val)
   | [], _ => none
   | g :: gs, i =>
-    match offsetFrom d.1 g.1 with
-    | some o =>
-      if o + d.2.size ≤ g.2.size && slotsIn o d.2.size g.2.slots d.2.slots then some (i, o)
-      else hostOf d gs (i + 1)
-    | none => hostOf d gs (i + 1)
+    if (d.1.minus g.1).isSome == plain &&
+        sumLe K [offTerm d.1 g.1, d.2.size] 0 [g.2.size] 0 &&
+        slotsIn K (offTerm d.1 g.1) d.2.size g.2.slots d.2.slots then
+      some (i, offTerm d.1 g.1)
+    else hostOfP plain K d gs (i + 1)
 
-theorem hostOf_spec (d : Val × HeldS) : (G : List (Val × HeldS)) → (i₀ i o : Nat) →
-    hostOf d G i₀ = some (i, o) →
-    ∃ g, G[i - i₀]? = some g ∧ i₀ ≤ i ∧ offsetFrom d.1 g.1 = some o ∧
-      o + d.2.size ≤ g.2.size ∧ slotsIn o d.2.size g.2.slots d.2.slots = true
+theorem hostOfP_spec {plain : Bool} {K : List (Val × TyS)} (d : Val × HeldS) :
+    (G : List (Val × HeldS)) → (i₀ i : Nat) → (o : Val) →
+    hostOfP plain K d G i₀ = some (i, o) →
+    ∃ g, G[i - i₀]? = some g ∧ i₀ ≤ i ∧ o = offTerm d.1 g.1 ∧
+      sumLe K [o, d.2.size] 0 [g.2.size] 0 = true ∧
+      slotsIn K o d.2.size g.2.slots d.2.slots = true
   | [], _, _, _, h => nomatch h
   | g :: gs, i₀, i, o, h => by
-    have later : hostOf d gs (i₀ + 1) = some (i, o) →
-        ∃ g', (g :: gs)[i - i₀]? = some g' ∧ i₀ ≤ i ∧ offsetFrom d.1 g'.1 = some o ∧
-          o + d.2.size ≤ g'.2.size ∧ slotsIn o d.2.size g'.2.slots d.2.slots = true := by
-      intro h'
-      obtain ⟨g', hg', hle, rest⟩ := hostOf_spec d gs (i₀ + 1) i o h'
+    unfold hostOfP at h
+    split at h
+    · next hc =>
+      cases h
+      simp only [Bool.and_eq_true] at hc
+      exact ⟨g, by simp, Nat.le_refl _, rfl, hc.1.2, hc.2⟩
+    · obtain ⟨g', hg', hle, rest⟩ := hostOfP_spec d gs (i₀ + 1) i o h
       refine ⟨g', ?_, by omega, rest⟩
       have e : i - i₀ = (i - (i₀ + 1)) + 1 := by omega
       rw [e, List.getElem?_cons_succ]
       exact hg'
-    unfold hostOf at h
-    cases hoff : offsetFrom d.1 g.1 with
-    | none => rw [hoff] at h; exact later h
-    | some o' =>
-      rw [hoff] at h
-      simp only at h
-      split at h
-      · next hc =>
-        cases h
-        simp only [Bool.and_eq_true, decide_eq_true_eq] at hc
-        exact ⟨g, by simp, Nat.le_refl _, hoff, hc.1, hc.2⟩
-      · exact later h
+
+/-- The first region of a list that a given region is a part of. -/
+def hostOf (K : List (Val × TyS)) (d : Val × HeldS) (G : List (Val × HeldS)) : Option (Nat × Val) :=
+  match hostOfP true K d G 0 with
+  | some r => some r
+  | none => hostOfP false K d G 0
+
+theorem hostOf_spec {K : List (Val × TyS)} (d : Val × HeldS) (G : List (Val × HeldS)) (i : Nat)
+    (o : Val) (h : hostOf K d G = some (i, o)) :
+    ∃ g, G[i]? = some g ∧ o = offTerm d.1 g.1 ∧
+      sumLe K [o, d.2.size] 0 [g.2.size] 0 = true ∧
+      slotsIn K o d.2.size g.2.slots d.2.slots = true := by
+  have key : ∀ plain, hostOfP plain K d G 0 = some (i, o) →
+      ∃ g, G[i]? = some g ∧ o = offTerm d.1 g.1 ∧
+        sumLe K [o, d.2.size] 0 [g.2.size] 0 = true ∧
+        slotsIn K o d.2.size g.2.slots d.2.slots = true := fun plain hp => by
+    obtain ⟨g, hg, _, rest⟩ := hostOfP_spec d G 0 i o hp
+    rw [Nat.sub_zero] at hg
+    exact ⟨g, hg, rest⟩
+  unfold hostOf at h
+  split at h
+  · next r hr => cases h; exact key true hr
+  · exact key false h
 
 /-- Each region of a list as a part of one of another: which, and how far
 in. Nothing if one is a part of none. -/
-def partsS (G : List (Val × HeldS)) : List (Val × HeldS) → Option (List (Nat × Nat × HeldS))
+def partsS (K : List (Val × TyS)) (G : List (Val × HeldS)) :
+    List (Val × HeldS) → Option (List (Nat × Val × HeldS))
   | [] => some []
   | d :: ds =>
-    match hostOf d G 0, partsS G ds with
+    match hostOf K d G, partsS K G ds with
     | some (i, o), some ps => some ((i, o, d.2) :: ps)
     | _, _ => none
 
-def partDen (ρ : Env) (x : Nat × Nat × HeldS) : Part := (x.1, x.2.1, x.2.2.den ρ)
+def partDen (ρ : Env) (x : Nat × Val × HeldS) : Part := (x.1, x.2.1.nat ρ, x.2.2.den ρ)
 
-theorem partsS_den (ρ : Env) (G : List (Val × HeldS)) :
-    (D : List (Val × HeldS)) → (P : List (Nat × Nat × HeldS)) → partsS G D = some P →
+theorem Val.plus_nat_le (ρ : Env) (a b : Val) : (a.plus b).nat ρ ≤ a.nat ρ + b.nat ρ := by
+  show ((a.plus b).den ρ).toNat ≤ _
+  rw [Val.plus_den, BitVec.toNat_add]
+  exact Nat.mod_le _ _
+
+theorem partsS_den (ρ : Env) {K : List (Val × TyS)} {Ψ' : MemTy} {n : Nat}
+    (hg : ∀ g ∈ K, HasTy fetch sys Ψ' n (g.2.den ρ) (g.1.den ρ)) (G : List (Val × HeldS)) :
+    (D : List (Val × HeldS)) → (P : List (Nat × Val × HeldS)) → partsS K G D = some P →
     D.map (regionDen ρ) = (P.map (partDen ρ)).map (partRegion (G.map (regionDen ρ))) ∧
       ∀ x ∈ P.map (partDen ρ), PartOk (G.map (regionDen ρ)) x
   | [], P, h => by cases h; exact ⟨rfl, fun _ hx => nomatch hx⟩
   | d :: ds, P, h => by
     unfold partsS at h
-    cases hh : hostOf d G 0 with
+    cases hh : hostOf K d G with
     | none => rw [hh] at h; cases h
     | some io =>
       obtain ⟨i, o⟩ := io
-      cases hp : partsS G ds with
+      cases hp : partsS K G ds with
       | none => rw [hh, hp] at h; cases h
       | some ps =>
         rw [hh, hp] at h
         cases h
-        obtain ⟨g, hg, _, hoff, hle, hsl⟩ := hostOf_spec d G 0 i o hh
-        rw [Nat.sub_zero] at hg
-        obtain ⟨ih₁, ih₂⟩ := partsS_den ρ G ds ps hp
+        obtain ⟨g, hgi, hoff, hle, hsl⟩ := hostOf_spec d G i o hh
+        obtain ⟨ih₁, ih₂⟩ := partsS_den ρ hg G ds ps hp
         have hE : (G.map (regionDen ρ))[i]? = some (regionDen ρ g) := by
-          rw [List.getElem?_map, hg]; rfl
+          rw [List.getElem?_map, hgi]; rfl
+        have hle' : o.nat ρ + d.2.size.nat ρ ≤ g.2.size.nat ρ := by
+          have := sumLe_den hle hg
+          simpa [sumNat] using this
+        have hlt : g.2.size.nat ρ < 2 ^ 64 := (g.2.size.den ρ).isLt
         have hok : PartOk (G.map (regionDen ρ)) (partDen ρ (i, o, d.2)) := by
-          refine ⟨regionDen ρ g, hE, hle, ?_⟩
+          refine ⟨regionDen ρ g, hE, hle', ?_⟩
           intro p hp'
           obtain ⟨q, hq, rfl⟩ := List.mem_map.mp hp'
-          simp only [slotsIn, List.all_eq_true, Bool.and_eq_true, decide_eq_true_eq,
-            List.any_eq_true, beq_iff_eq] at hsl
+          simp only [slotsIn, List.all_eq_true, Bool.and_eq_true, List.any_eq_true] at hsl
           obtain ⟨hfit, q', hq', ho, hv⟩ := hsl q hq
-          refine ⟨hfit, List.mem_map.mpr ⟨q', hq', ?_⟩⟩
-          show (q'.1, q'.2.den ρ) = (o + q.1, q.2.den ρ)
-          rw [ho, Val.same_den ρ hv]
+          have hfit' : q.1.nat ρ + 8 ≤ d.2.size.nat ρ := by
+            have := leS_den hfit hg
+            simpa using this
+          refine ⟨hfit', List.mem_map.mpr ⟨q', hq', ?_⟩⟩
+          show ((q'.1.den ρ).toNat, q'.2.den ρ) = (o.nat ρ + q.1.nat ρ, q.2.den ρ)
+          rw [Val.same_den ρ hv, Val.same_den ρ ho, Val.plus_den, BitVec.toNat_add]
+          have e1 : (o.den ρ).toNat = o.nat ρ := rfl
+          have e2 : (q.1.den ρ).toNat = q.1.nat ρ := rfl
+          rw [e1, e2, Nat.mod_eq_of_lt (by omega)]
         refine ⟨?_, ?_⟩
         · rw [List.map_cons, List.map_cons, List.map_cons, ih₁]
           congr 1
           rw [partRegion_eq (x := partDen ρ (i, o, d.2)) hE]
-          show (d.1.den ρ, d.2.den ρ) = (g.1.den ρ + BitVec.ofNat 64 o, d.2.den ρ)
-          rw [offsetFrom_den hoff]
+          show (d.1.den ρ, d.2.den ρ) = (g.1.den ρ + BitVec.ofNat 64 (o.nat ρ), d.2.den ρ)
+          rw [hoff, Val.nat, BitVec.ofNat_toNat, BitVec.setWidth_eq, ← offTerm_den]
         · intro x hx
           rw [List.map_cons] at hx
           rcases List.mem_cons.mp hx with rfl | hx
@@ -151,69 +188,83 @@ theorem partsS_den (ρ : Env) (G : List (Val × HeldS)) :
 
 /-- Whether no two parts overlap: of different regions, or one ending
 before the other begins. -/
-def apartS : List (Nat × Nat × HeldS) → Bool
+def apartS (K : List (Val × TyS)) : List (Nat × Val × HeldS) → Bool
   | [] => true
   | x :: xs =>
-    (xs.all fun y => x.1 != y.1 || decide (x.2.1 + x.2.2.size ≤ y.2.1) ||
-      decide (y.2.1 + y.2.2.size ≤ x.2.1)) && apartS xs
+    (xs.all fun y => x.1 != y.1 || sumLe K [x.2.1, x.2.2.size] 0 [y.2.1] 0 ||
+      sumLe K [y.2.1, y.2.2.size] 0 [x.2.1] 0) && apartS K xs
 
-theorem apartS_den (ρ : Env) : (P : List (Nat × Nat × HeldS)) → apartS P = true →
+theorem apartS_den (ρ : Env) {K : List (Val × TyS)} {Ψ' : MemTy} {n : Nat}
+    (hg : ∀ g ∈ K, HasTy fetch sys Ψ' n (g.2.den ρ) (g.1.den ρ)) :
+    (P : List (Nat × Val × HeldS)) → apartS K P = true →
     (P.map (partDen ρ)).Pairwise PartsApart
   | [], _ => .nil
   | x :: xs, h => by
-    simp only [apartS, Bool.and_eq_true, List.all_eq_true, Bool.or_eq_true, bne_iff_ne, ne_eq,
-      decide_eq_true_eq] at h
+    simp only [apartS, Bool.and_eq_true, List.all_eq_true, Bool.or_eq_true, bne_iff_ne, ne_eq] at h
     rw [List.map_cons, List.pairwise_cons]
-    refine ⟨fun y hy => ?_, apartS_den ρ xs h.2⟩
+    refine ⟨fun y hy => ?_, apartS_den ρ hg xs h.2⟩
     obtain ⟨y', hy', rfl⟩ := List.mem_map.mp hy
     rcases h.1 y' hy' with (h1 | h1) | h1
     · exact .inl h1
-    · exact .inr (.inl h1)
-    · exact .inr (.inr h1)
+    · have := sumLe_den h1 hg
+      simp only [sumNat, Nat.add_zero] at this
+      exact .inr (.inl this)
+    · have := sumLe_den h1 hg
+      simp only [sumNat, Nat.add_zero] at this
+      exact .inr (.inr this)
 
 /-- Whether the parts of the region at place `i`, of `size` bytes, take in
 the whole of it from byte `cur` on: one starts there, another where that one
 ends, and so on to the end. -/
-def coverFrom (P : List (Nat × Nat × HeldS)) (i size : Nat) : Nat → Nat → Bool
+def coverFrom (P : List (Nat × Val × HeldS)) (i : Nat) (size : Val) : Nat → Val → Bool
   | fuel, cur =>
-    if cur = size then true
+    if cur.same size then true
     else
       match fuel with
       | 0 => false
       | fuel + 1 =>
-        match P.find? fun x => x.1 == i && x.2.1 == cur && decide (0 < x.2.2.size) with
-        | some x => coverFrom P i size fuel (cur + x.2.2.size)
+        match P.find? fun x => x.1 == i && x.2.1.same cur && !x.2.2.size.same (.lit 0) with
+        | some x => coverFrom P i size fuel (cur.plus x.2.2.size)
         | none => false
 
-theorem coverFrom_spec (P : List (Nat × Nat × HeldS)) (i size : Nat) :
-    (fuel cur : Nat) → coverFrom P i size fuel cur = true →
-    ∀ o, cur ≤ o → o < size → ∃ x ∈ P, x.1 = i ∧ x.2.1 ≤ o ∧ o < x.2.1 + x.2.2.size
+theorem coverFrom_spec (ρ : Env) (P : List (Nat × Val × HeldS)) (i : Nat) (size : Val) :
+    (fuel : Nat) → (cur : Val) → coverFrom P i size fuel cur = true →
+    ∀ o, cur.nat ρ ≤ o → o < size.nat ρ →
+      ∃ x ∈ P, x.1 = i ∧ x.2.1.nat ρ ≤ o ∧ o < x.2.1.nat ρ + x.2.2.size.nat ρ
   | fuel, cur, h, o, hlo, hhi => by
     unfold coverFrom at h
     split at h
-    · next he => omega
+    · next he =>
+      have : cur.nat ρ = size.nat ρ := by
+        show (cur.den ρ).toNat = (size.den ρ).toNat
+        rw [Val.same_den ρ he]
+      omega
     · cases fuel with
       | zero => cases h
       | succ fuel =>
         simp only at h
-        cases hf : P.find? fun x => x.1 == i && x.2.1 == cur && decide (0 < x.2.2.size) with
+        cases hf : P.find? fun x => x.1 == i && x.2.1.same cur && !x.2.2.size.same (.lit 0) with
         | none => rw [hf] at h; cases h
         | some x =>
           rw [hf] at h
           have hx := List.find?_some hf
-          simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at hx
-          by_cases ho : o < cur + x.2.2.size
+          simp only [Bool.and_eq_true, beq_iff_eq] at hx
+          have hcur : x.2.1.nat ρ = cur.nat ρ := by
+            show (x.2.1.den ρ).toNat = (cur.den ρ).toNat
+            rw [Val.same_den ρ hx.1.2]
+          by_cases ho : o < cur.nat ρ + x.2.2.size.nat ρ
           · exact ⟨x, List.mem_of_find?_eq_some hf, hx.1.1, by omega, by omega⟩
-          · exact coverFrom_spec P i size fuel _ h o (by omega) hhi
+          · exact coverFrom_spec ρ P i size fuel _ h o
+              (Nat.le_trans (Val.plus_nat_le ρ _ _) (by omega)) hhi
 
 /-- Whether the parts take in the whole of every region of a list. -/
-def coverS (G : List (Val × HeldS)) (P : List (Nat × Nat × HeldS)) : Bool :=
+def coverS (G : List (Val × HeldS)) (P : List (Nat × Val × HeldS)) : Bool :=
   (List.range G.length).all fun i =>
     match G[i]? with
-    | some g => coverFrom P i g.2.size P.length 0
+    | some g => coverFrom P i g.2.size P.length (.lit 0)
     | none => true
 
-theorem coverS_den (ρ : Env) (G : List (Val × HeldS)) (P : List (Nat × Nat × HeldS))
+theorem coverS_den (ρ : Env) (G : List (Val × HeldS)) (P : List (Nat × Val × HeldS))
     (h : coverS G P = true) (i : Nat) (b : Region) (hb : (G.map (regionDen ρ))[i]? = some b)
     (o : Nat) (ho : o < b.2.size) :
     ∃ x ∈ P.map (partDen ρ), x.1 = i ∧ x.2.1 ≤ o ∧ o < x.2.1 + x.2.2.size := by
@@ -226,24 +277,34 @@ theorem coverS_den (ρ : Env) (G : List (Val × HeldS)) (P : List (Nat × Nat ×
     have hi : i < G.length := (List.getElem?_eq_some_iff.mp hg).1
     have := List.all_eq_true.mp h i (List.mem_range.mpr hi)
     rw [hg] at this
-    obtain ⟨x, hx, h1, h2, h3⟩ := coverFrom_spec P i g.2.size _ _ this o (Nat.zero_le _) ho
+    obtain ⟨x, hx, h1, h2, h3⟩ := coverFrom_spec ρ P i g.2.size _ _ this o (Nat.zero_le _) ho
     exact ⟨partDen ρ x, List.mem_map.mpr ⟨x, hx, rfl⟩, h1, h2, h3⟩
 
 /-- The first region of a list that an extent lies within: its place,
-counted from `i`, how far in the extent starts, and the region. -/
-def hostExtent (base : Val) (size : Nat) : List (Val × HeldS) → Nat → Option (Nat × Nat × HeldS)
+counted from `i`, how far in the extent starts, and the region; among those
+whose address the extent's is a number past (`plain`), or among the others. -/
+def hostExtentP (plain : Bool) (K : List (Val × TyS)) (base size : Val) :
+    List (Val × HeldS) → Nat → Option (Nat × Val × HeldS)
   | [], _ => none
   | g :: gs, i =>
-    match offsetFrom base g.1 with
-    | some o => if o + size ≤ g.2.size then some (i, o, g.2) else hostExtent base size gs (i + 1)
-    | none => hostExtent base size gs (i + 1)
+    if (base.minus g.1).isSome == plain && sumLe K [offTerm base g.1, size] 0 [g.2.size] 0 then
+      some (i, offTerm base g.1, g.2)
+    else hostExtentP plain K base size gs (i + 1)
 
-/-- A stretch of a region, as a region: its bytes, and the values the
-region says lie wholly in it. -/
-def stretch (g : Val × HeldS) (x : Nat × Nat) : Val × HeldS :=
-  (.add g.1 (.lit (BitVec.ofNat 64 x.1)),
+/-- The first region of a list that an extent lies within. -/
+def hostExtent (K : List (Val × TyS)) (base size : Val) (G : List (Val × HeldS)) :
+    Option (Nat × Val × HeldS) :=
+  match hostExtentP true K base size G 0 with
+  | some r => some r
+  | none => hostExtentP false K base size G 0
+
+/-- A stretch of a region, as a region: its bytes, from so far in and so
+many, and the values the region says lie wholly in it. -/
+def stretch (K : List (Val × TyS)) (g : Val × HeldS) (x : Val × Val) : Val × HeldS :=
+  (g.1.plus x.1,
     ⟨x.2, g.2.slots.filterMap fun p =>
-      if x.1 ≤ p.1 ∧ p.1 + 8 ≤ x.1 + x.2 then some (p.1 - x.1, p.2) else none⟩)
+      if leS K x.1 0 p.1 0 && sumLe K [p.1] 8 [x.1, x.2] 0 then some (offTerm p.1 x.1, p.2)
+      else none⟩)
 
 /-! ## What is known -/
 
@@ -434,11 +495,17 @@ theorem factFrom_hasTy {ent : TyS → TyS → Bool} (he : EntSound fetch sys ent
 
 /-! ## The whole -/
 
+/-- What a context knows, as it is said of the terms. -/
+theorem knownS {ρ : Env} {Γ : CtxS} {Ψ' : MemTy} {m : Nat}
+    (hg : ∀ g ∈ (Γ.den ρ).known, HasTy fetch sys Ψ' m g.2 g.1) :
+    ∀ g ∈ Γ.known, HasTy fetch sys Ψ' m (g.2.den ρ) (g.1.den ρ) := fun g hgm =>
+  hg (g.1.den ρ, g.2.den ρ) (List.mem_map.mpr ⟨g, hgm, rfl⟩)
+
 /-- **Whether the first context may be regarded as the second.** -/
 def regardS (ent : TyS → TyS → Bool) (Γ Δ : CtxS) : Bool :=
   (allRegs.all fun r => (Γ.regs.get r).same (Δ.regs.get r)) && Γ.flags == Δ.flags &&
-    (match partsS Γ.held Δ.held with
-     | some P => apartS P && coverS Γ.held P
+    (match partsS Γ.known Γ.held Δ.held with
+     | some P => apartS Γ.known P && coverS Γ.held P
      | none => false) &&
     Δ.known.all (factFrom ent Γ.known) && Δ.rest == Γ.rest
 
@@ -447,15 +514,18 @@ theorem regardS_sound {ent : TyS → TyS → Bool} (he : EntSound fetch sys ent)
     Regards fetch sys Ψ (Γ.den ρ) (Δ.den ρ) := by
   simp only [regardS, Bool.and_eq_true, List.all_eq_true, beq_iff_eq] at h
   obtain ⟨⟨⟨⟨hr, hf⟩, hh⟩, hk⟩, hrest⟩ := h
-  cases hP : partsS Γ.held Δ.held with
+  cases hP : partsS Γ.known Γ.held Δ.held with
   | none => rw [hP] at hh; cases hh
   | some P =>
     rw [hP] at hh
     simp only [Bool.and_eq_true] at hh
-    obtain ⟨hmap, hok⟩ := partsS_den ρ Γ.held Δ.held P hP
+    intro k Ψ' hext hwf s hw
+    have hg : ∀ g ∈ Γ.known, HasTy fetch sys Ψ' k (g.2.den ρ) (g.1.den ρ) := fun g hgm =>
+      hw.known (g.1.den ρ, g.2.den ρ) (List.mem_map.mpr ⟨g, hgm, rfl⟩)
+    obtain ⟨hmap, hok⟩ := partsS_den ρ hg Γ.held Δ.held P hP
     refine Regards.parts (E := Γ.held.map (regionDen ρ)) (F := restDen ρ Γ.rest)
-      (L := P.map (partDen ρ)) ?_ ?_ ?_ rfl ?_ hok (apartS_den ρ P hh.1)
-      (coverS_den ρ Γ.held P hh.2)
+      (L := P.map (partDen ρ)) ?_ ?_ ?_ rfl ?_ hok (apartS_den ρ hg P hh.1)
+      (coverS_den ρ Γ.held P hh.2) k Ψ' hext hwf s hw
     · funext r
       exact (Val.same_den ρ (hr r (mem_allRegs r))).symm
     · show Δ.flags.den ρ = Γ.flags.den ρ
@@ -465,5 +535,32 @@ theorem regardS_sound {ent : TyS → TyS → Bool} (he : EntSound fetch sys ent)
       exact factFrom_hasTy he ρ (hk g hg') Ψ' n hg
     · show Δ.held.map (regionDen ρ) ++ restDen ρ Δ.rest = _
       rw [hmap, hrest]
+
+/-- The place among the regions held of one at an address, of a size. -/
+def findRegion (base : Val) (size : Nat) : List (Val × HeldS) → Nat → Option Nat
+  | [], _ => none
+  | g :: gs, i =>
+    if g.1.same base && g.2.size.same (litNat size) && decide (size < 2 ^ 64) then some i
+    else findRegion base size gs (i + 1)
+
+theorem findRegion_spec (ρ : Env) {base : Val} {size : Nat} : (G : List (Val × HeldS)) →
+    (i₀ j : Nat) → findRegion base size G i₀ = some j →
+    ∃ g, G[j - i₀]? = some g ∧ i₀ ≤ j ∧ g.1.same base = true ∧ g.2.size.nat ρ = size
+  | [], _, _, h => nomatch h
+  | g :: gs, i₀, j, h => by
+    unfold findRegion at h
+    split at h
+    · next hc =>
+      cases h
+      simp only [Bool.and_eq_true, decide_eq_true_eq] at hc
+      refine ⟨g, by simp, Nat.le_refl _, hc.1.1, ?_⟩
+      show (g.2.size.den ρ).toNat = size
+      rw [Val.same_den ρ hc.1.2]
+      exact litNat_nat ρ hc.2
+    · obtain ⟨g', hg', hle, rest⟩ := findRegion_spec ρ gs (i₀ + 1) j h
+      refine ⟨g', ?_, by omega, rest⟩
+      have e : j - i₀ = (j - (i₀ + 1)) + 1 := by omega
+      rw [e, List.getElem?_cons_succ]
+      exact hg'
 
 end TypedAsm.U

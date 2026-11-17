@@ -158,13 +158,14 @@ def splitCand (Γ : CtxS) : Option CtxS :=
   | some nr, some len =>
     match linuxKind nr with
     | some .unmap =>
-      match hostExtent Γ.regs.rdi (pages len) Γ.held 0 with
+      match hostExtent Γ.known Γ.regs.rdi (litNat (pages len)) Γ.held with
       | some (j, o, G) =>
         match Γ.held[j]? with
         | some g =>
           some { Γ with held := Γ.held.eraseIdx j ++
-            ([(0, o), (o, pages len), (o + pages len, G.size - (o + pages len))].filter
-              fun x => x.2 != 0).map (stretch g) }
+            ([(.lit 0, o), (o, litNat (pages len)),
+              (o.plus (litNat (pages len)), offTerm G.size (o.plus (litNat (pages len))))].filter
+              fun x => !x.2.same (.lit 0)).map (stretch Γ.known g) }
         | none => none
       | none => none
     | _ => none

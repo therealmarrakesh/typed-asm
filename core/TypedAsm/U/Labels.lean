@@ -45,28 +45,30 @@ theorem lookup_mem {α : Type} : (l : List (Nat × α)) → (j : Nat) → (v : �
 /-- The bytes that regions wanted say hold a value and the context reached
 says nothing of: in which region of the context, and where. The regions
 wanted are given with their addresses as terms of the context reached. -/
-def wantedHeld (held : List (Val × HeldS)) (Γ : CtxS) : List (Nat × Nat) :=
+def wantedHeld (held : List (Val × HeldS)) (Γ : CtxS) : List (Nat × Val) :=
   held.flatMap fun d =>
-    match hostExtent d.1 d.2.size Γ.held 0 with
+    match hostExtent Γ.known d.1 d.2.size Γ.held with
     | some (i, o, G) =>
       d.2.slots.filterMap fun p =>
-        if G.slots.any fun q => q.1 == o + p.1 then none else some (i, o + p.1)
+        if G.slots.any fun q => q.1.same (o.plus p.1) then none else some (i, o.plus p.1)
     | none => []
 
 /-- A context with a region it holds said to hold, at eight of its bytes,
 the value the name `k` stands for. -/
-def CtxS.nameSlot (Γ : CtxS) (i o k : Nat) : Option CtxS :=
+def CtxS.nameSlot (Γ : CtxS) (i : Nat) (o : Val) (k : Nat) : Option CtxS :=
   match Γ.held[i]? with
   | some (b, S) =>
-    if o + 8 ≤ S.size then some { Γ with held := Γ.held.set i (b, ⟨S.size, (o, .var k) :: S.slots⟩) }
+    if fitsS Γ.known o 8 S.size && o.under k then
+      some { Γ with held := Γ.held.set i (b, ⟨S.size, (o, .var k) :: S.slots⟩) }
     else none
   | none => none
 
 theorem CtxS.nameSlot_ok (Q : Ctx → Prop)
     (hname : ∀ {Γ : Ctx} {i : Nat} {b : BitVec 64} {S : Held}, Γ.held[i]? = some (b, S) →
-      ∀ {o : Nat}, o + 8 ≤ S.size →
+      ∀ {o : Nat}, (∀ (Ψ' : MemTy) (m : Nat),
+        (∀ g ∈ Γ.known, HasTy fetch sys Ψ' m g.2 g.1) → o + 8 ≤ S.size) →
       (∀ x, Q { Γ with held := Γ.held.set i (b, ⟨S.size, (o, x) :: S.vals⟩) }) → Q Γ)
-    {Γ Γ' : CtxS} {i o k : Nat}
+    {Γ Γ' : CtxS} {i : Nat} {o : Val} {k : Nat}
     (h : Γ.nameSlot i o k = some Γ') (hu : Γ.under k = true) (ρ : Env)
     (hok : ∀ x, Q (Γ'.den (ρ.setVal k x))) : Q (Γ.den ρ) := by
   unfold CtxS.nameSlot at h
@@ -77,9 +79,15 @@ theorem CtxS.nameSlot_ok (Q : Ctx → Prop)
     rw [hi] at h
     simp only at h
     split at h
-    · next ho =>
+    · next hc =>
       cases h
-      refine hname (S := S.den ρ) (CtxS.held_den ρ Γ hi) ho fun x => ?_
+      rw [Bool.and_eq_true] at hc
+      obtain ⟨ho, hou⟩ := hc
+      refine hname (S := S.den ρ) (CtxS.held_den ρ Γ hi) (o := o.nat ρ)
+        (fun Ψ' m hg => by
+          have := leS_den ho (knownS hg)
+          simp only [Nat.add_zero] at this
+          exact this) fun x => ?_
       have hΓ : Γ.den (ρ.setVal k x) = Γ.den ρ := CtxS.den_setVal ρ k x Γ hu
       have hb : (b.den (ρ.setVal k x), S.den (ρ.setVal k x)) = (b.den ρ, S.den ρ) := by
         have h1 := CtxS.held_den (ρ.setVal k x) Γ hi
@@ -88,7 +96,8 @@ theorem CtxS.nameSlot_ok (Q : Ctx → Prop)
       have e : CtxS.den (ρ.setVal k x)
             { Γ with held := Γ.held.set i (b, ⟨S.size, (o, .var k) :: S.slots⟩) }
           = { Γ.den ρ with
-              held := (Γ.den ρ).held.set i (b.den ρ, ⟨S.size, (o, x) :: (S.den ρ).vals⟩) } := by
+              held := (Γ.den ρ).held.set i
+                (b.den ρ, ⟨(S.den ρ).size, (o.nat ρ, x) :: (S.den ρ).vals⟩) } := by
         refine ctx_ext
           (congrArg CtxOf.val hΓ : (Γ.den (ρ.setVal k x)).val = (Γ.den ρ).val)
           (congrArg CtxOf.flags hΓ : (Γ.den (ρ.setVal k x)).flags = (Γ.den ρ).flags) ?_
@@ -104,19 +113,19 @@ theorem CtxS.nameSlot_ok (Q : Ctx → Prop)
           ++ restDen (ρ.setVal k x) Γ.rest).set i _
         rw [List.set_append_left _ _ hj, List.map_set]
         congr 2
-        show (b.den (ρ.setVal k x), (⟨S.size, (o, (ρ.setVal k x).val k) ::
-          S.slots.map fun p => (p.1, p.2.den (ρ.setVal k x))⟩ : Held)) = _
-        rw [Env.setVal_get_self, (Prod.mk.inj hb).1]
-        have hS : (S.den (ρ.setVal k x)).vals = (S.den ρ).vals := congrArg ShapeOf.vals (Prod.mk.inj hb).2
-        show (_, (⟨S.size, (o, x) :: (S.den (ρ.setVal k x)).vals⟩ : Held)) = _
-        rw [hS]
+        show (b.den (ρ.setVal k x), (⟨(S.den (ρ.setVal k x)).size,
+          ((o.den (ρ.setVal k x)).toNat, (ρ.setVal k x).val k) ::
+            (S.den (ρ.setVal k x)).vals⟩ : Held)) = _
+        rw [Env.setVal_get_self, (Prod.mk.inj hb).1, (Prod.mk.inj hb).2,
+          Val.den_setVal ρ k x _ hou]
+        rfl
       have h2 := hok x
       rw [e] at h2
       exact h2
     · cases h
 
 /-- The same, of each of a list of places, with a new name for each. -/
-def nameSlots (Γ : CtxS) : List (Nat × Nat) → Nat → Option CtxS
+def nameSlots (Γ : CtxS) : List (Nat × Val) → Nat → Option CtxS
   | [], _ => some Γ
   | w :: ws, k =>
     match Γ.nameSlot w.1 w.2 k with
@@ -125,9 +134,10 @@ def nameSlots (Γ : CtxS) : List (Nat × Nat) → Nat → Option CtxS
 
 theorem nameSlots_ok (Q : Ctx → Prop)
     (hname : ∀ {Γ : Ctx} {i : Nat} {b : BitVec 64} {S : Held}, Γ.held[i]? = some (b, S) →
-      ∀ {o : Nat}, o + 8 ≤ S.size →
+      ∀ {o : Nat}, (∀ (Ψ' : MemTy) (m : Nat),
+        (∀ g ∈ Γ.known, HasTy fetch sys Ψ' m g.2 g.1) → o + 8 ≤ S.size) →
       (∀ x, Q { Γ with held := Γ.held.set i (b, ⟨S.size, (o, x) :: S.vals⟩) }) → Q Γ) :
-    (ws : List (Nat × Nat)) → (Γ Γ' : CtxS) → (k : Nat) → nameSlots Γ ws k = some Γ' →
+    (ws : List (Nat × Val)) → (Γ Γ' : CtxS) → (k : Nat) → nameSlots Γ ws k = some Γ' →
     Γ.under k = true → (ρ : Env) →
     (∀ ρ', Env.SameBelow k ρ' ρ → Q (Γ'.den ρ')) →
     Q (Γ.den ρ)
@@ -186,26 +196,28 @@ theorem OpenL.closed_opening {l : OpenL} (h : l.closed = true) : l.opening.Close
   · exact hr
   · exact ht
 
-/-- A list of pieces of a region, by where they start. -/
-def insertPiece (x : Nat × Nat) : List (Nat × Nat) → List (Nat × Nat)
+/-- A list of pieces of a region, by where they start, as far as what is
+known shows which starts first. -/
+def insertPiece (K : List (Val × TyS)) (x : Val × Val) : List (Val × Val) → List (Val × Val)
   | [] => [x]
-  | y :: ys => if x.1 ≤ y.1 then x :: y :: ys else y :: insertPiece x ys
+  | y :: ys => if leS K x.1 0 y.1 0 then x :: y :: ys else y :: insertPiece K x ys
 
-def sortPieces : List (Nat × Nat) → List (Nat × Nat)
+def sortPieces (K : List (Val × TyS)) : List (Val × Val) → List (Val × Val)
   | [] => []
-  | x :: xs => insertPiece x (sortPieces xs)
+  | x :: xs => insertPiece K x (sortPieces K xs)
 
 /-- The stretches of a region of `size` bytes, from byte `cur` on, that
 pieces listed by where they start leave out. -/
-def gaps (size : Nat) : Nat → List (Nat × Nat) → List (Nat × Nat)
-  | cur, [] => if cur < size then [(cur, size - cur)] else []
-  | cur, (o, n) :: rest => (if cur < o then [(cur, o - cur)] else []) ++ gaps size (o + n) rest
+def gaps (size : Val) : Val → List (Val × Val) → List (Val × Val)
+  | cur, [] => if cur.same size then [] else [(cur, offTerm size cur)]
+  | cur, (o, n) :: rest =>
+    (if cur.same o then [] else [(cur, offTerm o cur)]) ++ gaps size (o.plus n) rest
 
 /-- Where each region wanted lies in the context reached: in which region,
 how far in, and how long. -/
-def placed (held : List (Val × HeldS)) (Γ : CtxS) : List (Nat × Nat × Nat) :=
+def placed (held : List (Val × HeldS)) (Γ : CtxS) : List (Nat × Val × Val) :=
   held.filterMap fun d =>
-    match hostExtent d.1 d.2.size Γ.held 0 with
+    match hostExtent Γ.known d.1 d.2.size Γ.held with
     | some (i, off, _) => some (i, off, d.2.size)
     | none => none
 
@@ -217,9 +229,19 @@ def leftover (held : List (Val × HeldS)) (Γ : CtxS) : List (Val × HeldS) :=
   (List.range Γ.held.length).flatMap fun i =>
     match Γ.held[i]? with
     | some g =>
-      (gaps g.2.size 0 (sortPieces ((ps.filter fun p => p.1 == i).map fun p => p.2))).map
-        (stretch g)
+      (gaps g.2.size (.lit 0)
+        (sortPieces Γ.known ((ps.filter fun p => p.1 == i).map fun p => p.2))).map
+        (stretch Γ.known g)
     | none => []
+
+/-- The regions a family wants, with their addresses, their sizes and how
+far in their values are as terms of the context reached, by what the
+registers give. What the values are is left as the family says it. -/
+def wantedRegions (P Γ : CtxS) : List (Val × HeldS) :=
+  let bs₁ := allRegs.flatMap fun r => bindB (P.regs.get r) (Γ.regs.get r)
+  let o₁ : Opening := { b := fun j => (bs₁.lookup j).getD (.lit 0), f := Γ.flags }
+  P.held.map fun d => (d.1.open o₁ 0,
+    ⟨d.2.size.open o₁ 0, d.2.slots.map fun p => (p.1.open o₁ 0, p.2)⟩)
 
 /-- **A member of a family**, read off the context reached: its values from
 the registers, then from the regions at the addresses those give; and,
@@ -227,26 +249,22 @@ where the family ranges over whatever else is held, all that the context
 holds besides. -/
 def matchOpen (P Γ : CtxS) : OpenL :=
   let bs₁ := allRegs.flatMap fun r => bindB (P.regs.get r) (Γ.regs.get r)
-  let o₁ : Opening := { b := fun j => (bs₁.lookup j).getD (.lit 0), f := Γ.flags }
-  let wantedRegions := P.held.map fun d => (d.1.open o₁ 0, d.2)
-  let bs₂ := wantedRegions.flatMap fun d =>
-    match hostExtent d.1 d.2.size Γ.held 0 with
+  let bs₂ := (wantedRegions P Γ).flatMap fun d =>
+    match hostExtent Γ.known d.1 d.2.size Γ.held with
     | some (_, off, G) =>
       d.2.slots.flatMap fun p =>
-        match G.slots.lookup (off + p.1) with
-        | some g => bindB p.2 g
+        match G.slots.find? fun q => q.1.same (off.plus p.1) with
+        | some g => bindB p.2 g.2
         | none => []
     | none => []
   match P.rest with
-  | .bvar 0 => ⟨bs₁ ++ bs₂, Γ.flags, leftover wantedRegions Γ, Γ.rest⟩
+  | .bvar 0 => ⟨bs₁ ++ bs₂, Γ.flags, leftover (wantedRegions P Γ) Γ, Γ.rest⟩
   | _ => ⟨bs₁ ++ bs₂, Γ.flags, [], .none⟩
 
 /-- The bytes a family's contexts say hold a value and the context reached
 says nothing of. -/
-def wantedCode (P Γ : CtxS) : List (Nat × Nat) :=
-  let bs₁ := allRegs.flatMap fun r => bindB (P.regs.get r) (Γ.regs.get r)
-  let o₁ : Opening := { b := fun j => (bs₁.lookup j).getD (.lit 0), f := Γ.flags }
-  wantedHeld (P.held.map fun d => (d.1.open o₁ 0, d.2)) Γ
+def wantedCode (P Γ : CtxS) : List (Nat × Val) :=
+  wantedHeld (wantedRegions P Γ) Γ
 
 /-! ## Knowing that an address is code -/
 
@@ -332,7 +350,8 @@ def CloseSound (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (n : Nat)
     (cc : CtxS → CtxS → Nat → Option (CtxS × OpenL)) : Prop :=
   ∀ (Q : Ctx → Prop),
     (∀ {Γ : Ctx} {i : Nat} {b : BitVec 64} {S : Held}, Γ.held[i]? = some (b, S) →
-      ∀ {o : Nat}, o + 8 ≤ S.size →
+      ∀ {o : Nat}, (∀ (Ψ' : MemTy) (m : Nat),
+        (∀ g ∈ Γ.known, HasTy fetch sys Ψ' m g.2 g.1) → o + 8 ≤ S.size) →
       (∀ x, Q { Γ with held := Γ.held.set i (b, ⟨S.size, (o, x) :: S.vals⟩) }) → Q Γ) →
     (∀ {Γ Δ : Ctx}, Regards fetch sys Ψ Γ Δ → Q Δ → Q Γ) →
     (∀ {Γ : Ctx} (fs : List Fact),
@@ -605,7 +624,8 @@ def FlagsT.bmax (d : Nat) : FlagsT → Nat
 end
 
 def heldBmax (d : Nat) (held : List (Val × HeldS)) : Nat :=
-  held.foldl (fun m b => max m (max (b.1.bmax d) (b.2.slots.foldl (fun m p => max m (p.2.bmax d)) 0))) 0
+  held.foldl (fun m b => max m (max (max (b.1.bmax d) (b.2.size.bmax d))
+    (b.2.slots.foldl (fun m p => max m (max (p.1.bmax d) (p.2.bmax d))) 0))) 0
 
 mutual
 
@@ -703,7 +723,7 @@ theorem entF_sound : (f : Nat) → ∀ K, EntSound fetch sys (entF f K)
         have key := closeCtx_sound (fetch := fetch) (sys := sys) (Ψ := Ψ₂) (n := k)
           (ent := entF f) (justify := noJustify) (entF_sound f) (fun _ _ _ hj => by cases hj)
           (fun C => ∀ s : State, s.rip = v → WellTyped fetch sys Ψ₂ k C s → SafeN fetch sys k s)
-          (fun hi _ ho hall s hrip hw => hall _ s hrip (hw.nameSlot hi ho))
+          (fun hi _ ho hall s hrip hw => hall _ s hrip (hw.nameSlot hi (ho _ _ hw.known)))
           (fun hr hQ s hrip hw => hQ s hrip (hr k Ψ₂ (MemTy.Ext.refl _) hwf s hw))
           (fun fs hfs hQ s hrip hw => hQ s hrip
             (hw.addKnown fs fun f hf =>

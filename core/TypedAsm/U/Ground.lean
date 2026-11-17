@@ -78,19 +78,23 @@ end
 /-- Whether the regions of a list have nothing of an instruction's own
 description in them. -/
 def heldPlain (held : List (Val × HeldS)) : Bool :=
-  held.all fun b => b.1.plain && b.2.slots.all fun p => p.2.plain
+  held.all fun b => b.1.plain && b.2.size.plain &&
+    b.2.slots.all fun p => p.1.plain && p.2.plain
 
 theorem heldDen_bare (ρ : Env) (held : List (Val × HeldS)) (h : heldPlain held = true) :
     (held.map fun b => (b.1.den ρ.bare, b.2.den ρ.bare)) = held.map fun b => (b.1.den ρ, b.2.den ρ) := by
   refine List.map_congr_left fun b hb => ?_
   have hbk := List.all_eq_true.mp h b hb
-  rw [Bool.and_eq_true] at hbk
-  show (b.1.den ρ.bare, (⟨b.2.size, b.2.slots.map fun p => (p.1, p.2.den ρ.bare)⟩ : Held))
-    = (b.1.den ρ, ⟨b.2.size, b.2.slots.map fun p => (p.1, p.2.den ρ)⟩)
-  rw [Val.den_bare ρ _ hbk.1]
+  simp only [Bool.and_eq_true] at hbk
+  show (b.1.den ρ.bare, (⟨(b.2.size.den ρ.bare).toNat, b.2.slots.map (slotDen ρ.bare)⟩ : Held))
+    = (b.1.den ρ, ⟨(b.2.size.den ρ).toNat, b.2.slots.map (slotDen ρ)⟩)
+  rw [Val.den_bare ρ _ hbk.1.1, Val.den_bare ρ _ hbk.1.2]
   congr 2
   exact List.map_congr_left fun p hp => by
-    rw [Val.den_bare ρ _ (List.all_eq_true.mp hbk.2 p hp)]
+    have hp' := List.all_eq_true.mp hbk.2 p hp
+    rw [Bool.and_eq_true] at hp'
+    show ((p.1.den ρ.bare).toNat, p.2.den ρ.bare) = ((p.1.den ρ).toNat, p.2.den ρ)
+    rw [Val.den_bare ρ _ hp'.1, Val.den_bare ρ _ hp'.2]
 
 theorem restDen_bare (ρ : Env) (r : RestS) : restDen ρ.bare r = restDen ρ r := by
   cases r <;> rfl

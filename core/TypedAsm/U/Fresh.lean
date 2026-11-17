@@ -191,20 +191,24 @@ theorem Regs.all_get {k : Nat} (regs : Regs Val)
 
 /-- Whether the regions of a list mention only names below `k`. -/
 def heldUnder (k : Nat) (held : List (Val × HeldS)) : Bool :=
-  held.all fun b => b.1.under k && b.2.slots.all fun p => p.2.under k
+  held.all fun b => b.1.under k && b.2.size.under k &&
+    b.2.slots.all fun p => p.1.under k && p.2.under k
 
 theorem heldDen_under {k : Nat} {ρ₁ ρ₂ : Env} (hs : Env.SameBelow k ρ₁ ρ₂)
     (held : List (Val × HeldS)) (h : heldUnder k held = true) :
     (held.map fun b => (b.1.den ρ₁, b.2.den ρ₁)) = held.map fun b => (b.1.den ρ₂, b.2.den ρ₂) := by
   refine List.map_congr_left fun b hb => ?_
   have hbk := List.all_eq_true.mp h b hb
-  rw [Bool.and_eq_true] at hbk
-  show (b.1.den ρ₁, (⟨b.2.size, b.2.slots.map fun p => (p.1, p.2.den ρ₁)⟩ : Held))
-    = (b.1.den ρ₂, ⟨b.2.size, b.2.slots.map fun p => (p.1, p.2.den ρ₂)⟩)
-  rw [Val.den_under hs _ hbk.1]
+  simp only [Bool.and_eq_true] at hbk
+  show (b.1.den ρ₁, (⟨(b.2.size.den ρ₁).toNat, b.2.slots.map (slotDen ρ₁)⟩ : Held))
+    = (b.1.den ρ₂, ⟨(b.2.size.den ρ₂).toNat, b.2.slots.map (slotDen ρ₂)⟩)
+  rw [Val.den_under hs _ hbk.1.1, Val.den_under hs _ hbk.1.2]
   congr 2
   exact List.map_congr_left fun p hp => by
-    rw [Val.den_under hs _ (List.all_eq_true.mp hbk.2 p hp)]
+    have hp' := List.all_eq_true.mp hbk.2 p hp
+    rw [Bool.and_eq_true] at hp'
+    show ((p.1.den ρ₁).toNat, p.2.den ρ₁) = ((p.1.den ρ₂).toNat, p.2.den ρ₂)
+    rw [Val.den_under hs _ hp'.1, Val.den_under hs _ hp'.2]
 
 /-- Whether whatever else is held is said with a name below `k`, or none. -/
 def RestS.under (k : Nat) : RestS → Bool

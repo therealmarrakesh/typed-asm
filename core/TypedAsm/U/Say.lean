@@ -25,7 +25,6 @@ def Val.was (r : Reg) : Val := anyRegs.get r
 def Val.named (k : Nat) : Val := .bvar 0 (17 + k)
 
 instance : Coe (BitVec 64) Val := ⟨.lit⟩
-instance (n : Nat) : OfNat Val n := ⟨.lit (BitVec.ofNat 64 n)⟩
 instance : Add Val := ⟨.add⟩
 instance : Neg Val := ⟨.un (.neg .w64)⟩
 instance : _root_.Sub Val := ⟨fun a b => .add a (.un (.neg .w64) b)⟩
@@ -39,23 +38,53 @@ def regsWith (base : Regs Val) : List (Reg × Val) → Regs Val
 /-- The registers a function gives back as it found them. -/
 def keptRegs : List Reg := [.rbx, .rbp, .r12, .r13, .r14, .r15]
 
+mutual
+
+/-- A term said one family further in: each value of a family is then of
+the family one further out. -/
+def Val.lift : Val → Val
+  | .lit v => .lit v
+  | .var i => .var i
+  | .bvar d i => .bvar (d + 1) i
+  | .slot s => .slot s
+  | .un u x => .un u x.lift
+  | .bin u x y => .bin u x.lift y.lift
+  | .tri u x y z => .tri u x.lift y.lift z.lift
+  | .fop u fl x y => .fop u fl.lift x.lift y.lift
+
+def FlagsT.lift : FlagsT → FlagsT
+  | .lit f => .lit f
+  | .var i => .var i
+  | .bvar d => .bvar (d + 1)
+  | .old => .old
+  | .src u fl x y z => .src u fl.lift x.lift y.lift z.lift
+
+end
+
+/-- A term less so many: a number added where that is a number. -/
+def Val.lessBy (a n : Val) : Val :=
+  match n with
+  | .lit k => .add a (.lit (-k))
+  | n => a.less n
+
 /-- **What a function returns with**, written one family in from its
 entry: the registers it keeps as they were at entry, the stack pointer past
 the return address, the bytes it was given below the stack pointer and the
 eight that held the return address held still, the regions it took given
 back, the regions it hands its caller, each at the address a register holds
 at return, and whatever else was held, held. The other registers hold
-whatever they hold, but for those said. -/
-def returnsWith (results : List (Reg × Val) := []) (room : Nat := 0)
-    (takes : List (Reg × Nat) := []) (gives : List (Reg × Nat) := []) : TyS :=
+whatever they hold, but for those said. How many bytes are terms, said as
+at the function's entry: a number, or what a value there comes to. -/
+def returnsWith (results : List (Reg × Val) := []) (room : Val := 0)
+    (takes : List (Reg × Val) := []) (gives : List (Reg × Val) := []) : TyS :=
   .code
     (regsWith
       (regsWith anyRegs (keptRegs.map fun r => (r, .bvar 1 (allRegs.idxOf r))))
       ((.rsp, .add (.bvar 1 4) (.lit 8)) :: results))
     (.bvar 0)
-    ((.add (.bvar 1 4) (.lit (-(BitVec.ofNat 64 room))), ⟨room + 8, []⟩) ::
-      (takes.map fun t => (.bvar 1 (allRegs.idxOf t.1), ⟨t.2, []⟩)) ++
-      gives.map fun t => (.bvar 0 (allRegs.idxOf t.1), ⟨t.2, []⟩))
+    (((Val.bvar 1 4).lessBy room.lift, ⟨room.lift.plus 8, []⟩) ::
+      (takes.map fun t => (.bvar 1 (allRegs.idxOf t.1), ⟨t.2.lift, []⟩)) ++
+      gives.map fun t => (.bvar 0 (allRegs.idxOf t.1), ⟨t.2.lift, []⟩))
     .nil (.bvar 1)
 
 /-- **A label where a function is entered, or inside it with nothing
@@ -64,13 +93,14 @@ what the function returns with; so many bytes below the stack pointer the
 function's to use; the regions it takes from its caller and gives back,
 each at the address a register holds at entry and so many bytes; the
 regions it hands its caller when it returns; whatever else its caller
-holds; and the registers and facts said. -/
+holds; and the registers and facts said. How many bytes are terms: a
+number, or what a value at entry comes to. -/
 def inFunction (regs : List (Reg × Val) := []) (known : List (Val × TyS) := [])
-    (room : Nat := 0) (results : List (Reg × Val) := []) (takes : List (Reg × Nat) := [])
-    (gives : List (Reg × Nat) := []) : CtxS where
+    (room : Val := 0) (results : List (Reg × Val) := []) (takes : List (Reg × Val) := [])
+    (gives : List (Reg × Val) := []) : CtxS where
   regs := regsWith anyRegs regs
   flags := .bvar 0
-  held := (.add (.bvar 0 4) (.lit (-(BitVec.ofNat 64 room))), ⟨room + 8, [(room, .bvar 0 16)]⟩) ::
+  held := ((Val.bvar 0 4).lessBy room, ⟨room.plus 8, [(room, .bvar 0 16)]⟩) ::
     takes.map fun t => (.bvar 0 (allRegs.idxOf t.1), ⟨t.2, []⟩)
   known := (.bvar 0 16, returnsWith results room takes gives) :: known
   rest := .bvar 0
