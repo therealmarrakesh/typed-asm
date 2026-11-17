@@ -98,23 +98,23 @@ def walk (code : List (BitVec 64 × Instr × BitVec 64)) (stops : BitVec 64 → 
           | none =>
             match sysMap Γ k (a + len) with
             | some (Γe, Γo, sz) =>
-              if (Γe.addKnown [(.var k, .range (-4095) (-1))]).under (k + 1) &&
-                  (Γo.addKnown [(.var k, .range 0 (BitVec.ofNat 64 (addrTop - sz)))]).under (k + 1)
+              if (Γe.addKnown [(.var k, .range (-4095) (-1))]).sharpen.under (k + 1) &&
+                  (Γo.addKnown [(.var k, .range 0 (BitVec.ofNat 64 (addrTop - sz)))]).sharpen.under (k + 1)
                   && decide (sz ≤ addrTop) then
                 .sys2 k
                   (walk code stops false fuel (k + 1) (a + len)
-                    (Γe.addKnown [(.var k, .range (-4095) (-1))]))
+                    (Γe.addKnown [(.var k, .range (-4095) (-1))]).sharpen)
                   (walk code stops false fuel (k + 1) (a + len)
-                    (Γo.addKnown [(.var k, .range 0 (BitVec.ofNat 64 (addrTop - sz)))]))
+                    (Γo.addKnown [(.var k, .range 0 (BitVec.ofNat 64 (addrTop - sz)))]).sharpen)
               else .stop a Γ
             | none =>
               match sysUnmap Γ k (a + len) with
               | some (Γe, Γo) =>
-                if (Γe.addKnown [(.var k, .range (-4095) (-1))]).under (k + 1) && Γo.under k &&
+                if (Γe.addKnown [(.var k, .range (-4095) (-1))]).sharpen.under (k + 1) && Γo.under k &&
                     Γo.under (k + 1) then
                   .sys2 k
                     (walk code stops false fuel (k + 1) (a + len)
-                      (Γe.addKnown [(.var k, .range (-4095) (-1))]))
+                      (Γe.addKnown [(.var k, .range (-4095) (-1))]).sharpen)
                     (walk code stops false fuel (k + 1) (a + len) Γo)
                 else .stop a Γ
               | none =>
@@ -240,10 +240,12 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
                 subst hW
                 simp only [Bool.and_eq_true, decide_eq_true_eq] at hchk
                 obtain ⟨⟨hue, huo⟩, hsz⟩ := hchk
-                have ihe := fun x => (walk_sound hD hkind hpre code stops hcode false fuel (k + 1)
-                  (e + len) _ (ρ.setVal k x) hue (h x).1).1
-                have iho := fun x => (walk_sound hD hkind hpre code stops hcode false fuel (k + 1)
-                  (e + len) _ (ρ.setVal k x) huo (h x).2).1
+                have ihe := fun x => Ok.regard (CtxS.sharpen_regards (ρ.setVal k x) _)
+                  (walk_sound hD hkind hpre code stops hcode false fuel (k + 1)
+                    (e + len) _ (ρ.setVal k x) hue (h x).1).1
+                have iho := fun x => Ok.regard (CtxS.sharpen_regards (ρ.setVal k x) _)
+                  (walk_sound hD hkind hpre code stops hcode false fuel (k + 1)
+                    (e + len) _ (ρ.setVal k x) huo (h x).2).1
                 have hb := both fun m hm => by
                   refine Ok.step hf (sysMap_sound hD hkind hpre hmap hu) ?_
                   rintro t Δ ⟨x, rfl, ⟨hx, rfl⟩ | ⟨hfit, rfl⟩⟩
@@ -274,8 +276,9 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
                   subst hW
                   simp only [Bool.and_eq_true] at hchk
                   obtain ⟨⟨hue, huo⟩, huo'⟩ := hchk
-                  have ihe := fun x => (walk_sound hD hkind hpre code stops hcode false fuel (k + 1)
-                    (e + len) _ (ρ.setVal k x) hue (h x).1).1
+                  have ihe := fun x => Ok.regard (CtxS.sharpen_regards (ρ.setVal k x) _)
+                    (walk_sound hD hkind hpre code stops hcode false fuel (k + 1)
+                      (e + len) _ (ρ.setVal k x) hue (h x).1).1
                   have iho := (walk_sound hD hkind hpre code stops hcode false fuel (k + 1)
                     (e + len) _ (ρ.setVal k 0) huo' (h 0).2).1
                   rw [CtxS.den_setVal ρ k 0 Γo huo] at iho

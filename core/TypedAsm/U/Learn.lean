@@ -66,18 +66,48 @@ theorem TyS.strip_follows (ρ : Env) {nz ne : Bool} {v : BitVec 64} (hnz : nz = 
   | .code .. => Follows.refl _ _
   | .range _ _ => Follows.refl _ _
 
-/-- Whether the values a comparison leaves a value lie within a range. -/
-def CmpT.leaves (p : CmpT) (b : Bool) (v : Val) (R : Range) : Bool :=
-  match p.range b v with
-  | some r => r.within R
-  | none => false
+/-- Whether a context knows of a value a range that lies within a given
+one. -/
+def CtxS.knowsIn (Γ : CtxS) (v : Val) (R : Range) : Bool :=
+  Γ.known.any fun g =>
+    g.1.same v &&
+      (match g.2 with
+       | .range lo hi => Range.within ⟨lo, hi⟩ R
+       | _ => false)
 
-theorem CmpT.leaves_has {ρ : Env} {p : CmpT} {b : Bool} {v : Val} {R : Range}
-    (h : p.leaves b v R = true) (hp : p.den ρ = b) : R.has (v.den ρ) := by
-  unfold CmpT.leaves at h
-  cases hr : p.range b v with
-  | none => rw [hr] at h; cases h
-  | some r => rw [hr] at h; exact Range.within_has h (CmpT.range_sound hr hp)
+theorem CtxS.knowsIn_has {ρ : Env} {Γ : CtxS} {v : Val} {R : Range} (h : Γ.knowsIn v R = true)
+    {Ψ' : MemTy} {n : Nat} (hg : ∀ g ∈ (Γ.den ρ).known, HasTy fetch sys Ψ' n g.2 g.1) :
+    R.has (v.den ρ) := by
+  simp only [CtxS.knowsIn, List.any_eq_true, Bool.and_eq_true] at h
+  obtain ⟨g, hgm, hsame, hin⟩ := h
+  have hT := hg (g.1.den ρ, g.2.den ρ) (List.mem_map.mpr ⟨g, hgm, rfl⟩)
+  cases hτ : g.2 with
+  | range lo hi =>
+    rw [hτ] at hin hT
+    rw [← Val.same_den ρ hsame]
+    exact Range.within_has (r := ⟨lo, hi⟩) hin (hasTy_range.mp hT)
+  | _ => rw [hτ] at hin; cases hin
+
+/-- **A context with each thing known made as sharp as the ranges it knows
+allow**: what may be null and is known to lie clear of zero, is not null;
+what may be an error number and is known to lie clear of them, is not one.
+Whenever a range comes to be known, by a comparison or of what a call hands
+back, this is done; so it does not matter in which order things were
+learnt. -/
+def CtxS.sharpen (Γ : CtxS) : CtxS :=
+  { Γ with known := Γ.known.map fun f =>
+      (f.1, f.2.strip (Γ.knowsIn f.1 .nonZero) (Γ.knowsIn f.1 .noErr)) }
+
+theorem CtxS.sharpen_regards (ρ : Env) (Γ : CtxS) :
+    Regards fetch sys Ψ (Γ.den ρ) (Γ.sharpen.den ρ) := by
+  refine Regards.parts (E := []) (F := (Γ.den ρ).held) (L := []) rfl rfl ?_ rfl rfl
+    (fun _ hx => nomatch hx) .nil (fun i b hb => by simp at hb)
+  intro f hf Ψ' n hg
+  obtain ⟨g, hg', rfl⟩ := List.mem_map.mp hf
+  obtain ⟨g₀, hg₀, rfl⟩ := List.mem_map.mp hg'
+  exact TyS.strip_follows ρ (fun h => Range.nonZero_has (CtxS.knowsIn_has h hg))
+    (fun h => Range.noErr_has (CtxS.knowsIn_has h hg)) g₀.2 Ψ' n
+    (hg (g₀.1.den ρ, g₀.2.den ρ) (List.mem_map.mpr ⟨g₀, hg₀, rfl⟩))
 
 /-- The ranges a comparison leaves the values it compares: of each, that it
 lies in the range. -/
@@ -104,26 +134,22 @@ theorem CmpT.rangeFacts_hasTy {ρ : Env} {p : CmpT} {b : Bool} (hp : p.den ρ = 
   | zero => cases ho
 
 /-- **A context, knowing what a comparison teaches**: the range each value
-compared is left in; and of each value, less what it is then known not to
-be. -/
+compared is left in, and everything known made as sharp as that allows. -/
 def CtxS.learn (p : CmpT) (b : Bool) (Γ : CtxS) : CtxS :=
-  { Γ with known := p.rangeFacts b ++ Γ.known.map fun f =>
-      (f.1, f.2.strip (p.leaves b f.1 .nonZero) (p.leaves b f.1 .noErr)) }
+  (Γ.addKnown (p.rangeFacts b)).sharpen
 
 /-- **Where the comparison is as said, the context may be regarded as the
 one that has learnt it.** -/
 theorem CtxS.learn_regards {ρ : Env} {p : CmpT} {b : Bool} (Γ : CtxS) (hp : p.den ρ = b) :
     Regards fetch sys Ψ (Γ.den ρ) ((Γ.learn p b).den ρ) := by
+  refine Regards.trans ?_ (CtxS.sharpen_regards ρ _)
   refine Regards.parts (E := []) (F := (Γ.den ρ).held) (L := []) rfl rfl ?_ rfl rfl
     (fun _ hx => nomatch hx) .nil (fun i b hb => by simp at hb)
   intro f hf Ψ' n hg
   obtain ⟨g, hg', rfl⟩ := List.mem_map.mp hf
   rcases List.mem_append.mp hg' with hr | hs
   · exact CmpT.rangeFacts_hasTy hp hr Ψ' n
-  · obtain ⟨g₀, hg₀, rfl⟩ := List.mem_map.mp hs
-    exact TyS.strip_follows ρ (fun h => Range.nonZero_has (CmpT.leaves_has h hp))
-      (fun h => Range.noErr_has (CmpT.leaves_has h hp)) g₀.2 Ψ' n
-      (hg (g₀.1.den ρ, g₀.2.den ρ) (List.mem_map.mpr ⟨g₀, hg₀, rfl⟩))
+  · exact hg _ (List.mem_map.mpr ⟨g, hs, rfl⟩)
 
 /-- **The context on one side of a conditional jump**: knowing what the
 condition's being so, or not, teaches, where the flags say what comparison
