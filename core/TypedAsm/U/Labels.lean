@@ -40,15 +40,6 @@ theorem lookup_mem {α : Type} : (l : List (Nat × α)) → (j : Nat) → (v : �
       exact List.mem_cons_self
     · exact List.mem_cons_of_mem _ (lookup_mem rest j v h)
 
-/-- The first region of a list that an extent lies within: its place,
-counted from `i`, how far in the extent starts, and the region. -/
-def hostExtent (base : Val) (size : Nat) : List (Val × HeldS) → Nat → Option (Nat × Nat × HeldS)
-  | [], _ => none
-  | g :: gs, i =>
-    match offsetFrom base g.1 with
-    | some o => if o + size ≤ g.2.size then some (i, o, g.2) else hostExtent base size gs (i + 1)
-    | none => hostExtent base size gs (i + 1)
-
 /-! ## Naming what the context reached does not say -/
 
 /-- The bytes that regions wanted say hold a value and the context reached
@@ -209,13 +200,6 @@ pieces listed by where they start leave out. -/
 def gaps (size : Nat) : Nat → List (Nat × Nat) → List (Nat × Nat)
   | cur, [] => if cur < size then [(cur, size - cur)] else []
   | cur, (o, n) :: rest => (if cur < o then [(cur, o - cur)] else []) ++ gaps size (o + n) rest
-
-/-- A stretch of a region, as a region: its bytes, and the values the
-region says lie wholly in it. -/
-def stretch (g : Val × HeldS) (x : Nat × Nat) : Val × HeldS :=
-  (.add g.1 (.lit (BitVec.ofNat 64 x.1)),
-    ⟨x.2, g.2.slots.filterMap fun p =>
-      if x.1 ≤ p.1 ∧ p.1 + 8 ≤ x.1 + x.2 then some (p.1 - x.1, p.2) else none⟩)
 
 /-- Where each region wanted lies in the context reached: in which region,
 how far in, and how long. -/

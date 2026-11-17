@@ -228,6 +228,22 @@ theorem coverS_den (ρ : Env) (G : List (Val × HeldS)) (P : List (Nat × Nat ×
     obtain ⟨x, hx, h1, h2, h3⟩ := coverFrom_spec P i g.2.size _ _ this o (Nat.zero_le _) ho
     exact ⟨partDen ρ x, List.mem_map.mpr ⟨x, hx, rfl⟩, h1, h2, h3⟩
 
+/-- The first region of a list that an extent lies within: its place,
+counted from `i`, how far in the extent starts, and the region. -/
+def hostExtent (base : Val) (size : Nat) : List (Val × HeldS) → Nat → Option (Nat × Nat × HeldS)
+  | [], _ => none
+  | g :: gs, i =>
+    match offsetFrom base g.1 with
+    | some o => if o + size ≤ g.2.size then some (i, o, g.2) else hostExtent base size gs (i + 1)
+    | none => hostExtent base size gs (i + 1)
+
+/-- A stretch of a region, as a region: its bytes, and the values the
+region says lie wholly in it. -/
+def stretch (g : Val × HeldS) (x : Nat × Nat) : Val × HeldS :=
+  (.add g.1 (.lit (BitVec.ofNat 64 x.1)),
+    ⟨x.2, g.2.slots.filterMap fun p =>
+      if x.1 ≤ p.1 ∧ p.1 + 8 ≤ x.1 + x.2 then some (p.1 - x.1, p.2) else none⟩)
+
 /-! ## What is known -/
 
 /-- Whether what is known one way is known another, read off the two. -/

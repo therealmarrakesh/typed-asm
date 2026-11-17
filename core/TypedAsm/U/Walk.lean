@@ -112,10 +112,23 @@ theorem PreSound.all {D : SysDesc} (h : ∀ s, D.pre s) (pre : CtxS → Bool) :
 theorem Publishes.refl (Γ : Ctx) : Publishes fetch sys Ψ Γ Γ :=
   fun _ Ψ' _ hwf _ hw => ⟨Ψ', MemTy.Ext.refl Ψ', hwf, hw⟩
 
+theorem Publishes.trans {Γ Δ Θ : Ctx} (h₁ : Publishes fetch sys Ψ Γ Δ)
+    (h₂ : ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Publishes fetch sys Ψ' Δ Θ) : Publishes fetch sys Ψ Γ Θ :=
+  fun k Ψ' he hwf s hw => by
+    obtain ⟨Ψ₂, he₂, hwf₂, hw₂⟩ := h₁ k Ψ' he hwf s hw
+    obtain ⟨Ψ₃, he₃, hwf₃, hw₃⟩ := h₂ Ψ₂ (he.trans he₂) k Ψ₂ (MemTy.Ext.refl _) hwf₂ s hw₂
+    exact ⟨Ψ₃, he₂.trans he₃, hwf₃, hw₃⟩
+
+/-- A context regarded as another is that other with the memory typing as
+it is. -/
+theorem Publishes.of_regards {Γ Δ : Ctx} (h : Regards fetch sys Ψ Γ Δ) :
+    Publishes fetch sys Ψ Γ Δ :=
+  fun k Ψ' he hwf s hw => ⟨Ψ', MemTy.Ext.refl Ψ', hwf, h k Ψ' he hwf s hw⟩
+
 /-- The context at an address once what the program publishes there is
 published: as it was, where it publishes nothing there. Nothing where the
 region is not as the program says. -/
-def pubAt (pg : Prog) (k : Nat) (a : BitVec 64) (Γ : CtxS) : Option CtxS :=
+def pubOnly (pg : Prog) (k : Nat) (a : BitVec 64) (Γ : CtxS) : Option CtxS :=
   match pg.pubs.find? fun p => p.addr = a with
   | none => some Γ
   | some p =>
@@ -123,10 +136,10 @@ def pubAt (pg : Prog) (k : Nat) (a : BitVec 64) (Γ : CtxS) : Option CtxS :=
     | some Γ' => if Γ'.under k then some Γ' else none
     | none => none
 
-theorem pubAt_sound {ρ : Env} {pg : Prog} (hk : KindsOk Ψ pg.kinds) {k : Nat} {a : BitVec 64}
-    {Γ Γ' : CtxS} (h : pubAt pg k a Γ = some Γ') (hu : Γ.under k = true) :
+theorem pubOnly_sound {ρ : Env} {pg : Prog} (hk : KindsOk Ψ pg.kinds) {k : Nat} {a : BitVec 64}
+    {Γ Γ' : CtxS} (h : pubOnly pg k a Γ = some Γ') (hu : Γ.under k = true) :
     Γ'.under k = true ∧ Publishes fetch sys Ψ (Γ.den ρ) (Γ'.den ρ) := by
-  unfold pubAt at h
+  unfold pubOnly at h
   split at h
   · cases h; exact ⟨hu, Publishes.refl _⟩
   · split at h
@@ -135,6 +148,72 @@ theorem pubAt_sound {ρ : Env} {pg : Prog} (hk : KindsOk Ψ pg.kinds) {k : Nat} 
       · next hup => cases h; exact ⟨hup, publishS_sound hk hp⟩
       · cases h
     · cases h
+
+/-- A context about to give memory back, with the region the memory is of
+taken as its parts: what comes before the memory, the memory, and what
+comes after. Nothing where the call is not one that gives memory back, or
+no region held has the memory in it. -/
+def splitCand (Γ : CtxS) : Option CtxS :=
+  match Γ.regs.rax.lit?, Γ.regs.rsi.lit? with
+  | some nr, some len =>
+    match linuxKind nr with
+    | some .unmap =>
+      match hostExtent Γ.regs.rdi (pages len) Γ.held 0 with
+      | some (j, o, G) =>
+        match Γ.held[j]? with
+        | some g =>
+          some { Γ with held := Γ.held.eraseIdx j ++
+            ([(0, o), (o, pages len), (o + pages len, G.size - (o + pages len))].filter
+              fun x => x.2 != 0).map (stretch g) }
+        | none => none
+      | none => none
+    | _ => none
+  | _, _ => none
+
+/-- The same, where the context may be regarded so; else the context. -/
+def splitFor (Γ : CtxS) (k : Nat) : CtxS :=
+  match splitCand Γ with
+  | some Γ' => if Γ'.under k && regardS noEnt Γ Γ' then Γ' else Γ
+  | none => Γ
+
+theorem splitFor_sound (ρ : Env) (Γ : CtxS) {k : Nat} (hu : Γ.under k = true) :
+    (splitFor Γ k).under k = true ∧
+      Regards fetch sys Ψ (Γ.den ρ) ((splitFor Γ k).den ρ) := by
+  unfold splitFor
+  split
+  · split
+    · next h =>
+      rw [Bool.and_eq_true] at h
+      exact ⟨h.1, regardS_sound noEnt_sound ρ h.2⟩
+    · exact ⟨hu, Regards.refl _⟩
+  · exact ⟨hu, Regards.refl _⟩
+
+/-- **The context made ready at an address**: what the program publishes
+there published; and, at a system call, a region that memory is to be
+given back out of taken as its parts. -/
+def pubAt (pg : Prog) (k : Nat) (a : BitVec 64) (Γ : CtxS) : Option CtxS :=
+  match pubOnly pg k a Γ with
+  | some Γ' =>
+    match pg.code.find? fun e => e.1 = a with
+    | some e => if e.2.1 = .syscall then some (splitFor Γ' k) else some Γ'
+    | none => some Γ'
+  | none => none
+
+theorem pubAt_sound {ρ : Env} {pg : Prog} (hk : KindsOk Ψ pg.kinds) {k : Nat} {a : BitVec 64}
+    {Γ Γ' : CtxS} (h : pubAt pg k a Γ = some Γ') (hu : Γ.under k = true) :
+    Γ'.under k = true ∧ Publishes fetch sys Ψ (Γ.den ρ) (Γ'.den ρ) := by
+  unfold pubAt at h
+  split at h
+  · next Γp hp =>
+    obtain ⟨hup, hpub⟩ := pubOnly_sound (fetch := fetch) (sys := sys) (ρ := ρ) hk hp hu
+    split at h
+    · split at h
+      · cases h
+        exact ⟨(splitFor_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) ρ Γp hup).1,
+          hpub.trans fun Ψ' _ => Publishes.of_regards (splitFor_sound ρ Γp hup).2⟩
+      · cases h; exact ⟨hup, hpub⟩
+    · cases h; exact ⟨hup, hpub⟩
+  · cases h
 
 /-- **The checker walked from an address**, for at most so many
 instructions, `k` being a name no term yet mentions. It stops where `stops`
