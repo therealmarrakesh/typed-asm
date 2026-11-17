@@ -1,3 +1,4 @@
+import TypedAsm.U.Upper
 import TypedAsm.U.Labels
 import TypedAsm.U.Open
 
@@ -558,6 +559,22 @@ example : checkProgram codeRdS
 example : checkProgram codeRdS [lab 0 (buf (.mk 8 .nil) true)] 10 0 = false := by decide +kernel
 -- to an address nothing is known of: refused
 example : checkProgram codeRdS [lab 0 Pw] 10 0 = false := by decide +kernel
+
+/-! ## How large a value may be -/
+
+/-- `rcx` is known to be at most nine. -/
+def Γix : CtxS := { Γ0 with known := [(.var 1, .range 0 9)] }
+
+-- an index scaled by eight is at most seventy-two; with twenty-four added, ninety-six
+example : Γix.upper (.shl (.var 1) 3) = some 72 := by decide +kernel
+example : Γix.upper (.add (.shl (.var 1) 3) (.lit 24)) = some 96 := by decide +kernel
+-- a byte is at most 255, by its operator
+example : Γix.upper (.un .low8 (.var 2)) = some 255 := by decide +kernel
+-- of a value nothing is known of, the most a value can be
+example : Γix.upper (.var 2) = some (2 ^ 64 - 1) := by decide +kernel
+-- a range that wraps says nothing of how large
+example : ({ Γ0 with known := [(.var 1, .range (-4) 9)] } : CtxS).upper (.var 1)
+    = some (2 ^ 64 - 1) := by decide +kernel
 
 /-! ## Text -/
 
