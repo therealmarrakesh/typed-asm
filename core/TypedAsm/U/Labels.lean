@@ -1,6 +1,6 @@
 import TypedAsm.U.Walk
 import TypedAsm.U.Subst
-import TypedAsm.U.RegardS
+import TypedAsm.U.JoinS
 
 /-!
 # A program's labels
@@ -188,14 +188,14 @@ theorem nameSlots_ok {n : Nat} {a : BitVec 64} :
 /-- Whether a walk leaves nothing to be shown: every instruction it stepped
 over is seen not to fault of itself, every jump is decided, and every way
 through it ends the program or stops at a label in a context that may be
-regarded as the label's, once the values the label names and the context
-does not are named. `k` is a name no term of the walk yet mentions. -/
+regarded as the label's, once the regions it holds end to end are taken
+as one and the values the label names and the context does not are named. `k` is a name no term of the walk yet mentions. -/
 def Walk.closes (labels : List (BitVec 64 × CtxS)) : Nat → Walk → Bool
   | k, .stop a Γ =>
     match labels.find? fun e => e.1 == a with
     | some e =>
-      Γ.under k &&
-        (match nameSlots Γ (wanted e.2 Γ) k with
+      (joinAll Γ.held.length Γ).under k &&
+        (match nameSlots (joinAll Γ.held.length Γ) (wanted e.2 (joinAll Γ.held.length Γ)) k with
          | some Γ' => regardS Γ' (e.2.subst (matchCtx e.2 Γ'))
          | none => false)
     | none => false
@@ -222,11 +222,12 @@ theorem Walk.holds_of_closes {n : Nat} {labels : List (BitVec 64 × CtxS)}
       obtain ⟨hu, h⟩ := h
       have hmem := List.mem_of_find?_eq_some hfind
       have ha : e.1 = a := by simpa using List.find?_some hfind
-      cases hn : nameSlots Γ (wanted e.2 Γ) k with
+      cases hn : nameSlots (joinAll Γ.held.length Γ) (wanted e.2 (joinAll Γ.held.length Γ)) k with
       | none => rw [hn] at h; cases h
       | some Γ' =>
         rw [hn] at h
-        refine nameSlots_ok _ Γ Γ' k hn hu (fun ρ' => ?_) ρ
+        refine Ok.regard (joinAll_regards ρ Γ.held.length Γ) ?_
+        refine nameSlots_ok _ _ Γ' k hn hu (fun ρ' => ?_) ρ
         have hok := H e hmem (ρ'.inst (matchCtx e.2 Γ'))
         rw [← CtxS.den_subst, ha] at hok
         exact Ok.regard (regardS_sound ρ' h) hok

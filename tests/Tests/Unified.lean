@@ -221,6 +221,19 @@ example : mayHold [(.var 16, ⟨64, [(24, .var 7)]⟩)] = false := by decide +ke
 -- a value said to lie across the end of the region: refused
 example : mayHold [(.var 16, ⟨64, [(60, .var 17)]⟩)] = false := by decide +kernel
 
+-- from two regions that lie end to end, with a value in each, the label may
+-- ask for the one region they make, the values where they then are
+example : checkProgram codeJ
+    [(0, { Γw with held := [(.add (.var 16) (.lit 32), ⟨32, [(0, .var 18)]⟩),
+                            (.var 16, ⟨32, [(8, .var 17)]⟩)] }),
+     (5, { Γw with held := [(.var 16, ⟨64, [(8, .var 17), (32, .var 18)]⟩)] })] 10 20 = true := by
+  decide +kernel
+-- but not for one region where they do not meet
+example : checkProgram codeJ
+    [(0, { Γw with held := [(.add (.var 16) (.lit 40), ⟨24, []⟩), (.var 16, ⟨32, []⟩)] }),
+     (5, { Γw with held := [(.var 16, ⟨64, []⟩)] })] 10 20 = false := by
+  decide +kernel
+
 -- the frame loop again: the label may say the slot holds what `rdi` holds,
 -- which the body puts there, and may not say it holds what `rsi` holds
 example : checkProgram codeF [(0, { Γw with held := [(.var 16, ⟨64, [(16, .var 7)]⟩)] })] 10 20
