@@ -208,26 +208,44 @@ theorem perm_withArgs (x : BitVec 64) :
         .rw).perm x :=
   rfl
 
-/-- The stack is writable: the room below the stack pointer and the 64 KiB
-from it up. -/
-theorem perm_withArgs_in (hroom : 8 * room ≤ 0x10000) {x : BitVec 64}
-    (h1 : argBase.toNat - 8 * room ≤ x.toNat) (h2 : x.toNat < argBase.toNat + 0x10000) :
+/-- The stack is writable: the pages of the room below the stack pointer,
+and the 64 KiB from it up. -/
+theorem perm_withArgs_in (hroom : 8 * room ≤ 0x7fff0000) {x : BitVec 64}
+    (h1 : 4096 * ((argBase.toNat - 8 * room) / 4096) ≤ x.toNat)
+    (h2 : x.toNat < argBase.toNat + 0x10000) :
     (s.withArgs room args).perm x = .rw := by
   have hbase : argBase.toNat = 0x7fff0000 := rfl
   have hx : x.toNat < addrTop := by
     show x.toNat < 0x7ffffffff000
     rw [hbase] at h2
     exact Nat.lt_trans h2 (by decide)
-  rw [perm_withArgs]
-  exact State.perm_setPerm_in s (base := argBase - BitVec.ofNat 64 (8 * room))
-    (len := BitVec.ofNat 64 (8 * room + 0x10000)) .rw hx ⟨by bv_omega, by bv_omega⟩
+  have e1 : (argBase - BitVec.ofNat 64 (8 * room)).toNat = 0x7fff0000 - 8 * room := by
+    rw [BitVec.toNat_sub, BitVec.toNat_ofNat, hbase]
+    omega
+  have e2 : (BitVec.ofNat 64 (8 * room + 0x10000)).toNat = 8 * room + 0x10000 := by
+    rw [BitVec.toNat_ofNat]
+    omega
+  rw [perm_withArgs, State.perm_setPerm, e1, e2]
+  have h : (State.pagesOf (0x7fff0000 - 8 * room) (8 * room + 0x10000)).1 ≤ x.toNat / 4096 ∧
+      x.toNat / 4096 < (State.pagesOf (0x7fff0000 - 8 * room) (8 * room + 0x10000)).1
+        + (State.pagesOf (0x7fff0000 - 8 * room) (8 * room + 0x10000)).2 := by
+    simp only [State.pagesOf]
+    rw [hbase] at h1 h2
+    split <;> omega
+  simp only [hx, h, and_self, ↓reduceIte]
 
 /-- Below the stack's pages, permissions are what they were. -/
-theorem perm_withArgs_below (hroom : 8 * room ≤ 0x10000) {x : BitVec 64}
-    (hx : x.toNat < 0x7ffe0000) : (s.withArgs room args).perm x = s.perm x := by
+theorem perm_withArgs_below (hroom : 8 * room ≤ 0x7fff0000) {x : BitVec 64}
+    (hx : x.toNat < 4096 * ((argBase.toNat - 8 * room) / 4096)) :
+    (s.withArgs room args).perm x = s.perm x := by
   have hbase : argBase.toNat = 0x7fff0000 := rfl
+  have e1 : (argBase - BitVec.ofNat 64 (8 * room)).toNat = 0x7fff0000 - 8 * room := by
+    rw [BitVec.toNat_sub, BitVec.toNat_ofNat, hbase]
+    omega
   have hout : x.toNat / 4096 < (argBase - BitVec.ofNat 64 (8 * room)).toNat / 4096 := by
-    bv_omega
+    rw [e1]
+    rw [hbase] at hx
+    omega
   rw [perm_withArgs]
   exact State.perm_setPerm_out s (len := BitVec.ofNat 64 (8 * room + 0x10000)) .rw (.inl hout)
 

@@ -80,7 +80,9 @@ and two commands:
   and states what it shows: the program is safe, whatever the outside world
   holds. With `exits q` after it, also that the program ends only with a
   status `q` holds of. `asm_checked_args` is the same for a program started
-  with arguments: safe whatever its arguments.
+  with arguments: safe whatever its arguments. Such a program has the
+  stack it asks for below its arguments, and may push and call as any
+  program may.
 
 No proof is written for twenty-three of the twenty-four. In
 `examples/Fact`, the recursive factorial, two laws of the factorial are
@@ -107,9 +109,6 @@ What is not there:
   for bytes it made, not for bytes it read. A store of two or four bytes
   into a number it made leaves that number unknown; a store of one or of
   eight does not.
-- A program started with arguments has, in the model, no stack below its
-  arguments: it cannot push or call. Programs started without arguments
-  have the stack they ask for.
 - There are no signals in the model. An exit status is the value handed to
   `exit`; a parent process sees its low eight bits.
 - The examples are written as constructor terms; there is no notation for

@@ -16,14 +16,17 @@ variable {L : Type} [DecidableEq L]
 
 /-- The stretch of memory a program started with arguments is given for its
 stack. -/
-def argStretch : BitVec 64 × BitVec 64 :=
-  (argBase - BitVec.ofNat 64 (8 * 0), BitVec.ofNat 64 (8 * 0 + 0x10000))
+def argStretch (n : Nat) : BitVec 64 × BitVec 64 :=
+  (argBase - BitVec.ofNat 64 (8 * n), BitVec.ofNat 64 (8 * n + 0x10000))
 
 /-- **The state a program is started in with arguments**: its segments
-placed as the kernel places them, the stack given with the arguments on it,
-and the instruction pointer at the label it starts at; in any world. -/
-def startArgs (code : List (Asm L)) (l : L) (args : List (List Byte)) (w : World) : State :=
-  argsState (Asm.load State.init (Asm.base code) code l) (Asm.addr code (Asm.base code) l) args w
+placed as the kernel places them, the stack given with the arguments on it
+and so many slots below them, and the instruction pointer at the label it
+starts at; in any world. -/
+def startArgs (code : List (Asm L)) (l : L) (n : Nat) (args : List (List Byte)) (w : World) :
+    State :=
+  argsState (Asm.load State.init (Asm.base code) code l) (Asm.addr code (Asm.base code) l) n args
+    w
 
 /-- **The program's bytes are in memory still once the arguments are
 placed**, where they lie below the stack. -/
@@ -31,28 +34,30 @@ theorem args_holds {code : List (Asm L)} {l : L}
     (hholds : Loaded.holdsAllE (Asm.imageExt (Asm.base code) code)
       (Asm.partsExt (Asm.base code) code) = true)
     (hhead : Asm.headOkE (Asm.base code) code = true)
+    {n : Nat} (hn : 8 * n ≤ 0x7fff0000)
     (hbelow : (Asm.partsExt (Asm.base code) code).all
-      (fun g => decide (g.1 + g.2.2 ≤ 0x7ffe0000)) = true)
+      (fun g => decide (g.1 + g.2.2 ≤ argLow n)) = true)
     (args : List (List Byte)) (w : World) :
-    ∀ g ∈ Asm.parts (Asm.base code) code, (startArgs code l args w).Holds g := by
+    ∀ g ∈ Asm.parts (Asm.base code) code, (startArgs code l n args w).Holds g := by
   intro g hg k hk
   have hl := Asm.load_holds State.init (Asm.base code) code l hholds hhead g hg k hk
-  have hb : g.1 + g.2.2.length ≤ 0x7ffe0000 := by
+  have hb : g.1 + g.2.2.length ≤ argLow n := by
     rw [← Asm.parts_ext, List.all_map] at hbelow
     exact of_decide_eq_true (List.all_eq_true.mp hbelow g hg)
-  have hx : (BitVec.ofNat 64 g.1 + BitVec.ofNat 64 k).toNat < 0x7ffe0000 := by
+  have hlow := argLow_le n
+  have hx : (BitVec.ofNat 64 g.1 + BitVec.ofNat 64 k).toNat < argLow n := by
     rw [BitVec.toNat_add, BitVec.toNat_ofNat, BitVec.toNat_ofNat]
     omega
-  have hm : (startArgs code l args w).mem (BitVec.ofNat 64 g.1 + BitVec.ofNat 64 k)
+  have hm : (startArgs code l n args w).mem (BitVec.ofNat 64 g.1 + BitVec.ofNat 64 k)
       = (Asm.load State.init (Asm.base code) code l).mem
           (BitVec.ofNat 64 g.1 + BitVec.ofNat 64 k) :=
-    State.mem_withArgs_below _ 0 args (by
+    State.mem_withArgs_below _ n args (by
       have : argBase.toNat = 0x7fff0000 := rfl
       omega)
-  have hp : (startArgs code l args w).perm (BitVec.ofNat 64 g.1 + BitVec.ofNat 64 k)
+  have hp : (startArgs code l n args w).perm (BitVec.ofNat 64 g.1 + BitVec.ofNat 64 k)
       = (Asm.load State.init (Asm.base code) code l).perm
           (BitVec.ofNat 64 g.1 + BitVec.ofNat 64 k) :=
-    State.perm_withArgs_below _ 0 args (by omega) hx
+    State.perm_withArgs_below _ n args hn hx
   rw [hm, hp]
   exact hl
 
@@ -196,19 +201,20 @@ entry asks.** As for a program started without: the checker's program is
 the assembled table, the entry label is among the labels with the entry
 context for arguments, the labels' code is typed, the blocks the program
 says are seen in its segments; and the program lies below the stack. -/
-def wholeArgsOk (code : List (Asm L)) (l : L) (ks : List (Nat × ShapeS))
+def wholeArgsOk (code : List (Asm L)) (l : L) (n : Nat) (ks : List (Nat × ShapeS))
     (bs : List (BitVec 64 × LayoutS)) (pg : Prog) (labels : List Label) (fuel : Nat) : Bool :=
   let base := Asm.base code
   let segs := Asm.image base code l
   let blocks := denBlocks bs
   decide (pg.code = progCode (Asm.table base code)) &&
-  labels.any (fun x => decide (x.addr = Asm.addr code base l) && decide (x.pat = entryArgs)) &&
+  labels.any (fun x => decide (x.addr = Asm.addr code base l) && decide (x.pat = entryArgs (argRoom n))) &&
+  decide (8 * n ≤ 0x7fff0000) &&
   checkProgram pg labels fuel 0 && tableOk (Asm.table base code) && blocksWf blocks &&
   decide (blocks.Pairwise fun x y => x.1 ≠ y.1) && segsOk segs && segsFull segs &&
-  segs.all (offStack argStretch.1.toNat argStretch.2.toNat) &&
+  segs.all (offStack (argStretch n).1.toNat (argStretch n).2.toNat) &&
   Loaded.holdsAllE (Asm.imageExt base code) (Asm.partsExt base code) && Asm.headOkE base code &&
-  (Asm.partsExt base code).all (fun g => decide (g.1 + g.2.2 ≤ 0x7ffe0000)) &&
-  segs.all (fun g => decide (g.1 + pageBytes g.2.2.length ≤ 0x7ffe0000)) &&
+  (Asm.partsExt base code).all (fun g => decide (g.1 + g.2.2 ≤ argLow n)) &&
+  segs.all (fun g => decide (g.1 + pageBytes g.2.2.length ≤ argLow n)) &&
   (segStretches segs []).all (stretchIn (blocks.map fun x => (x.1, x.2.size))) &&
   pg.statics.all (staticS bs) && blocksIn segs blocks &&
   valsHold (codeJ pg labels fuel) segs bs &&
@@ -221,7 +227,7 @@ abbrev psiArgs (ks : List (Nat × ShapeS)) (bs : List (BitVec 64 × LayoutS))
   MemTy.ofList (denBlocks bs ++ argBlocks args) (kindsDen ks)
 
 /-- What the check establishes, for each list of arguments and each world. -/
-structure ArgsFacts (code : List (Asm L)) (l : L) (ks : List (Nat × ShapeS))
+structure ArgsFacts (code : List (Asm L)) (l : L) (n : Nat) (ks : List (Nat × ShapeS))
     (bs : List (BitVec 64 × LayoutS)) (pg : Prog) (labels : List Label) (fuel : Nat)
     (args : List (List Byte)) (w : World) : Prop where
   hcode : ∀ e ∈ pg.code, Asm.fetch (Asm.base code) code e.1 = some (e.2.1, e.2.2)
@@ -233,45 +239,46 @@ structure ArgsFacts (code : List (Asm L)) (l : L) (ks : List (Nat × ShapeS))
   statics : ∀ (fetch : Fetch) (sys : Syscall),
     StaticsOk fetch sys (MemTy.ofList (denBlocks bs) (kindsDen ks)) pg.statics
   check : checkProgram pg labels fuel 0 = true
-  entry : (⟨Asm.addr code (Asm.base code) l, entryArgs⟩ : Label) ∈ labels
-  loaded : Loaded (Asm.fetch (Asm.base code) code) (startArgs code l args w)
+  entry : (⟨Asm.addr code (Asm.base code) l, entryArgs (argRoom n)⟩ : Label) ∈ labels
+  loaded : Loaded (Asm.fetch (Asm.base code) code) (startArgs code l n args w)
   typed : ∀ (fetch : Fetch) (sys : Syscall) (k : Nat),
     (∀ a E, codeJ pg labels fuel a E = true → ∀ (ρ : Env) (fam : Fam), ρ.fn = pg.fns →
       Ok fetch sys (MemTy.ofList (denBlocks bs) (kindsDen ks)) k a
         (E.den { ρ with bound := fam :: ρ.bound })) →
     WellTyped fetch sys (psiArgs ks bs args) k
-      (entryArgs.den { ({ fn := pg.fns } : Env) with
-        bound := Fam.ofArgs (startArgs code l args w) (argCount args) :: [] })
-      (startArgs code l args w)
+      ((entryArgs (argRoom n)).den { ({ fn := pg.fns } : Env) with
+        bound := argsFam (startArgs code l n args w) n args :: [] })
+      (startArgs code l n args w)
 
-theorem wholeArgs_facts {code : List (Asm L)} {l : L} {ks : List (Nat × ShapeS)}
+theorem wholeArgs_facts {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat × ShapeS)}
     {bs : List (BitVec 64 × LayoutS)} {pg : Prog} {labels : List Label} {fuel : Nat}
-    (h : wholeArgsOk code l ks bs pg labels fuel = true) (args : List (List Byte)) (w : World) :
-    ArgsFacts code l ks bs pg labels fuel args w := by
+    (h : wholeArgsOk code l n ks bs pg labels fuel = true) (args : List (List Byte)) (w : World) :
+    ArgsFacts code l n ks bs pg labels fuel args w := by
   simp only [wholeArgsOk, Bool.and_eq_true, decide_eq_true_eq, List.any_eq_true] at h
-  obtain ⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨hpc, x, hx, hxa, hxp⟩, hchk⟩, htab⟩, hwfB⟩, hndB⟩, hsegs⟩, hfull⟩, hoff⟩,
+  obtain ⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨hpc, x, hx, hxa, hxp⟩, hn⟩, hchk⟩, htab⟩, hwfB⟩, hndB⟩, hsegs⟩, hfull⟩, hoff⟩,
     hholds⟩, hhead⟩, hpbelow⟩, hsbelow⟩, hcovB⟩, hstat⟩, hin⟩, hvals⟩, hkc⟩ := h
   have hbase : argBase.toNat = 0x7fff0000 := rfl
-  have hperm : (startArgs code l args w).perm
-      = ((State.init.loadSegs (Asm.image (Asm.base code) code l)).setPerm argStretch.1
-          argStretch.2 .rw).perm := rfl
-  have hmemOn : MemOn (Asm.image (Asm.base code) code l) (startArgs code l args w) := by
+  have hlow := argLow_le n
+  have hperm : (startArgs code l n args w).perm
+      = ((State.init.loadSegs (Asm.image (Asm.base code) code l)).setPerm (argStretch n).1
+          (argStretch n).2 .rw).perm := rfl
+  have hmemOn : MemOn (Asm.image (Asm.base code) code l) (startArgs code l n args w) := by
     intro g hg j hj
     have hb := of_decide_eq_true (List.all_eq_true.mp hsbelow g hg)
     have hpl := pageData_length g
     have hlt : (BitVec.ofNat 64 g.1 + BitVec.ofNat 64 j).toNat < argBase.toNat := by
       rw [BitVec.toNat_add, BitVec.toNat_ofNat, BitVec.toNat_ofNat]
       omega
-    have e : (startArgs code l args w).mem (BitVec.ofNat 64 g.1 + BitVec.ofNat 64 j)
+    have e : (startArgs code l n args w).mem (BitVec.ofNat 64 g.1 + BitVec.ofNat 64 j)
         = (Asm.load State.init (Asm.base code) code l).mem
             (BitVec.ofNat 64 g.1 + BitVec.ofNat 64 j) :=
-      State.mem_withArgs_below _ 0 args hlt
+      State.mem_withArgs_below _ n args hlt
     rw [e]
     exact mem_pageData hsegs hg rfl hj
   have hwfBs : (MemTy.ofList (denBlocks bs) (kindsDen ks)).WF :=
     blocksWf_wf hwfB (tags_of_check hkc)
-  have hB : ∀ x ∈ denBlocks bs, (startArgs code l args w).canRead x.1 x.2.size = true ∧
-      (x.2.writable = true → (startArgs code l args w).canWrite x.1 x.2.size = true) := by
+  have hB : ∀ x ∈ denBlocks bs, (startArgs code l n args w).canRead x.1 x.2.size = true ∧
+      (x.2.writable = true → (startArgs code l n args w).canWrite x.1 x.2.size = true) := by
     intro x hx'
     have := List.all_eq_true.mp (blocksPerm_in hsegs hfull hoff hperm hin) x hx'
     simp only [Bool.and_eq_true, Bool.or_eq_true, Bool.not_eq_true'] at this
@@ -279,27 +286,40 @@ theorem wholeArgs_facts {code : List (Asm L)} {l : L} {ks : List (Nat × ShapeS)
     rcases this.2 with hn | hcw
     · rw [hw] at hn; cases hn
     · exact hcw
-  have hBbelow : ∀ x ∈ denBlocks bs, x.1.toNat + x.2.size ≤ argBase.toNat := by
+  have hBlow : ∀ x ∈ denBlocks bs, x.1.toNat + x.2.size ≤ argLow n := by
     intro x hx'
     obtain ⟨g, hg, hb⟩ := List.any_eq_true.mp (List.all_eq_true.mp hin x hx')
     simp only [blockOf, Bool.and_eq_true, decide_eq_true_eq] at hb
     have h2 := hb.1.1.1.2
     have hb' := of_decide_eq_true (List.all_eq_true.mp hsbelow g hg)
     omega
+  have hBbelow : ∀ x ∈ denBlocks bs, x.1.toNat + x.2.size ≤ argBase.toNat := fun x hx' => by
+    have := hBlow x hx'
+    omega
   have hBpos : ∀ x ∈ denBlocks bs, 0 < x.2.size := fun x hx' =>
     hwfBs.nonempty x.1 x.2 (MemTy.ofList_of_mem _ hndB x hx')
-  have hcov : ∀ a : BitVec 64, (startArgs code l args w).perm a ≠ .none →
-      (argBase.toNat ≤ a.toNat ∧ a.toNat < argBase.toNat + 0x10000) ∨
+  have hcov : ∀ a : BitVec 64, (startArgs code l n args w).perm a ≠ .none →
+      (argLow n ≤ a.toNat ∧ a.toNat < argBase.toNat + 0x10000) ∨
         ∃ x ∈ denBlocks bs, (a - x.1).toNat < x.2.size := by
     intro a ha
-    have hpw : PermsWithin (startArgs code l args w)
-        (argStretch :: segStretches (Asm.image (Asm.base code) code l) []) :=
-      ((PermsWithin.init.loadSegs _).setPerm argStretch.1 argStretch.2 .rw).congr hperm
+    have hpw : PermsWithin (startArgs code l n args w)
+        (argStretch n :: segStretches (Asm.image (Asm.base code) code l) []) :=
+      ((PermsWithin.init.loadSegs _).setPerm (argStretch n).1 (argStretch n).2 .rw).congr hperm
     obtain ⟨r, hr, h1, h2⟩ := hpw a ha
     rcases List.mem_cons.mp hr with rfl | hr
-    · have hp : State.pagesOf argStretch.1.toNat argStretch.2.toNat = (0x7fff0, 16) := by decide
-      rw [hp] at h1 h2
-      exact .inl (by omega)
+    · have e1 : (argStretch n).1.toNat = 0x7fff0000 - 8 * n := by
+        show (argBase - BitVec.ofNat 64 (8 * n)).toNat = _
+        rw [BitVec.toNat_sub, BitVec.toNat_ofNat, hbase]
+        omega
+      have e2 : (argStretch n).2.toNat = 8 * n + 0x10000 := by
+        show (BitVec.ofNat 64 (8 * n + 0x10000)).toNat = _
+        rw [BitVec.toNat_ofNat]
+        omega
+      rw [e1, e2] at h1 h2
+      simp only [State.pagesOf, show 8 * n + 0x10000 ≠ 0 from by omega, ↓reduceIte] at h1 h2
+      refine .inl ?_
+      unfold argLow
+      omega
     · have := List.all_eq_true.mp hcovB r hr
       simp only [stretchIn, Bool.or_eq_true, beq_iff_eq] at this
       generalize (State.pagesOf r.1.toNat r.2.toNat).1 = p1 at *
@@ -319,58 +339,63 @@ theorem wholeArgs_facts {code : List (Asm L)} {l : L} {ks : List (Nat × ShapeS)
     ⟨fun a l' hl => MemTy.ofList_of_mem _ hnd (a, l')
       (List.mem_append_left _ (MemTy.mem_of_ofList hl)), rfl⟩
   have hst := starts_argsState (Asm.load State.init (Asm.base code) code l)
-    (Asm.addr code (Asm.base code) l) args w ({ fn := pg.fns } : Env) (kinds := kindsDen ks) hB
-    (said_in hsegs hmemOn hin) (text_in hsegs hmemOn hin) hBbelow hcov
+    (Asm.addr code (Asm.base code) l) n args w ({ fn := pg.fns } : Env) (kinds := kindsDen ks) hB
+    (said_in hsegs hmemOn hin) (text_in hsegs hmemOn hin) hn hBlow hcov
   refine ⟨by rw [hpc]; exact hcode_of_tableOk htab, wf_args args hwfBs hndB hBbelow, hext,
     kindsOk_of_check hkc _,
     fun fetch sys => staticsOk_of_holds (fetch := fetch) (sys := sys) (kinds := kindsDen ks)
       hndB hstat,
-    hchk, ?_, Asm.loaded (args_holds hholds hhead hpbelow args w), fun fetch sys k hj => ?_⟩
+    hchk, ?_, Asm.loaded (args_holds hholds hhead hn hpbelow args w), fun fetch sys k hj => ?_⟩
   · obtain ⟨xa, xp⟩ := x
     simp only at hxa hxp
     subst hxa hxp
     exact hx
   refine hst.matches hnd (fun f hf => ?_) (fun y hy q hq => ?_)
-  · have e : f = ((startArgs code l args w).getReg .rsp + 8,
+  · have e : f = (BitVec.ofNat 64 (argLow n) + BitVec.ofNat 64 (argRoom n) + 8,
         Ty.arr (argCount args) (Ty.str 0)) := List.mem_singleton.mp hf
-    rw [e, show (startArgs code l args w).getReg .rsp = argBase from argsState_rsp _ _ _ _]
+    have hr : BitVec.ofNat 64 (argLow n) + BitVec.ofNat 64 (argRoom n) = argBase := by
+      have := argLow_room n
+      apply BitVec.eq_of_toNat_eq
+      rw [BitVec.toNat_add, BitVec.toNat_ofNat, BitVec.toNat_ofNat, hbase]
+      omega
+    rw [e, hr]
     exact argv_known args k hΨv
   · rcases List.mem_append.mp hy with hy | hy
     · exact (heap_of_check hmemOn hndB hvals k hj y hy q hq).ext hext
     · rcases argBlocks_mem args hy with rfl | rfl
-      · exact argv_heap _ _ args w k hΨv q hq
+      · exact argv_heap _ _ n args w k hΨv q hq
       · cases hq
 
 /-- **A program started with arguments that checks is safe, on the machine
 that decodes its instructions from memory: whatever its arguments, and
 whatever the world outside it holds.** -/
-theorem whole_args_safe {code : List (Asm L)} {l : L} {ks : List (Nat × ShapeS)}
+theorem whole_args_safe {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat × ShapeS)}
     {bs : List (BitVec 64 × LayoutS)} {pg : Prog} {labels : List Label} {fuel : Nat}
-    (h : wholeArgsOk code l ks bs pg labels fuel = true) (hpk : pg.kinds = kindsOf ks)
+    (h : wholeArgsOk code l n ks bs pg labels fuel = true) (hpk : pg.kinds = kindsOf ks)
     (hlaws : LawsHold pg.fns pg.laws) :
-    ∀ args w, SafeMem linux (startArgs code l args w) := fun args w =>
+    ∀ args w, SafeMem linux (startArgs code l n args w) := fun args w =>
   have f := wholeArgs_facts h args w
   SafeMem.of_safe linux_frame f.loaded
     (safe_of_checked_ext linux_describes rfl (PreSound.all (fun _ => trivial) _) f.hcode
       (hpk ▸ f.kindsOk) (f.statics _ _) f.ext f.wf hlaws f.check f.entry rfl { fn := pg.fns }
-      (Fam.ofArgs (startArgs code l args w) (argCount args)) rfl fun k H =>
+      (argsFam (startArgs code l n args w) n args) rfl fun k H =>
         f.typed _ _ k fun a E hj ρ fam hfn =>
           justifyF_sound linux_describes rfl (PreSound.all (fun _ => trivial) _) f.hcode
             (hpk ▸ f.kindsOk) (f.statics _ _) hlaws H fuel 0 a E hj ρ fam hfn)
 
 /-- **And where it checks against the wanted status, ends only with it.** -/
-theorem whole_args_exits {code : List (Asm L)} {l : L} {ks : List (Nat × ShapeS)}
+theorem whole_args_exits {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat × ShapeS)}
     {bs : List (BitVec 64 × LayoutS)} {pg : Prog} {labels : List Label} {fuel : Nat}
-    (h : wholeArgsOk code l ks bs pg labels fuel = true)
+    (h : wholeArgsOk code l n ks bs pg labels fuel = true)
     {Q : BitVec 32 → Prop} {q : BitVec 32 → Bool} (hq : ∀ c, q c = true → Q c)
     (hpg : pg.pre = preExits q) (hpk : pg.kinds = kindsOf ks) (hlaws : LawsHold pg.fns pg.laws) :
-    ∀ args w, SafeMem linux (startArgs code l args w) ∧
-      ∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startArgs code l args w) s' →
+    ∀ args w, SafeMem linux (startArgs code l n args w) ∧
+      ∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startArgs code l n args w) s' →
         ∀ len c, Asm.fetch (Asm.base code) code s'.rip = some (.syscall, len) →
         linux { s' with rip := s'.rip + len } = .exit c → Q c := fun args w =>
   have f := wholeArgs_facts h args w
   have r := exits_of_checked_ext hq hpg f.hcode (hpk ▸ f.kindsOk) (f.statics _ _) f.ext f.wf
-    f.check f.entry rfl { fn := pg.fns } (Fam.ofArgs (startArgs code l args w) (argCount args))
+    f.check f.entry rfl { fn := pg.fns } (argsFam (startArgs code l n args w) n args)
     rfl hlaws fun k H =>
       f.typed _ _ k fun a E hj ρ fam hfn =>
         justifyF_sound (D := exitsDesc Q) (linux_describes.exitsOnly Q) rfl

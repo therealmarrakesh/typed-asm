@@ -106,20 +106,27 @@ macro_rules
     return mkNullNode cmds
 
 /-- **A label in the code of a program started with arguments**, outside
-any function and with nothing pushed: the count held at the stack pointer,
-the row of pointers to the arguments' text after it; and the registers and
-facts said. The count is the value `argCount`. -/
-def inArgs (regs : List (Reg × Val) := []) (known : List (Val × TyS) := []) : CtxS :=
-  { entryArgs with regs := regsWith entryArgs.regs regs, known := entryArgs.known ++ known }
+any function: the count held where the stack pointer was when the program
+started, the stack of so many slots below it, the stack pointer so many
+bytes below where it started, the row of pointers to the arguments' text
+after the count; and the registers and facts said. The count is the value
+`argCountV`. -/
+def inArgs (regs : List (Reg × Val) := []) (known : List (Val × TyS) := []) (stack : Nat := 0)
+    (pushed : Nat := 0) : CtxS :=
+  { entryArgs (argRoom stack) with
+    regs := regsWith
+      ((entryArgs (argRoom stack)).regs.set .rsp
+        (.add (.bvar 0 17) (litNat (argRoom stack - pushed)))) regs
+    known := (entryArgs (argRoom stack)).known ++ known }
 
 /-- How many arguments the program was handed: the value held at the stack
 pointer when it starts. -/
 def argCountV : Val := .bvar 0 16
 
-/-- `asm_checked_args code start l program pg labels ls`: as `asm_checked`,
-for a program that is started with arguments: `startArgs args`, which the
-program's file defines as the program loaded and given a stack with the
-arguments on it. It states
+/-- `asm_checked_args code start l stack n program pg labels ls`: as
+`asm_checked`, for a program that is started with arguments: `startArgs
+args`, which the program's file defines as the program loaded and given a
+stack with the arguments on it and `n` slots below them. It states
 
 * `checked`: the check, run by Lean's kernel;
 * `start_eq`: the state the program is started in with given arguments is
@@ -130,12 +137,13 @@ arguments on it. It states
 
 With `exits q` it states `safe_exits_in`, `safe` and `exits` instead, as
 `asm_checked` does. `blocks`, `kinds`, `fuel` and `laws` are as there. -/
-syntax "asm_checked_args " ident &" start " term:max &" program " term:max &" labels " term:max
+syntax "asm_checked_args " ident &" start " term:max &" stack " term:max &" program " term:max
+  &" labels " term:max
   (&" blocks " term:max)? (&" kinds " term:max)? (&" fuel " term:max)? (&" exits " term:max)?
   (&" laws " term:max)? : command
 
 macro_rules
-  | `(asm_checked_args $code start $l program $pg labels $ls $[blocks $bs?]? $[kinds $ks?]?
+  | `(asm_checked_args $code start $l stack $n program $pg labels $ls $[blocks $bs?]? $[kinds $ks?]?
       $[fuel $k?]? $[exits $q?]? $[laws $lw?]?) => do
     let checked := mkIdent `checked
     let startEq := mkIdent `start_eq
@@ -163,11 +171,11 @@ macro_rules
     let mut cmds : Array (TSyntax `command) := #[]
     cmds := cmds.push (← `(/-- **The check**: the labels' code is typed, and whatever the
       arguments, the state the program is loaded into starts as its entry asks. -/
-      theorem $checked : wholeArgsOk $code $l $ks $bs $pg $ls $k = true := by decide +kernel))
+      theorem $checked : wholeArgsOk $code $l $n $ks $bs $pg $ls $k = true := by decide +kernel))
     cmds := cmds.push (← `(/-- The state the program is started in with given arguments is the
       one the check is of, in the world it has. -/
       theorem $startEq (args : List (List Byte)) :
-          $startArgs args = TypedAsm.U.startArgs $code $l args ($startArgs args).world := by
+          $startArgs args = TypedAsm.U.startArgs $code $l $n args ($startArgs args).world := by
         unfold $startArgs $prepared TypedAsm.U.startArgs TypedAsm.U.argsState $entry $base
         rfl))
     match q? with
@@ -176,7 +184,7 @@ macro_rules
         instructions from memory, whatever its arguments and whatever the world outside it
         holds.** -/
         theorem $safeIn (args : List (List Byte)) (w : World) :
-            SafeMem linux (TypedAsm.U.startArgs $code $l args w) :=
+            SafeMem linux (TypedAsm.U.startArgs $code $l $n args w) :=
           whole_args_safe $checked rfl $lw args w))
       cmds := cmds.push (← `(/-- So the program as it is run, with any arguments, is safe. -/
         theorem $safe (args : List (List Byte)) : SafeMem linux ($startArgs args) :=
@@ -186,8 +194,8 @@ macro_rules
         instructions from memory, and ends only with a status that is as said: whatever its
         arguments and whatever the world outside it holds.** -/
         theorem $safeExitsIn (args : List (List Byte)) (w : World) :
-            SafeMem linux (TypedAsm.U.startArgs $code $l args w) ∧
-              ExitsOnly $fetch (fun c => $q c = true) (TypedAsm.U.startArgs $code $l args w) :=
+            SafeMem linux (TypedAsm.U.startArgs $code $l $n args w) ∧
+              ExitsOnly $fetch (fun c => $q c = true) (TypedAsm.U.startArgs $code $l $n args w) :=
           whole_args_exits $checked (Q := fun c => $q c = true) (q := $q) (fun _ h => h) rfl rfl
             $lw args w))
       cmds := cmds.push (← `(/-- So the program as it is run, with any arguments, is safe. -/

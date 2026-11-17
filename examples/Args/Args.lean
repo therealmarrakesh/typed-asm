@@ -39,6 +39,6 @@ def labels : List U.Label :=
 
 /-! ## The check, and what it shows -/
 
-asm_checked_args code start .start program pg labels labels exits (· == 0)
+asm_checked_args code start .start stack 0 program pg labels labels exits (· == 0)
 
 end Args

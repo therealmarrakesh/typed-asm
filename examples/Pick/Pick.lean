@@ -38,6 +38,6 @@ def labels : List U.Label := [⟨entry, inArgs⟩]
 
 /-! ## The check, and what it shows -/
 
-asm_checked_args code start .start program pg labels labels blocks blocks
+asm_checked_args code start .start stack 0 program pg labels labels blocks blocks
 
 end Pick
