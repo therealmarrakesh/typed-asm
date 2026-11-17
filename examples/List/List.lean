@@ -1,51 +1,58 @@
 import ListProgram
-import TypedAsm.Tactic
+import TypedAsm.U.Checked
 
 /-!
 # List: typing and safety
 
-The program is in `ListProgram.lean`. This file types it and proves it safe.
-It is kept separate so that running the program does not link the tactics.
+The program is in `ListProgram.lean`. This file says what its labels want
+and checks it: one check, run by Lean's kernel, that the code is typed and
+that the state the kernel loads the program into starts as its entry asks.
+Nothing is proved by hand.
+
+It is kept separate so that running the program does not link the checker.
 -/
 
-open TypedAsm
+open TypedAsm TypedAsm.U
 
 namespace List3
 
--- Where the list is loaded. Each node is sixteen bytes.
-asm_label dataBase .first
+/-! ## What the labels want -/
 
-/-! ## The typing -/
+/-- A link: nought, or a pointer to a node. -/
+def link : TyS := .nullable (.ref 1 false 0)
 
-/-- What a node's link holds: zero, or the address of a node. Nodes are the
-blocks of kind 1. -/
-def link : Ty := .nullable (.ref 1 false 0)
+/-- A node: a number, then a link. -/
+def node : ShapeS := .mk 16 (.cons 8 link .nil)
 
-/-- A node: sixteen bytes, a value and then a link. -/
-def nodeShape : Shape := ⟨16, [(8, link)]⟩
+/-- The one kind of block there is: kind 1 is a node. -/
+def kinds : List (Nat × ShapeS) := [(1, node)]
 
-def nodeLayout : Layout := ⟨nodeShape, false, some 1, 0, none⟩
+/-- A node at a label of the data. -/
+def nodeAt (l : Label) : BitVec 64 × U.LayoutS :=
+  (Asm.addr code base l, { shape := node, writable := false, tag := some 1 })
 
-/-- In the loop `rdi` holds a link. -/
-def walking : Ctx := ⟨fun r => if r = .rdi then link else .int, [], 0, Flags.Any, [], 0⟩
+/-- The blocks the program says its segments are: the three nodes. That
+each one's link is nought or the address of a node is read from the
+program's bytes. -/
+def blocks : List (BitVec 64 × U.LayoutS) :=
+  blocksWith code .start [nodeAt .first, nodeAt .second, nodeAt .third]
 
-/-- The contexts allowed at each label. -/
-inductive At : Label → Ctx → Prop
-  | start : At .start (entryCtx 0)
-  | loop : At .loop walking
+/-- The program for the checker: its instructions; its kinds; and that the
+first node is a node. -/
+def pg : Prog :=
+  { code := progCode (Asm.table base code)
+    kinds := kindsOf kinds
+    statics := staticRef blocks (Asm.addr code base .first) }
 
-/-- Three memory blocks, one for each node. -/
-def blocks : List (BitVec 64 × Layout) :=
-  [(dataBase, nodeLayout), (dataBase + 16, nodeLayout), (dataBase + 32, nodeLayout)]
+/-- The labels: the start; and the loop, where `rdi` is a link. The program
+never loads through the nought that ends the list: its own test of the link
+is what lets it load. -/
+def labels : List U.Label :=
+  [⟨entry, inProgram 0⟩,
+   ⟨Asm.addr code base .loop, inProgram 0 (known := [(.was .rdi, link)])⟩]
 
--- The blocks, and the one kind of block there is: kind 1 is a node.
-asm_typing At blocks blocks kinds [(1, nodeShape)]
+/-! ## The check, and what it shows -/
 
-/-! ## Safety -/
-
--- Each node's link holds what the data says, the address of the next node or
--- zero: read from the program's bytes. The program never loads through the
--- zero that ends the list.
-asm_safety At.start
+asm_checked code start .start stack 0 program pg labels labels blocks blocks kinds kinds fuel 40
 
 end List3

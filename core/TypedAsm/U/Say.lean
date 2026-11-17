@@ -94,7 +94,17 @@ address is that of a byte of the segment's block. -/
 def staticIn (blocks : List (BitVec 64 × LayoutS)) (a : BitVec 64) : List (Val × TyS) :=
   match blocks.find? fun b =>
       decide (b.1 ≤ a) && decide (a.toNat < b.1.toNat + b.2.shape.size) with
-  | some b => [(.lit a, .ptr (.mk b.2.shape.size .nil) b.2.writable (a - b.1).toNat)]
+  | some b => [(.lit a, .ptr b.2.shape b.2.writable (a - b.1).toNat)]
+  | none => []
+
+/-- What a program says of a block of a kind among its segments' blocks:
+that its address is that of a block of the kind. -/
+def staticRef (blocks : List (BitVec 64 × LayoutS)) (a : BitVec 64) : List (Val × TyS) :=
+  match blocks.find? fun b => b.1 == a with
+  | some b =>
+    match b.2.tag with
+    | some t => [(.lit a, .ref t b.2.writable 0)]
+    | none => []
   | none => []
 
 /-- A block of plain bytes. -/

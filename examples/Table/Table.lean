@@ -1,43 +1,46 @@
 import TableProgram
-import TypedAsm.Tactic
+import TypedAsm.U.Checked
 
 /-!
 # Table: typing and safety
 
-The program is in `TableProgram.lean`. This file types it and proves it safe.
-It is kept separate so that running the program does not link the tactics.
+The program is in `TableProgram.lean`. This file says what its labels want
+and checks it: one check, run by Lean's kernel, that the code is typed and
+that the state the kernel loads the program into starts as its entry asks.
+Nothing is proved by hand.
+
+It is kept separate so that running the program does not link the checker.
 -/
 
-open TypedAsm
+open TypedAsm TypedAsm.U
 
 namespace Table
 
--- Where the data is loaded: the table first, then the record.
-asm_label dataBase .table
--- Where the record is.
-asm_label recordAddr .record
+/-! ## What the labels want -/
 
-/-! ## The typing -/
+/-- A pointer to the record: sixteen bytes that may be written. -/
+def pair : TyS := .ptr (.mk 16 .nil) true 0
 
-/-- A pointer to a writable record of sixteen plain bytes: two numbers. -/
-def pair : Ty := .ptr (.raw 16) true 0
+/-- The blocks the program says its segments are: the table, eight bytes
+holding a pointer to the record, not to be written; and the record. That
+the table's eight bytes are the record's address is read from the program's
+bytes. -/
+def blocks : List (BitVec 64 × U.LayoutS) :=
+  blocksWith code .start
+    [(Asm.addr code base .table, { shape := .mk 8 (.cons 0 pair .nil), writable := false }),
+     (Asm.addr code base .record, plainBlock 16 true)]
 
-inductive At : Label → Ctx → Prop
-  | start : At .start (entryCtx 0)
+/-- The program for the checker: its instructions, and that the table is
+one of the blocks said. -/
+def pg : Prog :=
+  { code := progCode (Asm.table base code)
+    statics := staticIn blocks (Asm.addr code base .table) }
 
-/-- The table: eight bytes, holding a pointer to the record. -/
-def tableLayout : Layout := ⟨⟨8, [(0, pair)]⟩, false, none, 0, none⟩
+/-- One label: the start, with nothing known. -/
+def labels : List U.Label := [⟨entry, inProgram 0⟩]
 
-def recordLayout : Layout := ⟨.raw 16, true, none, 0, none⟩
+/-! ## The check, and what it shows -/
 
-def blocks : List (BitVec 64 × Layout) := [(dataBase, tableLayout), (recordAddr, recordLayout)]
-
-asm_typing At blocks blocks
-
-/-! ## Safety -/
-
--- The table's entry is a pointer to the record because the data says so:
--- that is read from the program's bytes.
-asm_safety At.start
+asm_checked code start .start stack 0 program pg labels labels blocks blocks fuel 40
 
 end Table

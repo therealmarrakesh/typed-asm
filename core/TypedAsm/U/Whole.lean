@@ -1,5 +1,6 @@
 import TypedAsm.U.Blocks
 import TypedAsm.U.LayoutS
+import TypedAsm.U.Typed
 import TypedAsm.Linux
 
 /-!
@@ -66,8 +67,9 @@ labels, with the entry context; the labels' code is typed; and the state
 the program is loaded into is seen, by where its segments and its stack
 are, to start as the entry asks, under the blocks the program says its
 segments are; and those blocks, and what the program says of its static
-data, are seen in its segments; its kinds mention nothing, and each block
-said to be of one has its shape. -/
+data, are seen in its segments, with each value a block's shape says it
+holds; its kinds mention nothing, and each block said to be of one has its
+shape. -/
 def wholeOkWith (code : List (Asm L)) (l : L) (n : Nat) (ks : List (Nat × ShapeS))
     (bs : List (BitVec 64 × LayoutS)) (pg : Prog) (labels : List Label) (fuel : Nat) : Bool :=
   let base := Asm.base code
@@ -90,8 +92,8 @@ def wholeOkWith (code : List (Asm L)) (l : L) (n : Nat) (ks : List (Nat × Shape
     (blocks.all fun x => decide (Disjoint (stackBase n) (stackSize n) x.1 x.2.size)) &&
     (st :: segStretches segs []).all
       (stretchIn ((stackBase n, stackSize n) :: blocks.map fun x => (x.1, x.2.size)))) &&
-  pg.statics.all (staticOk blocks) && blocksIn segs blocks &&
-  (blocks.all fun x => x.2.shape.vals.isEmpty) && kindsCheck ks bs
+  pg.statics.all (staticS bs) && blocksIn segs blocks &&
+  valsHold segs bs && kindsCheck ks bs
 
 /-- The same, each segment taken as one block of plain bytes, and no kinds. -/
 abbrev wholeOk (code : List (Asm L)) (l : L) (n : Nat) (pg : Prog) (labels : List Label)
@@ -105,7 +107,10 @@ structure WholeFacts (code : List (Asm L)) (l : L) (n : Nat) (ks : List (Nat × 
   hcode : ∀ e ∈ pg.code, Asm.fetch (Asm.base code) code e.1 = some (e.2.1, e.2.2)
   wf : (MemTy.ofList (denBlocks bs) (kindsDen ks)).WF
   nd : (denBlocks bs).Pairwise fun x y => x.1 ≠ y.1
-  plain : ∀ x ∈ denBlocks bs, x.2.shape.vals = []
+  heap : ∀ (fetch : Fetch) (sys : Syscall) (w : World) (k : Nat),
+    ∀ x ∈ denBlocks bs, ∀ p ∈ x.2.shape.vals,
+      HasTy fetch sys (MemTy.ofList (denBlocks bs) (kindsDen ks)) k p.2
+        ((startIn code l n w).load64 (x.1 + BitVec.ofNat 64 p.1))
   kindsOk : KindsOk (MemTy.ofList (denBlocks bs) (kindsDen ks)) (kindsOf ks)
   check : checkProgram pg labels fuel 0 = true
   entry : (⟨Asm.addr code (Asm.base code) l, entryOf n⟩ : Label) ∈ labels
@@ -127,9 +132,9 @@ theorem wholeOk_facts {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat ×
       (Asm.prepared_holds State.init (Asm.base code) code l (stackStretch n).1 (stackStretch n).2
         0x80000000 hholds hhead hoffp g hg).congr rfl rfl
   refine ⟨?_, blocksWf_wf hwf (tags_of_check hkc), hnd,
-    fun x hx => List.isEmpty_iff.mp (List.all_eq_true.mp hplain x hx),
+    fun _ _ w k => heap_of_check (t := startIn code l n w) hsegs rfl hnd hplain k,
     kindsOk_of_check hkc _, hchk, ?_,
-    fun _ _ => staticsOk_of_check hnd hstat,
+    fun _ _ => staticsOk_of_holds hnd hstat,
     fun w => Asm.loaded (hparts w), fun w ρ => ?_⟩
   · rw [hpc]
     exact hcode_of_tableOk htab
@@ -155,7 +160,8 @@ theorem wholeOk_facts {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat ×
         htop (hsp.trans hrsp) hapart hc
 
 /-- A state that starts as the entry asks matches it, at every step count:
-the entry knows nothing of any value, and the blocks are of plain bytes. -/
+the entry knows nothing of any value, and each block holds what its shape
+says. -/
 theorem WholeFacts.wellTyped {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat × ShapeS)}
     {bs : List (BitVec 64 × LayoutS)} {pg : Prog}
     {labels : List Label} {fuel : Nat} (f : WholeFacts code l n ks bs pg labels fuel)
@@ -169,9 +175,7 @@ theorem WholeFacts.wellTyped {code : List (Asm L)} {l : L} {n : Nat} {ks : List 
         split <;> rfl
       rw [hk] at hg
       cases hg)
-    (fun x hx p hp => by
-      rw [f.plain x hx] at hp
-      cases hp)
+    (f.heap fetch sys w k)
 
 /-- **A program that checks is safe, on the machine that decodes its
 instructions from memory.** -/
