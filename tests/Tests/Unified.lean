@@ -8,6 +8,7 @@ import TypedAsm.U.Stack
 import TypedAsm.U.Loaded
 import TypedAsm.U.Whole
 import TypedAsm.U.Order
+import TypedAsm.U.Know
 import TypedAsm.U.Labels
 import TypedAsm.U.Open
 
@@ -950,6 +951,19 @@ example : entails 4 [⟨[(1, .var 0), (-1, .var 1)], 0⟩, ⟨[(1, .var 1)], -7�
     = true := by decide +kernel
 example : entails 4 [⟨[(1, .var 0), (-1, .var 1)], 0⟩, ⟨[(1, .var 1)], -7⟩] ⟨[(1, .var 0)], -6⟩
     = false := by decide +kernel
+
+/-! ## How large, by what is known -/
+
+-- of a count known to be at most four, and four less it known not to be nought:
+-- one more than it is at most four
+example : rangeHolds [(.var 0, .range 0 4), (.add (.lit 4) (.un (.neg .w64) (.var 0)), .range 1 (-1))]
+    (.add (.var 0) (.lit 1)) 0 4 = true := by decide +kernel
+-- without the second, it may be five
+example : rangeHolds [(.var 0, .range 0 4)] (.add (.var 0) (.lit 1)) 0 4 = false := by
+  decide +kernel
+-- a range that goes round: not three, and at most four, so three more is not six
+example : rangeHolds [(.var 0, .range 0 4), (.var 0, .range 4 2)]
+    (.add (.var 0) (.lit 3)) 7 5 = true := by decide +kernel
 
 /-! ## All the memory a first state has -/
 

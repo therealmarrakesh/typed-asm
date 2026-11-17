@@ -1,5 +1,6 @@
 import TypedAsm.U.Find
 import TypedAsm.U.Lin
+import TypedAsm.U.Know
 import TypedAsm.U.Entail
 import TypedAsm.U.Range
 
@@ -372,7 +373,10 @@ theorem noEnt_sound : EntSound fetch sys noEnt := fun _ _ _ _ h => nomatch h
 the same value: read off the two, or by `ent`, which is asked what reading
 off does not show. -/
 def factFrom (ent : TyS → TyS → Bool) (G : List (Val × TyS)) (f : Val × TyS) : Bool :=
-  outright f.1 f.2 || G.any fun g => g.1.same f.1 && (followsS g.2 f.2 || ent g.2 f.2)
+  outright f.1 f.2 || (G.any fun g => g.1.same f.1 && (followsS g.2 f.2 || ent g.2 f.2)) ||
+    match f.2 with
+    | .range lo hi => rangeHolds G f.1 lo hi
+    | _ => false
 
 /-- **What is so of itself, or follows from something known of the same
 value, is so wherever what is known is.** -/
@@ -382,7 +386,14 @@ theorem factFrom_hasTy {ent : TyS → TyS → Bool} (he : EntSound fetch sys ent
     (hg : ∀ g ∈ G.map (fun g => (g.1.den ρ, g.2.den ρ)), HasTy fetch sys Ψ' n g.2 g.1) :
     HasTy fetch sys Ψ' n (f.2.den ρ) (f.1.den ρ) := by
   simp only [factFrom, Bool.or_eq_true, List.any_eq_true, Bool.and_eq_true] at h
-  rcases h with hout | ⟨g₀, hg₀, hs, hfo⟩
+  rcases h with (hout | ⟨g₀, hg₀, hs, hfo⟩) | hr
+  rotate_left 2
+  · split at hr
+    · next lo hi hτ =>
+      rw [hτ]
+      exact hasTy_range.mpr (rangeHolds_has hr fun g hgm =>
+        hg (g.1.den ρ, g.2.den ρ) (List.mem_map.mpr ⟨g, hgm, rfl⟩))
+    · cases hr
   · exact outright_hasTy ρ Ψ' n f.1 f.2 hout
   · have hsrc := hg (g₀.1.den ρ, g₀.2.den ρ) (List.mem_map.mpr ⟨g₀, hg₀, rfl⟩)
     rw [← Val.same_den ρ hs]
