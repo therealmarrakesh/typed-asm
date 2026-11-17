@@ -45,14 +45,14 @@ theorem hasTy_code_iff {n : Nat} {pre : Seq → Ctx} {v : BitVec 64} :
 
 /-- `Steps fetch sys Ψ i next Γ Q`: the instruction `i`, with the instruction
 pointer already at `next` past it, takes every state that matches `Γ` to a
-state that matches some context of `Q`, still at `next`, the memory typing
-having perhaps grown. -/
+state at some address `t` that matches some context `Γ'`, with `Q t Γ'`; the
+memory typing having perhaps grown. -/
 def Steps (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (i : Instr) (next : BitVec 64) (Γ : Ctx)
-    (Q : Ctx → Prop) : Prop :=
+    (Q : BitVec 64 → Ctx → Prop) : Prop :=
   ∀ n, ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, s.rip = next →
     WellTyped fetch sys Ψ' n Γ s →
-    ∃ s', exec sys i s = .next s' ∧ s'.rip = s.rip ∧
-      ∃ Ψ'' : MemTy, Ψ'.Ext Ψ'' ∧ Ψ''.WF ∧ ∃ Γ', Q Γ' ∧ WellTyped fetch sys Ψ'' n Γ' s'
+    ∃ s', exec sys i s = .next s' ∧
+      ∃ Ψ'' : MemTy, Ψ'.Ext Ψ'' ∧ Ψ''.WF ∧ ∃ Γ', Q s'.rip Γ' ∧ WellTyped fetch sys Ψ'' n Γ' s'
 
 /-- Where the instruction pointer is, is no part of what a context says. -/
 theorem WellTyped.setRip {n : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch sys Ψ n Γ s)
@@ -72,15 +72,17 @@ theorem WellTyped.setRip {n : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch s
         heap := h.held.heap
         apart := h.held.apart } }
 
-/-- **An instruction typed, and what follows it typed, is typed.** -/
-theorem Ok.step {a len : BitVec 64} {i : Instr} {n : Nat} {Γ : Ctx} {Q : Ctx → Prop}
+/-- **An instruction typed, and the code at each place it may leave the
+machine typed there, is typed.** One statement for an instruction that goes
+on to the next and for one that passes control elsewhere. -/
+theorem Ok.step {a len : BitVec 64} {i : Instr} {n : Nat} {Γ : Ctx} {Q : BitVec 64 → Ctx → Prop}
     (hf : fetch a = some (i, len)) (hs : Steps fetch sys Ψ i (a + len) Γ Q)
-    (hrest : ∀ Γ', Q Γ' → Ok fetch sys Ψ n (a + len) Γ') : Ok fetch sys Ψ (n + 1) a Γ := by
+    (hrest : ∀ t Γ', Q t Γ' → Ok fetch sys Ψ n t Γ') : Ok fetch sys Ψ (n + 1) a Γ := by
   intro k hk Ψ' he hwf s hrip hw
   cases k with
   | zero => trivial
   | succ k =>
-    obtain ⟨s', hex, hrip', Ψ'', he', hwf', Γ', hQ, hw'⟩ :=
+    obtain ⟨s', hex, Ψ'', he', hwf', Γ', hQ, hw'⟩ :=
       hs (k + 1) Ψ' he hwf _ (by show s.rip + len = a + len; rw [hrip]) (hw.setRip (s.rip + len))
     have hstep : TypedAsm.step fetch sys s = .next s' := by
       unfold TypedAsm.step
@@ -90,7 +92,6 @@ theorem Ok.step {a len : BitVec 64} {i : Instr} {n : Nat} {Γ : Ctx} {Q : Ctx �
     refine ⟨by rw [hstep]; rfl, fun s'' hs'' => ?_⟩
     rw [hstep] at hs''
     cases hs''
-    exact hrest Γ' hQ k (by omega) Ψ'' (he.trans he') hwf' s'
-      (by rw [hrip']; show s.rip + len = a + len; rw [hrip]) (hw'.mono (by omega))
+    exact hrest _ Γ' hQ k (by omega) Ψ'' (he.trans he') hwf' s' rfl (hw'.mono (by omega))
 
 end TypedAsm.U

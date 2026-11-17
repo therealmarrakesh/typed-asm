@@ -162,48 +162,21 @@ def readFacts (Sh : Shape) (o n : Nat) (x : BitVec 64) : List Fact :=
   if n = 8 then (Sh.vals.filter fun q => q.1 = o).map fun q => (x, q.2) else []
 
 /-- **A context provides the bytes of a block a value is known to point
-into.** They may be read; and written, if the pointer may be written
-through and each typed value of the block either keeps clear of the bytes
-or is the eight bytes written, with a value known to be of its type. What
-is read is known to be of the type the block gives those bytes. -/
-theorem Access.shared {Γ : Ctx} {p a : BitVec 64} {Sh : Shape} {w : Bool} {off o n : Nat}
-    (rd wr : Bool) (hf : (p, Ty.ptr Sh w off) ∈ Γ.known)
-    (ha : a + BitVec.ofNat 64 off = p + BitVec.ofNat 64 o) (hin : o + n ≤ Sh.size) (hn : n ≤ 8)
-    (hwr : wr = true → w = true) :
-    Access fetch sys Ψ Γ a n rd wr
-      (fun v => wr = true → ∀ q ∈ Sh.vals, (q.1 + 8 ≤ o ∨ o + n ≤ q.1) ∨
-        (n = 8 ∧ q.1 = o ∧ ∃ τ', (v, τ') ∈ Γ.known ∧ Sub v τ' q.2))
-      (fun x _ Γ₁ => Γ₁ = { Γ with known := readFacts Sh o n x ++ Γ.known }) := by
+into, to be read**: what is read is known to be of the type the block gives
+those bytes. -/
+theorem Reads.shared {Γ : Ctx} {p a : BitVec 64} {Sh : Shape} {w : Bool} {off o n : Nat}
+    (hf : (p, Ty.ptr Sh w off) ∈ Γ.known)
+    (ha : a + BitVec.ofNat 64 off = p + BitVec.ofNat 64 o) (hin : o + n ≤ Sh.size) :
+    Reads fetch sys Ψ Γ a n
+      (fun x Γr => Γr = { Γ with known := readFacts Sh o n x ++ Γ.known }) := by
   intro j Ψ' he hwf s hw
   obtain ⟨base, l, hl, hsh, hlw, hp⟩ := hasTy_ptr.mp (hw.known _ hf)
   subst hsh
   have hab : a = base + BitVec.ofNat 64 o := by bv_omega
   subst hab
-  have hperm := hw.heapPerm base l hl
   have hsub : o + n ≤ l.size := by simp only [Layout.size]; omega
-  refine ⟨fun _ => State.canRead_sub hperm.1 hsub,
-    fun h => State.canWrite_sub (hperm.2 (hlw (hwr h))) hsub, fun v hv => ?_⟩
-  refine ⟨_, rfl, rfl, rfl, ?_⟩
-  -- the state after the write, if there is one, still matches
-  have hw₁ : WellTyped fetch sys Ψ' j Γ
-      (if wr = true then storeN s n (base + BitVec.ofNat 64 o) v else s) := by
-    cases hwb : wr with
-    | false => exact hw
-    | true =>
-      show WellTyped fetch sys Ψ' j Γ (storeN s n (base + BitVec.ofNat 64 o) v)
-      refine hw.writeShared hwf hl (hlw (hwr hwb)) hin (storeN_regs _ _ _ _)
-        (storeN_flags _ _ _ _) (storeN_perm _ _ _ _)
-        (fun y hy => storeN_load64_out _ _ _ _ _ hn hy)
-        (fun x hx => storeN_mem_out _ _ _ _ _ hn hx) (fun q hq => ?_)
-      rcases hv hwb q hq with hout | ⟨h8, hqo, τ', hτ', hsubτ⟩
-      · exact .inl hout
-      · subst h8
-        rw [hqo]
-        exact .inr (by
-          rw [show storeN s 8 (base + BitVec.ofNat 64 o) v = s.store64 _ v from rfl,
-            TypedAsm.State.load64_store64_same]
-          exact (hw.known _ hτ').sub hsubτ)
-  refine hw₁.addKnown _ (fun f hf' => ?_)
+  refine ⟨State.canRead_sub (hw.heapPerm base l hl).1 hsub, _, rfl, rfl, rfl, ?_⟩
+  refine hw.addKnown _ (fun f hf' => ?_)
   unfold readFacts at hf'
   split at hf'
   · next h8 =>
@@ -214,5 +187,35 @@ theorem Access.shared {Γ : Ctx} {p a : BitVec 64} {Sh : Shape} {w : Bool} {off 
     rw [hq.2] at this
     exact this
   · cases hf'
+
+/-- **And to be written**, if the pointer may be written through and each
+typed value of the block either keeps clear of the bytes or is the eight
+bytes written, with a value known to be of its type. The context is as it
+was: the block still holds what its type says. -/
+theorem Writes.shared {Γ : Ctx} {p a : BitVec 64} {Sh : Shape} {off o n : Nat} (v : BitVec 64)
+    (hf : (p, Ty.ptr Sh true off) ∈ Γ.known)
+    (ha : a + BitVec.ofNat 64 off = p + BitVec.ofNat 64 o) (hin : o + n ≤ Sh.size) (hn : n ≤ 8)
+    (hv : ∀ q ∈ Sh.vals, (q.1 + 8 ≤ o ∨ o + n ≤ q.1) ∨
+      (n = 8 ∧ q.1 = o ∧ ∃ τ', (v, τ') ∈ Γ.known ∧ Sub v τ' q.2)) :
+    Writes fetch sys Ψ Γ a n v Γ := by
+  refine ⟨rfl, rfl, fun j Ψ' he hwf s hw => ?_⟩
+  obtain ⟨base, l, hl, hsh, hlw, hp⟩ := hasTy_ptr.mp (hw.known _ hf)
+  subst hsh
+  have hab : a = base + BitVec.ofNat 64 o := by bv_omega
+  subst hab
+  have hsub : o + n ≤ l.size := by simp only [Layout.size]; omega
+  refine ⟨State.canWrite_sub ((hw.heapPerm base l hl).2 (hlw rfl)) hsub, ?_⟩
+  refine hw.writeShared hwf hl (hlw rfl) hin (storeN_regs _ _ _ _)
+    (storeN_flags _ _ _ _) (storeN_perm _ _ _ _)
+    (fun y hy => storeN_load64_out _ _ _ _ _ hn hy)
+    (fun x hx => storeN_mem_out _ _ _ _ _ hn hx) (fun q hq => ?_)
+  rcases hv q hq with hout | ⟨h8, hqo, τ', hτ', hsubτ⟩
+  · exact .inl hout
+  · subst h8
+    rw [hqo]
+    exact .inr (by
+      rw [show storeN s 8 (base + BitVec.ofNat 64 o) v = s.store64 _ v from rfl,
+        TypedAsm.State.load64_store64_same]
+      exact (hw.known _ hτ').sub hsubτ)
 
 end TypedAsm.U

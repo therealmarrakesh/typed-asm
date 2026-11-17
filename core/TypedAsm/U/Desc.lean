@@ -29,7 +29,7 @@ structure Effect where
 /-- An instruction as what it uses and what it does with it. The function
 is given the values of `srcs` in order, the flags, the address of `addr` and
 the bytes there as a number. -/
-structure Desc where
+structure Desc1 where
   /-- The registers whose values the instruction computes with. -/
   srcs : List Reg
   /-- The memory operand whose address it uses. -/
@@ -104,7 +104,7 @@ def wide {w : Width} (v : BitVec w.bits) : BitVec 64 := v.setWidth 64
 /-- **Each instruction that goes on to the next, described.** Nothing for
 those that pass control elsewhere, call the system, or are not to be
 reached. -/
-def _root_.TypedAsm.Instr.desc : Instr → Option Desc
+def _root_.TypedAsm.Instr.desc1 : Instr → Option Desc1
   | .alu op w ops =>
     let d := ops.dst
     some {
