@@ -6735,6 +6735,15 @@ theorem guarded_some {α : Type} {b : Bool} {x : Option α} {w : α}
   · cases h
   · exact h
 
+/-- Moves enough for a walk over so many instructions. Before each
+instruction the walk makes at most one move to make pointers of addresses,
+one to reorder the blocks owned, one to regard a block as two, and one for
+each register to name what it holds or open what it points to; then the
+instruction is a move. That is at most 36 for each instruction, and one
+more walk's worth for where it stops. The walk does not go on for having
+moves left: it ends where its instructions do. -/
+def walkFuel (instrs : Nat) : Nat := 36 * (instrs + 1)
+
 /-- The checker walked from an address for at most so many moves, `k` being
 a variable no term yet mentions. Before an instruction, a pointer to a block
 of a kind that it reaches through is opened, and a value it needs to speak

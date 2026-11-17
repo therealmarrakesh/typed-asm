@@ -4215,7 +4215,7 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
         | .split at' i len' => some (BitVec.ofNat 64 at', i, len')
         | .jump at' i len' => some (BitVec.ofNat 64 at', i, len')
         | _ => none
-    let W := Sym.walk P code (moves.size + 6) k₀ (BitVec.ofNat 64 n) S
+    let W := Sym.walk P code (Sym.walkFuel code.length) k₀ (BitVec.ofNat 64 n) S
     let rec final : Sym.Walk → Option Sym.CtxS
       | .stop _ Γ => some Γ
       | .conds _ rest => final rest
@@ -4688,9 +4688,8 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
     if rests.isEmpty && enters.isEmpty && leave?.isNone && call?.isNone && via?.isNone &&
         jvia?.isNone && callAll?.isNone && viaAll?.isNone && !exits? W then
       return none
-    -- a few more moves than the driver counted: a context made ready to be
-    -- compared is a move or two of the checker's
-    let fuelE := mkNatLit (moves.size + 6)
+    -- moves enough for these instructions, as the checker counts them
+    let fuelE := mkNatLit (Sym.walkFuel code.length)
     let PE := toExpr P
     let WE := toExpr W
     let hP := mkAppN (mkConst ``Sym.Prog.Ok.mk) #[Ψ, ρ, PE, hB, hT, hK]
