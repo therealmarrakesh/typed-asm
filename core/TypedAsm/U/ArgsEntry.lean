@@ -332,4 +332,61 @@ theorem starts_argsState (ρ : Env) {B : List (BitVec 64 × Layout)} {kinds : Na
 
 end
 
+variable {fetch : Fetch} {sys : Syscall}
+
+section
+variable (p : State) (e : BitVec 64) (args : List (List Byte)) (w : World)
+
+/-- **The block after the count is a row of as many pointers to text as
+the count says.** -/
+theorem argv_known {Ψ : MemTy} (n : Nat) (hΨ : Ψ (argBase + 8) = some (argvLayout args)) :
+    HasTy fetch sys Ψ n (.arr (argCount args) (.str 0)) (argBase + 8) := by
+  refine hasTy_arr.mpr ⟨argBase + 8, argvLayout args, 0, hΨ, by simp, fun i hi => ?_⟩
+  have hc : (argCount args).toNat = (argsGiven args).length := by
+    have := argsGiven_length_le args
+    simp only [argCount, BitVec.toNat_ofNat]
+    omega
+  rw [hc] at hi
+  exact argvVals_mem 0 _ i hi
+
+/-- **Each of its values is the address of a byte of its text.** -/
+theorem argv_heap {Ψ : MemTy} (n : Nat) (hΨ : Ψ (argBase + 8) = some (argvLayout args)) :
+    ∀ q ∈ (argvLayout args).shape.vals,
+      HasTy fetch sys Ψ n q.2
+        ((argsState p e args w).load64 (argBase + 8 + BitVec.ofNat 64 q.1)) := by
+  intro q hq
+  have hbase : argBase.toNat = 0x7fff0000 := rfl
+  have hA8 : (argBase + 8).toNat = 0x7fff0008 := rfl
+  have hL := argBytes_length_le args
+  have hL' := argBytes_length args
+  obtain ⟨i, hi, rfl⟩ := argvVals_spec 0 _ q hq
+  have hT : i < (textsAt (argsGiven args) (textBase (argsGiven args))).length := by
+    rw [textsAt_length]; exact hi
+  have hb := textsAt_bounds (argsGiven args) (textBase (argsGiven args)) _
+    (List.getElem_mem hT)
+  have htb : textBase (argsGiven args) = 0x7fff0000 + 8 * ((argsGiven args).length + 5) := by
+    simp only [textBase, hbase]
+  have hload : (argsState p e args w).load64 (argBase + 8 + BitVec.ofNat 64 (0 + 8 * i))
+      = BitVec.ofNat 64 ((textsAt (argsGiven args) (textBase (argsGiven args)))[i]).1 := by
+    have h := (argsState_data p e args w).load64 (i := 8 * (i + 1)) (by omega)
+    have ea : argBase + 8 + BitVec.ofNat 64 (0 + 8 * i) = argBase + BitVec.ofNat 64 (8 * (i + 1)) := by
+      apply BitVec.eq_of_toNat_eq
+      rw [BitVec.toNat_add (argBase + 8), hA8, BitVec.toNat_ofNat, BitVec.toNat_add argBase,
+        BitVec.toNat_ofNat, hbase]
+      omega
+    rw [ea, h]
+    exact argBlock_slot (argsGiven args) i hi
+  rw [hload]
+  refine hasTy_str.mpr ⟨argBase + 8, argvLayout args,
+    ((textsAt (argsGiven args) (textBase (argsGiven args)))[i]).1 - textBase (argsGiven args),
+    hΨ, ?_, fun h => absurd rfl h, ?_⟩
+  · show _ < (textBytes (argsGiven args)).length
+    omega
+  · apply BitVec.eq_of_toNat_eq
+    show _ = (argBase + 8 + BitVec.ofNat 64 (8 * (argsGiven args).length + 32 + _)).toNat
+    rw [BitVec.toNat_ofNat, BitVec.toNat_add (argBase + 8), hA8, BitVec.toNat_ofNat]
+    omega
+
+end
+
 end TypedAsm.U
