@@ -72,12 +72,26 @@ theorem WellTyped.setRip {n : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch s
         heap := h.held.heap
         apart := h.held.apart } }
 
-/-- **An instruction typed, and the code at each place it may leave the
-machine typed there, is typed.** One statement for an instruction that goes
-on to the next and for one that passes control elsewhere. -/
+/-- `Arrives fetch sys Ψ n t Γ`: a state that has just come to `t`, matching
+`Γ`, is safe for up to `n` steps. It is what is asked of each place an
+instruction may leave the machine. The state has what was known before the
+step, which is one step's worth more than typed code at `t` needs. -/
+def Arrives (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (n : Nat) (t : BitVec 64) (Γ : Ctx) :
+    Prop :=
+  ∀ k, k ≤ n → ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, s.rip = t →
+    WellTyped fetch sys Ψ' (k + 1) Γ s → SafeN fetch sys k s
+
+/-- At typed code, the machine arrives. -/
+theorem Ok.arrives {n : Nat} {t : BitVec 64} {Γ : Ctx} (h : Ok fetch sys Ψ n t Γ) :
+    Arrives fetch sys Ψ n t Γ :=
+  fun k hk Ψ' he hwf s hs hw => h k hk Ψ' he hwf s hs (hw.mono (Nat.le_succ k))
+
+/-- **An instruction typed, and the machine arriving wherever it may leave
+it, is typed.** One statement for an instruction that goes on to the next
+and for one that passes control elsewhere. -/
 theorem Ok.step {a len : BitVec 64} {i : Instr} {n : Nat} {Γ : Ctx} {Q : BitVec 64 → Ctx → Prop}
     (hf : fetch a = some (i, len)) (hs : Steps fetch sys Ψ i (a + len) Γ Q)
-    (hrest : ∀ t Γ', Q t Γ' → Ok fetch sys Ψ n t Γ') : Ok fetch sys Ψ (n + 1) a Γ := by
+    (hrest : ∀ t Γ', Q t Γ' → Arrives fetch sys Ψ n t Γ') : Ok fetch sys Ψ (n + 1) a Γ := by
   intro k hk Ψ' he hwf s hrip hw
   cases k with
   | zero => trivial
@@ -92,6 +106,6 @@ theorem Ok.step {a len : BitVec 64} {i : Instr} {n : Nat} {Γ : Ctx} {Q : BitVec
     refine ⟨by rw [hstep]; rfl, fun s'' hs'' => ?_⟩
     rw [hstep] at hs''
     cases hs''
-    exact hrest _ Γ' hQ k (by omega) Ψ'' (he.trans he') hwf' s' rfl (hw'.mono (by omega))
+    exact hrest _ Γ' hQ k (by omega) Ψ'' (he.trans he') hwf' s' rfl hw'
 
 end TypedAsm.U
