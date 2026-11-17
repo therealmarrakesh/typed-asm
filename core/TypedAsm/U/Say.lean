@@ -135,6 +135,21 @@ def cutSeg (g : Nat × Perm × List Byte) : Nat → List (BitVec 64 × LayoutS) 
       [(BitVec.ofNat 64 cur, plainBlock (x.1.toNat - cur) g.2.1.writable)] else []) ++
       x :: cutSeg g (x.1.toNat + x.2.size) xs
 
+/-- The typed values of a row: `n` of them, eight bytes each, from byte
+`o`, of each of which `τ` is known. -/
+def rowVals (τ : TyS) : Nat → Nat → ValsS
+  | _, 0 => .nil
+  | o, n + 1 => .cons o τ (rowVals τ (o + 8) n)
+
+/-- A block that is a row of `n` values, of each of which `τ` is known. -/
+def rowBlock (n : Nat) (τ : TyS) (writable : Bool) : LayoutS :=
+  { shape := .mk (8 * n) (rowVals τ 0 n), writable := writable }
+
+/-- What a program says of a row among its segments' blocks: that its
+address is that of so many values of which `τ` is known. -/
+def staticRow (a : BitVec 64) (n : Nat) (τ : TyS) : List (Val × TyS) :=
+  [(.lit a, .arr (.lit (BitVec.ofNat 64 n)) τ)]
+
 /-- A block of text that is not written: the bytes given, which are to end
 in one of nought, and are said. -/
 def textBlock (bytes : List Byte) : LayoutS :=

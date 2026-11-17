@@ -18,25 +18,23 @@ namespace Index
 
 /-! ## What the labels want -/
 
-/-- Where the array is. -/
-def arr : Val := .lit (Asm.addr code base .array)
-
-/-- The blocks the program says its segments are. The array: five numbers, not to be written. -/
+/-- The blocks the program says its segments are. The array: a row of five
+values, not to be written. -/
 def blocks : List (BitVec 64 × U.LayoutS) :=
-  blocksWith code .start [(Asm.addr code base .array, plainBlock 40 false)]
+  blocksWith code .start [(Asm.addr code base .array, rowBlock 5 .any false)]
 
-/-- The program for the checker: its instructions, and that the array is in
-one of the blocks said. -/
+/-- The program for the checker: its instructions, and that the array is a
+row of five values. -/
 def pg : Prog :=
   { code := progCode (Asm.table base code)
-    statics := staticIn blocks (Asm.addr code base .array) }
+    statics := staticRow (Asm.addr code base .array) 5 .any }
 
-/-- The labels. `get` takes the array in `rdi`, its length in `rsi`, and in
-`rdx` any number at all as the index: the comparison it makes is what lets
-it read. -/
+/-- The labels. `get` takes in `rdi` a row of as many values as `rsi` says:
+whatever row, and however many. In `rdx` it takes any number at all as the
+index: the comparison it makes with `rsi` is what lets it read. -/
 def labels : List U.Label :=
-  [⟨entry, entryOf 1⟩,
-   ⟨Asm.addr code base .get, inFunction [(.rdi, arr), (.rsi, 5)]⟩]
+  [⟨entry, inProgram 1⟩,
+   ⟨Asm.addr code base .get, inFunction (known := [(.was .rdi, .arr (.was .rsi) .any)])⟩]
 
 /-! ## The check, and what it shows -/
 

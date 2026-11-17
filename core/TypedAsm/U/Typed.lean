@@ -65,6 +65,9 @@ def tyHolds (j : BitVec 64 → CtxS → Bool) (bs : List (BitVec 64 × LayoutS))
   | .range lo hi, v => decide (v - lo ≤ hi - lo)
   | .nullable τ, v => v == 0 || tyHolds j bs τ v
   | .code regs flags held known rest, v => j v (codeCtx regs flags held known rest)
+  | .arr (.lit c) τ, v => bs.any fun b =>
+      (List.range c.toNat).all fun i =>
+        b.2.shape.vals.toList.contains ((v - b.1).toNat + 8 * i, τ)
   | .ptr S w off, v => bs.any fun b =>
       b.2.shape == S && (!w || b.2.writable) && v == b.1 + BitVec.ofNat 64 off
   | .ref tag w off, v => bs.any fun b =>
@@ -112,7 +115,31 @@ theorem tyHolds_hasTy {j : BitVec 64 → CtxS → Bool} {bs : List (BitVec 64 ×
   | .orErr _, _, h => nomatch h
   | .str _, _, h => nomatch h
   | .atom _, _, h => nomatch h
-  | .arr .., _, h => nomatch h
+  | .arr (.lit c) τ, v, h => by
+    simp only [tyHolds, List.any_eq_true, List.all_eq_true, List.mem_range,
+      List.contains_iff_mem] at h
+    obtain ⟨b, hb, hall⟩ := h
+    simp only [TyS.den, Val.den, HasTy]
+    refine ⟨b.1, b.2.den, (v - b.1).toNat,
+      MemTy.ofList_of_mem _ hnd (b.1, b.2.den) (List.mem_map.mpr ⟨b, hb, rfl⟩), ?_, fun i hi => ?_⟩
+    · rw [BitVec.ofNat_toNat, BitVec.setWidth_eq]
+      bv_omega
+    · have hm := hall i hi
+      cases hs : b.2.shape with
+      | mk size vals =>
+        rw [hs] at hm
+        show ((v - b.1).toNat + 8 * i, τ.den {}) ∈ (b.2.shape.den {}).vals
+        rw [hs]
+        show _ ∈ vals.den {}
+        rw [ValsS.den_toList]
+        exact List.mem_map.mpr ⟨_, hm, rfl⟩
+  | .arr (.var _) _, _, h => nomatch h
+  | .arr (.bvar _ _) _, _, h => nomatch h
+  | .arr (.slot _) _, _, h => nomatch h
+  | .arr (.un _ _) _, _, h => nomatch h
+  | .arr (.bin _ _ _) _, _, h => nomatch h
+  | .arr (.tri _ _ _ _) _, _, h => nomatch h
+  | .arr (.fop _ _ _ _) _, _, h => nomatch h
   | .upTo .., _, h => nomatch h
   | .code regs flags held known rest, v, h => by
     rw [code_den, hasTy_code]
