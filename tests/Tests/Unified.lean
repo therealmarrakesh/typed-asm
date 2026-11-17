@@ -496,6 +496,16 @@ example : (Val.un (.trunc .w32) (.var 3)).bound = ⟨0, 0xffffffff⟩ := by deci
 example : (Val.un .low8 (.var 3)).bound = ⟨0, 0xff⟩ := by decide +kernel
 example : (Val.fop (.condByte .e) (.var 0) (.lit 0) (.lit 0)).bound = ⟨0, 1⟩ := by decide +kernel
 
+/-! ## Narrow reads -/
+
+-- a byte read and widened is the byte read: the term says by its head that it
+-- is a byte, and widening a byte does nothing
+example : ((stepHeld noKinds { Γ0 with known := [(.var 7, .ptr (.mk 16 .nil) false 0)] } 20 100
+      (.movzx .w32 .rax .w8 (.mem (.sib (some .rdi) none 3)))).map fun r => r.1.regs.rax)
+    = some (.un .low8 (.var 20)) := by decide +kernel
+-- and its range is read off it
+example : (Val.un .low8 (.var 20)).bound = ⟨0, 0xff⟩ := by decide +kernel
+
 /-! ## Pointers by kind -/
 
 /-- A list node: sixteen bytes, the first eight nought or a pointer to

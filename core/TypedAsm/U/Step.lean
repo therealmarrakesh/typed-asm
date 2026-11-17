@@ -78,6 +78,25 @@ theorem CtxS.held_den (ρ : Env) (Γ : CtxS) {j : Nat} {b : Val} {S : HeldS}
   rw [List.getElem?_append_left hj, List.getElem?_map, h]
   rfl
 
+/-- A term for so many bytes read: no more than so many bytes, which the
+term says by the operator at its head. -/
+def narrow (n : Nat) (x : Val) : Val :=
+  match n with
+  | 1 => .un .low8 x
+  | 2 => .un .low16 x
+  | 4 => .un (.trunc .w32) x
+  | _ => x
+
+theorem narrow_den (ρ : Env) (n : Nat) (x : Val) : (narrow n x).den ρ = cutN n (x.den ρ) := by
+  by_cases h1 : n = 1
+  · subst h1; rfl
+  · by_cases h2 : n = 2
+    · subst h2; rfl
+    · by_cases h4 : n = 4
+      · subst h4; rfl
+      · unfold narrow cutN
+        split <;> first | contradiction | (split <;> first | contradiction | rfl)
+
 /-- The term for the bytes an instruction reads, and what reading them
 tells. Nothing where it reads none. In a region the context holds: the value
 held there, where one is held at those eight bytes, and otherwise the name
@@ -94,10 +113,10 @@ def readCell (kinds : Nat → Option ShapeS) (Γ : CtxS) (k : Nat) (next : BitVe
         match S.slotAt o with
         | some v => some (v, [])
         | none => some (.var k, [])
-      else some (.var k, [])
+      else some (narrow n (.var k), [])
     | none =>
       match findFact kinds (eaS Γ.regs next m) n Γ.known with
-      | some (_, Sh, _, _, o) => some (.var k, readFactsS Sh o n (.var k))
+      | some (_, Sh, _, _, o) => some (narrow n (.var k), readFactsS Sh o n (.var k))
       | none => none
 
 theorem readCell_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk Ψ kinds) {Γ : CtxS}
@@ -119,8 +138,8 @@ theorem readCell_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
         rw [← eaS_den]; exact ha
       show Reads fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n _
       rw [haddr]
-      refine (Reads.held (CtxS.held_den ρ Γ hl) hin).mono ?_
-      rintro x Γr ⟨rfl, hslot⟩
+      refine (Reads.held (CtxS.held_den ρ Γ hl) hin).narrow.mono ?_
+      rintro x Γr ⟨⟨rfl, hslot⟩, hcut⟩
       -- nothing is learnt, and the context is as it was
       have key : ∀ c : Val, c.den (ρ.setVal k x) = x → (some (c, ([] : List (Val × TyS))) = some (cell, extra)) →
           Γ.den ρ = CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known } ∧
@@ -142,7 +161,9 @@ theorem readCell_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
             exact (hu.1.1.2 (b, S) (List.mem_of_getElem? hl)).2 (o, v) hm
           exact key v (by rw [Val.den_setVal ρ k x _ hcu]; exact hx.symm) h
         · exact key (.var k) (Env.setVal_get_self ρ k x) h
-      · exact key (.var k) (Env.setVal_get_self ρ k x) h
+      · exact key (narrow n (.var k))
+          (by rw [narrow_den, show (Val.var k).den (ρ.setVal k x) = x from
+            Env.setVal_get_self ρ k x]; exact hcut) h
     · split at h
       · next p Sh w off o hfind =>
         cases h
@@ -152,9 +173,10 @@ theorem readCell_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
         have haddr : eaOf (Γ.den ρ).val next m + BitVec.ofNat 64 off
             = p.den ρ + BitVec.ofNat 64 o := by
           rw [← eaS_den]; exact ha
-        refine (Reads.shared hf (TyS.pointee_den hk ρ hpt) haddr (by rw [ShapeS.den_size]; exact hin)).mono ?_
-        rintro x Γr rfl
-        refine ⟨?_, Env.setVal_get_self ρ k x⟩
+        refine (Reads.shared hf (TyS.pointee_den hk ρ hpt) haddr (by rw [ShapeS.den_size]; exact hin)).narrow.mono ?_
+        rintro x Γr ⟨rfl, hcut⟩
+        refine ⟨?_, by rw [narrow_den, show (Val.var k).den (ρ.setVal k x) = x from
+          Env.setVal_get_self ρ k x]; exact hcut⟩
         have hΓ := CtxS.den_setVal ρ k x Γ hu
         refine ctx_ext (congrArg CtxOf.val hΓ).symm (congrArg CtxOf.flags hΓ).symm
           (congrArg CtxOf.held hΓ).symm ?_

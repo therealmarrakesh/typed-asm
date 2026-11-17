@@ -121,6 +121,27 @@ def Reads (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (Γ : Ctx) (a : BitVec 64
     ∃ Γr, P (loadN s n a) Γr ∧ Γr.val = Γ.val ∧ Γr.flags = Γ.flags ∧
       WellTyped fetch sys Ψ' k Γr s
 
+/-- The low `n` bytes of a number, as a number. -/
+def cutN (n : Nat) (x : BitVec 64) : BitVec 64 :=
+  match n with
+  | 1 => (x.setWidth 8).setWidth 64
+  | 2 => (x.setWidth 16).setWidth 64
+  | 4 => (x.setWidth 32).setWidth 64
+  | _ => x
+
+/-- So many bytes read are no more than so many bytes. -/
+theorem loadN_cut (s : State) (n : Nat) (a : BitVec 64) : cutN n (loadN s n a) = loadN s n a := by
+  unfold cutN loadN
+  split <;> first | rfl | (apply BitVec.eq_of_toNat_eq; simp)
+
+/-- What is read is no more than the bytes read. -/
+theorem Reads.narrow {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {Γ : Ctx} {a : BitVec 64} {n : Nat}
+    {P : BitVec 64 → Ctx → Prop} (h : Reads fetch sys Ψ Γ a n P) :
+    Reads fetch sys Ψ Γ a n (fun x Γr => P x Γr ∧ cutN n x = x) := by
+  intro k Ψ' he hwf s hw
+  obtain ⟨hr, Γr, hp, hv, hf, hw'⟩ := h k Ψ' he hwf s hw
+  exact ⟨hr, Γr, ⟨hp, loadN_cut s n a⟩, hv, hf, hw'⟩
+
 /-- `Writes … Γ a n v Γw`: the context `Γ` provides the `n` bytes at `a` to
 be written with `v`, and is `Γw` once they are: in every state matching `Γ`
 they may be written, and the state with `v` there matches `Γw`, whose
