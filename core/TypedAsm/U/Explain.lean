@@ -301,10 +301,10 @@ def Walk.faults (pg : Prog) (ent : Nat → TyS → TyS → Bool)
           "on the machine: control could go anywhere"]⟩]
   | path, _, .step i Γ next k rest =>
     rest.faults pg ent justify whyJ labels from_ (⟨stepAddr pg i next, i, Γ⟩ :: path) (k + 1)
-  | path, _, .sys k rest => rest.faults pg ent justify whyJ labels from_ path (k + 1)
+  | path, _, .sys k rest => rest.faults pg ent justify whyJ labels from_ path (k + 2)
   | path, _, .sys2 k a b =>
-    a.faults pg ent justify whyJ labels from_ path (k + 1) ++
-      b.faults pg ent justify whyJ labels from_ path (k + 1)
+    a.faults pg ent justify whyJ labels from_ path (k + 2) ++
+      b.faults pg ent justify whyJ labels from_ path (k + 2)
   | _, _, .ends => []
   | _, _, .vacuous => []
   | path, k, .branch c fl taken fall =>

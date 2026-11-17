@@ -477,8 +477,8 @@ def Walk.closes (cc : CtxS → CtxS → Nat → Option (CtxS × OpenL)) (labels 
          | none => false)
     | _ => false
   | _, .step _ _ _ k rest => rest.closes cc labels (k + 1)
-  | _, .sys k rest => rest.closes cc labels (k + 1)
-  | _, .sys2 k a b => a.closes cc labels (k + 1) && b.closes cc labels (k + 1)
+  | _, .sys k rest => rest.closes cc labels (k + 2)
+  | _, .sys2 k a b => a.closes cc labels (k + 2) && b.closes cc labels (k + 2)
   | _, .ends => true
   | _, .vacuous => true
   | k, .branch c fl taken fall =>
@@ -538,10 +538,10 @@ theorem Walk.holds_of_closes {n : Nat} {labels : List Label}
         exact Arrives.code _ hf hreg
     · cases h
   | .step i Γ next k rest, _, ρ, hfn, h => fun x => Walk.holds_of_closes hcc H rest _ _ hfn h
-  | .sys k rest, _, ρ, hfn, h => fun x => Walk.holds_of_closes hcc H rest _ _ hfn h
+  | .sys k rest, _, ρ, hfn, h => fun x y => Walk.holds_of_closes hcc H rest _ _ hfn h
   | .sys2 k a b, _, ρ, hfn, h => by
     simp only [Walk.closes, Bool.and_eq_true] at h
-    exact fun x => ⟨Walk.holds_of_closes hcc H a _ _ hfn h.1,
+    exact fun x y => ⟨Walk.holds_of_closes hcc H a _ _ hfn h.1,
       Walk.holds_of_closes hcc H b _ _ hfn h.2⟩
   | .ends, _, _, _, _ => trivial
   | .vacuous, _, _, _, _ => trivial

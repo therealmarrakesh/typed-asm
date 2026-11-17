@@ -22,16 +22,39 @@ that matches a context. -/
 def PreAt (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (D : SysDesc) (Γ : Ctx) : Prop :=
   ∀ n, ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, WellTyped fetch sys Ψ' n Γ s → D.pre s
 
+/-- A setting with the two things a returning call leaves named: what it
+hands back, as `k`, and what the kernel leaves in `r11`, as the name after. -/
+def Env.setSys (ρ : Env) (k : Nat) (x y : BitVec 64) : Env :=
+  Env.setVal (Env.setVal ρ k x) (k + 1) y
+
+theorem Env.setSys_k (ρ : Env) (k : Nat) (x y : BitVec 64) : (ρ.setSys k x y).val k = x := by
+  show (Env.setVal (Env.setVal ρ k x) (k + 1) y).val k = x
+  rw [Env.setVal_get_lt _ _ _ (Nat.lt_succ_self k), Env.setVal_get_self]
+
+theorem Env.setSys_k1 (ρ : Env) (k : Nat) (x y : BitVec 64) : (ρ.setSys k x y).val (k + 1) = y :=
+  Env.setVal_get_self (Env.setVal ρ k x) (k + 1) y
+
+theorem Env.sameBelow_setSys (ρ : Env) (k : Nat) (x y : BitVec 64) :
+    Env.SameBelow k (ρ.setSys k x y) ρ :=
+  ((Env.SameBelow.setVal (Env.setVal ρ k x) (k + 1) y).mono (Nat.le_succ k)).trans
+    (Env.SameBelow.setVal ρ k x)
+
+/-- A context that mentions no name from `k` on stands for the same with
+those two named. -/
+theorem CtxS.den_setSys (ρ : Env) (k : Nat) (x y : BitVec 64) (Γ : CtxS) (h : Γ.under k = true) :
+    Γ.den (ρ.setSys k x y) = Γ.den ρ :=
+  CtxS.den_under (Env.sameBelow_setSys ρ k x y) Γ h
+
 /-- The context a call returns in, as terms: `rax` holds the term for what
-was handed back, `rcx` the address after the call, `r11` zero; and the flags
-are undefined. -/
-def CtxS.afterSys (Γ : CtxS) (v : Val) (next : BitVec 64) : CtxS :=
+was handed back, `rcx` the address after the call, `r11` the term for what
+the kernel left there; and the flags are undefined. -/
+def CtxS.afterSys (Γ : CtxS) (v r : Val) (next : BitVec 64) : CtxS :=
   { Γ with
-    regs := ((Γ.regs.set .rax v).set .rcx (.lit next)).set .r11 (.lit 0)
+    regs := ((Γ.regs.set .rax v).set .rcx (.lit next)).set .r11 r
     flags := .lit Flags.unknown }
 
-theorem CtxS.afterSys_den (ρ : Env) (Γ : CtxS) (v : Val) (next : BitVec 64) :
-    (Γ.afterSys v next).den ρ = (Γ.den ρ).afterSys (v.den ρ) next := by
+theorem CtxS.afterSys_den (ρ : Env) (Γ : CtxS) (v r : Val) (next : BitVec 64) :
+    (Γ.afterSys v r next).den ρ = (Γ.den ρ).afterSys (v.den ρ) (r.den ρ) next := by
   refine ctx_ext ?_ rfl rfl rfl
   funext r
   cases r <;> rfl
@@ -43,7 +66,7 @@ def sysWorld (Γ : CtxS) (k : Nat) (next : BitVec 64) : Option CtxS :=
   match Γ.regs.rax.lit? with
   | some nr =>
     match linuxKind nr with
-    | some .world => some (Γ.afterSys (.var k) next)
+    | some .world => some (Γ.afterSys (.var k) (.var (k + 1)) next)
     | _ => none
   | none => none
 
@@ -52,7 +75,7 @@ theorem sysWorld_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
     (h : sysWorld Γ k next = some Γ') (hu : Γ.under k = true)
     (hpre : PreAt fetch sys Ψ D (Γ.den ρ)) :
     Steps fetch sys Ψ .syscall next (Γ.den ρ) fun t Δ =>
-      ∃ x, t = next ∧ Δ = Γ'.den (ρ.setVal k x) := by
+      ∃ x y, t = next ∧ Δ = Γ'.den (ρ.setSys k x y) := by
   unfold sysWorld at h
   split at h
   · next nr hnr =>
@@ -62,11 +85,11 @@ theorem sysWorld_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
       have hrax : (Γ.den ρ).val .rax = nr := Val.lit?_den hnr
       refine Steps.mono (Steps.world hD (by rw [hkind, hrax]; exact hk)
         (fun n Ψ' he hwf s _ hw => hpre n Ψ' he hwf s hw)) ?_
-      rintro t Δ ⟨rfl, x, rfl⟩
-      refine ⟨x, rfl, ?_⟩
-      rw [CtxS.afterSys_den, CtxS.den_setVal ρ k x Γ hu]
-      show _ = CtxOf.afterSys (Γ.den ρ) ((ρ.setVal k x).val k) t
-      rw [Env.setVal_get_self]
+      rintro t Δ ⟨rfl, x, y, rfl⟩
+      refine ⟨x, y, rfl, ?_⟩
+      rw [CtxS.afterSys_den, CtxS.den_setSys ρ k x y Γ hu]
+      show _ = CtxOf.afterSys (Γ.den ρ) ((ρ.setSys k x y).val k) ((ρ.setSys k x y).val (k + 1)) t
+      rw [Env.setSys_k, Env.setSys_k1]
     · cases h
   · cases h
 
@@ -141,8 +164,8 @@ def fillsHeld (plain : Bool) (Γ : CtxS) (k : Nat) (next : BitVec 64) (b : Reg) 
   let n := (roomLs Γ room).2
   match findHeldP plain Γ.known (Γ.regs.get b) ls n Γ.held 0 with
   | some (j, base, S, o) =>
-    some (Γ.afterSys (.var k) next,
-      CtxS.afterSys { Γ with held := Γ.held.set j (base, S.clearT Γ.known o ls n) } (.var k) next)
+    some (Γ.afterSys (.var k) (.var (k + 1)) next,
+      CtxS.afterSys { Γ with held := Γ.held.set j (base, S.clearT Γ.known o ls n) } (.var k) (.var (k + 1)) next)
   | none => none
 
 theorem fillsHeld_sound {D : SysDesc} (hD : Describes sys D) {ρ : Env} {plain : Bool}
@@ -151,7 +174,7 @@ theorem fillsHeld_sound {D : SysDesc} (hD : Describes sys D) {ρ : Env} {plain :
     (h : fillsHeld plain Γ k next b room = some (Γe, Γh)) (hu : Γ.under k = true)
     (hpre : PreAt fetch sys Ψ D (Γ.den ρ)) :
     Steps fetch sys Ψ .syscall next (Γ.den ρ) fun t Δ =>
-      ∃ x, t = next ∧ (Δ = Γe.den (ρ.setVal k x) ∨ Δ = Γh.den (ρ.setVal k x)) := by
+      ∃ x y, t = next ∧ (Δ = Γe.den (ρ.setSys k x y) ∨ Δ = Γh.den (ρ.setSys k x y)) := by
   simp only [fillsHeld] at h
   split at h
   · next j base S o hfind =>
@@ -187,14 +210,14 @@ theorem fillsHeld_sound {D : SysDesc} (hD : Describes sys D) {ρ : Env} {plain :
       exact H.2.2 k' Ψ' he hwf s hw data hlen hcw
     refine Steps.mono (Steps.fills hD hk
       (fun n Ψ' he hwf s _ hw => hpre n Ψ' he hwf s hw) hH) ?_
-    rintro t Δ ⟨rfl, x, hcase⟩
-    have hΓ : Γ.den (ρ.setVal k x) = Γ.den ρ := CtxS.den_setVal ρ k x Γ hu
-    refine ⟨x, rfl, ?_⟩
+    rintro t Δ ⟨rfl, x, y, hcase⟩
+    have hΓ : Γ.den (ρ.setSys k x y) = Γ.den ρ := CtxS.den_setSys ρ k x y Γ hu
+    refine ⟨x, y, rfl, ?_⟩
     rcases hcase with rfl | rfl
     · refine .inl ?_
       rw [CtxS.afterSys_den, hΓ]
-      show _ = CtxOf.afterSys (Γ.den ρ) ((ρ.setVal k x).val k) t
-      rw [Env.setVal_get_self]
+      show _ = CtxOf.afterSys (Γ.den ρ) ((ρ.setSys k x y).val k) ((ρ.setSys k x y).val (k + 1)) t
+      rw [Env.setSys_k, Env.setSys_k1]
     · refine .inr ?_
       rw [CtxS.afterSys_den]
       have hu' : CtxS.under k
@@ -202,19 +225,19 @@ theorem fillsHeld_sound {D : SysDesc} (hD : Describes sys D) {ρ : Env} {plain :
         simp only [CtxS.under, Bool.and_eq_true] at hu ⊢
         exact ⟨⟨⟨hu.1.1.1, heldUnder_set hu.1.1.2 hl rfl
           (fun p hp => (List.mem_filter.mp hp).1)⟩, hu.1.2⟩, hu.2⟩
-      have e : CtxS.den (ρ.setVal k x)
+      have e : CtxS.den (ρ.setSys k x y)
             { Γ with held := Γ.held.set j (base, S.clearT Γ.known o ls n) }
           = { Γ.den ρ with
               held := (Γ.den ρ).held.set j (base.den ρ, (S.clearT Γ.known o ls n).den ρ) } := by
-        rw [CtxS.den_setVal ρ k x _ hu']
+        rw [CtxS.den_setSys ρ k x y _ hu']
         refine ctx_ext rfl rfl ?_ rfl
         show (Γ.held.set j (base, S.clearT Γ.known o ls n)).map (fun b => (b.1.den ρ, b.2.den ρ))
             ++ restDen ρ Γ.rest
           = ((Γ.held.map fun b => (b.1.den ρ, b.2.den ρ)) ++ restDen ρ Γ.rest).set j _
         rw [List.set_append_left _ _ hjlt, List.map_set]
       rw [e]
-      show _ = CtxOf.afterSys _ ((ρ.setVal k x).val k) t
-      rw [Env.setVal_get_self]
+      show _ = CtxOf.afterSys _ ((ρ.setSys k x y).val k) ((ρ.setSys k x y).val (k + 1)) t
+      rw [Env.setSys_k, Env.setSys_k1]
   · cases h
 
 /-- **A call that stores bytes at an address the program gives, as a step
@@ -239,7 +262,7 @@ def sysFills (kinds : Nat → Option ShapeS) (Γ : CtxS) (k : Nat) (next : BitVe
           match findFactR kinds Γ (Γ.regs.get b) M Γ.known with
           | some (_, _, Sh, w, off, d, Ma) =>
             if w && Sh.vals.free (d + off) (Ma + M) then
-              some (Γ.afterSys (.var k) next, Γ.afterSys (.var k) next)
+              some (Γ.afterSys (.var k) (.var (k + 1)) next, Γ.afterSys (.var k) (.var (k + 1)) next)
             else fillsHeld false Γ k next b room
           | none => fillsHeld false Γ k next b room
         | none => fillsHeld false Γ k next b room
@@ -252,7 +275,7 @@ theorem sysFills_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
     (h : sysFills kinds Γ k next = some (Γe, Γh)) (hu : Γ.under k = true)
     (hpre : PreAt fetch sys Ψ D (Γ.den ρ)) :
     Steps fetch sys Ψ .syscall next (Γ.den ρ) fun t Δ =>
-      ∃ x, t = next ∧ (Δ = Γe.den (ρ.setVal k x) ∨ Δ = Γh.den (ρ.setVal k x)) := by
+      ∃ x y, t = next ∧ (Δ = Γe.den (ρ.setSys k x y) ∨ Δ = Γh.den (ρ.setSys k x y)) := by
   unfold sysFills at h
   split at h
   · next nr hnr =>
@@ -301,13 +324,15 @@ theorem sysFills_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
                 exact H.2.2 k' Ψ' he hwf s hw data (by omega) hcw
               refine Steps.mono (Steps.fills hD (by rw [hkind, hrax]; exact hk)
                 (fun n Ψ' he hwf s _ hw => hpre n Ψ' he hwf s hw) hH) ?_
-              rintro t Δ ⟨rfl, x, hcase⟩
-              have hΓ : Γ.den (ρ.setVal k x) = Γ.den ρ := CtxS.den_setVal ρ k x Γ hu
-              have e : (Γ.afterSys (.var k) t).den (ρ.setVal k x) = (Γ.den ρ).afterSys x t := by
+              rintro t Δ ⟨rfl, x, y, hcase⟩
+              have hΓ : Γ.den (ρ.setSys k x y) = Γ.den ρ := CtxS.den_setSys ρ k x y Γ hu
+              have e : (Γ.afterSys (.var k) (.var (k + 1)) t).den (ρ.setSys k x y)
+                  = (Γ.den ρ).afterSys x y t := by
                 rw [CtxS.afterSys_den, hΓ]
-                show CtxOf.afterSys (Γ.den ρ) ((ρ.setVal k x).val k) t = _
-                rw [Env.setVal_get_self]
-              refine ⟨x, rfl, .inl ?_⟩
+                show CtxOf.afterSys (Γ.den ρ) ((ρ.setSys k x y).val k)
+                  ((ρ.setSys k x y).val (k + 1)) t = _
+                rw [Env.setSys_k, Env.setSys_k1]
+              refine ⟨x, y, rfl, .inl ?_⟩
               rcases hcase with rfl | rfl <;> exact e.symm
             · exact fillsHeld_sound hD hk' h hu hpre
           · exact fillsHeld_sound hD hk' h hu hpre
@@ -331,8 +356,8 @@ def sysMap (Γ : CtxS) (k : Nat) (next : BitVec 64) : Option (CtxS × CtxS × Na
     | some .map =>
       if di = 0 then
         if Γ.regs.rdx.lit? = some 3 ∧ Γ.regs.r10.lit? = some 0x22 then
-          some (Γ.afterSys (.var k) next,
-            CtxS.afterSys { Γ with held := (.var k, ⟨litNat (pages len), []⟩) :: Γ.held } (.var k) next,
+          some (Γ.afterSys (.var k) (.var (k + 1)) next,
+            CtxS.afterSys { Γ with held := (.var k, ⟨litNat (pages len), []⟩) :: Γ.held } (.var k) (.var (k + 1)) next,
             pages len)
         else none
       else none
@@ -344,8 +369,8 @@ theorem sysMap_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linu
     (h : sysMap Γ k next = some (Γe, Γo, sz)) (hu : Γ.under k = true)
     (hpre : PreAt fetch sys Ψ D (Γ.den ρ)) :
     Steps fetch sys Ψ .syscall next (Γ.den ρ) fun t Δ =>
-      ∃ x, t = next ∧ ((SysErr x ∧ Δ = Γe.den (ρ.setVal k x)) ∨
-        (x.toNat + sz ≤ addrTop ∧ Δ = Γo.den (ρ.setVal k x))) := by
+      ∃ x y, t = next ∧ ((SysErr x ∧ Δ = Γe.den (ρ.setSys k x y)) ∨
+        (x.toNat + sz ≤ addrTop ∧ Δ = Γo.den (ρ.setSys k x y))) := by
   unfold sysMap at h
   split at h
   · next nr di len hnr hdi hlen =>
@@ -362,34 +387,34 @@ theorem sysMap_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linu
         have hrsi : (Γ.den ρ).val .rsi = len := Val.lit?_den hlen
         refine Steps.mono (Steps.map hD (by rw [hkind, hrax]; exact hk) hrdi
           (fun n Ψ' he hwf s _ hw => hpre n Ψ' he hwf s hw)) ?_
-        rintro t Δ ⟨rfl, x, hcase⟩
-        have hΓ : Γ.den (ρ.setVal k x) = Γ.den ρ := CtxS.den_setVal ρ k x Γ hu
-        refine ⟨x, rfl, ?_⟩
+        rintro t Δ ⟨rfl, x, y, hcase⟩
+        have hΓ : Γ.den (ρ.setSys k x y) = Γ.den ρ := CtxS.den_setSys ρ k x y Γ hu
+        refine ⟨x, y, rfl, ?_⟩
         rcases hcase with ⟨hx, rfl⟩ | ⟨_, hfit, rfl⟩
         · refine .inl ⟨hx, ?_⟩
           rw [CtxS.afterSys_den, hΓ]
-          show _ = CtxOf.afterSys (Γ.den ρ) ((ρ.setVal k x).val k) t
-          rw [Env.setVal_get_self]
+          show _ = CtxOf.afterSys (Γ.den ρ) ((ρ.setSys k x y).val k) ((ρ.setSys k x y).val (k + 1)) t
+          rw [Env.setSys_k, Env.setSys_k1]
         · rw [hrsi] at hfit
           refine .inr ⟨hfit, ?_⟩
           rw [CtxS.afterSys_den, hrsi]
           have hlt : pages len < 2 ^ 64 := by
             have : addrTop < 2 ^ 64 := by decide
             omega
-          have e : CtxS.den (ρ.setVal k x)
+          have e : CtxS.den (ρ.setSys k x y)
                 { Γ with held := (.var k, ⟨litNat (pages len), []⟩) :: Γ.held }
               = { Γ.den ρ with held := (x, ⟨pages len, []⟩) :: (Γ.den ρ).held } := by
             refine ctx_ext
-              (congrArg CtxOf.val hΓ : (Γ.den (ρ.setVal k x)).val = (Γ.den ρ).val)
-              (congrArg CtxOf.flags hΓ : (Γ.den (ρ.setVal k x)).flags = (Γ.den ρ).flags) ?_
-              (congrArg CtxOf.known hΓ : (Γ.den (ρ.setVal k x)).known = (Γ.den ρ).known)
-            show ((ρ.setVal k x).val k,
-              (⟨(litNat (pages len)).nat (ρ.setVal k x), []⟩ : Held)) ::
-                (Γ.den (ρ.setVal k x)).held = _
-            rw [Env.setVal_get_self, hΓ, litNat_nat _ hlt]
+              (congrArg CtxOf.val hΓ : (Γ.den (ρ.setSys k x y)).val = (Γ.den ρ).val)
+              (congrArg CtxOf.flags hΓ : (Γ.den (ρ.setSys k x y)).flags = (Γ.den ρ).flags) ?_
+              (congrArg CtxOf.known hΓ : (Γ.den (ρ.setSys k x y)).known = (Γ.den ρ).known)
+            show ((ρ.setSys k x y).val k,
+              (⟨(litNat (pages len)).nat (ρ.setSys k x y), []⟩ : Held)) ::
+                (Γ.den (ρ.setSys k x y)).held = _
+            rw [Env.setSys_k, hΓ, litNat_nat _ hlt]
           rw [e]
-          show _ = CtxOf.afterSys _ ((ρ.setVal k x).val k) t
-          rw [Env.setVal_get_self]
+          show _ = CtxOf.afterSys _ ((ρ.setSys k x y).val k) ((ρ.setSys k x y).val (k + 1)) t
+          rw [Env.setSys_k, Env.setSys_k1]
       · cases h
     · cases h
   · cases h
@@ -414,8 +439,8 @@ def sysUnmap (Γ : CtxS) (k : Nat) (next : BitVec 64) : Option (CtxS × CtxS) :=
     | some .unmap =>
       match findRegion Γ.regs.rdi (pages len) Γ.held 0 with
       | some j =>
-        some (Γ.afterSys (.var k) next,
-          CtxS.afterSys { Γ with held := Γ.held.eraseIdx j } (.lit 0) next)
+        some (Γ.afterSys (.var k) (.var (k + 1)) next,
+          CtxS.afterSys { Γ with held := Γ.held.eraseIdx j } (.lit 0) (.var (k + 1)) next)
       | none => none
     | _ => none
   | _, _ => none
@@ -425,7 +450,8 @@ theorem sysUnmap_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
     (h : sysUnmap Γ k next = some (Γe, Γo)) (hu : Γ.under k = true)
     (hpre : PreAt fetch sys Ψ D (Γ.den ρ)) :
     Steps fetch sys Ψ .syscall next (Γ.den ρ) fun t Δ =>
-      t = next ∧ ((∃ x, SysErr x ∧ Δ = Γe.den (ρ.setVal k x)) ∨ Δ = Γo.den ρ) := by
+      t = next ∧ ((∃ x y, SysErr x ∧ Δ = Γe.den (ρ.setSys k x y)) ∨
+        ∃ x y, Δ = Γo.den (ρ.setSys k x y)) := by
   unfold sysUnmap at h
   split at h
   · next nr len hnr hlen =>
@@ -447,13 +473,20 @@ theorem sysUnmap_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
           (by rw [hrsi]; exact hsize) (fun n Ψ' he hwf s _ hw => hpre n Ψ' he hwf s hw)) ?_
         rintro t Δ ⟨rfl, hcase⟩
         refine ⟨rfl, ?_⟩
-        rcases hcase with ⟨x, hx, rfl⟩ | rfl
-        · refine .inl ⟨x, hx, ?_⟩
-          rw [CtxS.afterSys_den, CtxS.den_setVal ρ k x Γ hu]
-          show _ = CtxOf.afterSys (Γ.den ρ) ((ρ.setVal k x).val k) t
-          rw [Env.setVal_get_self]
-        · refine .inr ?_
-          rw [CtxS.afterSys_den]
+        rcases hcase with ⟨x, y, hx, rfl⟩ | ⟨y, rfl⟩
+        · refine .inl ⟨x, y, hx, ?_⟩
+          rw [CtxS.afterSys_den, CtxS.den_setSys ρ k x y Γ hu]
+          show _ = CtxOf.afterSys (Γ.den ρ) ((ρ.setSys k x y).val k) ((ρ.setSys k x y).val (k + 1)) t
+          rw [Env.setSys_k, Env.setSys_k1]
+        · refine .inr ⟨0, y, ?_⟩
+          have hu' : CtxS.under k { Γ with held := Γ.held.eraseIdx j } = true := by
+            simp only [CtxS.under, Bool.and_eq_true] at hu ⊢
+            refine ⟨⟨⟨hu.1.1.1, ?_⟩, hu.1.2⟩, hu.2⟩
+            simp only [heldUnder, List.all_eq_true] at hu ⊢
+            exact fun b hb => hu.1.1.2 b (List.mem_of_mem_eraseIdx hb)
+          rw [CtxS.afterSys_den, CtxS.den_setSys ρ k 0 y _ hu']
+          show _ = CtxOf.afterSys _ 0 ((ρ.setSys k 0 y).val (k + 1)) t
+          rw [Env.setSys_k1]
           have hj : j < (Γ.held.map fun b => (b.1.den ρ, b.2.den ρ)).length := by
             rw [List.length_map]; exact (List.getElem?_eq_some_iff.mp hg).1
           have e : CtxS.den ρ { Γ with held := Γ.held.eraseIdx j }
@@ -463,7 +496,6 @@ theorem sysUnmap_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
               = ((Γ.held.map fun b => (b.1.den ρ, b.2.den ρ)) ++ restDen ρ Γ.rest).eraseIdx j
             rw [List.eraseIdx_append_of_lt_length hj, map_eraseIdx]
           rw [e]
-          rfl
       · cases h
     · cases h
   · cases h

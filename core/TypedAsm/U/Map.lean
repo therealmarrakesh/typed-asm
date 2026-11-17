@@ -124,19 +124,20 @@ theorem Steps.map {D : SysDesc} (hD : Describes sys D) {Γ : Ctx} {next : BitVec
     (hk : D.kind (Γ.val .rax) = some .map) (hdi : Γ.val .rdi = 0)
     (hpre : ∀ n, ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, s.rip = next →
       WellTyped fetch sys Ψ' n Γ s → D.pre s) :
-    Steps fetch sys Ψ .syscall next Γ fun t Γ' => t = next ∧ ∃ v,
-      (SysErr v ∧ Γ' = Γ.afterSys v next) ∨
+    Steps fetch sys Ψ .syscall next Γ fun t Γ' => t = next ∧ ∃ v r,
+      (SysErr v ∧ Γ' = Γ.afterSys v r next) ∨
       (v.toNat % 4096 = 0 ∧ v.toNat + pages (Γ.val .rsi) ≤ addrTop ∧
-        Γ' = CtxOf.afterSys { Γ with held := (v, ⟨pages (Γ.val .rsi), []⟩) :: Γ.held } v next) := by
+        Γ' = CtxOf.afterSys { Γ with held := (v, ⟨pages (Γ.val .rsi), []⟩) :: Γ.held } v r
+          next) := by
   intro n Ψ' he hwf s hrip hw
   obtain ⟨t, hst, hmaps⟩ := hD s .map (by rw [hw.val]; exact hk) (hpre n Ψ' he hwf s hrip hw)
     (by rw [hw.val]; exact hdi)
   rw [hw.val .rsi] at hmaps
   rcases hmaps with ⟨v, w, hv, rfl⟩ | ⟨a, w, hal, hfit, hun, rfl⟩
-  · refine ⟨_, hst, Γ.afterSys v next, ⟨hrip, v, .inl ⟨hv, rfl⟩⟩, ?_⟩
+  · refine ⟨_, hst, Γ.afterSys v (w.saved 0) next, ⟨hrip, v, _, .inl ⟨hv, rfl⟩⟩, ?_⟩
     rw [← hrip]
     exact hw.ret v w
-  · refine ⟨_, hst, _, ⟨hrip, a, .inr ⟨hal, hfit, rfl⟩⟩, ?_⟩
+  · refine ⟨_, hst, _, ⟨hrip, a, w.saved 0, .inr ⟨hal, hfit, rfl⟩⟩, ?_⟩
     have hT : addrTop = 0x7ffffffff000 := rfl
     have h4 : pages (Γ.val .rsi) % 4096 = 0 := Nat.mul_mod_left _ _
     have hH := hw.mapZero_held hwf hal h4 hfit (by omega) hun

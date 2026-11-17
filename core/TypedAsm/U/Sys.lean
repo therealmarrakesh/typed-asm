@@ -19,10 +19,10 @@ namespace TypedAsm.U
 variable {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
 
 /-- The context a call returns in, with the value `v` handed back: `rax`
-holds it, `rcx` the address after the call, `r11` zero, and the flags are
-undefined. -/
-def CtxOf.afterSys (Γ : Ctx) (v next : BitVec 64) : Ctx :=
-  Γ.apply ⟨[(.rax, v), (.rcx, next), (.r11, 0)], Flags.unknown, 0⟩
+holds it, `rcx` the address after the call, `r11` the value `r` the kernel
+left there, and the flags are undefined. -/
+def CtxOf.afterSys (Γ : Ctx) (v r next : BitVec 64) : Ctx :=
+  Γ.apply ⟨[(.rax, v), (.rcx, next), (.r11, r)], Flags.unknown, 0⟩
 
 /-- What is in the world outside is no part of what a context says. -/
 theorem WellTyped.setWorld {n : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch sys Ψ n Γ s)
@@ -47,8 +47,10 @@ theorem WellTyped.setWorld {n : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch
 a call returns in. -/
 theorem WellTyped.ret {n : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch sys Ψ n Γ s)
     (v : BitVec 64) (w : World) :
-    WellTyped fetch sys Ψ n (Γ.afterSys v s.rip) (Linux.ret { s with world := w } v) :=
-  (h.setWorld w).apply ⟨[(.rax, v), (.rcx, s.rip), (.r11, 0)], Flags.unknown, 0⟩
+    WellTyped fetch sys Ψ n (Γ.afterSys v (w.saved 0) s.rip)
+      (Linux.ret { s with world := w } v) :=
+  ((h.setWorld w).apply ⟨[(.rax, v), (.rcx, s.rip), (.r11, w.saved 0)], Flags.unknown, 0⟩).setWorld
+    w.spent
 
 /-- What a call does to the program. -/
 inductive SysKind
@@ -118,10 +120,10 @@ theorem Steps.world {D : SysDesc} (hD : Describes sys D) {Γ : Ctx} {next : BitV
     (hk : D.kind (Γ.val .rax) = some .world)
     (hpre : ∀ n, ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, s.rip = next →
       WellTyped fetch sys Ψ' n Γ s → D.pre s) :
-    Steps fetch sys Ψ .syscall next Γ fun t Γ' => t = next ∧ ∃ v, Γ' = Γ.afterSys v next := by
+    Steps fetch sys Ψ .syscall next Γ fun t Γ' => t = next ∧ ∃ v r, Γ' = Γ.afterSys v r next := by
   intro n Ψ' he hwf s hrip hw
   obtain ⟨t, hst, v, w, rfl⟩ := hD s .world (by rw [hw.val]; exact hk) (hpre n Ψ' he hwf s hrip hw)
-  refine ⟨_, hst, Γ.afterSys v next, ⟨hrip, v, rfl⟩, ?_⟩
+  refine ⟨_, hst, Γ.afterSys v (w.saved 0) next, ⟨hrip, v, _, rfl⟩, ?_⟩
   rw [← hrip]
   exact hw.ret v w
 
@@ -143,7 +145,7 @@ theorem Steps.fills {D : SysDesc} (hD : Describes sys D) {Γ Γh : Ctx} {next : 
       WellTyped fetch sys Ψ' n Γ s → D.pre s)
     (hh : Havoc fetch sys Ψ Γ (Γ.val b) (roomVal Γ.val room) Γh) :
     Steps fetch sys Ψ .syscall next Γ fun t Γ' =>
-      t = next ∧ ∃ v, Γ' = Γ.afterSys v next ∨ Γ' = Γh.afterSys v next := by
+      t = next ∧ ∃ v r, Γ' = Γ.afterSys v r next ∨ Γ' = Γh.afterSys v r next := by
   intro n Ψ' he hwf s hrip hw
   obtain ⟨t, hst, hfills⟩ := hD s (.fills b room) (by rw [hw.val]; exact hk)
     (hpre n Ψ' he hwf s hrip hw)
@@ -152,10 +154,10 @@ theorem Steps.fills {D : SysDesc} (hD : Describes sys D) {Γ Γh : Ctx} {next : 
     | inl r => show (s.getReg r).toNat = (Γ.val r).toNat; rw [hw.val]
     | inr k => rfl
   rcases hfills with ⟨v, w, rfl⟩ | ⟨data, v, w, hlen, hcw, rfl⟩
-  · refine ⟨_, hst, Γ.afterSys v next, ⟨hrip, v, .inl rfl⟩, ?_⟩
+  · refine ⟨_, hst, Γ.afterSys v (w.saved 0) next, ⟨hrip, v, _, .inl rfl⟩, ?_⟩
     rw [← hrip]
     exact hw.ret v w
-  · refine ⟨_, hst, Γh.afterSys v next, ⟨hrip, v, .inr rfl⟩, ?_⟩
+  · refine ⟨_, hst, Γh.afterSys v (w.saved 0) next, ⟨hrip, v, _, .inr rfl⟩, ?_⟩
     rw [hroom] at hlen
     have hb : s.getReg b = Γ.val b := hw.val b
     rw [hb] at hcw

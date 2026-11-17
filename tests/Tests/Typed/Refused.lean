@@ -122,4 +122,30 @@ example : checkProgram (prog ([(0, .shift .shl .w32 (.mem (.sib (some .rbx) none
 example : checkProgram (prog ([(0, .imul2 .w32 .rax (.mem (.sib (some .rbx) none 14)), 4)] ++
     exitAt 4)) [lab 0 Pq] 10 0 = false := by decide +kernel
 
+/-! ## What a system call leaves in the registers
+
+A call that returns leaves its answer in `rax`, the address it returns to
+in `rcx`, and in `r11` the flags the processor saved when the call was
+made: no number a program can count on. -/
+
+/-- `getpid`; then the program ends with what this register holds. -/
+def codeAfterCall (r : Reg) : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .mov .w32 (.rm_i (.reg .rax) 39), 5), (5, .syscall, 2),
+   (7, .mov .w64 (.rm_r (.reg .rdi) r), 3),
+   (10, .mov .w32 (.rm_i (.reg .rax) 60), 5), (15, .syscall, 2)]
+
+/-- The program, to end with this status. -/
+def pgAfterCall (r : Reg) (status : BitVec 32) : Prog :=
+  { code := codeAfterCall r, pre := preExits (· == status) }
+
+-- `rcx` holds the address the call returned to, which is seven
+example : checkProgram (pgAfterCall .rcx 7) [lab 0 Pw] 10 0 = true := by decide +kernel
+-- `r11` does not hold nought, nor any number that can be said: refused
+example : checkProgram (pgAfterCall .r11 0) [lab 0 Pw] 10 0 = false := by decide +kernel
+-- in the model too it is what the world says, which is anything
+example (s : State) (v : BitVec 64) : (Linux.ret s v).getReg .r11 = s.world.saved 0 := rfl
+-- and the next call has the next
+example (s : State) (v w : BitVec 64) :
+    (Linux.ret (Linux.ret s v) w).getReg .r11 = s.world.saved 1 := rfl
+
 end Tests.Unified

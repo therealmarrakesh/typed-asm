@@ -63,9 +63,14 @@ namespace TypedAsm
 namespace Linux
 
 /-- The state a call returns in, with result `v`. Like the real kernel, a
-returning call overwrites `rcx` and `r11` and leaves the flags unknown. -/
+returning call overwrites `rcx` and `r11` and leaves the flags unknown:
+`rcx` holds the address the call returns to, and `r11` the flags the
+processor saved when the call was made, which is no number the program can
+count on: the world says what it is, anew at each call. -/
 def ret (s : State) (v : BitVec 64) : State :=
-  { ((s.setReg .rax v).setReg .rcx s.rip).setReg .r11 0 with flags := .unknown }
+  { ((s.setReg .rax v).setReg .rcx s.rip).setReg .r11 (s.world.saved 0) with
+    flags := .unknown
+    world := s.world.spent }
 
 /-- The state a call returns in after storing `data` at `buf`, with result
 `v` and the world as `w`. -/
@@ -721,14 +726,15 @@ theorem write_only (s : State) : OnlyWorld s (write s) := by
 
 /-- **What a program may conclude from the result of a `write` to its
 output**, whatever the kernel did with it. Either the call failed, with an
-error number, and nothing was written. Or it answered a count `n`, no more
+error number, and nothing was written: the world is as it was, but for the
+call having returned. Or it answered a count `n`, no more
 than was asked for: then exactly the first `n` bytes of the buffer were
 added to the output. Nothing says `n` is all that was asked for, only that
 it is not zero when something was: a program that goes round again with the
 rest gets somewhere each time. -/
 theorem writeBy_stdout (d : Fate) (s : State)
     (hfd : s.world.fd? (fdArg s .rdi) = some .stdout) :
-    (SysErr ((writeBy d s).getReg .rax) ∧ (writeBy d s).world = s.world) ∨
+    (SysErr ((writeBy d s).getReg .rax) ∧ (writeBy d s).world = s.world.spent) ∨
     ∃ n, n ≤ (s.getReg .rdx).toNat ∧ (0 < (s.getReg .rdx).toNat → 0 < n) ∧
       (writeBy d s).getReg .rax = BitVec.ofNat 64 n ∧
       (writeBy d s).world.writes = s.loadBytes (s.getReg .rsi) n :: s.world.writes := by

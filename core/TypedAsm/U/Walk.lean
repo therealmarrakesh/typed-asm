@@ -90,8 +90,8 @@ def Walk.holds (P A : BitVec 64 → Ctx → Prop) : Walk → Env → Prop
   | .stop a Γ, ρ => P a (Γ.den ρ)
   | .arrive t Γ, ρ => A (t.den ρ) (Γ.den ρ)
   | .step _ _ _ k rest, ρ => ∀ x, rest.holds P A (ρ.setVal k x)
-  | .sys k rest, ρ => ∀ x, rest.holds P A (ρ.setVal k x)
-  | .sys2 k a b, ρ => ∀ x, a.holds P A (ρ.setVal k x) ∧ b.holds P A (ρ.setVal k x)
+  | .sys k rest, ρ => ∀ x y, rest.holds P A (ρ.setSys k x y)
+  | .sys2 k a b, ρ => ∀ x y, a.holds P A (ρ.setSys k x y) ∧ b.holds P A (ρ.setSys k x y)
   | .ends, _ => True
   | .branch c fl taken fall, ρ =>
     (∃ b, c.eval (fl.den ρ) = some b) ∧
@@ -246,34 +246,35 @@ def walk (pg : Prog) (stops : BitVec 64 → Bool) :
         else
           match sysWorld Γ k (a + len) with
           | some Γ' =>
-            if Γ'.under (k + 1) then .sys k (walk pg stops false fuel (k + 1) (a + len) Γ') else .stop a Γ
+            if Γ'.under (k + 2) then .sys k (walk pg stops false fuel (k + 2) (a + len) Γ')
+            else .stop a Γ
           | none =>
             match sysMap Γ k (a + len) with
             | some (Γe, Γo, sz) =>
-              if (Γe.addKnown [(.var k, .range (-4095) (-1))]).sharpen.under (k + 1) &&
-                  (Γo.addKnown [(.var k, .range 0 (BitVec.ofNat 64 (addrTop - sz)))]).sharpen.under (k + 1)
+              if (Γe.addKnown [(.var k, .range (-4095) (-1))]).sharpen.under (k + 2) &&
+                  (Γo.addKnown [(.var k, .range 0 (BitVec.ofNat 64 (addrTop - sz)))]).sharpen.under (k + 2)
                   && decide (sz ≤ addrTop) then
                 .sys2 k
-                  (walk pg stops false fuel (k + 1) (a + len)
+                  (walk pg stops false fuel (k + 2) (a + len)
                     (Γe.addKnown [(.var k, .range (-4095) (-1))]).sharpen)
-                  (walk pg stops false fuel (k + 1) (a + len)
+                  (walk pg stops false fuel (k + 2) (a + len)
                     (Γo.addKnown [(.var k, .range 0 (BitVec.ofNat 64 (addrTop - sz)))]).sharpen)
               else .stop a Γ
             | none =>
               match sysUnmap Γ k (a + len) with
               | some (Γe, Γo) =>
-                if (Γe.addKnown [(.var k, .range (-4095) (-1))]).sharpen.under (k + 1) && Γo.under k &&
-                    Γo.under (k + 1) then
+                if (Γe.addKnown [(.var k, .range (-4095) (-1))]).sharpen.under (k + 2) &&
+                    Γo.under (k + 2) then
                   .sys2 k
-                    (walk pg stops false fuel (k + 1) (a + len)
+                    (walk pg stops false fuel (k + 2) (a + len)
                       (Γe.addKnown [(.var k, .range (-4095) (-1))]).sharpen)
-                    (walk pg stops false fuel (k + 1) (a + len) Γo)
+                    (walk pg stops false fuel (k + 2) (a + len) Γo)
                 else .stop a Γ
               | none =>
                 match sysFills pg.kinds Γ k (a + len) with
                 | some (Γe, Γh) =>
-                  if Γh.under (k + 1) && regardS noEnt Γe Γh then
-                    .sys k (walk pg stops false fuel (k + 1) (a + len) Γh)
+                  if Γh.under (k + 2) && regardS noEnt Γe Γh then
+                    .sys k (walk pg stops false fuel (k + 2) (a + len) Γh)
                   else .stop a Γ
                 | none => .stop a Γ
       else
@@ -367,12 +368,12 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
             split at hW
             · next hu' =>
               subst hW
-              have ih := fun x => (walk_sound hD hkind pg hpre stops hcode hk false fuel (k + 1) (e + len) Γ'
-                (ρ.setVal k x) hu' (h x)).1
+              have ih := fun x y => (walk_sound hD hkind pg hpre stops hcode hk false fuel (k + 2)
+                (e + len) Γ' (ρ.setSys k x y) hu' (h x y)).1
               have hb := both fun m hm => by
                 refine Ok.step hf (sysWorld_sound hD hkind hw hu hpreΓ) ?_
-                rintro t Δ ⟨x, rfl, rfl⟩
-                exact ((ih x).mono hm).arrives
+                rintro t Δ ⟨x, y, rfl, rfl⟩
+                exact ((ih x y).mono hm).arrives
               exact ⟨hb.1, fun _ => hb.2⟩
             · subst hW; exact ⟨h, fun hm => nomatch hm⟩
           · split at hW
@@ -382,31 +383,31 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
                 subst hW
                 simp only [Bool.and_eq_true, decide_eq_true_eq] at hchk
                 obtain ⟨⟨hue, huo⟩, hsz⟩ := hchk
-                have ihe := fun x => Ok.regard (CtxS.sharpen_regards (ρ.setVal k x) _)
-                  (walk_sound hD hkind pg hpre stops hcode hk false fuel (k + 1)
-                    (e + len) _ (ρ.setVal k x) hue (h x).1).1
-                have iho := fun x => Ok.regard (CtxS.sharpen_regards (ρ.setVal k x) _)
-                  (walk_sound hD hkind pg hpre stops hcode hk false fuel (k + 1)
-                    (e + len) _ (ρ.setVal k x) huo (h x).2).1
+                have ihe := fun x y => Ok.regard (CtxS.sharpen_regards (ρ.setSys k x y) _)
+                  (walk_sound hD hkind pg hpre stops hcode hk false fuel (k + 2)
+                    (e + len) _ (ρ.setSys k x y) hue (h x y).1).1
+                have iho := fun x y => Ok.regard (CtxS.sharpen_regards (ρ.setSys k x y) _)
+                  (walk_sound hD hkind pg hpre stops hcode hk false fuel (k + 2)
+                    (e + len) _ (ρ.setSys k x y) huo (h x y).2).1
                 have hb := both fun m hm => by
                   refine Ok.step hf (sysMap_sound hD hkind hmap hu hpreΓ) ?_
-                  rintro t Δ ⟨x, rfl, ⟨hx, rfl⟩ | ⟨hfit, rfl⟩⟩
-                  · refine Arrives.learn [((Val.var k).den (ρ.setVal k x), Ty.range (-4095) (-1))]
-                      ?_ (((ihe x).mono hm).arrives)
+                  rintro t Δ ⟨x, y, rfl, ⟨hx, rfl⟩ | ⟨hfit, rfl⟩⟩
+                  · refine Arrives.learn [((Val.var k).den (ρ.setSys k x y), Ty.range (-4095) (-1))]
+                      ?_ (((ihe x y).mono hm).arrives)
                     intro f hf' k' _ Ψ' _ _
                     rw [List.mem_singleton.mp hf']
                     refine hasTy_range.mpr ?_
-                    show (ρ.setVal k x).val k - (-4095) ≤ (-1 : BitVec 64) - (-4095)
-                    rw [Env.setVal_get_self]
+                    show (ρ.setSys k x y).val k - (-4095) ≤ (-1 : BitVec 64) - (-4095)
+                    rw [Env.setSys_k]
                     unfold SysErr at hx
                     bv_omega
-                  · refine Arrives.learn [((Val.var k).den (ρ.setVal k x),
-                        Ty.range 0 (BitVec.ofNat 64 (addrTop - sz)))] ?_ (((iho x).mono hm).arrives)
+                  · refine Arrives.learn [((Val.var k).den (ρ.setSys k x y),
+                        Ty.range 0 (BitVec.ofNat 64 (addrTop - sz)))] ?_ (((iho x y).mono hm).arrives)
                     intro f hf' k' _ Ψ' _ _
                     rw [List.mem_singleton.mp hf']
                     refine hasTy_range.mpr ?_
-                    show (ρ.setVal k x).val k - 0 ≤ BitVec.ofNat 64 (addrTop - sz) - 0
-                    rw [Env.setVal_get_self]
+                    show (ρ.setSys k x y).val k - 0 ≤ BitVec.ofNat 64 (addrTop - sz) - 0
+                    rw [Env.setSys_k]
                     have hT : addrTop = 0x7ffffffff000 := rfl
                     bv_omega
                 exact ⟨hb.1, fun _ => hb.2⟩
@@ -417,26 +418,25 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
                 · next hchk =>
                   subst hW
                   simp only [Bool.and_eq_true] at hchk
-                  obtain ⟨⟨hue, huo⟩, huo'⟩ := hchk
-                  have ihe := fun x => Ok.regard (CtxS.sharpen_regards (ρ.setVal k x) _)
-                    (walk_sound hD hkind pg hpre stops hcode hk false fuel (k + 1)
-                      (e + len) _ (ρ.setVal k x) hue (h x).1).1
-                  have iho := (walk_sound hD hkind pg hpre stops hcode hk false fuel (k + 1)
-                    (e + len) _ (ρ.setVal k 0) huo' (h 0).2).1
-                  rw [CtxS.den_setVal ρ k 0 Γo huo] at iho
+                  obtain ⟨hue, huo⟩ := hchk
+                  have ihe := fun x y => Ok.regard (CtxS.sharpen_regards (ρ.setSys k x y) _)
+                    (walk_sound hD hkind pg hpre stops hcode hk false fuel (k + 2)
+                      (e + len) _ (ρ.setSys k x y) hue (h x y).1).1
+                  have iho := fun x y => (walk_sound hD hkind pg hpre stops hcode hk false fuel
+                    (k + 2) (e + len) _ (ρ.setSys k x y) huo (h x y).2).1
                   have hb := both fun m hm => by
                     refine Ok.step hf (sysUnmap_sound hD hkind hun hu hpreΓ) ?_
-                    rintro t Δ ⟨rfl, ⟨x, hx, rfl⟩ | rfl⟩
-                    · refine Arrives.learn [((Val.var k).den (ρ.setVal k x), Ty.range (-4095) (-1))]
-                        ?_ (((ihe x).mono hm).arrives)
+                    rintro t Δ ⟨rfl, ⟨x, y, hx, rfl⟩ | ⟨x, y, rfl⟩⟩
+                    · refine Arrives.learn [((Val.var k).den (ρ.setSys k x y), Ty.range (-4095) (-1))]
+                        ?_ (((ihe x y).mono hm).arrives)
                       intro f hf' k' _ Ψ' _ _
                       rw [List.mem_singleton.mp hf']
                       refine hasTy_range.mpr ?_
-                      show (ρ.setVal k x).val k - (-4095) ≤ (-1 : BitVec 64) - (-4095)
-                      rw [Env.setVal_get_self]
+                      show (ρ.setSys k x y).val k - (-4095) ≤ (-1 : BitVec 64) - (-4095)
+                      rw [Env.setSys_k]
                       unfold SysErr at hx
                       bv_omega
-                    · exact (iho.mono hm).arrives
+                    · exact ((iho x y).mono hm).arrives
                   exact ⟨hb.1, fun _ => hb.2⟩
                 · subst hW; exact ⟨h, fun hm => nomatch hm⟩
               · split at hW
@@ -445,14 +445,14 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
                   · next hchk =>
                     subst hW
                     rw [Bool.and_eq_true] at hchk
-                    have ih := fun x => (walk_sound hD hkind pg hpre stops hcode hk false fuel
-                      (k + 1) (e + len) Γh (ρ.setVal k x) hchk.1 (h x)).1
+                    have ih := fun x y => (walk_sound hD hkind pg hpre stops hcode hk false fuel
+                      (k + 2) (e + len) Γh (ρ.setSys k x y) hchk.1 (h x y)).1
                     have hb := both fun m hm => by
                       refine Ok.step hf (sysFills_sound hD hkind hk hfill hu hpreΓ) ?_
-                      rintro t Δ ⟨x, rfl, rfl | rfl⟩
-                      · exact Arrives.regard (regardS_sound noEnt_sound (ρ.setVal k x) hchk.2)
-                          ((ih x).mono hm).arrives
-                      · exact ((ih x).mono hm).arrives
+                      rintro t Δ ⟨x, y, rfl, rfl | rfl⟩
+                      · exact Arrives.regard (regardS_sound noEnt_sound (ρ.setSys k x y) hchk.2)
+                          ((ih x y).mono hm).arrives
+                      · exact ((ih x y).mono hm).arrives
                     exact ⟨hb.1, fun _ => hb.2⟩
                   · subst hW; exact ⟨h, fun hm => nomatch hm⟩
                 · subst hW; exact ⟨h, fun hm => nomatch hm⟩

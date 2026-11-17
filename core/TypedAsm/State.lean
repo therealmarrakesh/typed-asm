@@ -208,8 +208,16 @@ structure World where
   hasClock : Nat → Bool := fun _ => false
   /-- The number of the process. -/
   pid : Nat := 1
+  /-- What the kernel leaves in `r11` at each call that returns, the next
+  first: the flags it saved when the call was made, which the program's
+  own flags do not say in full. -/
+  saved : Nat → BitVec 64 := fun _ => 0
 
 namespace World
+
+/-- The world once a call has returned: what the kernel leaves in `r11` is
+used, and the next call has the next. Nothing else of the world differs. -/
+def spent (w : World) : World := { w with saved := fun n => w.saved (n + 1) }
 
 /-- What a descriptor refers to, if it is open. -/
 def fd? (w : World) (n : Nat) : Option Fd :=
