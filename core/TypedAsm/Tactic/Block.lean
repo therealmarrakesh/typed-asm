@@ -335,177 +335,11 @@ def declaredLabels (Φ : Expr) : MetaM (Array Nat) := do
     catch _ => pure ()
   return out
 
-/-- Types the control transfer at the head of a block goal. -/
+/-- Types a conditional jump at the head of a block goal, for `ty_branch`,
+where an author says something of one side of it; and code that is never
+reached. Every other ending is the checker's walk's to type. -/
 def finishBlockCore (goal : MVarId) (instr : Instr) : TacticM Finish := do
   match instr with
-  | .jmp (.rel _) =>
-    let before ← saveState
-    try
-      let gs ← runOn goal (do evalTactic (← `(tactic|
-        refine BlockOk.last (by ty_fetch) (HasType.jmp ?_))))
-      let [acc] := gs | throwError "ty_block: unexpected goals at `jmp`"
-      return .done (← proveAccepts acc)
-    catch e =>
-      -- A jump forward to a label with no context that accepts this one is
-      -- typed by typing what is there, here and now. A jump back is a loop,
-      -- and a loop's head must say what holds each time round.
-      unless jumpsForward instr && (← isNoContext e) do throw e
-      before.restore
-      let [target] ← runOn goal (do evalTactic (← `(tactic|
-        refine BlockOk.jump (by ty_fetch) ?_))) | throwError "ty_block: unexpected goals at `jmp`"
-      let [target'] ← runOn target (do evalTactic (← `(tactic| ty_normalize)))
-        | throwError "unexpected goals"
-      return .forks [target'] []
-  | .syscall =>
-    -- `write` and `read` are typed as steps; what reaches here is `exit`, or
-    -- a call the type system has no rule for.
-    let ctx := (← instantiateMVars (← goal.getType)).consumeMData.getAppArgs[5]!
-    let sysArg := (← instantiateMVars (← goal.getType)).consumeMData.getAppArgs[2]!
-    -- Where the program is being shown to end only with a status that is
-    -- as wanted, the status must be exactly known here and be so. That it
-    -- is, is left as a goal where it does not follow by computing.
-    let exitOnly (rule : Name) : TacticM (List MVarId) := do
-      let gs ← try
-          runOn goal (do evalTactic (← `(tactic|
-            refine BlockOk.last (by ty_fetch)
-              (HasType.syscallExit ($(mkIdent rule) rfl rfl ?status)))))
-        catch _ =>
-          let actual ← goal.withContext do
-            ppTy (← whnf (← mkAppM ``CtxOf.regs #[ctx, mkConst ``Reg.rdi]))
-          throwError "`syscall`: what the program ends with is being shown, so the status in \
-            `rdi` must be exactly known here, but its type is `{actual}`"
-      let mut left : List MVarId := []
-      for g in gs do
-        if ← g.isAssigned then continue
-        left := left ++ (← try
-            runOn g (do evalTactic (← `(tactic|
-              first | (dsimp only; decide) | decide | rfl | (dsimp only; ty_arith) | ty_arith)))
-          catch _ => pure [g])
-      return left
-    match ← syscallNumber ctx with
-    | some 60 =>
-      if sysArg.isAppOf ``Syscall.exitsOnly then return .done (← exitOnly ``linux_exit_only)
-      if sysArg.isAppOf ``Syscall.writesOnly && sysArg.getAppArgs[0]!.isAppOf ``Syscall.exitsOnly then
-        return .done (← exitOnly ``linux_exit_only_writes)
-      if sysArg.isAppOf ``Syscall.writesOnly then
-        let gs ← runOn goal (do evalTactic (← `(tactic|
-          refine BlockOk.last (by ty_fetch) (HasType.syscallExit (linux_exit_writes rfl)))))
-        return .done gs
-      let gs ← try
-          runOn goal (do evalTactic (← `(tactic|
-            refine BlockOk.last (by ty_fetch) (HasType.syscallExit (linux_exit rfl)))))
-        catch _ => throwError "`syscall`: the operating system here is not the Linux model"
-      return .done gs
-    | some 231 =>
-      if sysArg.isAppOf ``Syscall.exitsOnly then
-        return .done (← exitOnly ``linux_exit_group_only)
-      if sysArg.isAppOf ``Syscall.writesOnly && sysArg.getAppArgs[0]!.isAppOf ``Syscall.exitsOnly then
-        return .done (← exitOnly ``linux_exit_group_only_writes)
-      if sysArg.isAppOf ``Syscall.writesOnly then
-        let gs ← runOn goal (do evalTactic (← `(tactic|
-          refine BlockOk.last (by ty_fetch) (HasType.syscallExit (linux_exit_group_writes rfl)))))
-        return .done gs
-      let gs ← try
-          runOn goal (do evalTactic (← `(tactic|
-            refine BlockOk.last (by ty_fetch) (HasType.syscallExit (linux_exit_group rfl)))))
-        catch _ => throwError "`syscall`: the operating system here is not the Linux model"
-      return .done gs
-    | some 9 =>
-      -- Unless it is said what the new memory is to hold, the program owns
-      -- it as plain bytes: the block goes on twice, for the error and for
-      -- the address.
-      let before ← saveState
-      try
-        setGoals [goal]
-        Tactic.withoutRecover do evalTactic (← `(tactic| ty_mmap_own as $(mkIdent `p)))
-        return .forks (← getGoals) []
-      catch _ =>
-        before.restore
-        return .needsHelp m!"`syscall`: an `mmap` needs the layout of the new block; use \
-          `ty_mmap <shape>` or `ty_mmap_kind <kind>`"
-    | some 11 =>
-      -- giving back a block the context owns
-      setGoals [goal]
-      evalTactic (← `(tactic| ty_munmap))
-      return .forks (← getGoals) []
-    | some nr =>
-      throwError "`syscall`: call number {nr} has no rule. The calls that can be typed are \
-        {typedCalls}"
-    | none =>
-      let actual ← goal.withContext do
-        ppTy (← reduce (← mkAppM ``CtxOf.regs #[ctx, mkConst ``Reg.rax]))
-      throwError "`syscall`: the call number in `rax` must be exactly known, but its type is \
-        `{actual}`"
-  | .ret =>
-    let gs ← try
-        runOn goal (do evalTactic (← `(tactic|
-          refine BlockOk.last (by ty_fetch)
-            (FnSig.ret_of (sig := ?_) (saved := ?_) ?caller ?regs ?sp rfl rfl ?own ?above))))
-      catch _ =>
-        let family ← goal.withContext do
-          try
-            let t := (← instantiateMVars (← goal.getType)).consumeMData
-            let stack ← whnf (← mkAppM ``CtxOf.stack #[t.appArg!])
-            if stack.isAppOfArity ``List.cons 3 then
-              pure ((← instantiateMVars stack.appFn!.appArg!).find?
-                (·.isConstOf ``Ty.codeAll)).isSome
-            else pure false
-          catch _ => pure false
-        if family then
-          throwError "`ret`: the return address here is ready for a family of contexts, one \
-            for each value the function may hand back; say which the function returns into \
-            with `ty_return_as`"
-        throwError "`ret` needs a return address on top of the stack, but the context does \
-          not have one there. Control would go to whatever number is there: a \
-          general-protection fault where the processor has no such address, a page fault \
-          where there is no code"
-    let mut left := []
-    for g in gs do
-      if ← g.isAssigned then continue
-      let t ← instantiateMVars (← g.getType)
-      if t.isAppOf ``FnSig.CallerOk then
-        try
-          discard <| runOn g (do evalTactic (← `(tactic| first
-            | assumption
-            | exact FnSigEx.CallerOk.each (by assumption) _)))
-        catch _ =>
-          -- with pieces of the stack detached, the stack is not the one the caller expects
-          let detached ← goal.withContext do
-            try
-              let t := (← instantiateMVars (← goal.getType)).consumeMData
-              let above ← normAbove (← mkAppM ``CtxOf.above #[t.appArg!])
-              pure !(above.isAppOfArity ``CtxOf.above 2 || above.isProj)
-            catch _ => pure false
-          if detached then
-            throwError "`ret`: pieces of the stack are still detached; a function must attach \
-              them again (`ty_stack_attach`) and leave the stack as it found it"
-          throwError "`ret` needs the caller's requirement (`sig.CallerOk …`) among the hypotheses"
-      else if t.isAppOf ``Sub then
-        left := left ++ (← runOn g (do evalTactic (← `(tactic| ty_sub))))
-      else if (← g.getTag).eraseMacroScopes == `above then
-        try
-          discard <| deep <| runOn g (do evalTactic (← `(tactic| first
-            | rfl
-            | exact (FnSigEx.CallerOk.detached (by assumption) _).symm
-            | omega
-            | (dsimp only; omega)
-            | (simp only [← FnSigEx.CallerOk.detached (by assumption)]; omega))))
-        catch _ =>
-          throwError "`ret`: a piece detached from the stack has not been attached again; a \
-            function must leave the stack as it found it"
-      else if t.isAppOf ``Eq then
-        try
-          discard <| deep <| runOn g (do evalTactic (← `(tactic| first
-            | rfl
-            | exact FnSig.CallerOk.owned_back (by assumption) rfl
-            | exact FnSigEx.CallerOk.owned_back (by assumption) _ rfl)))
-        catch _ =>
-          throwError "`ret`: the blocks owned here are not the ones the function gives back, \
-            followed by the caller's own; a function must hand back what its signature says \
-            and dispose of anything else it took"
-      else if ← isProp t then
-        left := left ++ (← runOn g (do evalTactic (← `(tactic| sub_regs))))
-    return .done left
   | .jcc _ _ =>
     -- First try to end the block here, where the next instruction is at a
     -- label with a context of its own: elsewhere that cannot succeed, and
@@ -578,40 +412,6 @@ def finishBlockCore (goal : MVarId) (instr : Instr) : TacticM Finish := do
           | throwError "unexpected goals"
         blocks := blocks ++ [side'']
     return .forks blocks []
-  | .jmp (.ind _) =>
-    let before ← saveState
-    -- a tail call through a function pointer, on behalf of this function's caller
-    let tail? ← try
-        let gs ← runOn goal (do evalTactic (← `(tactic|
-          refine BlockOk.last (by ty_fetch) (HasType.jmpFn (sig := ?_) (saved := ?_) (ret := ?_)
-            (rest := ?_) (room := ?_) ?fn ?caller ?sub))))
-        discard <| runOn (← goalNamed gs `fn) (do evalTactic (← `(tactic| ty_operand)))
-        discard <| runOn (← goalNamed gs `caller) (do evalTactic (← `(tactic| assumption)))
-        let left ← runOn (← goalNamed gs `sub) (do evalTactic (← `(tactic| ctx_sub)))
-        pure (some left)
-      catch _ =>
-        before.restore
-        pure none
-    if let some left := tail? then return .done left
-    let gs ← runOn goal (do evalTactic (← `(tactic|
-      refine BlockOk.last (by ty_fetch) (HasType.jmpInd (Δ := ?_) ?code ?sub))))
-    let code ← goalNamed gs `code
-    let sub ← goalNamed gs `sub
-    try
-      discard <| runOn code (do evalTactic (← `(tactic| ty_operand)))
-    catch _ =>
-      throwError "`{instr.toAsm}`: the operand does not hold a pointer to code here. Control \
-        would go to whatever number it holds: a general-protection fault where the processor \
-        has no such address, a page fault where there is no code. A register holding the \
-        exact address of a label becomes a pointer to code with `ty_fn_ptr` (a function) or \
-        `ty_code_ptr` (any other label)"
-    let left ← try
-        runOn sub (do evalTactic (← `(tactic| ctx_sub)))
-      catch _ =>
-        throwError "`{instr.toAsm}`: the stack, the free room or the flags do not match what \
-          the target expects"
-    rejectImpossible left
-    return .done left
   | .ud2 =>
     -- Reached only if no state matches the context; that is left to prove
     -- unless the flags predicate is plainly unsatisfiable.
@@ -621,10 +421,8 @@ def finishBlockCore (goal : MVarId) (instr : Instr) : TacticM Finish := do
        intro _ _ _ _ _ $hstate:ident
        first | exact ($hstate).flags | skip))))
     return .done gs
-  | .call _ =>
-    return .needsHelp m!"`{instr.toAsm}`: a call needs the callee's signature; use `ty_call <signature>`"
   | _ =>
-    return .needsHelp m!"`{instr.toAsm}` is not handled by `ty_block`"
+    return .needsHelp m!"`{instr.toAsm}` is not a conditional jump"
 
 /-- Ends a block, adding to a rejection where the registers and flags it
 speaks of got what they have, and carrying that record on to wherever the
