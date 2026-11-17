@@ -1,5 +1,5 @@
 import TypedAsm.U.Mem
-import TypedAsm.Soundness
+import TypedAsm.Ranges
 
 /-!
 # Memory held alone
