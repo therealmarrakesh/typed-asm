@@ -52,6 +52,31 @@ theorem Havoc.held {Γ : Ctx} {k : Nat} {b : BitVec 64} {S : Held} {o n : Nat}
       decide_eq_true_eq] at hp
     exact .inl ⟨hp.1, by omega⟩
 
+/-- **And somewhere within a stretch of the region**: the region then holds
+no value the stretch reaches into. So of a call given an address or a room
+known only within bounds. -/
+theorem Havoc.heldIn {Γ : Ctx} {k : Nat} {b : BitVec 64} {S : Held} {o o' L n : Nat}
+    (hk : Γ.held[k]? = some (b, S)) (ho : o ≤ o') (hfit : o' + n ≤ o + L) (hL : o + L ≤ S.size) :
+    Havoc fetch sys Ψ Γ (b + BitVec.ofNat 64 o') n
+      { Γ with held := Γ.held.set k (b, S.clear o L) } := by
+  refine ⟨rfl, rfl, fun j Ψ' he hwf s hw data hlen _ => ?_⟩
+  obtain ⟨hklt, hkeq⟩ := List.getElem?_eq_some_iff.mp hk
+  have hmem : (b, S) ∈ Γ.held := hkeq ▸ List.getElem_mem hklt
+  have hsz := hw.held.size_lt _ hmem
+  simp only at hsz
+  have hl : data.length < 2 ^ 64 := by omega
+  refine hw.writeHeld (S' := S.clear o L) hwf hk (lo := o') (cnt := data.length) (by omega) rfl ?_
+    rfl rfl rfl
+    (fun y hy => storeBytes_load64_out _ _ _ _ hl hy)
+    (fun x hx => storeBytes_mem_out _ _ _ _ hl hx) ?_
+  · intro p hp
+    simp only [ShapeOf.clear, List.mem_filter] at hp
+    exact hw.held.fits _ hmem p hp.1
+  · intro p hp
+    simp only [ShapeOf.clear, List.mem_filter, ShapeOf.clearOf, Bool.or_eq_true,
+      decide_eq_true_eq] at hp
+    exact .inl ⟨hp.1, by omega⟩
+
 /-- **And in a block a value is known to point into**, through a pointer
 that may be written through, at bytes that hold no typed value: the context
 is as it was. -/

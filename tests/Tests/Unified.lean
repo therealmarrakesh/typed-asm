@@ -576,6 +576,24 @@ example : Γix.upper (.var 2) = some (2 ^ 64 - 1) := by decide +kernel
 example : ({ Γ0 with known := [(.var 1, .range (-4) 9)] } : CtxS).upper (.var 1)
     = some (2 ^ 64 - 1) := by decide +kernel
 
+/-- `cmp rdx, <most>; ja out; mov eax, 0; syscall; out: exit`: read as many
+bytes as `rdx` says, once it is known to say no more than so many. -/
+def codeRdN (most : BitVec 32) : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .alu .cmp .w64 (.rm_i (.reg .rdx) most), 4), (4, .jcc .a 7, 2),
+   (6, .mov .w32 (.rm_i (.reg .rax) 0), 5), (11, .syscall, 2),
+   (13, .mov .w32 (.rm_i (.reg .rax) 60), 5), (18, .syscall, 2)]
+
+-- at most twelve bytes, from the fourth of sixteen: they lie in the block
+example : checkProgram (codeRdN 12) [lab 0 (buf (.mk 16 .nil) true)] 10 0 = true := by
+  decide +kernel
+-- thirteen may run past the end: refused
+example : checkProgram (codeRdN 13) [lab 0 (buf (.mk 16 .nil) true)] 10 0 = false := by
+  decide +kernel
+-- entered past the comparison, the room may be anything: refused
+example : checkProgram (codeRdN 12)
+    [lab 0 (buf (.mk 16 .nil) true), lab 6 (buf (.mk 16 .nil) true)] 10 0 = false := by
+  decide +kernel
+
 /-! ## An index with a bound -/
 
 /-- `rbx` points to a table of eight values. -/
