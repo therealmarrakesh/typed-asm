@@ -63,6 +63,18 @@ def inFunction (regs : List (Reg × Val) := []) (known : List (Val × TyS) := []
   known := (.bvar 0 16, returnsWith results room) :: known
   rest := .bvar 0
 
+/-- **A label in the program's own code, outside any function**: the stack
+it started with held whole, the stack pointer so many bytes below where it
+started; and the registers and facts said. -/
+def inProgram (n : Nat) (pushed : Nat := 0) (regs : List (Reg × Val) := [])
+    (known : List (Val × TyS) := []) : CtxS :=
+  if n = 0 then { entryPat with regs := regsWith anyRegs regs, known := known }
+  else
+    { entryPatStack (stackSize n) with
+      regs := regsWith
+        (anyRegs.set .rsp (.add (.bvar 0 16) (.lit (BitVec.ofNat 64 (stackSize n - pushed))))) regs
+      known := known }
+
 /-- What a program says of something in one of its segments: that its
 address is that of a byte of the segment's block. -/
 def staticIn (blocks : List (BitVec 64 × Layout)) (a : BitVec 64) : List (Val × TyS) :=

@@ -1,33 +1,37 @@
 import BufferProgram
-import TypedAsm.Tactic
+import TypedAsm.U.Checked
 
 /-!
 # Buffer: typing and safety
 
-The program is in `BufferProgram.lean`. This file types it and proves it
-safe. It is kept separate so that running the program does not link the tactics.
+The program is in `BufferProgram.lean`. This file says what its labels want
+and checks it: one check, run by Lean's kernel, that the code is typed and
+that the state the kernel loads the program into starts as its entry asks.
+Nothing is proved by hand.
+
+It is kept separate so that running the program does not link the checker.
 -/
 
-open TypedAsm
+open TypedAsm TypedAsm.U
 
 namespace Buffer
 
-/-! ## The typing -/
+/-! ## What the labels want -/
 
-/-- In the loop the buffer is allocated: sixteen plain bytes of stack. -/
-def looping : Ctx := ⟨fun _ => .int, [.raw 16], 0, Flags.Any, [], 0⟩
+/-- The program for the checker: its instructions, and that it is to end
+with status nought. -/
+def pg : Prog :=
+  { code := progCode (Asm.table base code)
+    pre := preExits (· == 0) }
 
-/-- The contexts allowed at each label. -/
-inductive At : Label → Ctx → Prop
-  | start : At .start (entryCtx 2)
-  | loop : At .loop looping
+/-- The labels: the start; and the loop, where the stack pointer is the
+sixteen bytes of the buffer below where it started. -/
+def labels : List U.Label :=
+  [⟨entry, inProgram 2⟩,
+   ⟨Asm.addr code base .loop, inProgram 2 (pushed := 16)⟩]
 
-asm_typing At
+/-! ## The check, and what it shows -/
 
-/-! ## Safety -/
-
--- And it ends only with status 0.
-asm_safety At.start exits (· = 0)
+asm_checked code start .start stack 2 program pg labels labels fuel 30 exits (· == 0)
 
 end Buffer
-
