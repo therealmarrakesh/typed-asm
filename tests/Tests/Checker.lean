@@ -482,6 +482,27 @@ example : asKind [(1, .mk (.lit 80) (.cons 0 (.ref 1 true (.lit 0)) .nil))] 80 =
 -- nor for a kind that is not declared
 example : asKind [] 80 = none := by decide
 
+/-! ## Part of an owned block given back -/
+
+/-- Two pages owned as one block at the address `v 0`, and the registers set
+to give back `len` bytes from `p`. -/
+def twoPages (p : Val) (len : BitVec 64) : CtxS :=
+  { reg (reg (reg base .rax (.eq (.lit 11))) .rdi (.eq p)) .rsi (.eq (.lit len)) with
+    owned := [(v 0, .mk (.lit 8192) (.cons 0 (.eq (v 3)) (.cons 4096 (.eq (v 4)) .nil)))] }
+
+-- the second page: the block is regarded as two, each keeping what it holds
+example : (unmapSplit (twoPages (.add (v 0) (.lit 4096)) 4096) .syscall).map (·.owned)
+    = some [(.add (v 0) (.lit 4096), .mk (.lit 4096) (.cons 0 (.eq (v 4)) .nil)),
+            (v 0, .mk (.lit 4096) (.cons 0 (.eq (v 3)) .nil))] := by decide
+-- the first page: likewise, from the other end
+example : ((unmapSplit (twoPages (v 0) 4096) .syscall).map (·.owned.map (·.2.size)))
+    = some [.lit 4096, .lit 4096] := by decide
+-- the whole block needs no regarding as two
+example : (unmapSplit (twoPages (v 0) 8192) .syscall).isNone = true := by decide
+-- and it is then given back: after the split, the call is a step
+example : ((unmapSplit (twoPages (.add (v 0) (.lit 4096)) 4096) .syscall).bind
+    (stepSys ·)).map (·.1.owned.length) = some 1 := by decide
+
 /-! ## Why an instruction is refused -/
 
 def isReason (Γ : CtxS) (i : Instr) (p : Reject → Bool) : Bool :=

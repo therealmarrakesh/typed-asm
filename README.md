@@ -86,12 +86,13 @@ jumped back to, called or returned to, and three commands:
 Each instruction is typed without being told how, and so is each way a
 block ends: a jump, a call or a return, through a label or through a value,
 a call that ends the program, memory asked of the kernel or given back.
-Twenty-two of the twenty-four examples need nothing more than their contexts.
-In the other two, a label's block says what cannot be read off the program:
-where an owned block is split, joined or made part of the shared memory
-(`examples/Own`), and which piece of the stack is lent to a function
-(`examples/Lend`). What kind a new block is to be is found by trying the
-kinds there are. A fact about what the program computes is a theorem marked
+Twenty-three of the twenty-four examples need nothing more than their
+contexts. In the one that is left, `examples/Lend`, a label's block says
+which piece of the stack is lent to a function. What kind a new block is to
+be is found by trying the kinds there are, and an owned block is regarded as
+two where part of it is given back. An author may still say where an owned
+block is split, joined or made part of the shared memory. A fact about what
+the program computes is a theorem marked
 `@[asm_fact]`: `examples/Fact` gives three, what the function returns for
 zero, what its multiply computes, and what one less than its argument is,
 and the checker uses them where they are needed, the last to see which of

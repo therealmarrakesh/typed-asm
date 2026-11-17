@@ -63,19 +63,21 @@ type of whatever is stored in them, a number or an address, because nothing
 else can be looking; and once it is given back, the context no longer lists
 it, so nothing typed can touch it again.
 
-An owned block can be split wherever the program likes, and two that lie end
-to end can be joined. Neither is an instruction: they are steps of the
-typing, which say how the program regards memory it already has. The first
-page is typed as two blocks while it is in use, to show that an address
-reaches whichever block it falls in, and as one again when it is given back.
-The two pages that come next arrive as one block and are split so that one
-can be given back while the other is kept.
+The two pages that come next arrive as one block, and the program gives one
+of them back and keeps the other. Giving back part of a block is typed by
+regarding the block as two, the part given back and the rest: no instruction
+does that, it is how the memory the program already has is looked at, and
+the checker looks at it so where a `munmap` asks for it.
 
-The page that is kept shows what owning is for besides scratch space. A block
-whose first field is a pointer that is never null cannot be had from `mmap`
-directly, since fresh memory is zero. Owned, the page can be filled in
-first; then it is frozen into an ordinary block with exactly the fields it
-has, and from there on it is pointed at like any other.
+The page that is kept shows what owning is for besides scratch space: a
+field of it is given an address, a pointer that is never null, which fresh
+memory, being zero, could not be said to hold. The field takes the type of
+what is stored in it, and what is loaded from it is that pointer.
+
+An owned block can also be split wherever the author likes, two that lie end
+to end joined, and a block that has been filled in frozen into an ordinary
+block that others may point to (`ty_split`, `ty_join`, `ty_freeze`); this
+program needs none of that said.
 
 `lake exe own` runs it in the model; `lake exe own --elf FILE` writes an
 executable that Linux can run.

@@ -5415,6 +5415,170 @@ theorem denOwned_eraseIdx (ρ : Env) : (l : List (Val × ShapeS)) →
     show (a.den ρ, S.den ρ) :: denOwned ρ (l.eraseIdx i) tail = _
     rw [denOwned_eraseIdx ρ l tail i (Nat.lt_of_succ_lt_succ h)]; rfl
 
+/-- The typed values of a block that lie in its first `m` bytes. -/
+def ValsS.takeV (m : Nat) : ValsS → ValsS
+  | .nil => .nil
+  | .cons o τ rest => if o + 8 ≤ m then .cons o τ (rest.takeV m) else rest.takeV m
+
+/-- The typed values of a block from byte `m` on, placed from there. -/
+def ValsS.dropV (m : Nat) : ValsS → ValsS
+  | .nil => .nil
+  | .cons o τ rest => if m ≤ o then .cons (o - m) τ (rest.dropV m) else rest.dropV m
+
+theorem ValsS.den_takeV (ρ : Env) (m : Nat) : (vs : ValsS) →
+    (vs.takeV m).den ρ = (vs.den ρ).filter fun p => p.1 + 8 ≤ m
+  | .nil => rfl
+  | .cons o τ rest => by
+    unfold ValsS.takeV
+    by_cases h : o + 8 ≤ m
+    · simp only [h, ↓reduceIte, ValsS.den, List.filter_cons, decide_true]
+      rw [ValsS.den_takeV ρ m rest]
+    · simp only [h, ↓reduceIte, ValsS.den, List.filter_cons, decide_false]
+      rw [ValsS.den_takeV ρ m rest]; rfl
+
+theorem ValsS.den_dropV (ρ : Env) (m : Nat) : (vs : ValsS) →
+    (vs.dropV m).den ρ = ((vs.den ρ).filter fun p => m ≤ p.1).map fun p => (p.1 - m, p.2)
+  | .nil => rfl
+  | .cons o τ rest => by
+    unfold ValsS.dropV
+    by_cases h : m ≤ o
+    · simp only [h, ↓reduceIte, ValsS.den, List.filter_cons, decide_true, List.map_cons]
+      rw [ValsS.den_dropV ρ m rest]
+    · simp only [h, ↓reduceIte, ValsS.den, List.filter_cons, decide_false]
+      rw [ValsS.den_dropV ρ m rest]; rfl
+
+/-- A block of a size written out regarded as two: its first `m` bytes and
+the rest. -/
+def ShapeS.split (m : Nat) : ShapeS → Option (ShapeS × ShapeS)
+  | .mk (.lit sz) vals =>
+    if m ≤ sz then some (.mk (.lit m) (vals.takeV m), .mk (.lit (sz - m)) (vals.dropV m)) else none
+  | _ => none
+
+theorem ShapeS.den_split {ρ : Env} {m : Nat} {S A B : ShapeS} (h : S.split m = some (A, B)) :
+    A.den ρ = (S.den ρ).take m ∧ B.den ρ = (S.den ρ).drop m ∧ m ≤ (S.den ρ).size := by
+  unfold ShapeS.split at h
+  split at h
+  · next sz vals =>
+    split at h
+    · next hm =>
+      cases h
+      refine ⟨?_, ?_, hm⟩
+      · show (⟨m, (vals.takeV m).den ρ⟩ : Shape) = _
+        rw [ValsS.den_takeV]; rfl
+      · show (⟨sz - m, (vals.dropV m).den ρ⟩ : Shape) = _
+        rw [ValsS.den_dropV]; rfl
+    · cases h
+  · cases h
+
+/-- How many bytes a `munmap` of so many gives back: whole pages. -/
+def pagesOf (len : BitVec 64) : Nat := (len.toNat + 4095) / 4096 * 4096
+
+/-- A `munmap` of part of a block the context owns, from a place inside it
+to its end or from its start: the block is regarded as two first, so that
+what is given back is a block by itself. -/
+def unmapSplit (Γ : CtxS) : Instr → Option CtxS
+  | .syscall =>
+    match Γ.regs.get .rax, Γ.regs.get .rdi, Γ.regs.get .rsi with
+    | .eq (.lit nr), .eq p, .eq (.lit len) =>
+      if nr = 11 then
+        match ownedAt p Γ.owned 0 with
+        | some (k, S) =>
+          -- from its start: the pages given back, and the rest
+          match S.size.lit? with
+          | some sz =>
+            if 0 < pagesOf len ∧ pagesOf len < sz then
+              (S.split (pagesOf len)).map fun (A, B) =>
+                { Γ with owned := (p.plusLit (BitVec.ofNat 64 (pagesOf len)), B) :: (p, A) ::
+                    Γ.owned.eraseIdx k }
+            else none
+          | none => none
+        | none =>
+          -- from a place inside it: what comes before, and the rest
+          match findOwned p Γ.owned 0 with
+          | some (k, a, S, j) =>
+            match j.lit? with
+            | some jj =>
+              if 0 < jj then
+                (S.split jj).map fun (A, B) =>
+                  { Γ with owned := (p, B) :: (a, A) :: Γ.owned.eraseIdx k }
+              else none
+            | none => none
+          | none => none
+      else none
+    | _, _, _ => none
+  | _ => none
+
+theorem unmapSplit_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {ρ : Env}
+    {a : BitVec 64} {Γ Γ' : CtxS} {i : Instr} (hu : unmapSplit Γ i = some Γ')
+    (h : BlockOk Φ fetch sys Ψ a (Γ'.den ρ)) : BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
+  -- the block regarded as two, whichever block it is
+  have key : ∀ {k : Nat} {b q : Val} {S A B : ShapeS} {m : Nat},
+      Γ.owned[k]? = some (b, S) → S.split m = some (A, B) →
+      q.den ρ = b.den ρ + BitVec.ofNat 64 m →
+      BlockOk Φ fetch sys Ψ a
+        (CtxS.den ρ { Γ with owned := (q, B) :: (b, A) :: Γ.owned.eraseIdx k }) →
+      BlockOk Φ fetch sys Ψ a (Γ.den ρ) := by
+    intro k b q S A B m hk hs hq hb
+    obtain ⟨hA, hB, hm⟩ := ShapeS.den_split (ρ := ρ) hs
+    have hlt : k < Γ.owned.length := by
+      rcases Nat.lt_or_ge k Γ.owned.length with h | h
+      · exact h
+      · rw [List.getElem?_eq_none h] at hk; cases hk
+    have hk' : (Γ.den ρ).owned[k]? = some (b.den ρ, S.den ρ) := by
+      rw [CtxS.den_owned]; exact denOwned_getElem? ρ _ _ _ _ _ hk
+    have e : CtxS.den ρ { Γ with owned := (q, B) :: (b, A) :: Γ.owned.eraseIdx k }
+        = { Γ.den ρ with owned :=
+            (b.den ρ + BitVec.ofNat 64 m, (S.den ρ).drop m) :: (b.den ρ, (S.den ρ).take m) ::
+              (Γ.den ρ).owned.eraseIdx k } := by
+      show ({ Γ.den ρ with
+        owned := ((q.den ρ, B.den ρ) :: (b.den ρ, A.den ρ) ::
+          (denOwned ρ (Γ.owned.eraseIdx k) _)) } : Ctx) = _
+      rw [denOwned_eraseIdx ρ _ _ _ hlt, hq, hA, hB]; rfl
+    rw [e] at hb
+    exact .weaken (fun _ _ hΨ₁ _ _ hw => hw.splitOwned hΨ₁ hk' hm) hb
+  unfold unmapSplit at hu
+  split at hu
+  · split at hu
+    · next nr p len hax hdi hsi =>
+      split at hu
+      · split at hu
+        · next k S ho =>
+          split at hu
+          · next sz hsz =>
+            split at hu
+            · cases hsp : S.split (pagesOf len) with
+              | none => rw [hsp] at hu; cases hu
+              | some AB =>
+                obtain ⟨A, B⟩ := AB
+                rw [hsp] at hu; cases hu
+                obtain ⟨i', hk, hi⟩ := ownedAt_spec _ 0 ho
+                have hki : k = i' := by omega
+                subst hki
+                exact key hi hsp (Val.den_plusLit ρ p _) h
+            · cases hu
+          · cases hu
+        · split at hu
+          · next k b S j hf =>
+            split at hu
+            · next jj hj =>
+              split at hu
+              · cases hsp : S.split jj with
+                | none => rw [hsp] at hu; cases hu
+                | some AB =>
+                  obtain ⟨A, B⟩ := AB
+                  rw [hsp] at hu; cases hu
+                  obtain ⟨i', hk, hi, hp⟩ := findOwned_spec ρ p Γ.owned 0 hf
+                  have hki : k = i' := by omega
+                  subst hki
+                  rw [Num.lit?_den hj] at hp
+                  exact key hi hsp hp h
+              · cases hu
+            · cases hu
+          · cases hu
+      · cases hu
+    · cases hu
+  · cases hu
+
 /-- `munmap` of a block the context owns: its address exactly in `rdi`, and
 in `rsi` a length written out that covers exactly the block. The context
 no longer owns it. -/
@@ -6517,6 +6681,9 @@ def walk (P : Prog) :
       match reorderAt P a Γ (transfers i) with
       | some Γ' => walk P code fuel k a Γ'
       | none =>
+      match (if transfers i then unmapSplit Γ i else none) with
+      | some Γ' => walk P code fuel k a Γ'
+      | none =>
       match endAt P k a len Γ i with
       | some W => W
       | none =>
@@ -6607,6 +6774,11 @@ theorem walk_sound {Φ : CodeTy} {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {P
         split at hc
         · exact reorder_sound hc (walk_sound hsys hw hE hWr code hcode fuel k a Γ' ρ hP h)
         · cases hc
+      next =>
+      split at h
+      · next Γ' hc =>
+        exact unmapSplit_sound (guarded_some hc)
+          (walk_sound hsys hw hE hWr code hcode fuel k a Γ' ρ hP h)
       next =>
       split at h
       · next W hj => exact endAt_sound hP hsys hE hfetch hj h
