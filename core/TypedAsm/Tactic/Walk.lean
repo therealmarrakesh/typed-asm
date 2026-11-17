@@ -1958,9 +1958,6 @@ def solveLeaf (g : MVarId) (Φ : Expr) (lName kName : Name) (params : Array Expr
     (t : Nat) (Δ : Sym.CtxS) (cs : List Sym.CondS) (atoms : Sym.Atoms)
     (parts : List Sym.Part := []) : TacticM Unit :=
     g.withContext do
-  let env ← getEnv
-  let lctx ← getLCtx
-  let kwhnf (e : Expr) : MetaM Expr := ofExceptKernelException (Kernel.whnf env lctx e)
   let goals ← getGoals
   let (pf2, prems) ← labelProof Φ lName kName params t Δ atoms
   let P := mkApp Φ (toExpr (BitVec.ofNat 64 t))
@@ -2110,7 +2107,6 @@ def solveLeave (g : MVarId) (i : Nat) (Δ0 mid hmid : Expr) (Δ : Sym.CtxS)
     g.withContext do
   let env ← getEnv
   let lctx ← getLCtx
-  let kwhnf (e : Expr) : MetaM Expr := ofExceptKernelException (Kernel.whnf env lctx e)
   let goals ← getGoals
   let tyE := atoms.ty.getD i (mkConst ``Ty.int)
   let ΔE ← Sym.denCtx atoms Δ
