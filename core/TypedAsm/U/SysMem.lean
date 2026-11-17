@@ -55,12 +55,13 @@ theorem Havoc.held {Γ : Ctx} {k : Nat} {b : BitVec 64} {S : Held} {o n : Nat}
 /-- **And in a block a value is known to point into**, through a pointer
 that may be written through, at bytes that hold no typed value: the context
 is as it was. -/
-theorem Havoc.shared {Γ : Ctx} {p a : BitVec 64} {Sh : Shape} {off o n : Nat}
-    (hf : (p, Ty.ptr Sh true off) ∈ Γ.known)
+theorem Havoc.shared {Γ : Ctx} {p a : BitVec 64} {τ : Ty} {Sh : Shape} {off o n : Nat}
+    (hf : (p, τ) ∈ Γ.known) (hτ : τ.pointee Ψ.kinds = some (Sh, true, off))
     (ha : a + BitVec.ofNat 64 off = p + BitVec.ofNat 64 o) (hin : o + n ≤ Sh.size)
     (hfree : Sh.free o n = true) : Havoc fetch sys Ψ Γ a n Γ := by
   refine ⟨rfl, rfl, fun j Ψ' he hwf s hw data hlen _ => ?_⟩
-  obtain ⟨base, l, hl, hsh, hlw, hp⟩ := hasTy_ptr.mp (hw.known _ hf)
+  obtain ⟨base, l, hl, hsh, hlw, hp⟩ :=
+    hasTy_pointee hwf (by rw [he.kinds]; exact hτ) (hw.known _ hf)
   subst hsh
   have hab : a = base + BitVec.ofNat 64 o := by bv_omega
   subst hab

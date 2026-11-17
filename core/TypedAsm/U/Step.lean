@@ -151,7 +151,7 @@ theorem readCell_sound {ρ : Env} {Γ : CtxS} {k : Nat} {next : BitVec 64} {cell
         have haddr : eaOf (Γ.den ρ).val next m + BitVec.ofNat 64 off
             = p.den ρ + BitVec.ofNat 64 o := by
           rw [← eaS_den]; exact ha
-        refine (Reads.shared hf haddr (by rw [ShapeS.den_size]; exact hin)).mono ?_
+        refine (Reads.shared hf rfl haddr (by rw [ShapeS.den_size]; exact hin)).mono ?_
         rintro x Γr rfl
         refine ⟨?_, Env.setVal_get_self ρ k x⟩
         have hΓ := CtxS.den_setVal ρ k x Γ hu
@@ -274,7 +274,7 @@ theorem writeCell_sound {ρ : Env} {Γ : CtxS} {next : BitVec 64} {v : Val}
               = p.den ρ + BitVec.ofNat 64 o := by
             rw [← eaS_den]; exact ha
           show Writes fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n (v.den ρ) (Γ.den ρ)
-          exact Writes.shared (v.den ρ) hf haddr (by rw [ShapeS.den_size]; exact hin) hn
+          exact Writes.shared (v.den ρ) hf rfl haddr (by rw [ShapeS.den_size]; exact hin) hn
             (by rw [ShapeS.den_vals]; exact valsOkS_sound ρ Sh.vals hvals)
         · cases h
       · cases h

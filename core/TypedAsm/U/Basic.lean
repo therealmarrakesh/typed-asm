@@ -27,6 +27,33 @@ theorem hasTy_ref {tag : Nat} {writable : Bool} {off : Nat} {v : BitVec 64} :
         v = a + BitVec.ofNat 64 off := by
   simp [HasTy]
 
+/-- The block a value is known to point into, by what is known of it: its
+shape, whether it may be written through the value, and how far in. A
+pointer says the shape; a pointer by kind says the kind, whose shape the
+memory typing has. -/
+def Ty.pointee (kinds : Nat → Option Shape) : Ty → Option (Shape × Bool × Nat)
+  | .ptr Sh w off => some (Sh, w, off)
+  | .ref tag w off => (kinds tag).map fun Sh => (Sh, w, off)
+  | _ => none
+
+/-- **A value known to point into a block does.** A pointer by kind is a
+pointer to a block of the kind's shape. -/
+theorem hasTy_pointee (hwf : Ψ.WF) {τ : Ty} {Sh : Shape} {w : Bool} {off : Nat} {v : BitVec 64}
+    (hτ : τ.pointee Ψ.kinds = some (Sh, w, off)) (h : HasTy fetch sys Ψ n τ v) :
+    ∃ a l, Ψ a = some l ∧ l.shape = Sh ∧ (w = true → l.writable = true) ∧
+      v = a + BitVec.ofNat 64 off := by
+  cases τ with
+  | ptr Sh' w' off' =>
+    cases hτ
+    exact hasTy_ptr.mp h
+  | ref tag w' off' =>
+    obtain ⟨a, l, hl, htag, hlw, hv⟩ := hasTy_ref.mp h
+    have hk := hwf.kinds a l hl tag htag
+    simp only [Ty.pointee, hk, Option.map_some, Option.some.injEq, Prod.mk.injEq] at hτ
+    obtain ⟨rfl, rfl, rfl⟩ := hτ
+    exact ⟨a, l, hl, rfl, hlw, hv⟩
+  | _ => cases hτ
+
 theorem hasTy_nullable {τ : Ty} {v : BitVec 64} :
     HasTy fetch sys Ψ n (.nullable τ) v ↔ v = 0 ∨ HasTy fetch sys Ψ n τ v := by
   rw [HasTy]

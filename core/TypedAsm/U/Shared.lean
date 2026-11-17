@@ -166,13 +166,14 @@ def readFacts (Sh : Shape) (o n : Nat) (x : BitVec 64) : List Fact :=
 /-- **A context provides the bytes of a block a value is known to point
 into, to be read**: what is read is known to be of the type the block gives
 those bytes. -/
-theorem Reads.shared {Γ : Ctx} {p a : BitVec 64} {Sh : Shape} {w : Bool} {off o n : Nat}
-    (hf : (p, Ty.ptr Sh w off) ∈ Γ.known)
+theorem Reads.shared {Γ : Ctx} {p a : BitVec 64} {τ : Ty} {Sh : Shape} {w : Bool} {off o n : Nat}
+    (hf : (p, τ) ∈ Γ.known) (hτ : τ.pointee Ψ.kinds = some (Sh, w, off))
     (ha : a + BitVec.ofNat 64 off = p + BitVec.ofNat 64 o) (hin : o + n ≤ Sh.size) :
     Reads fetch sys Ψ Γ a n
       (fun x Γr => Γr = { Γ with known := readFacts Sh o n x ++ Γ.known }) := by
   intro j Ψ' he hwf s hw
-  obtain ⟨base, l, hl, hsh, hlw, hp⟩ := hasTy_ptr.mp (hw.known _ hf)
+  obtain ⟨base, l, hl, hsh, hlw, hp⟩ :=
+    hasTy_pointee hwf (by rw [he.kinds]; exact hτ) (hw.known _ hf)
   subst hsh
   have hab : a = base + BitVec.ofNat 64 o := by bv_omega
   subst hab
@@ -195,15 +196,17 @@ typed value of the block either keeps clear of the bytes or is the eight
 bytes written, with a value that is of its type whenever what the context
 knows is so. The context is as it was: the block still holds what its type
 says. -/
-theorem Writes.shared {Γ : Ctx} {p a : BitVec 64} {Sh : Shape} {off o n : Nat} (v : BitVec 64)
-    (hf : (p, Ty.ptr Sh true off) ∈ Γ.known)
+theorem Writes.shared {Γ : Ctx} {p a : BitVec 64} {τ : Ty} {Sh : Shape} {off o n : Nat}
+    (v : BitVec 64)
+    (hf : (p, τ) ∈ Γ.known) (hτ : τ.pointee Ψ.kinds = some (Sh, true, off))
     (ha : a + BitVec.ofNat 64 off = p + BitVec.ofNat 64 o) (hin : o + n ≤ Sh.size) (hn : n ≤ 8)
     (hv : ∀ q ∈ Sh.vals, (q.1 + 8 ≤ o ∨ o + n ≤ q.1) ∨
       (n = 8 ∧ q.1 = o ∧ ∀ (Ψ' : MemTy) (k : Nat),
         (∀ g ∈ Γ.known, HasTy fetch sys Ψ' k g.2 g.1) → HasTy fetch sys Ψ' k q.2 v)) :
     Writes fetch sys Ψ Γ a n v Γ := by
   refine ⟨rfl, rfl, fun j Ψ' he hwf s hw => ?_⟩
-  obtain ⟨base, l, hl, hsh, hlw, hp⟩ := hasTy_ptr.mp (hw.known _ hf)
+  obtain ⟨base, l, hl, hsh, hlw, hp⟩ :=
+    hasTy_pointee hwf (by rw [he.kinds]; exact hτ) (hw.known _ hf)
   subst hsh
   have hab : a = base + BitVec.ofNat 64 o := by bv_omega
   subst hab
