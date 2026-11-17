@@ -1,5 +1,4 @@
-import TypedAsm.U.Fresh
-import TypedAsm.U.Held
+import TypedAsm.U.FindFact
 
 /-!
 # The checker's step
@@ -73,29 +72,37 @@ theorem CtxS.held_den (ρ : Env) (Γ : CtxS) {j : Nat} {b : Val} {S : HeldS}
   rw [List.getElem?_map, h]
   rfl
 
-/-- The term for the bytes an instruction reads: nothing where it reads
-none; the value the region holds there, where it holds one at those eight
-bytes; and otherwise the name `k`, for a value the context does not say. -/
-def readCell (Γ : CtxS) (k : Nat) (next : BitVec 64) : Option (Mem × Nat) → Option Val
-  | none => some (.lit 0)
+/-- The term for the bytes an instruction reads, and what reading them
+tells. Nothing where it reads none. In a region the context holds: the value
+held there, where one is held at those eight bytes, and otherwise the name
+`k`, for a value the context does not say. In a block a value is known to
+point into: the name `k`, of which is then known what the block's shape
+says is at those bytes. -/
+def readCell (Γ : CtxS) (k : Nat) (next : BitVec 64) :
+    Option (Mem × Nat) → Option (Val × List (Val × TyS))
+  | none => some (.lit 0, [])
   | some (m, n) =>
     match findHeld (eaS Γ.regs next m) n Γ.held 0 with
     | some (_, _, S, o) =>
       if n = 8 then
         match S.slotAt o with
-        | some v => some v
-        | none => some (.var k)
-      else some (.var k)
-    | none => none
+        | some v => some (v, [])
+        | none => some (.var k, [])
+      else some (.var k, [])
+    | none =>
+      match findFact (eaS Γ.regs next m) n Γ.known with
+      | some (_, Sh, _, _, o) => some (.var k, readFactsS Sh o n (.var k))
+      | none => none
 
 theorem readCell_sound {ρ : Env} {Γ : CtxS} {k : Nat} {next : BitVec 64} {cell : Val}
-    (hu : Γ.under k = true) :
-    (rd : Option (Mem × Nat)) → readCell Γ k next rd = some cell →
+    {extra : List (Val × TyS)} (hu : Γ.under k = true) :
+    (rd : Option (Mem × Nat)) → readCell Γ k next rd = some (cell, extra) →
     match rd with
     | some (m, n) => Reads fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n
-        (fun x Γr => Γr = Γ.den ρ ∧ cell.den (ρ.setVal k x) = x)
-    | none => cell.den (ρ.setVal k 0) = 0
-  | none, h => by cases h; rfl
+        (fun x Γr => Γr = CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known } ∧
+          cell.den (ρ.setVal k x) = x)
+    | none => extra = [] ∧ cell.den (ρ.setVal k 0) = 0
+  | none, h => by cases h; exact ⟨rfl, rfl⟩
   | some (m, n), h => by
     simp only [readCell] at h
     split at h
@@ -107,25 +114,51 @@ theorem readCell_sound {ρ : Env} {Γ : CtxS} {k : Nat} {next : BitVec 64} {cell
       rw [haddr]
       refine (Reads.held (CtxS.held_den ρ Γ hl) hin).mono ?_
       rintro x Γr ⟨rfl, hslot⟩
-      refine ⟨rfl, ?_⟩
+      -- nothing is learnt, and the context is as it was
+      have key : ∀ c : Val, c.den (ρ.setVal k x) = x → (some (c, ([] : List (Val × TyS))) = some (cell, extra)) →
+          Γ.den ρ = CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known } ∧
+            cell.den (ρ.setVal k x) = x := by
+        intro c hc he
+        cases he
+        exact ⟨(CtxS.den_setVal ρ k x Γ hu).symm, hc⟩
       split at h
       · next h8 =>
         split at h
         · next v hv =>
-          cases h
           have hm := HeldS.slotAt_mem hv
-          have hx := hslot h8 (cell.den ρ) (by
-            show (o, cell.den ρ) ∈ S.slots.map _
-            exact List.mem_map.mpr ⟨(o, cell), hm, rfl⟩)
+          have hx := hslot h8 (v.den ρ) (by
+            show (o, v.den ρ) ∈ S.slots.map _
+            exact List.mem_map.mpr ⟨(o, v), hm, rfl⟩)
           -- the slot's term mentions no name from `k` on
-          have hcu : cell.under k = true := by
+          have hcu : v.under k = true := by
             simp only [CtxS.under, Bool.and_eq_true, List.all_eq_true] at hu
-            exact (hu.1.2 (b, S) (List.mem_of_getElem? hl)).2 (o, cell) hm
-          rw [Val.den_setVal ρ k x _ hcu]
-          exact hx.symm
-        · cases h; exact Env.setVal_get_self ρ k x
-      · cases h; exact Env.setVal_get_self ρ k x
-    · cases h
+            exact (hu.1.2 (b, S) (List.mem_of_getElem? hl)).2 (o, v) hm
+          exact key v (by rw [Val.den_setVal ρ k x _ hcu]; exact hx.symm) h
+        · exact key (.var k) (Env.setVal_get_self ρ k x) h
+      · exact key (.var k) (Env.setVal_get_self ρ k x) h
+    · split at h
+      · next p Sh w off o hfind =>
+        cases h
+        obtain ⟨hmem, hin, ha⟩ := findFact_spec (ρ := ρ) Γ.known hfind
+        have hf : (p.den ρ, Ty.ptr (Sh.den ρ) w off) ∈ (Γ.den ρ).known :=
+          List.mem_map.mpr ⟨(p, .ptr Sh w off), hmem, rfl⟩
+        have haddr : eaOf (Γ.den ρ).val next m + BitVec.ofNat 64 off
+            = p.den ρ + BitVec.ofNat 64 o := by
+          rw [← eaS_den]; exact ha
+        refine (Reads.shared hf haddr (by rw [ShapeS.den_size]; exact hin)).mono ?_
+        rintro x Γr rfl
+        refine ⟨?_, Env.setVal_get_self ρ k x⟩
+        have hΓ := CtxS.den_setVal ρ k x Γ hu
+        refine ctx_ext (congrArg CtxOf.val hΓ).symm (congrArg CtxOf.flags hΓ).symm
+          (congrArg CtxOf.held hΓ).symm ?_
+        show readFacts (Sh.den ρ) o n x ++ (Γ.den ρ).known
+          = (readFactsS Sh o n (.var k) ++ Γ.known).map _
+        rw [List.map_append, readFactsS_den, ShapeS.den_setVal]
+        congr 1
+        · show _ = readFacts (Sh.den ρ) o n ((Val.var k).den (ρ.setVal k x))
+          rw [show (Val.var k).den (ρ.setVal k x) = x from Env.setVal_get_self ρ k x]
+        · exact (congrArg CtxOf.known hΓ).symm
+      · cases h
 
 /-- What the context holds once an instruction has written its bytes: the
 region they are in holds the value written there. -/
@@ -209,24 +242,25 @@ theorem target_den (ρ : Env) (Γ : CtxS) (next : BitVec 64) {i : Instr} {d : De
   rw [args_den ρ Γ d.srcs (desc_srcs_le hd), eaTerm_den]
   rfl
 
-/-- **The checker's step for any instruction whose memory, if it touches
-any, is memory the context holds.** The bytes it reads are found, and are
-the value held there or a value given the name `k`; each register it writes
-holds the term for what the instruction gives it, made as simple as it can
-be; the bytes it writes are found, and the region holds what was written.
-With the context after, the address control goes to. -/
+/-- **The checker's step, for any described instruction.** The bytes it
+reads are found, in a region the context holds or through a fact about a
+value, and are the value held there or a value given the name `k`; each
+register it writes holds the term for what the instruction gives it, made
+as simple as it can be; the bytes it writes are found, and the region holds
+what was written. With the context after, the address control goes to. -/
 def stepHeld (Γ : CtxS) (k : Nat) (next : BitVec 64) (i : Instr) : Option (CtxS × Val) :=
   match i.desc with
   | some d =>
     match readCell Γ k next d.rd with
-    | some cell =>
+    | some (cell, extra) =>
+      let Γ₁ : CtxS := { Γ with known := extra ++ Γ.known }
       let a := argAt Γ.regs d.srcs 0
       let b := argAt Γ.regs d.srcs 1
       let c := argAt Γ.regs d.srcs 2
       let ea := eaTerm Γ next d.ea
-      match writeCell Γ next (.stored i a b c Γ.flags next ea cell) d.wr with
+      match writeCell Γ₁ next (.stored i a b c Γ.flags next ea cell) d.wr with
       | some held' =>
-        some ({ Γ with
+        some ({ Γ₁ with
                 regs := setOuts (fun j => simpOut i j a b c Γ.flags next ea cell) i.outs 0 Γ.regs
                 flags := .out i a b c Γ.flags next ea cell
                 held := held' },
@@ -249,38 +283,45 @@ theorem stepHeld_sound {ρ : Env} {Γ Γ' : CtxS} {k : Nat} {next : BitVec 64} {
     rw [hd] at h
     simp only at h
     split at h
-    · next cell hrc =>
+    · next cell extra hrc =>
       split at h
       · next held' hwc =>
         cases h
         have hR := readCell_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) (ρ := ρ) hu d.rd hrc
         refine Steps.mono (Steps.desc
-          (R := fun x Γr => Γr = Γ.den ρ ∧ cell.den (ρ.setVal k x) = x)
-          (W := fun x _ Γw => Γw = CtxS.den (ρ.setVal k x) { Γ with held := held' }) hd ?_ ?_ ?_) ?_
+          (R := fun x Γr => Γr = CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known } ∧
+            cell.den (ρ.setVal k x) = x)
+          (W := fun x _ Γw => Γw = CtxS.den (ρ.setVal k x)
+            { Γ with known := extra ++ Γ.known, held := held' }) hd ?_ ?_ ?_) ?_
         · cases hrd : d.rd with
-          | none => rw [hrd] at hR; exact ⟨rfl, hR⟩
+          | none =>
+            rw [hrd] at hR
+            obtain ⟨he, hc⟩ := hR
+            subst he
+            exact ⟨(CtxS.den_setVal ρ k 0 Γ hu).symm, hc⟩
           | some mn => rw [hrd] at hR; exact hR
         · rintro x Γr ⟨rfl, hx⟩
           refine ⟨_, rfl, ?_⟩
           have hΓ : Γ.den (ρ.setVal k x) = Γ.den ρ := CtxS.den_setVal ρ k x Γ hu
+          have hval : (CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known }).val
+              = (Γ.den ρ).val := (congrArg CtxOf.val hΓ : (Γ.den (ρ.setVal k x)).val = _)
           have hW := writeCell_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) (ρ := ρ.setVal k x)
-            d.wr hwc
+            (Γ := { Γ with known := extra ++ Γ.known }) d.wr hwc
           cases hwr : d.wr with
           | none =>
             rw [hwr] at hW
-            show CtxS.den (ρ.setVal k x) { Γ with held := held' } = Γ.den ρ
-            rw [hW, ← hΓ]
+            show CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known, held := held' } = _
+            rw [hW]
           | some mn =>
             obtain ⟨m, n⟩ := mn
             rw [hwr] at hW
-            show Writes fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n _ _
             have hst : (Val.stored i (argAt Γ.regs d.srcs 0) (argAt Γ.regs d.srcs 1)
                 (argAt Γ.regs d.srcs 2) Γ.flags next (eaTerm Γ next d.ea) cell).den (ρ.setVal k x)
                 = (d.run (d.srcs.map (Γ.den ρ).val) (Γ.den ρ).flags next
                   ((d.ea.map (eaOf (Γ.den ρ).val next)).getD 0) x).store := by
               show (effectOf i _ _ next _ (cell.den (ρ.setVal k x))).store = _
               rw [effect_den (ρ.setVal k x) Γ next hd, hΓ, hx]
-            rw [hst, hΓ] at hW
+            rw [hst, hval] at hW
             exact hW
         · intro x Γr _
           exact hg d hd x
