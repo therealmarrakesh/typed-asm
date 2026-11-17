@@ -45,14 +45,14 @@ theorem hasTy_code_iff {n : Nat} {pre : Seq → Ctx} {v : BitVec 64} :
 
 /-- `Steps fetch sys Ψ i next Γ Q`: the instruction `i`, with the instruction
 pointer already at `next` past it, takes every state that matches `Γ` to a
-state at some address `t` that matches some context `Γ'`, with `Q t Γ'`; the
-memory typing having perhaps grown. -/
+state at some address `t` that matches some context `Γ'`, with `Q t Γ'`,
+under the same memory typing: no instruction makes memory held alone into
+memory others may point into. -/
 def Steps (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (i : Instr) (next : BitVec 64) (Γ : Ctx)
     (Q : BitVec 64 → Ctx → Prop) : Prop :=
   ∀ n, ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, s.rip = next →
     WellTyped fetch sys Ψ' n Γ s →
-    ∃ s', exec sys i s = .next s' ∧
-      ∃ Ψ'' : MemTy, Ψ'.Ext Ψ'' ∧ Ψ''.WF ∧ ∃ Γ', Q s'.rip Γ' ∧ WellTyped fetch sys Ψ'' n Γ' s'
+    ∃ s', exec sys i s = .next s' ∧ ∃ Γ', Q s'.rip Γ' ∧ WellTyped fetch sys Ψ' n Γ' s'
 
 /-- Where the instruction pointer is, is no part of what a context says. -/
 theorem WellTyped.setRip {n : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch sys Ψ n Γ s)
@@ -97,7 +97,7 @@ theorem Ok.step {a len : BitVec 64} {i : Instr} {n : Nat} {Γ : Ctx} {Q : BitVec
   cases k with
   | zero => trivial
   | succ k =>
-    obtain ⟨s', hex, Ψ'', he', hwf', Γ', hQ, hw'⟩ :=
+    obtain ⟨s', hex, Γ', hQ, hw'⟩ :=
       hs (k + 1) Ψ' he hwf _ (by show s.rip + len = a + len; rw [hrip]) (hw.setRip (s.rip + len))
     have hstep : TypedAsm.step fetch sys s = .next s' := by
       unfold TypedAsm.step
@@ -107,6 +107,6 @@ theorem Ok.step {a len : BitVec 64} {i : Instr} {n : Nat} {Γ : Ctx} {Q : BitVec
     refine ⟨by rw [hstep]; rfl, fun s'' hs'' => ?_⟩
     rw [hstep] at hs''
     cases hs''
-    exact hrest _ Γ' hQ k (by omega) Ψ'' (he.trans he') hwf' s' rfl hw'
+    exact hrest _ Γ' hQ k (by omega) Ψ' he hwf s' rfl hw'
 
 end TypedAsm.U

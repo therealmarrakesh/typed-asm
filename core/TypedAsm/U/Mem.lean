@@ -230,7 +230,7 @@ theorem Steps.desc {i : Instr} {d : Desc} {next : BitVec 64} {Γ : Ctx}
       · show WellTyped fetch sys Ψ' n Γw (storeN s k (s.ea m) (d.effect s).store)
         rw [hea, heff]; exact hwt
   obtain ⟨hcanW, _, _, hwΓw⟩ := hstore
-  refine ⟨d.after s, exec_desc sys s hd hcanR hcanW hguard, Ψ', MemTy.Ext.refl _, hwf,
+  refine ⟨d.after s, exec_desc sys s hd hcanR hcanW hguard,
     Γw.apply (d.run (d.srcs.map Γ.val) Γ.flags next ((d.ea.map (eaOf Γ.val next)).getD 0)
       (d.cell s)), ⟨d.cell s, Γr, Γw, hR, hW, rfl, ?_⟩, ?_⟩
   · -- where the machine is

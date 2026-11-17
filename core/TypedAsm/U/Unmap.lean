@@ -87,10 +87,10 @@ theorem Steps.unmap {D : SysDesc} (hD : Describes sys D) {Γ : Ctx} {next : BitV
   obtain ⟨t, hst, hun⟩ := hD s .unmap (by rw [hw.val]; exact hk) (hpre n Ψ' he hwf s hrip hw)
   rw [hw.val .rdi, hw.val .rsi, ← hsz] at hun
   rcases hun with ⟨v, hv, rfl⟩ | ⟨hal, hfit, rfl⟩
-  · refine ⟨_, hst, Ψ', MemTy.Ext.refl _, hwf, _, ⟨hrip, .inl ⟨v, hv, rfl⟩⟩, ?_⟩
+  · refine ⟨_, hst, _, ⟨hrip, .inl ⟨v, hv, rfl⟩⟩, ?_⟩
     rw [← hrip]
     exact hw.ret v s.world
-  · refine ⟨_, hst, Ψ', MemTy.Ext.refl _, hwf, _, ⟨hrip, .inr rfl⟩, ?_⟩
+  · refine ⟨_, hst, _, ⟨hrip, .inr rfl⟩, ?_⟩
     have hsz4 : S.size % 4096 = 0 := by rw [hsz]; exact Nat.mul_mod_left _ _
     have hD' := hw.dropHeld hwf hheld (s' := s.unmap (Γ.val .rdi) S.size) rfl rfl rfl
       (fun x hx => by rw [State.perm_unmap s hal hsz4 hfit]; simp only [hx, ↓reduceIte])

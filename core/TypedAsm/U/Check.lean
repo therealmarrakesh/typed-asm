@@ -156,7 +156,7 @@ theorem Steps.mono {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {i : Instr} {nex
     {Γ : Ctx} {Q Q' : BitVec 64 → Ctx → Prop} (h : Steps fetch sys Ψ i next Γ Q)
     (hQ : ∀ t Δ, Q t Δ → Q' t Δ) : Steps fetch sys Ψ i next Γ Q' := by
   intro n Ψ' he hwf s hrip hw
-  obtain ⟨s', hex, Ψ'', he', hwf', Γ', hq, hw'⟩ := h n Ψ' he hwf s hrip hw
-  exact ⟨s', hex, Ψ'', he', hwf', Γ', hQ _ _ hq, hw'⟩
+  obtain ⟨s', hex, Γ', hq, hw'⟩ := h n Ψ' he hwf s hrip hw
+  exact ⟨s', hex, Γ', hQ _ _ hq, hw'⟩
 
 end TypedAsm.U

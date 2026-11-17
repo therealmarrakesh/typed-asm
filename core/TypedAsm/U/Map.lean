@@ -133,10 +133,10 @@ theorem Steps.map {D : SysDesc} (hD : Describes sys D) {Γ : Ctx} {next : BitVec
     (by rw [hw.val]; exact hdi)
   rw [hw.val .rsi] at hmaps
   rcases hmaps with ⟨v, w, hv, rfl⟩ | ⟨a, w, hal, hfit, hun, rfl⟩
-  · refine ⟨_, hst, Ψ', MemTy.Ext.refl _, hwf, Γ.afterSys v next, ⟨hrip, v, .inl ⟨hv, rfl⟩⟩, ?_⟩
+  · refine ⟨_, hst, Γ.afterSys v next, ⟨hrip, v, .inl ⟨hv, rfl⟩⟩, ?_⟩
     rw [← hrip]
     exact hw.ret v w
-  · refine ⟨_, hst, Ψ', MemTy.Ext.refl _, hwf, _, ⟨hrip, a, .inr ⟨hal, hfit, rfl⟩⟩, ?_⟩
+  · refine ⟨_, hst, _, ⟨hrip, a, .inr ⟨hal, hfit, rfl⟩⟩, ?_⟩
     have hT : addrTop = 0x7ffffffff000 := rfl
     have h4 : pages (Γ.val .rsi) % 4096 = 0 := Nat.mul_mod_left _ _
     have hH := hw.mapZero_held hwf hal h4 hfit (by omega) hun

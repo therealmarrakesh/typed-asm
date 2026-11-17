@@ -121,7 +121,7 @@ theorem Steps.world {D : SysDesc} (hD : Describes sys D) {Γ : Ctx} {next : BitV
     Steps fetch sys Ψ .syscall next Γ fun t Γ' => t = next ∧ ∃ v, Γ' = Γ.afterSys v next := by
   intro n Ψ' he hwf s hrip hw
   obtain ⟨t, hst, v, w, rfl⟩ := hD s .world (by rw [hw.val]; exact hk) (hpre n Ψ' he hwf s hrip hw)
-  refine ⟨_, hst, Ψ', MemTy.Ext.refl _, hwf, Γ.afterSys v next, ⟨hrip, v, rfl⟩, ?_⟩
+  refine ⟨_, hst, Γ.afterSys v next, ⟨hrip, v, rfl⟩, ?_⟩
   rw [← hrip]
   exact hw.ret v w
 
@@ -152,10 +152,10 @@ theorem Steps.fills {D : SysDesc} (hD : Describes sys D) {Γ Γh : Ctx} {next : 
     | inl r => show (s.getReg r).toNat = (Γ.val r).toNat; rw [hw.val]
     | inr k => rfl
   rcases hfills with ⟨v, w, rfl⟩ | ⟨data, v, w, hlen, hcw, rfl⟩
-  · refine ⟨_, hst, Ψ', MemTy.Ext.refl _, hwf, Γ.afterSys v next, ⟨hrip, v, .inl rfl⟩, ?_⟩
+  · refine ⟨_, hst, Γ.afterSys v next, ⟨hrip, v, .inl rfl⟩, ?_⟩
     rw [← hrip]
     exact hw.ret v w
-  · refine ⟨_, hst, Ψ', MemTy.Ext.refl _, hwf, Γh.afterSys v next, ⟨hrip, v, .inr rfl⟩, ?_⟩
+  · refine ⟨_, hst, Γh.afterSys v next, ⟨hrip, v, .inr rfl⟩, ?_⟩
     rw [hroom] at hlen
     have hb : s.getReg b = Γ.val b := hw.val b
     rw [hb] at hcw
