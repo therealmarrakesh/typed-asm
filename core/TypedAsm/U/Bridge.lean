@@ -1,4 +1,5 @@
 import TypedAsm.U.Table
+import TypedAsm.U.Norm
 
 /-!
 # The table agrees with the machine
@@ -27,12 +28,9 @@ theorem Desc.ext' {d e : Desc} (h1 : d.srcs = e.srcs) (h2 : d.ea = e.ea) (h3 : d
   subst hg hu ho
   rfl
 
-theorem wide_low' (w : Width) (r : BitVec w.bits) : (wide r).setWidth w.bits = r := by
-  cases w <;> simp [wide, Width.bits]
-
 /-- A number written in an instruction is, at its width, itself. -/
 theorem immV_low (ρ : Env) (w : Width) (imm : BitVec 32) :
-    ((immV w imm).den ρ).setWidth w.bits = imm.signExtend w.bits := wide_low' w _
+    ((immV w imm).den ρ).setWidth w.bits = imm.signExtend w.bits := wide_low w _
 
 /-- A count written in an instruction is itself. -/
 theorem countV_imm (ρ : Env) (k : BitVec 8) (j : Nat) :
@@ -41,14 +39,6 @@ theorem countV_imm (ρ : Env) (k : BitVec 8) (j : Nat) :
   have := k.isLt
   rw [BitVec.toNat_ofNat]
   omega
-
-/-- What a shift or rotation gives does not turn on the flags before it. -/
-theorem shift_fst {n : Nat} (op : ShiftOp) (f : Flags) (a : BitVec n) (c : Nat) :
-    (op.eval f a c).1 = (op.eval Flags.unknown a c).1 := by
-  unfold ShiftOp.eval
-  split
-  · rfl
-  · cases op <;> rfl
 
 /-- One form agrees: outright, or once the row is unfolded and a number
 written in the instruction, re-read at its width, is itself. -/
@@ -160,5 +150,30 @@ theorem sem_desc (i : Instr) : i.sem.map Sem.toDesc = i.desc := by
   | nop => bridge
   | ud2 => rfl
   | syscall => rfl
+
+set_option maxRecDepth 4000 in
+/-- **Every instruction's terms speak only of what it computes with.** -/
+theorem sem_slotOnly {i : Instr} {s : Sem} (h : i.sem = some s) : s.slotOnly = true := by
+  cases i with
+  | alu op w ops =>
+    cases op <;> rcases ops with ⟨dst | m, src⟩ | ⟨dst, m⟩ | ⟨dst | m, imm⟩ <;> cases h <;> rfl
+  | test w dst src => cases dst <;> cases src <;> cases h <;> rfl
+  | unary op w dst => cases op <;> cases dst <;> cases h <;> rfl
+  | shift op w dst c => cases dst <;> cases c <;> cases h <;> rfl
+  | mulDiv op w src => cases src <;> cases h <;> rfl
+  | imul2 w dst src => cases src <;> cases h <;> rfl
+  | imul3 w dst src imm => cases src <;> cases h <;> rfl
+  | popcnt w dst src => cases src <;> cases h <;> rfl
+  | mov w ops => rcases ops with ⟨dst | m, src⟩ | ⟨dst, m⟩ | ⟨dst | m, imm⟩ <;> cases h <;> rfl
+  | movzx w dst sw src => cases src <;> cases h <;> rfl
+  | movsx w dst sw src => cases src <;> cases h <;> rfl
+  | movsxd dst src => cases src <;> cases h <;> rfl
+  | cmov c w dst src => cases src <;> cases h <;> rfl
+  | setcc c dst => cases dst <;> cases h <;> rfl
+  | jmp t => rcases t with rel | (r | m) <;> cases h <;> rfl
+  | call t => rcases t with rel | (r | m) <;> cases h <;> rfl
+  | ud2 => cases h
+  | syscall => cases h
+  | _ => cases h; rfl
 
 end TypedAsm.U

@@ -42,6 +42,14 @@ structure Sem where
   /-- Where it sends control, if not to the instruction after it. -/
   goes : Option Val := none
 
+/-- Whether an instruction's terms speak only of what it computes with. -/
+def Sem.slotOnly (s : Sem) : Bool :=
+  s.ga.slotOnly && s.gb.slotOnly && s.gc.slotOnly && s.outs.all (fun p => p.2.slotOnly) &&
+    s.flags.slotOnly && s.store.slotOnly &&
+    (match s.goes with
+     | some t => t.slotOnly
+     | none => true)
+
 /-- The setting in which an instruction's terms stand for given inputs. -/
 def slotEnv (vals : List (BitVec 64)) (fl : Flags) (next ea cell : BitVec 64) : Env where
   slot

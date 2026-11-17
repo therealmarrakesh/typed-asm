@@ -99,4 +99,73 @@ theorem FlagsT.den_fill (ρ : Env) (σ : Filling) :
 
 end
 
+/-! ## Terms of an instruction's description only -/
+
+mutual
+
+/-- Whether a term speaks only of what an instruction computes with: of no
+name, and of no family's value. An instruction's description is such. -/
+def Val.slotOnly : Val → Bool
+  | .lit _ => true
+  | .slot _ => true
+  | .un _ a => a.slotOnly
+  | .bin _ a b => a.slotOnly && b.slotOnly
+  | .tri _ a b c => a.slotOnly && b.slotOnly && c.slotOnly
+  | .fop _ fl a b => fl.slotOnly && a.slotOnly && b.slotOnly
+  | _ => false
+
+def FlagsT.slotOnly : FlagsT → Bool
+  | .lit _ => true
+  | .old => true
+  | .src _ fl a b c => fl.slotOnly && a.slotOnly && b.slotOnly && c.slotOnly
+  | _ => false
+
+end
+
+mutual
+
+/-- Such a term stands for the same in any two settings in which the things
+an instruction computes with are the same. -/
+theorem Val.den_slots {ρ₁ ρ₂ : Env} (hs : ρ₁.slot = ρ₂.slot) (ho : ρ₁.old = ρ₂.old) :
+    (a : Val) → a.slotOnly = true → a.den ρ₁ = a.den ρ₂
+  | .lit _, _ => rfl
+  | .slot s, _ => by
+    show ρ₁.slot s = ρ₂.slot s
+    rw [hs]
+  | .un o a, h => by
+    simp only [Val.slotOnly] at h
+    simp only [Val.den, Val.den_slots hs ho a h]
+  | .bin o a b, h => by
+    simp only [Val.slotOnly, Bool.and_eq_true] at h
+    simp only [Val.den, Val.den_slots hs ho a h.1, Val.den_slots hs ho b h.2]
+  | .tri o a b c, h => by
+    simp only [Val.slotOnly, Bool.and_eq_true] at h
+    simp only [Val.den, Val.den_slots hs ho a h.1.1, Val.den_slots hs ho b h.1.2,
+      Val.den_slots hs ho c h.2]
+  | .fop o fl a b, h => by
+    simp only [Val.slotOnly, Bool.and_eq_true] at h
+    simp only [Val.den, FlagsT.den_slots hs ho fl h.1.1, Val.den_slots hs ho a h.1.2,
+      Val.den_slots hs ho b h.2]
+  | .var _, h => nomatch h
+  | .bvar _ _, h => nomatch h
+  | .add _ _, h => nomatch h
+  | .shl _ _, h => nomatch h
+  | .out .., h => nomatch h
+  | .stored .., h => nomatch h
+  | .goes .., h => nomatch h
+
+theorem FlagsT.den_slots {ρ₁ ρ₂ : Env} (hs : ρ₁.slot = ρ₂.slot) (ho : ρ₁.old = ρ₂.old) :
+    (f : FlagsT) → f.slotOnly = true → f.den ρ₁ = f.den ρ₂
+  | .lit _, _ => rfl
+  | .old, _ => ho
+  | .src o fl a b c, h => by
+    simp only [FlagsT.slotOnly, Bool.and_eq_true] at h
+    simp only [FlagsT.den, FlagsT.den_slots hs ho fl h.1.1.1, Val.den_slots hs ho a h.1.1.2,
+      Val.den_slots hs ho b h.1.2, Val.den_slots hs ho c h.2]
+  | .var _, h => nomatch h
+  | .bvar _, h => nomatch h
+  | .out .., h => nomatch h
+
+end
+
 end TypedAsm.U

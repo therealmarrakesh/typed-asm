@@ -1,6 +1,7 @@
 import TypedAsm.U.FindFact
 import TypedAsm.U.FlagsS
 import TypedAsm.U.RegardS
+import TypedAsm.U.Bridge
 
 /-!
 # The checker's step
@@ -288,94 +289,98 @@ theorem eaTerm_den (ρ : Env) (Γ : CtxS) (next : BitVec 64) (ea : Option Mem) :
   | none => rfl
   | some m => exact eaS_den ρ Γ next m
 
-/-- What an instruction leaves, on the terms a context gives it, is what its
-description computes from what the context says. -/
-theorem effect_den (ρ : Env) (Γ : CtxS) (next : BitVec 64) {i : Instr} {d : Desc}
-    (hd : i.desc = some d) (cell : BitVec 64) :
-    effectOf i [(argAt Γ.regs d.srcs 0).den ρ, (argAt Γ.regs d.srcs 1).den ρ,
-        (argAt Γ.regs d.srcs 2).den ρ] (Γ.flags.den ρ) next ((eaTerm Γ next d.ea).den ρ) cell
-      = d.run (d.srcs.map (Γ.den ρ).val) (Γ.den ρ).flags next
-        ((d.ea.map (eaOf (Γ.den ρ).val next)).getD 0) cell := by
-  unfold effectOf
-  rw [hd]
-  simp only
-  rw [args_den ρ Γ d.srcs (desc_srcs_le hd), eaTerm_den]
-  rfl
+/-- The term for the `j`th register an instruction uses stands for that
+register's value. -/
+theorem argAt_den (ρ : Env) (Γ : CtxS) (srcs : List Reg) (j : Nat) :
+    (argAt Γ.regs srcs j).den ρ = (srcs.map (Γ.den ρ).val).getD j 0 := by
+  unfold argAt
+  rw [List.getD_eq_getElem?_getD, List.getElem?_map]
+  cases srcs[j]? <;> rfl
 
-theorem target_den (ρ : Env) (Γ : CtxS) (next : BitVec 64) {i : Instr} {d : Desc}
-    (hd : i.desc = some d) (cell : BitVec 64) :
-    targetOf i [(argAt Γ.regs d.srcs 0).den ρ, (argAt Γ.regs d.srcs 1).den ρ,
-        (argAt Γ.regs d.srcs 2).den ρ] (Γ.flags.den ρ) next ((eaTerm Γ next d.ea).den ρ) cell
-      = (d.goes (d.srcs.map (Γ.den ρ).val) (Γ.den ρ).flags next
-        ((d.ea.map (eaOf (Γ.den ρ).val next)).getD 0) cell).getD next := by
-  unfold targetOf
-  rw [hd]
-  simp only
-  rw [args_den ρ Γ d.srcs (desc_srcs_le hd), eaTerm_den]
-  rfl
+/-- What an instruction computes with, as the context's terms. -/
+def fillOf (Γ : CtxS) (srcs : List Reg) (next : BitVec 64) (ea cell : Val) : Filling where
+  slot
+    | .arg j => argAt Γ.regs srcs j
+    | .cell => cell
+    | .ea => ea
+    | .next => .lit next
+  old := Γ.flags
 
-/-- An instruction with a single-cell description goes on to the next. -/
-theorem targetOf_next {i : Instr} {d₁ : Desc1} (h : i.desc1 = some d₁) (vals : List (BitVec 64))
-    (fl : Flags) (next ea cell : BitVec 64) : targetOf i vals fl next ea cell = next := by
-  unfold targetOf
-  rw [desc_of_desc1 h]
-  rfl
+/-- **An instruction's terms, filled in with the context's, stand for what
+its description computes from what the context says.** -/
+theorem fill_den {ρ ρ' : Env} {Γ : CtxS} (s : Sem) (next : BitVec 64) {cell : Val} {x : BitVec 64}
+    (hΓ : Γ.den ρ' = Γ.den ρ) (hx : cell.den ρ' = x) :
+    (∀ t : Val, t.slotOnly = true →
+      (t.fillN (fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell)).den ρ'
+        = t.den (slotEnv (s.srcs.map (Γ.den ρ).val) (Γ.den ρ).flags next
+            ((s.ea.map (eaOf (Γ.den ρ).val next)).getD 0) x)) ∧
+    (∀ f : FlagsT, f.slotOnly = true →
+      (f.fill (fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell)).den ρ'
+        = f.den (slotEnv (s.srcs.map (Γ.den ρ).val) (Γ.den ρ).flags next
+            ((s.ea.map (eaOf (Γ.den ρ).val next)).getD 0) x)) := by
+  have hs : (ρ'.filled (fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell)).slot
+      = (slotEnv (s.srcs.map (Γ.den ρ).val) (Γ.den ρ).flags next
+          ((s.ea.map (eaOf (Γ.den ρ).val next)).getD 0) x).slot := by
+    funext sl
+    cases sl with
+    | arg j =>
+      show (argAt Γ.regs s.srcs j).den ρ' = (s.srcs.map (Γ.den ρ).val).getD j 0
+      rw [← hΓ]
+      exact argAt_den ρ' Γ s.srcs j
+    | cell => exact hx
+    | ea =>
+      show (eaTerm Γ next s.ea).den ρ' = _
+      rw [eaTerm_den, hΓ]
+      rfl
+    | next => rfl
+  have ho : (ρ'.filled (fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell)).old
+      = (slotEnv (s.srcs.map (Γ.den ρ).val) (Γ.den ρ).flags next
+          ((s.ea.map (eaOf (Γ.den ρ).val next)).getD 0) x).old :=
+    congrArg CtxOf.flags hΓ
+  exact ⟨fun t ht => (Val.den_fillN ρ' _ t).trans (Val.den_slots hs ho t ht),
+    fun f hf => (FlagsT.den_fill ρ' _ f).trans (FlagsT.den_slots hs ho f hf)⟩
 
-/-- **Where control goes, as plainly as it can be said**: the next
-instruction, for one that goes on; the address jumped to or called, where
-the instruction names it; and otherwise the term for where the instruction
-sends it. -/
-def targetS (i : Instr) (next : BitVec 64) (a b cell t : Val) : Val :=
-  match i.desc1 with
-  | some _ => .lit next
-  | none =>
-    match i with
-    | .jmp (.rel d) => .lit (next + d.signExtend 64)
-    | .call (.rel d) => .lit (next + d.signExtend 64)
-    | .jmp (.ind (.reg _)) => a
-    | .jmp (.ind (.mem _)) => cell
-    | .call (.ind (.reg _)) => b
-    | .call (.ind (.mem _)) => cell
-    | .ret => cell
-    | _ => t
+/-- The registers with those an instruction writes given its terms, filled
+in; the later winning. -/
+def setRegs (σ : Filling) : List (Reg × Val) → Regs Val → Regs Val
+  | [], m => m
+  | p :: l, m => setRegs σ l (m.set p.1 (p.2.fillN σ))
 
-theorem targetS_den (ρ : Env) (i : Instr) (a b c : Val) (fl : FlagsT) (next : BitVec 64)
-    (ea cell : Val) :
-    (targetS i next a b cell (.goes i a b c fl next ea cell)).den ρ
-      = (Val.goes i a b c fl next ea cell).den ρ := by
-  unfold targetS
-  cases h : i.desc1 with
-  | some d₁ => exact (targetOf_next h _ _ _ _ _).symm
-  | none =>
-    cases i with
-    | jmp t => rcases t with rel | (r | m) <;> rfl
-    | call t => rcases t with rel | (r | m) <;> rfl
-    | ret => rfl
-    | _ => rfl
+theorem setRegs_den (ρ : Env) (σ : Filling) :
+    (l : List (Reg × Val)) → (m : Regs Val) → (f : Reg → BitVec 64) →
+    (∀ r, (m.get r).den ρ = f r) →
+    ∀ r, ((setRegs σ l m).get r).den ρ
+      = (l.map fun p => (p.1, (p.2.fillN σ).den ρ)).foldl
+          (fun f p => fun r => if r = p.1 then p.2 else f r) f r
+  | [], _, _, hm, r => hm r
+  | p :: l, m, f, hm, r => by
+    refine setRegs_den ρ σ l (m.set p.1 (p.2.fillN σ)) _ (fun r' => ?_) r
+    show ((m.set p.1 (p.2.fillN σ)).get r').den ρ
+      = if r' = p.1 then (p.2.fillN σ).den ρ else f r'
+    rw [Regs.get_set]
+    split
+    · rfl
+    · exact hm r'
 
-/-- **The checker's step, for any described instruction.** The bytes it
-reads are found, in a region the context holds or through a fact about a
-value, and are the value held there or a value given the name `k`; each
-register it writes holds the term for what the instruction gives it, made
-as simple as it can be; the bytes it writes are found, and the region holds
-what was written. With the context after, the address control goes to. -/
+/-- **The checker's step.** The context after an instruction, and the term
+for where control goes. `k` is a name no term yet mentions, for what is
+read where the context does not say. -/
 def stepHeld (Γ : CtxS) (k : Nat) (next : BitVec 64) (i : Instr) : Option (CtxS × Val) :=
-  match i.desc with
-  | some d =>
-    match readCell Γ k next d.rd with
+  match i.sem with
+  | some s =>
+    match readCell Γ k next s.rd with
     | some (cell, extra) =>
       let Γ₁ : CtxS := { Γ with known := extra ++ Γ.known }
-      let a := argAt Γ.regs d.srcs 0
-      let b := argAt Γ.regs d.srcs 1
-      let c := argAt Γ.regs d.srcs 2
-      let ea := eaTerm Γ next d.ea
-      match writeCell Γ₁ next (simpStored i a b c Γ.flags next ea cell) d.wr with
+      let σ := fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell
+      match writeCell Γ₁ next (s.store.fillN σ) s.wr with
       | some held' =>
         some ({ Γ₁ with
-                regs := setOuts (fun j => simpOut i j a b c Γ.flags next ea cell) i.outs 0 Γ.regs
-                flags := flagsOut i a b c Γ.flags next ea cell
+                regs := setRegs σ s.outs Γ.regs
+                flags := s.flags.fill σ
                 held := held' },
-          targetS i next a b cell (.goes i a b c Γ.flags next ea cell))
+          match s.goes with
+          | some t => t.fillN σ
+          | none => .lit next)
       | none => none
     | none => none
   | none => none
@@ -388,23 +393,30 @@ theorem stepHeld_sound {ρ : Env} {Γ Γ' : CtxS} {k : Nat} {next : BitVec 64} {
     Steps fetch sys Ψ i next (Γ.den ρ) fun t' Δ =>
       ∃ x, t' = t.den (ρ.setVal k x) ∧ Δ = Γ'.den (ρ.setVal k x) := by
   unfold stepHeld at h
-  cases hd : i.desc with
-  | none => rw [hd] at h; cases h
-  | some d =>
-    rw [hd] at h
+  cases hsem : i.sem with
+  | none => rw [hsem] at h; cases h
+  | some s =>
+    rw [hsem] at h
     simp only at h
+    have hd : i.desc = some s.toDesc := by rw [← sem_desc, hsem]; rfl
+    have hso := sem_slotOnly hsem
+    simp only [Sem.slotOnly, Bool.and_eq_true] at hso
+    obtain ⟨⟨⟨⟨_, houts⟩, hflags⟩, hstore⟩, hgoes⟩ := hso
     split at h
     · next cell extra hrc =>
       split at h
       · next held' hwc =>
         cases h
-        have hR := readCell_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) (ρ := ρ) hu d.rd hrc
+        have hR := readCell_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) (ρ := ρ) hu s.rd hrc
         refine Steps.mono (Steps.desc
           (R := fun x Γr => Γr = CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known } ∧
             cell.den (ρ.setVal k x) = x)
           (W := fun x _ Γw => Γw = CtxS.den (ρ.setVal k x)
             { Γ with known := extra ++ Γ.known, held := held' }) hd ?_ ?_ ?_) ?_
-        · cases hrd : d.rd with
+        · show match s.rd with
+            | some (m, n) => _
+            | none => _
+          cases hrd : s.rd with
           | none =>
             rw [hrd] at hR
             obtain ⟨he, hc⟩ := hR
@@ -417,8 +429,11 @@ theorem stepHeld_sound {ρ : Env} {Γ Γ' : CtxS} {k : Nat} {next : BitVec 64} {
           have hval : (CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known }).val
               = (Γ.den ρ).val := (congrArg CtxOf.val hΓ : (Γ.den (ρ.setVal k x)).val = _)
           have hW := writeCell_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) (ρ := ρ.setVal k x)
-            (Γ := { Γ with known := extra ++ Γ.known }) d.wr hwc
-          cases hwr : d.wr with
+            (Γ := { Γ with known := extra ++ Γ.known }) s.wr hwc
+          show match s.wr with
+            | some (m, n) => _
+            | none => _
+          cases hwr : s.wr with
           | none =>
             rw [hwr] at hW
             show CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known, held := held' } = _
@@ -426,42 +441,30 @@ theorem stepHeld_sound {ρ : Env} {Γ Γ' : CtxS} {k : Nat} {next : BitVec 64} {
           | some mn =>
             obtain ⟨m, n⟩ := mn
             rw [hwr] at hW
-            have hst : (Val.stored i (argAt Γ.regs d.srcs 0) (argAt Γ.regs d.srcs 1)
-                (argAt Γ.regs d.srcs 2) Γ.flags next (eaTerm Γ next d.ea) cell).den (ρ.setVal k x)
-                = (d.run (d.srcs.map (Γ.den ρ).val) (Γ.den ρ).flags next
-                  ((d.ea.map (eaOf (Γ.den ρ).val next)).getD 0) x).store := by
-              show (effectOf i _ _ next _ (cell.den (ρ.setVal k x))).store = _
-              rw [effect_den (ρ.setVal k x) Γ next hd, hΓ, hx]
-            rw [simpStored_den, hst, hval] at hW
+            rw [(fill_den s next hΓ hx).1 _ hstore, hval] at hW
             exact hW
         · intro x Γr _
-          exact hg d hd x
+          exact hg _ hd x
         · rintro t' Δ ⟨x, Γr, Γw, ⟨rfl, hx⟩, rfl, rfl, rfl⟩
           have hΓ : Γ.den (ρ.setVal k x) = Γ.den ρ := CtxS.den_setVal ρ k x Γ hu
+          have hfill := fill_den s next hΓ hx
           refine ⟨x, ?_, ?_⟩
-          · rw [targetS_den]
-            show _ = targetOf i _ _ next _ (cell.den (ρ.setVal k x))
-            rw [target_den (ρ.setVal k x) Γ next hd, hΓ, hx]
-          · have he := effect_den (ρ.setVal k x) Γ next hd (cell.den (ρ.setVal k x))
-            rw [hΓ, hx] at he
-            have houts := desc_outs hd (d.srcs.map (Γ.den ρ).val) (Γ.den ρ).flags next
-              ((d.ea.map (eaOf (Γ.den ρ).val next)).getD 0) x
-            refine ctx_ext ?_ ?_ rfl rfl
+          · show (Option.map _ s.goes).getD next = _
+            cases hgo : s.goes with
+            | none => rfl
+            | some tg =>
+              rw [hgo] at hgoes
+              exact (hfill.1 tg hgoes).symm
+          · refine ctx_ext ?_ ?_ rfl rfl
             · funext r
-              show List.foldl _ (Γ.den (ρ.setVal k x)).val _ r
-                = ((setOuts _ i.outs 0 Γ.regs).get r).den (ρ.setVal k x)
-              rw [← houts]
-              refine (setOuts_den (ρ.setVal k x) _ _ 0 Γ.regs _ (fun _ => rfl)
-                (fun j hj => ?_) r).symm
-              rw [simpOut_den]
-              show ((effectOf i _ _ next _ (cell.den (ρ.setVal k x))).regs.getD (0 + j)
-                (Reg.rax, 0)).2 = _
-              rw [hx, he, Nat.zero_add, List.getD_eq_getElem?_getD, List.getElem?_eq_getElem hj]
+              show List.foldl _ (Γ.den (ρ.setVal k x)).val (s.outs.map _) r
+                = ((setRegs _ s.outs Γ.regs).get r).den (ρ.setVal k x)
+              rw [setRegs_den (ρ.setVal k x) _ s.outs Γ.regs (Γ.den (ρ.setVal k x)).val
+                (fun _ => rfl) r]
+              refine congrFun (congrArg _ (List.map_congr_left fun p hp => ?_)) r
+              rw [hfill.1 p.2 (List.all_eq_true.mp houts p hp)]
               rfl
-            · refine Eq.trans ?_ (flagsOut_den (ρ.setVal k x) i _ _ _ _ next _ _).symm
-              show _ = (effectOf i _ _ next _ (cell.den (ρ.setVal k x))).flags
-              rw [hx, he]
-              rfl
+            · exact (hfill.2 s.flags hflags).symm
       · cases h
     · cases h
 

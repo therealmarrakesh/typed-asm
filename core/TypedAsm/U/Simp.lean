@@ -1,5 +1,6 @@
 import TypedAsm.U.Check
 import TypedAsm.U.CondRel
+import TypedAsm.U.Norm
 
 /-!
 # Terms made simpler
@@ -17,21 +18,6 @@ it started, which is how the bytes it names are found.
 namespace TypedAsm.U
 
 open TypedAsm
-
-/-- The number a term is, if it is one written out. -/
-def Val.lit? : Val → Option (BitVec 64)
-  | .lit v => some v
-  | _ => none
-
-def FlagsT.lit? : FlagsT → Option Flags
-  | .lit f => some f
-  | _ => none
-
-theorem Val.lit?_den {ρ : Env} {a : Val} {v : BitVec 64} (h : a.lit? = some v) : a.den ρ = v := by
-  cases a <;> first | (cases h; rfl) | cases h
-
-theorem FlagsT.lit?_den {ρ : Env} {a : FlagsT} {f : Flags} (h : a.lit? = some f) : a.den ρ = f := by
-  cases a <;> first | (cases h; rfl) | cases h
 
 /-- **What an instruction gives a register, worked out**, where every input
 is a number written out: one rule for every instruction. -/
@@ -139,17 +125,6 @@ theorem effectOf_call (t : Target) (va vb vc : BitVec 64) (fl : Flags) (next ea 
 
 theorem effectOf_ret (va vb vc : BitVec 64) (fl : Flags) (next ea cell : BitVec 64) :
     ((effectOf .ret [va, vb, vc] fl next ea cell).regs.getD 0 (.rax, 0)).2 = va + 8 := rfl
-
-theorem add_res64 (a b : BitVec 64) : (addCarry a b false).1 = a + b := by
-  apply BitVec.eq_of_toNat_eq
-  have := a.isLt; have := b.isLt
-  simp [addCarry, BitVec.toNat_add, BitVec.toNat_setWidth]
-
-theorem sub_res64 (a b : BitVec 64) : (subBorrow a b false).1 = a - b := by
-  apply BitVec.eq_of_toNat_eq
-  have := a.isLt; have := b.isLt
-  simp [subBorrow, BitVec.toNat_sub, BitVec.toNat_setWidth]
-  omega
 
 theorem effectOf_addRR (d s : Reg) (va vb vc : BitVec 64) (fl : Flags) (next ea cell : BitVec 64) :
     ((effectOf (.alu .add .w64 (.rm_r (.reg d) s)) [va, vb, vc] fl next ea cell).regs.getD 0

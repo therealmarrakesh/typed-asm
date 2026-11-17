@@ -1,5 +1,6 @@
 import TypedAsm.U.Term
 import TypedAsm.U.CondRel
+import TypedAsm.U.Norm
 
 /-!
 # Where an instruction's flags come from
@@ -91,9 +92,6 @@ def FlagKind.Holds {n : Nat} : FlagKind → BitVec n → BitVec n → Flags → 
   | .tst, x, y, F => F = Flags.ofResult (x &&& y) false false
   | .res, x, _, F => F.zf = some (x == 0) ∧ F.sf = some x.msb
   | .zero, x, _, F => F = ⟨some false, some (x == 0), some false, some false⟩
-
-theorem wide_low (w : Width) (r : BitVec w.bits) : (wide r).setWidth w.bits = r := by
-  cases w <;> simp [wide, Width.bits]
 
 /-- A shift by a count that is not nought leaves the zero and sign flags
 those of its result. -/

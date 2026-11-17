@@ -184,4 +184,12 @@ def GuardE.eval : GuardE → Flags → BitVec 64 → BitVec 64 → BitVec 64 →
     | .next _ => true
     | _ => false
 
+/-- What a shift or rotation gives does not turn on the flags before it. -/
+theorem shift_fst {n : Nat} (op : ShiftOp) (f : Flags) (a : BitVec n) (c : Nat) :
+    (op.eval f a c).1 = (op.eval Flags.unknown a c).1 := by
+  unfold ShiftOp.eval
+  split
+  · rfl
+  · cases op <;> rfl
+
 end TypedAsm.U

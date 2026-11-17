@@ -131,4 +131,19 @@ def FlagsT.den (ρ : Env) : FlagsT → Flags
 
 end
 
+/-- The number a term is, if it is one written out. -/
+def Val.lit? : Val → Option (BitVec 64)
+  | .lit v => some v
+  | _ => none
+
+def FlagsT.lit? : FlagsT → Option Flags
+  | .lit f => some f
+  | _ => none
+
+theorem Val.lit?_den {ρ : Env} {a : Val} {v : BitVec 64} (h : a.lit? = some v) : a.den ρ = v := by
+  cases a <;> first | (cases h; rfl) | cases h
+
+theorem FlagsT.lit?_den {ρ : Env} {a : FlagsT} {f : Flags} (h : a.lit? = some f) : a.den ρ = f := by
+  cases a <;> first | (cases h; rfl) | cases h
+
 end TypedAsm.U
