@@ -1,4 +1,4 @@
-import TypedAsm.Types
+import TypedAsm.Shape
 
 /-!
 # Types, on one model of values and one of memory
