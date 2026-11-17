@@ -20,12 +20,12 @@ instance (a : BitVec 64) (n : Nat) (b : BitVec 64) (m : Nat) : Decidable (Disjoi
 
 /-- Whether a list of blocks makes sense as a memory typing with no kinds:
 each of a size a machine word holds and not nought, its typed values within
-it, of no kind, saying its bytes only if it may not be written and saying
+it, saying its bytes only if it may not be written and saying
 all of them; and no two overlapping or at one address. -/
 def blocksWf (blocks : List (BitVec 64 × Layout)) : Bool :=
   (blocks.all fun x =>
     decide (x.2.size < 18446744073709551616) && decide (0 < x.2.size) &&
-      (x.2.shape.vals.all fun p => decide (p.1 + 8 ≤ x.2.shape.size)) && x.2.tag.isNone &&
+      (x.2.shape.vals.all fun p => decide (p.1 + 8 ≤ x.2.shape.size)) &&
       (match x.2.said with
        | some bs => !x.2.writable && decide (bs.length = x.2.size)
        | none => true)) &&
@@ -33,21 +33,21 @@ def blocksWf (blocks : List (BitVec 64 × Layout)) : Bool :=
     decide (x.1 = y.1) || decide (Disjoint x.1 x.2.size y.1 y.2.size))
 
 theorem blocksWf_wf {blocks : List (BitVec 64 × Layout)} {kinds : Nat → Option Shape}
-    (h : blocksWf blocks = true) : (MemTy.ofList blocks kinds).WF := by
+    (h : blocksWf blocks = true)
+    (hk : ∀ x ∈ blocks, ∀ t, x.2.tag = some t → kinds t = some x.2.shape) :
+    (MemTy.ofList blocks kinds).WF := by
   simp only [blocksWf, Bool.and_eq_true, List.all_eq_true, decide_eq_true_eq, Bool.or_eq_true]
     at h
   obtain ⟨h1, h2⟩ := h
   refine ⟨fun a l hl => ?_, fun a b la lb ha hb hab => ?_, fun a l hl => ?_, fun a l hl p hp => ?_,
     fun a l hl tag ht => ?_, fun a l bs hl hs => ?_⟩
-  · exact (h1 _ (MemTy.mem_of_ofList hl)).1.1.1.1
+  · exact (h1 _ (MemTy.mem_of_ofList hl)).1.1.1
   · rcases h2 _ (MemTy.mem_of_ofList ha) _ (MemTy.mem_of_ofList hb) with he | hd
     · exact absurd he hab
     · exact hd
-  · exact (h1 _ (MemTy.mem_of_ofList hl)).1.1.1.2
-  · exact (h1 _ (MemTy.mem_of_ofList hl)).1.1.2 p hp
-  · have := (h1 _ (MemTy.mem_of_ofList hl)).1.2
-    rw [ht] at this
-    cases this
+  · exact (h1 _ (MemTy.mem_of_ofList hl)).1.1.2
+  · exact (h1 _ (MemTy.mem_of_ofList hl)).1.2 p hp
+  · exact hk _ (MemTy.mem_of_ofList hl) tag ht
   · have := (h1 _ (MemTy.mem_of_ofList hl)).2
     rw [hs] at this
     simp only [Bool.and_eq_true, Bool.not_eq_true', decide_eq_true_eq] at this

@@ -19,7 +19,7 @@ namespace Random
 /-! ## What the labels want -/
 
 /-- The blocks the program says its segments are. The buffer: 512 bytes that may be written. -/
-def blocks : List (BitVec 64 × U.Layout) :=
+def blocks : List (BitVec 64 × U.LayoutS) :=
   blocksWith code .start [(Asm.addr code base .buffer, plainBlock 512 true)]
 
 /-- The program for the checker: its instructions; that the buffer is in

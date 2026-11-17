@@ -77,19 +77,20 @@ def inProgram (n : Nat) (pushed : Nat := 0) (regs : List (Reg × Val) := [])
 
 /-- What a program says of something in one of its segments: that its
 address is that of a byte of the segment's block. -/
-def staticIn (blocks : List (BitVec 64 × Layout)) (a : BitVec 64) : List (Val × TyS) :=
+def staticIn (blocks : List (BitVec 64 × LayoutS)) (a : BitVec 64) : List (Val × TyS) :=
   match blocks.find? fun b =>
       decide (b.1 ≤ a) && decide (a.toNat < b.1.toNat + b.2.shape.size) with
   | some b => [(.lit a, .ptr (.mk b.2.shape.size .nil) b.2.writable (a - b.1).toNat)]
   | none => []
 
 /-- A block of plain bytes. -/
-def plainBlock (size : Nat) (writable : Bool) : Layout := ⟨⟨size, []⟩, writable, none, 0, none⟩
+def plainBlock (size : Nat) (writable : Bool) : LayoutS :=
+  { shape := .mk size .nil, writable := writable }
 
 /-- A segment's pages as the blocks said of it, in the order of their
 addresses, and blocks of plain bytes for what lies between and after. -/
-def cutSeg (g : Nat × Perm × List Byte) : Nat → List (BitVec 64 × Layout) →
-    List (BitVec 64 × Layout)
+def cutSeg (g : Nat × Perm × List Byte) : Nat → List (BitVec 64 × LayoutS) →
+    List (BitVec 64 × LayoutS)
   | cur, [] =>
     if cur < g.1 + pageBytes g.2.2.length then
       [(BitVec.ofNat 64 cur, plainBlock (g.1 + pageBytes g.2.2.length - cur) g.2.1.writable)]
@@ -101,7 +102,8 @@ def cutSeg (g : Nat × Perm × List Byte) : Nat → List (BitVec 64 × Layout) �
 
 /-- A block of text that is not written: the bytes given, which are to end
 in one of nought, and are said. -/
-def textBlock (bytes : List Byte) : Layout := ⟨⟨0, []⟩, false, none, bytes.length, some bytes⟩
+def textBlock (bytes : List Byte) : LayoutS :=
+  { shape := .mk 0 .nil, writable := false, text := bytes.length, said := some bytes }
 
 /-- What a program says of text in one of its blocks: that its address is
 that of the text's first byte, with more after it. -/
@@ -112,8 +114,8 @@ variable {L : Type} [DecidableEq L]
 /-- **A program's first blocks, some of them said**: each segment's pages
 cut into the blocks said of it, which are to be given in the order of their
 addresses, with plain bytes between. -/
-def blocksWith (code : List (Asm L)) (l : L) (says : List (BitVec 64 × Layout)) :
-    List (BitVec 64 × Layout) :=
+def blocksWith (code : List (Asm L)) (l : L) (says : List (BitVec 64 × LayoutS)) :
+    List (BitVec 64 × LayoutS) :=
   (Asm.image (Asm.base code) code l).flatMap fun g =>
     cutSeg g g.1 (says.filter fun x =>
       decide (g.1 ≤ x.1.toNat) && decide (x.1.toNat < g.1 + pageBytes g.2.2.length))

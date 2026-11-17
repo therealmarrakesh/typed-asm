@@ -41,7 +41,7 @@ def labels : List U.Label := [⟨entry, entryOf 0⟩]
 /-- **The check.** -/
 theorem checked : wholeOk code .start 0 pg labels 12 = true := by decide +kernel
 
-theorem saidOk : saidCheck (blocksOf code .start) said = true := by decide +kernel
+theorem saidOk : saidCheck (denBlocks (blocksOf code .start)) said = true := by decide +kernel
 
 /-! ## What it shows -/
 
@@ -64,7 +64,7 @@ theorem safe_exits_writes (w : World) :
       WritesOnly fetch (fun fd bytes => fd = 1 ∧ bytes = message) (startIn code .start 0 w) :=
   whole_outputs checked (Q := fun c => c = 0) (q := fun c => c == 0) (fun c h => by simpa using h)
     (R := fun fd bs => fd = 1 ∧ bs = message) (r := fun fd b => fd == 1 && b == message)
-    (fun fd bs h => by simpa using h) saidOk rfl (KindsOk.none _) w
+    (fun fd bs h => by simpa using h) saidOk rfl rfl w
 
 /-- Everything the program ever adds to the output is the message, or the
 first so many bytes of it where the kernel took fewer than it was offered. -/

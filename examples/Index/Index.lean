@@ -22,7 +22,7 @@ namespace Index
 def arr : Val := .lit (Asm.addr code base .array)
 
 /-- The blocks the program says its segments are. The array: five numbers, not to be written. -/
-def blocks : List (BitVec 64 × U.Layout) :=
+def blocks : List (BitVec 64 × U.LayoutS) :=
   blocksWith code .start [(Asm.addr code base .array, plainBlock 40 false)]
 
 /-- The program for the checker: its instructions, and that the array is in

@@ -19,7 +19,7 @@ namespace Ops
 /-! ## What the labels want -/
 
 /-- The blocks the program says its segments are. The record: sixteen bytes that may be written. -/
-def blocks : List (BitVec 64 × U.Layout) :=
+def blocks : List (BitVec 64 × U.LayoutS) :=
   blocksWith code .start [(Asm.addr code base .record, plainBlock 16 true)]
 
 /-- The program for the checker: its instructions, and that the record is

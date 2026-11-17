@@ -21,7 +21,7 @@ namespace Stat
 /-- The blocks the program says its segments are: the path, text that is
 not written and ends in a byte of nought; and the buffer, 144 bytes that
 may be written. -/
-def blocks : List (BitVec 64 × U.Layout) :=
+def blocks : List (BitVec 64 × U.LayoutS) :=
   blocksWith code .start
     [(Asm.addr code base .path, textBlock (name ++ [0])),
      (Asm.addr code base .buffer, plainBlock 144 true)]
