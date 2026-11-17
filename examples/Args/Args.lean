@@ -1,51 +1,44 @@
 import ArgsProgram
-import TypedAsm.Tactic
+import TypedAsm.U.Checked
 
 /-!
 # Args: typing and safety
 
-The program is in `ArgsProgram.lean`. This file types it and proves it safe.
-It is kept separate so that running the program does not link the tactics.
+The program is in `ArgsProgram.lean`. This file says what its labels want
+and checks it: one check, run by Lean's kernel, that the code is typed and
+that the state the kernel loads the program into starts as its entry asks.
+Nothing is proved by hand.
+
+The theorems hold however many arguments the program is given and whatever
+they say.
+
+It is kept separate so that running the program does not link the checker.
 -/
 
-open TypedAsm
+open TypedAsm TypedAsm.U
 
 namespace Args
 
-/-! ## The typing -/
+/-! ## What the labels want -/
 
-/-- The stack as the program finds it when given `c` arguments: the count,
-the address of each one's text, and four more words. -/
-def slots (c : BitVec 64) : List Shape :=
-  [.slot (.eq c), (ShapeOf.slot (.str false)).rep c.toNat, .raw 32]
+/-- The program for the checker: its instructions, and that it is to end
+with status nought. -/
+def pg : Prog :=
+  { code := progCode (Asm.table base code)
+    pre := preExits (· == 0) }
 
-/-- Between arguments: `r13` holds exactly the count `c` and `r14` exactly
-the number `v` of the argument to do next. -/
-def loopCtx (c v : BitVec 64) : Ctx :=
-  ⟨fun r => if r = .r13 then .eq c else if r = .r14 then .eq v else .int, slots c, 0, Flags.Any, [], 0⟩
+/-- The labels. At the start the program finds the count of its arguments
+at the stack pointer and, after it, a row of that many pointers to text.
+Between arguments `r13` holds the count; within one, `rdi` also points into
+its text. That an argument's number is below the count is the program's own
+comparison; that there is more text is what each byte read says. -/
+def labels : List U.Label :=
+  [⟨entry, inArgs⟩,
+   ⟨Asm.addr code base .arg, inArgs [(.r13, argCountV)]⟩,
+   ⟨Asm.addr code base .scan, inArgs [(.r13, argCountV)] [(.was .rdi, .str (.lit 0))]⟩]
 
-/-- Within an argument: also `rsi` points at the start of its text and `rdi`
-at the place reached in it. -/
-def scanCtx (c v : BitVec 64) : Ctx :=
-  ⟨fun r => if r = .r13 then .eq c else if r = .r14 then .eq v
-      else if r = .rsi then .str false else if r = .rdi then .str false else .int,
-    slots c, 0, Flags.Any, [], 0⟩
+/-! ## The check, and what it shows -/
 
-/-- The contexts allowed at each label, one for every number of arguments
-and every argument reached. -/
-inductive At : Label → Ctx → Prop
-  | start (c : BitVec 64) : At .start (textsCtx 0 c)
-  | arg (c v : BitVec 64) : At .arg (loopCtx c v)
-  | scan (c v : BitVec 64) : At .scan (scanCtx c v)
-
--- The program's one block is the byte that ends a line. The texts of its
--- arguments are blocks too, but they are there only when it runs.
-asm_typing At
-
-/-! ## Safety -/
-
--- Safe however many arguments the program is given and whatever they say.
--- And it ends only with status 0.
-asm_safety At.start exits (· = 0)
+asm_checked_args code start .start program pg labels labels exits (· == 0)
 
 end Args

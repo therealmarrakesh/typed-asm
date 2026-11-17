@@ -1,42 +1,51 @@
 import CatProgram
-import TypedAsm.Tactic
+import TypedAsm.U.Checked
 
 /-!
 # Cat: typing and safety
 
-The program is in `CatProgram.lean`. This file types it and proves it safe.
-It is kept separate so that running the program does not link the tactics.
+The program is in `CatProgram.lean`. This file says what its labels want
+and checks it: one check, run by Lean's kernel, that the code is typed and
+that the state the kernel loads the program into starts as its entry asks.
+Nothing is proved by hand.
+
+The theorems hold however many arguments the program is given and whatever
+they are, whatever files there are and whatever they hold.
+
+It is kept separate so that running the program does not link the checker.
 -/
 
-open TypedAsm
+open TypedAsm TypedAsm.U
 
 namespace Cat
 
-/-! ## The typing -/
+/-! ## What the labels want -/
 
-/-- The context inside the loop, for a program given `c` arguments that is
-about to do argument number `v`: `r13` holds exactly `c`, `r14` exactly `v`,
-and the stack is as the program found it. -/
-def loopCtx (c v : BitVec 64) : Ctx :=
-  ⟨fun r => if r = .r13 then .eq c else if r = .r14 then .eq v else .int,
-    [.slot (.eq c), .raw (8 * (c.toNat + 4))], 0, Flags.Any, [], 0⟩
+/-- The blocks the program says its segments are. The buffer: sixty-four
+bytes that may be written. -/
+def blocks : List (BitVec 64 × U.LayoutS) :=
+  blocksWith code .start [(Asm.addr code base .buffer, plainBlock 64 true)]
 
-/-- The contexts allowed at each label, one for every number of arguments
-and, in the loop, every argument reached. The descriptor in `r12` is a
-number like any other. -/
-inductive At : Label → Ctx → Prop
-  | start (c : BitVec 64) : At .start (argsCtx 0 c)
-  | file (c v : BitVec 64) : At .file (loopCtx c v)
-  | next (c v : BitVec 64) : At .next (loopCtx c v)
+/-- The program for the checker: its instructions; that the buffer is one
+of the blocks said; and that it is to end with status nought or one. -/
+def pg : Prog :=
+  { code := progCode (Asm.table base code)
+    statics := staticIn blocks (Asm.addr code base .buffer)
+    pre := preExits (fun c => c == 0 || c == 1) }
 
-asm_typing At
+/-- The labels. At the start the program finds the count of its arguments
+at the stack pointer and, after it, a row of that many pointers to text.
+Between files, and between reads of one, `r13` holds the count. A file's
+name is an argument whose number the program has compared with the count;
+the descriptor in `r12` is a number like any other. -/
+def labels : List U.Label :=
+  [⟨entry, inArgs⟩,
+   ⟨Asm.addr code base .file, inArgs [(.r13, argCountV)]⟩,
+   ⟨Asm.addr code base .next, inArgs [(.r13, argCountV)]⟩]
 
-/-! ## Safety -/
+/-! ## The check, and what it shows -/
 
--- Safe however many arguments the program is given and whatever they are,
--- whatever files there are and whatever they hold.
--- And it ends only with status 0 or 1: 1 where it stopped at a file it could
--- not open.
-asm_safety At.start exits (fun c => c = 0 ∨ c = 1)
+asm_checked_args code start .start program pg labels labels blocks blocks fuel 60
+  exits (fun c => c == 0 || c == 1)
 
 end Cat
