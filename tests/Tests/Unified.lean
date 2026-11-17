@@ -5,6 +5,7 @@ import TypedAsm.U.Writes
 import TypedAsm.U.Pages
 import TypedAsm.Linux
 import TypedAsm.U.Stack
+import TypedAsm.U.Loaded
 import TypedAsm.U.Labels
 import TypedAsm.U.Open
 
@@ -956,12 +957,11 @@ example : [((0x400000 : BitVec 64), (4096 : BitVec 64)), (0x10000, 8192)].all
 /-! ## A program end to end: Hello
 
 The program as written, assembled; checked; and the state it is loaded into
-shown to start as its entry asks. So it is safe, on the machine that
+shown to start as its entry asks, by where its segments are. So it is safe, on the machine that
 decodes its instructions from memory; it ends only with status nought; and
 at its one `write` it offers exactly its message, to descriptor 1. -/
 
 namespace HelloU
-
 inductive Label
   | start | message
   deriving DecidableEq
@@ -980,71 +980,46 @@ def code : List (Asm Label) := [
   .label .message, .bytes message]
 def base : BitVec 64 := Asm.base code
 def entry : BitVec 64 := Asm.addr code base .start
-def pad : List Byte := message ++ List.replicate (4096 - 14) 0
-def blocks : List (BitVec 64 × U.Layout) :=
-  [(0x400000, ⟨⟨4096, []⟩, false, none, 0, none⟩), (0x401000, ⟨⟨4096, []⟩, false, none, 0, some pad⟩)]
-def said : List (BitVec 64 × List (BitVec 8)) := [(0x401000, pad)]
+/-- What the program puts in memory, as the kernel places it. -/
+def segs : List (Nat × Perm × List Byte) := Asm.image base code .start
+
+/-- Each segment as the block of its pages. -/
+def blocks : List (BitVec 64 × U.Layout) := segs.map segBlock
+
+/-- The page the message is on says its bytes: the message, then nought. -/
+def said : List (BitVec 64 × List (BitVec 8)) :=
+  [(0x401000, message ++ List.replicate (4096 - 14) 0)]
+
 def pg : Prog :=
   { code := progCode (Asm.table base code)
     pre := preOut said (· == 0) (fun fd b => fd == 1 && b == message) }
+
 def labels : List U.Label := [⟨entry, entryPat⟩]
+
 def start : State :=
   { ((Asm.load State.init base code .start).setPerm 0x80000000 0 .rw).setReg .rsp 0x80000000 with
     rip := entry }
+
 theorem hcheck : checkProgram pg labels 12 0 = true := by decide +kernel
 theorem htable : tableOk (Asm.table base code) = true := by decide +kernel
 theorem hwfb : blocksWf blocks = true := by decide +kernel
-theorem hcover : ((0x80000000, 0) :: segStretches (Asm.image base code .start) []).all
-    (stretchIn (blocks.map fun x => (x.1, x.2.size))) = true := by decide +kernel
-theorem hperm : blocksPerm start blocks = true := by decide +kernel
+theorem hnd : blocks.Pairwise (fun x y => x.1 ≠ y.1) := by decide +kernel
+theorem hsaid : saidCheck blocks said = true := by decide +kernel
+theorem hsegs : segsOk segs = true := by decide +kernel
+theorem hfull : segsFull segs = true := by decide +kernel
+theorem hoff : segs.all (offStack (0x80000000 : BitVec 64).toNat (0 : BitVec 64).toNat) = true := by
+  decide +kernel
+theorem hcover : (((0x80000000 : BitVec 64), (0 : BitVec 64)) :: segStretches segs []).all
+    (stretchIn ((segs.map segBlock).map fun x => (x.1, x.2.size))) = true := by decide +kernel
 theorem hparts : ∀ g ∈ Asm.parts base code, start.Holds g := fun g hg =>
   (Asm.prepared_holds State.init base code .start 0x80000000 0 0x80000000
     (by decide +kernel) (by decide +kernel) (by decide +kernel) g hg).congr rfl rfl
-theorem hclear : segsClear (Asm.image base code .start) (4198400 + 14) (4096 - 14) = true := by
-  decide +kernel
-
-theorem hwithin : PermsWithin start ((0x80000000, 0) :: segStretches (Asm.image base code .start) []) :=
-  (((PermsWithin.init.loadSegs (Asm.image base code .start)).setPerm 0x80000000 0 .rw).congr rfl).congr
-    rfl
-
-theorem hmsg : start.HasData 0x401000 message :=
-  (hparts (4198400, .ro, message) (by decide +kernel)).hasData
-
-theorem hzero (k : Nat) (hk : k < 4096 - 14) :
-    start.mem (0x401000 + BitVec.ofNat 64 (message.length + k)) = 0 := by
-  have h := mem_loadSegs_clear hclear State.init hk
-  have e : (0x401000 : BitVec 64) + BitVec.ofNat 64 (message.length + k)
-      = BitVec.ofNat 64 (4198400 + 14) + BitVec.ofNat 64 k := by
-    rw [show message.length = 14 by decide +kernel, BitVec.ofNat_add, BitVec.ofNat_add,
-      ← BitVec.add_assoc]
-    rfl
-  rw [e]
-  exact (show start.mem _ = (State.init.loadSegs (Asm.image base code .start)).mem _ from rfl).trans
-    (h.trans (mem_init _))
-
-theorem hsaidHeld : ∀ x ∈ blocks, ∀ bs : List (BitVec 8), x.2.said = some bs →
-    ∀ k (hk : k < bs.length), start.mem (x.1 + BitVec.ofNat 64 k) = bs[k] := by
-  intro x hx bs hs
-  simp only [blocks, List.mem_cons, List.mem_nil_iff, or_false] at hx
-  rcases hx with rfl | rfl
-  · cases hs
-  · cases hs
-    exact said_of_data_zeros hmsg hzero
 
 theorem hstarts (ρ : Env) :
     Starts blocks (fun _ => none) (entryPat.den { ρ with bound := Fam.ofState start :: ρ.bound })
       start :=
-  starts_entry ρ hperm hsaidHeld
-    (fun x hx => by
-      simp only [blocks, List.mem_cons, List.mem_nil_iff, or_false] at hx
-      rcases hx with rfl | rfl <;> rfl)
-    hwithin hcover
-
-theorem hsaidOk : SaidOk (MemTy.ofList blocks fun _ => none) said := by
-  intro x hx
-  simp only [said, List.mem_cons, List.mem_nil_iff, or_false] at hx
-  subst hx
-  exact ⟨_, rfl, rfl⟩
+  loaded_starts ρ (segs := segs) (sb := 0x80000000) (len := 0) (t := start) hsegs hfull hoff rfl
+    rfl hcover
 
 /-- **Hello is safe, ends only with status nought, and offers at its `write`
 exactly its message, to descriptor 1.** -/
@@ -1059,14 +1034,13 @@ theorem hello :
   outputs_of_checked (Ψ := MemTy.ofList blocks fun _ => none)
     (Q := fun c => c = 0) (q := fun c => c == 0) (fun c h => by simpa using h)
     (R := fun fd bs => fd = 1 ∧ bs = message) (r := fun fd b => fd == 1 && b == message)
-    (fun fd bs h => by simpa using h) hsaidOk (pg := pg) rfl (hcode_of_tableOk htable)
-    (KindsOk.none _) StaticsOk.nil (blocksWf_wf hwfb) hcheck (l := ⟨entry, entryPat⟩)
-    List.mem_cons_self rfl {} (Fam.ofState start)
-    (fun n => (hstarts {}).matches (by decide) (fun _ h => nomatch h)
+    (fun fd bs h => by simpa using h) (saidOk_of_check hnd hsaid) (pg := pg) rfl
+    (hcode_of_tableOk htable) (KindsOk.none _) StaticsOk.nil (blocksWf_wf hwfb) hcheck
+    (l := ⟨entry, entryPat⟩) List.mem_cons_self rfl {} (Fam.ofState start)
+    (fun n => (hstarts {}).matches hnd (fun _ h => nomatch h)
       (fun x hx p hp => by
-        simp only [blocks, List.mem_cons, List.mem_nil_iff, or_false] at hx
-        rcases hx with rfl | rfl <;> cases hp))
-
+        obtain ⟨g, _, rfl⟩ := List.mem_map.mp hx
+        cases hp))
 
 /-- And safe on the machine that decodes its instructions from memory. -/
 theorem helloMem : SafeMem linux start :=
@@ -1080,7 +1054,6 @@ The stack's page is a region the entry context holds, the stack pointer at
 its end. -/
 
 namespace PushU
-
 inductive Label
   | start
   deriving DecidableEq
@@ -1094,45 +1067,45 @@ def code : List (Asm Label) := [
   .ins .syscall]
 def base : BitVec 64 := Asm.base code
 def entry : BitVec 64 := Asm.addr code base .start
-def blocks : List (BitVec 64 × U.Layout) := [(0x400000, ⟨⟨4096, []⟩, false, none, 0, none⟩)]
+def segs : List (Nat × Perm × List Byte) := Asm.image base code .start
+def blocks : List (BitVec 64 × U.Layout) := segs.map segBlock
 def pg : Prog := { code := progCode (Asm.table base code), pre := preExits (· == 0) }
 def labels : List U.Label := [⟨entry, entryPatStack 4096⟩]
 def start : State :=
   { ((Asm.load State.init base code .start).setPerm (0x80000000 - 8) 8 .rw).setReg .rsp 0x80000000
     with rip := entry }
+
 theorem hcheck : checkProgram pg labels 12 0 = true := by decide +kernel
 theorem htable : tableOk (Asm.table base code) = true := by decide +kernel
 theorem hwfb : blocksWf blocks = true := by decide +kernel
-theorem hperm : blocksPerm start blocks = true := by decide +kernel
-theorem hstack : start.canWrite 0x7ffff000 4096 = true := by decide +kernel
-theorem hcover : ((0x80000000 - 8, 8) :: segStretches (Asm.image base code .start) []).all
-    (stretchIn ((0x7ffff000, 4096) :: blocks.map fun x => (x.1, x.2.size))) = true := by
-  decide +kernel
 theorem hparts : ∀ g ∈ Asm.parts base code, start.Holds g := fun g hg =>
   (Asm.prepared_holds State.init base code .start (0x80000000 - 8) 8 0x80000000
     (by decide +kernel) (by decide +kernel) (by decide +kernel) g hg).congr rfl rfl
-theorem hwithin :
-    PermsWithin start ((0x80000000 - 8, 8) :: segStretches (Asm.image base code .start) []) :=
-  (((PermsWithin.init.loadSegs (Asm.image base code .start)).setPerm (0x80000000 - 8) 8 .rw).congr
-    rfl).congr rfl
+
+theorem h1 : segsOk segs = true := by decide +kernel
+theorem h2 : segsFull segs = true := by decide +kernel
+theorem h3 : segs.all (offStack (0x80000000 - 8 : BitVec 64).toNat (8 : BitVec 64).toNat) = true := by
+  decide +kernel
+theorem h4 : (0x7ffff000 : BitVec 64).toNat
+    = 4096 * (State.pagesOf (0x80000000 - 8 : BitVec 64).toNat (8 : BitVec 64).toNat).1 := by
+  decide +kernel
+theorem h5 : 4096 = 4096 * (State.pagesOf (0x80000000 - 8 : BitVec 64).toNat (8 : BitVec 64).toNat).2 := by
+  decide +kernel
+theorem h6 : (0x7ffff000 : BitVec 64).toNat + 4096 ≤ addrTop := by decide +kernel
+theorem h7 : start.getReg .rsp = 0x7ffff000 + BitVec.ofNat 64 4096 := by decide +kernel
+theorem h8 : ((segs.map segBlock).all fun x =>
+    decide (Disjoint (0x7ffff000 : BitVec 64) 4096 x.1 x.2.size)) = true := by decide +kernel
+theorem h9 : (((0x80000000 - 8 : BitVec 64), (8 : BitVec 64)) :: segStretches segs []).all
+    (stretchIn (((0x7ffff000 : BitVec 64), 4096) :: (segs.map segBlock).map fun x => (x.1, x.2.size)))
+    = true := by decide +kernel
 
 theorem hstarts (ρ : Env) :
     Starts blocks (fun _ => none)
       ((entryPatStack 4096).den { ρ with bound := Fam.ofStack start 0x7ffff000 :: ρ.bound })
       start :=
-  starts_stack ρ hperm
-    (fun x hx bs hs => by
-      simp only [blocks, List.mem_cons, List.mem_nil_iff, or_false] at hx
-      subst hx
-      cases hs)
-    (fun x hx => by
-      simp only [blocks, List.mem_cons, List.mem_nil_iff, or_false] at hx
-      subst hx
-      rfl)
-    hstack (by decide) (by decide +kernel) (by decide +kernel) hwithin hcover
+  loaded_starts_stack ρ (segs := segs) (sb := 0x80000000 - 8) (len := 8) (t := start)
+    (base := 0x7ffff000) (size := 4096) h1 h2 h3 rfl rfl h4 h5 h6 h7 h8 h9
 
-/-- **A program that pushes and pops is safe, on the machine that decodes
-its instructions from memory, and ends only with status nought.** -/
 theorem pushPop :
     SafeMem linux start ∧
       ∀ s', TypedAsm.Steps (Asm.fetch base code) linux start s' → ∀ len c,
@@ -1142,14 +1115,11 @@ theorem pushPop :
     (Q := fun c => c = 0) (q := fun c => c == 0) (fun c h => by simpa using h) (pg := pg) rfl
     (hcode_of_tableOk htable) (KindsOk.none _) StaticsOk.nil (blocksWf_wf hwfb) hcheck
     (l := ⟨entry, entryPatStack 4096⟩) List.mem_cons_self rfl {} (Fam.ofStack start 0x7ffff000)
-    (fun n => (hstarts {}).matches (by decide) (fun _ h => nomatch h)
+    (fun n => (hstarts {}).matches (by decide +kernel) (fun _ h => nomatch h)
       (fun x hx p hp => by
-        simp only [blocks, List.mem_cons, List.mem_nil_iff, or_false] at hx
-        subst hx
+        obtain ⟨g, _, rfl⟩ := List.mem_map.mp hx
         cases hp))
   ⟨SafeMem.of_safe linux_frame (Asm.loaded hparts) h.1, h.2⟩
-
-
 end PushU
 
 end Tests.Unified
