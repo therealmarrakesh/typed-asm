@@ -9,10 +9,11 @@ and checks it: one check, run by Lean's kernel, that the code is typed and
 that the state the kernel loads the program into starts as its entry asks.
 Nothing is proved by hand.
 
-Only the start is a label. The checker follows the program from there, into
-its functions and back: they are checked as this program calls them, not
-for every caller. A function given a label of its own is checked for every
-caller that label allows; see `Swap` and `Frame`.
+The function `pause` has a label of its own, so it is typed once, for
+every caller. Its label says what every function's does: it returns with
+the stack pointer past its return address and the registers a function
+keeps as it found them. That is what lets the address the program took
+before the call, kept in `rbx`, be used after it.
 
 It is kept separate so that running the program does not link the checker.
 -/
@@ -28,11 +29,13 @@ def pg : Prog :=
   { code := progCode (Asm.table base code)
     pre := preExits (· == 0) }
 
-/-- One label: the start, with nothing known. -/
-def labels (n : Nat) : List U.Label := [⟨entry, entryOf n⟩]
+/-- The labels: the start, with nothing known; and `pause`, a function that
+wants nothing. -/
+def labels : List U.Label :=
+  [⟨entry, entryOf 3⟩, ⟨Asm.addr code base .pause, inFunction⟩]
 
 /-! ## The check, and what it shows -/
 
-asm_checked code start .start stack 3 program pg labels (labels 3) fuel 80 exits (· == 0)
+asm_checked code start .start stack 3 program pg labels labels fuel 80 exits (· == 0)
 
 end Keep

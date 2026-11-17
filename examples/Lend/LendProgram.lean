@@ -27,13 +27,12 @@ fill:
      ret
 ```
 
-A function is handed memory by being handed a block to own. So for the call,
-`work` detaches its local from the stack: the local becomes a block `work`
-owns, which it hands to `fill` and is given back. Only the top of a stack
-can be detached, so what lies above the local, `work`'s return address and
-its caller's part of the stack, is detached with it, and nothing reaches it
-while `fill` runs. After the call everything is attached again and the stack
-is as it was, with the local holding what `fill` stored.
+A function is handed memory by being handed a region to hold. `fill` asks
+for sixteen bytes at the address in `rdi`, and gives them back when it
+returns. Those sixteen bytes are part of what `work` holds, its stack; for
+the call, that part is `fill`'s, and the rest stays `work`'s, so nothing
+reaches the return addresses while `fill` runs. After the call the stack is
+whole again, the local holding what `fill` stored.
 
 `lake exe lend` runs it in the model; `lake exe lend --elf FILE` writes an
 executable that Linux can run.

@@ -9,10 +9,12 @@ and checks it: one check, run by Lean's kernel, that the code is typed and
 that the state the kernel loads the program into starts as its entry asks.
 Nothing is proved by hand.
 
-Only the start is a label. The checker follows the program from there, into
-its functions and back: they are checked as this program calls them, not
-for every caller. A function given a label of its own is checked for every
-caller that label allows; see `Swap` and `Frame`.
+The function `two` has a label of its own, so it is typed once, for every
+caller: it uses eight bytes of stack, and hands its caller two pages, one
+at the address it returns in `rax` and one at the address it returns in
+`rdx`. The program calls it through a register. The checker knows the
+register holds the function's address, and so what is wanted there and
+what comes back.
 
 It is kept separate so that running the program does not link the checker.
 -/
@@ -27,11 +29,15 @@ namespace Pair
 def pg : Prog :=
   { code := progCode (Asm.table base code) }
 
-/-- One label: the start, with nothing known. -/
-def labels (n : Nat) : List U.Label := [⟨entry, entryOf n⟩]
+/-- The labels: the start, with nothing known; and `two`, which uses eight
+bytes of stack and hands its caller a page at each of the addresses it
+returns in `rax` and `rdx`. -/
+def labels : List U.Label :=
+  [⟨entry, entryOf 2⟩,
+   ⟨Asm.addr code base .two, inFunction (room := 8) (gives := [(.rax, 4096), (.rdx, 4096)])⟩]
 
 /-! ## The check, and what it shows -/
 
-asm_checked code start .start stack 2 program pg labels (labels 2) fuel 80
+asm_checked code start .start stack 2 program pg labels labels fuel 80
 
 end Pair

@@ -86,11 +86,11 @@ No proof is written for twenty-three of the twenty-four. In
 proved, in a dozen lines; with them its function is typed once for every
 argument: that it needs sixteen bytes of stack for each unit of its
 argument, and that it returns the factorial. The program is then proved to
-end with 120. A function is typed once, for every caller its label allows: `examples/Sum` and `examples/Index` take
-any row of values of any length; `examples/Fresh` has a function that hands
-its caller a page of memory, `examples/Double` one that takes a page and
-gives it back; `examples/Dispatch` calls through a table of pointers to
-functions.
+end with 120. A function is typed once, for every caller its label allows:
+`examples/Sum` and `examples/Index` take any row of values of any length;
+`examples/Fresh` has a function that hands its caller a page of memory,
+`examples/Double` one that takes a page and gives it back;
+`examples/Dispatch` calls through a table of pointers to functions.
 
 What is not there:
 

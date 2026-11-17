@@ -75,16 +75,20 @@ eight that held the return address held still, the regions it took given
 back, the regions it hands its caller, each at the address a register holds
 at return, and whatever else was held, held. The other registers hold
 whatever they hold, but for those said. How many bytes are terms, said as
-at the function's entry: a number, or what a value there comes to. -/
+at the function's entry: a number, or what a value there comes to. A
+region taken may be said to hold values when it is given back (`leaves`):
+by the register it was taken at, how far in each value is, and the value. -/
 def returnsWith (results : List (Reg × Val) := []) (room : Val := 0)
-    (takes : List (Reg × Val) := []) (gives : List (Reg × Val) := []) : TyS :=
+    (takes : List (Reg × Val) := []) (gives : List (Reg × Val) := [])
+    (leaves : List (Reg × List (Val × Val)) := []) : TyS :=
   .code
     (regsWith
       (regsWith anyRegs (keptRegs.map fun r => (r, .bvar 1 (allRegs.idxOf r))))
       ((.rsp, .add (.bvar 1 4) (.lit 8)) :: results))
     (.bvar 0)
     (((Val.bvar 1 4).lessBy room.lift, ⟨room.lift.plus 8, []⟩) ::
-      (takes.map fun t => (.bvar 1 (allRegs.idxOf t.1), ⟨t.2.lift, []⟩)) ++
+      (takes.map fun t => (.bvar 1 (allRegs.idxOf t.1),
+        ⟨t.2.lift, ((leaves.lookup t.1).getD []).map fun p => (p.1.lift, p.2.lift)⟩)) ++
       gives.map fun t => (.bvar 0 (allRegs.idxOf t.1), ⟨t.2.lift, []⟩))
     .nil (.bvar 1)
 
@@ -95,15 +99,16 @@ function's to use; the regions it takes from its caller and gives back,
 each at the address a register holds at entry and so many bytes; the
 regions it hands its caller when it returns; whatever else its caller
 holds; and the registers and facts said. How many bytes are terms: a
-number, or what a value at entry comes to. -/
+number, or what a value at entry comes to. `leaves` says what values a
+region taken holds when the function gives it back. -/
 def inFunction (regs : List (Reg × Val) := []) (known : List (Val × TyS) := [])
     (room : Val := 0) (results : List (Reg × Val) := []) (takes : List (Reg × Val) := [])
-    (gives : List (Reg × Val) := []) : CtxS where
+    (gives : List (Reg × Val) := []) (leaves : List (Reg × List (Val × Val)) := []) : CtxS where
   regs := regsWith anyRegs regs
   flags := .bvar 0
   held := ((Val.bvar 0 4).lessBy room, ⟨room.plus 8, [(room, .bvar 0 16)]⟩) ::
     takes.map fun t => (.bvar 0 (allRegs.idxOf t.1), ⟨t.2, []⟩)
-  known := (.bvar 0 16, returnsWith results room takes gives) :: known
+  known := (.bvar 0 16, returnsWith results room takes gives leaves) :: known
   rest := .bvar 0
 
 /-- **A label in the program's own code, outside any function**: the stack
