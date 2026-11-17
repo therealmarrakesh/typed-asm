@@ -1137,8 +1137,27 @@ def hasUserFacts : MetaM Bool := do
   let some ext ← Meta.getSimpExtension? `asm_fact | return false
   let thms ← ext.getTheorems
   return thms.lemmaNames.toList.any fun
-    | .decl n .. => n != ``imulTrunc_fst
+    | .decl n .. => n != ``imulTrunc_fst && n != ``aluSub_fst && n != ``aluAdd_fst
     | _ => true
+
+/-- A term rewritten by the facts the user has marked for the checker, with
+what is known here: so that a value may be recognised as the one a context
+speaks of where a fact says they are the same. -/
+def simpFacts (e : Expr) : TacticM Expr := do
+  try
+    -- numbers are put in the form a fact is stated with: `1`, not `1#64`
+    let e ← Meta.transform e (pre := fun x => do
+      if x.isAppOfArity ``BitVec.ofNat 2 then
+        if let (some w, some k) := (x.getAppArgs[0]!.nat?, x.getAppArgs[1]!.nat?) then
+          return .done (← mkNumeral (mkApp (mkConst ``BitVec) (mkNatLit w)) k)
+      return .continue)
+    let stx ← `(tactic| simp only [asm_fact, *])
+    let sc ← mkSimpContext stx (eraseLocal := false)
+    let (r, _) ← sc.dischargeWrapper.with fun d? => Lean.Meta.simp e sc.ctx sc.simprocs d?
+    return r.expr
+  catch ex =>
+    trace[TypedAsm.fast] "the facts could not be used: {ex.toMessageData}"
+    return e
 
 /-- Proves what the checker leaves to be shown. It is taken apart into its
 parts, and each is settled the cheapest way that does: by one of the proofs
@@ -1228,6 +1247,45 @@ partial def closeNeeds (env : Environment) (lctx : LocalContext)
     unless left.isEmpty do throwError "left over"
   return g
 
+/-- A goal of arithmetic with what a function's requirement of its caller
+says of the room on the stack put among its hypotheses: the caller left at
+least as much as the function's signature says it needs, written out. -/
+def withNeedFacts (g : MVarId) : MetaM MVarId := g.withContext do
+  let mut hyps : Array Hypothesis := #[]
+  for d in ← getLCtx do
+    if d.isImplementationDetail then continue
+    let t ← instantiateMVars d.type
+    let pf? ← (do
+      try
+        if t.isAppOfArity ``FnSig.CallerOk 5 then
+          return some (← mkAppM ``FnSig.CallerOk.room #[d.toExpr])
+        if t.isAppOfArity ``FnSigEx.CallerOk 8 then
+          let seq := mkLambda `i .default (mkConst ``Nat) (toExpr (0 : BitVec 64))
+          let x ← mkAppOptM ``Chosen.dec #[some t.getAppArgs[0]!, none, some seq]
+          return some (← mkAppM ``FnSig.CallerOk.room
+            #[← mkAppM ``FnSigEx.CallerOk.each #[d.toExpr, x]])
+        return none
+      catch _ => return none : MetaM (Option Expr))
+    let some pf := pf? | continue
+    let ty ← whnfR (← inferType pf)
+    unless ty.isAppOfArity ``LE.le 4 do continue
+    -- what the signature needs, as its definition writes it
+    let need := ty.appFn!.appArg!
+    let need' ← (do
+      try
+        unless need.isApp do return need
+        let sig := need.appArg!
+        let some sigU ← unfoldDefinition? sig | return need
+        let w ← whnfR (mkApp need.appFn! sigU)
+        return w
+      catch _ => return need : MetaM Expr)
+    let ty' := mkApp4 ty.getAppFn ty.getAppArgs[0]! ty.getAppArgs[1]! need' ty.appArg!
+    unless ← isDefEq ty ty' do continue
+    hyps := hyps.push { userName := `hneed, type := ty', value := pf }
+  if hyps.isEmpty then return g
+  let (_, g') ← g.assertHypotheses hyps
+  return g'
+
 /-- Settles the arithmetic `closeNeeds` set aside: all of it by one call
 where that succeeds, and otherwise each part by itself. -/
 def closeArithLeft : TacticM Unit := do
@@ -1236,7 +1294,12 @@ def closeArithLeft : TacticM Unit := do
   let each : TacticM Unit := do
     for g in gs do
       if ← g.isAssigned then continue
-      let left ← runOn g do evalTactic (← `(tactic| first | omega | bv_omega | ty_side))
+      let left ← try
+          runOn g do evalTactic (← `(tactic| first | omega | bv_omega | ty_side))
+        catch _ =>
+          -- with what the caller's requirement says of the room
+          let g' ← withNeedFacts g
+          runOn g' do evalTactic (← `(tactic| first | omega | bv_omega))
       unless left.isEmpty do throwError "left over"
   if gs.size == 1 then
     each
@@ -2123,6 +2186,43 @@ def callType (Φ : Expr) (atoms : Sym.Atoms) (c : CallInfo) (cs : List Sym.CondS
     (mkApp2 (mkConst ``And) (mkAppN Φ #[toExpr (BitVec.ofNat 64 c.next), RE])
       (mkApp2 (mkConst ``And) (mkAppN Φ #[toExpr (BitVec.ofNat 64 c.t), ΔE]) allE))
 
+/-- Shows what a context demands from something known that says the same
+but for numbers written differently, such as the room on the stack: each
+such number is shown equal by arithmetic, with what the caller's requirement
+says of the room. Whether it did. -/
+def closeFromHyp (m : MVarId) : TacticM Bool := m.withContext do
+  let t ← instantiateMVars (← m.getType)
+  if t.hasExprMVar then return false
+  let targs := t.getAppArgs
+  for d in ← getLCtx do
+    if d.isImplementationDetail then continue
+    let ht ← instantiateMVars d.type
+    unless ht.getAppFn == t.getAppFn && ht.getAppNumArgs == targs.size do continue
+    let hargs := ht.getAppArgs
+    let saved ← saveState
+    let r ← try (do
+        -- that the two statements are the same, argument by argument
+        let mut eq ← mkEqRefl t.getAppFn
+        let mut differs := false
+        for (a, b) in targs.zip hargs do
+          if ← withoutModifyingState (isDefEq a b) then
+            eq ← mkCongrFun eq a
+          else
+            unless (← whnf (← inferType a)).isConstOf ``Nat do return false
+            let e ← mkFreshExprSyntheticOpaqueMVar (← mkEq a b)
+            let g ← withNeedFacts e.mvarId!
+            let left ← runOn g (do evalTactic (← `(tactic| omega)))
+            unless left.isEmpty do return false
+            eq ← mkCongr eq (← instantiateMVars e)
+            differs := true
+        unless differs do return false
+        m.assign (← mkEqMPR eq d.toExpr)
+        return true : TacticM Bool)
+      catch _ => pure false
+    if r then return true
+    saved.restore
+  return false
+
 /-- Shows a function's requirement of its caller, from what the function
 returns with standing for the context at the return point. -/
 def closeCallerOk (m : MVarId) : TacticM Unit := do
@@ -2139,8 +2239,14 @@ def closeCallerOk (m : MVarId) : TacticM Unit := do
         catch e =>
           match sigName? with
           | some c =>
-            runOn g (do evalTactic (← `(tactic|
-              (unfold $(mkIdent c); dsimp only; first | decide | omega))))
+            try
+              runOn g (do evalTactic (← `(tactic|
+                (unfold $(mkIdent c); dsimp only; first | decide | omega))))
+            catch _ =>
+              -- with the room this code's own caller left it
+              let [g'] ← runOn g (do evalTactic (← `(tactic| (unfold $(mkIdent c); dsimp only))))
+                | throw e
+              runOn (← withNeedFacts g') (do evalTactic (← `(tactic| omega)))
           | none => throw e
       else runOn g (do evalTactic (← `(tactic| first | rfl | decide)))
     unless left.isEmpty do throwError "left over"
@@ -2171,21 +2277,34 @@ def solveCall (g : MVarId) (Φ : Expr) (c : CallInfo) (R0 : Expr)
   for m in premsR ++ premsF do
     if ← m.isAssigned then continue
     let t ← instantiateMVars (← m.getType)
+    if ← closeFromHyp m then continue
     if t.isAppOf ``FnSig.CallerOk then
-      closeCallerOk m
+      try closeCallerOk m
+      catch e =>
+        trace[TypedAsm.fast] "call: the caller's requirement is not shown: {t}"
+        throw e
     else
-      let left ← runOn m do
-        evalTactic (← `(tactic| first | assumption | omega | decide | ty_arith))
-      unless left.isEmpty do throwError "left over"
+      let left ← try
+          runOn m do evalTactic (← `(tactic| first | assumption | omega | decide | ty_arith))
+        catch _ => pure [m]
+      unless left.isEmpty do
+        trace[TypedAsm.fast] "call: a context's demand is not shown: {t}"
+        throwError "left over"
   let mut hn := mkConst ``True.intro
   let mut allE := mkConst ``True
   arithLeft.set #[]
   for x in cs.reverse do
     let leaf ← Sym.denCond atoms x
-    let h ← closeNeeds env lctx kwhnf pure #[] leaf
+    let h ← try closeNeeds env lctx kwhnf pure #[] leaf
+      catch e =>
+        trace[TypedAsm.fast] "call: the comparison leaves: {leaf}"
+        throw e
     hn := mkApp4 (mkConst ``And.intro) leaf allE h hn
     allE := mkApp2 (mkConst ``And) leaf allE
-  closeArithLeft
+  try closeArithLeft
+  catch e =>
+    trace[TypedAsm.fast] "call: the comparison leaves arithmetic: {(← arithLeft.get).map mkMVar}"
+    throw e
   let tR := mkAppN Φ #[toExpr (BitVec.ofNat 64 c.next), RE]
   let tF := mkAppN Φ #[toExpr (BitVec.ofNat 64 c.t), ΔE]
   let inner := mkApp4 (mkConst ``And.intro) tF allE hF (← instantiateMVars hn)
@@ -2245,18 +2364,32 @@ def findCall (Φ : Expr) (atoms : Sym.Atoms) (named : Array (Nat × Reg))
             -- what the argument registers hold says which signature
             if regsE.isAppOfArity ``RegMap.get 2 && regsE.appArg!.isAppOfArity ``RegMap.mk 17 then
               let tbl := regsE.appArg!.getAppArgs
+              -- first as the facts given to the checker say what they hold:
+              -- a value written by a fact is the one a signature speaks of
+              if ← hasUserFacts then
+                for r in allRegs do
+                  if r == .rsp then continue
+                  let want ← whnf (← mkAppM ``FnSig.regsIn #[a[0]!, regsE, toExpr r])
+                  if (← instantiateMVars want).hasExprMVar then
+                    let e := tbl[1 + regIdx r]!
+                    let e' ← simpFacts e
+                    unless e' == e do matchPart want e'
               for r in allRegs do
                 if r == .rsp then continue
                 let want ← whnf (← mkAppM ``FnSig.regsIn #[a[0]!, regsE, toExpr r])
                 matchPart want tbl[1 + regIdx r]!
             let sig ← instantiateMVars a[0]!
-            if sig.hasExprMVar then return none
+            if sig.hasExprMVar then
+              trace[TypedAsm.fast] "call ({kFn}): nothing settles which signature: {sig}"
+              return none
             -- the return point: what the function returns with stands for it
             let ownedBack ← mkAppM ``HAppend.hAppend #[← mkAppM ``FnSig.gives #[sig],
               ← mkAppM ``List.drop #[← mkAppM ``List.length #[← mkAppM ``FnSig.takes #[sig]], ownedE]]
             let returned ← mkAppM ``FnSig.returned #[sig, regsE, stackE, roomE, ownedBack, aboveE]
             let some retN ← normalCtx returned | return none
-            let some (paramsR, R0) ← matchCtor kRet lRet retN | return none
+            let some (paramsR, R0) ← matchCtor kRet lRet retN
+              | do trace[TypedAsm.fast] "call ({kFn}, {kRet}): the return point's context is not found"
+                   return none
             unless ← isDefEq a[2]! R0 do return none
             let Δ0 ← instantiateMVars pat0
             if Δ0.hasExprMVar then return none
@@ -2304,6 +2437,7 @@ def findCall (Φ : Expr) (atoms : Sym.Atoms) (named : Array (Nat × Reg))
             let info : CallInfo := ⟨at', t, next, j, R, Δ, R0, lRet, kRet, paramsR, lFn, kFn,
               paramsFn, (named.map (·.1)).zip temps⟩
             let g ← mkFreshExprSyntheticOpaqueMVar (← callType Φ atoms₂ info (rc ++ cs))
+            trace[TypedAsm.fast] "call ({kFn}, {kRet}): contexts chosen, showing the rest"
             solveCall g.mvarId! Φ info R0 paramsR paramsFn (rc ++ cs) atoms₂
             keepLeaf named g
             let mut vals := atoms₂.val
@@ -2311,7 +2445,11 @@ def findCall (Φ : Expr) (atoms : Sym.Atoms) (named : Array (Nat × Reg))
               if k < vals.size then vals := vals.set! k (toExpr (0 : BitVec 64))
             return some (info, { atoms₂ with val := vals }))
           catch e =>
-            trace[TypedAsm.fast] "call ({kFn}, {kRet}): {e.toMessageData}"
+            let what ← (match e with
+              | .internal id _ => do
+                pure m!"{(← id.getName)}"
+              | _ => pure e.toMessageData)
+            trace[TypedAsm.fast] "call ({kFn}, {kRet}): {what}"
             pure none
         st.restore
         if found.isSome then return found

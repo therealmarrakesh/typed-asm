@@ -305,6 +305,15 @@ theorem cmp_not_less {a b : BitVec 64} (h : Cond.eval (AluOp.apply .cmp a b).2 .
   rw [cmp_less_iff] at h
   simpa using h
 
+/-- What a subtraction leaves, written as one: so that a fact may be stated
+of `a - b`. -/
+@[asm_fact] theorem aluSub_fst (a b : BitVec 64) : (AluOp.sub.apply a b).1 = a - b := by
+  simp only [AluOp.apply, subBorrow_fst]
+
+/-- What an addition leaves, written as one. -/
+@[asm_fact] theorem aluAdd_fst (a b : BitVec 64) : (AluOp.add.apply a b).1 = a + b := by
+  simp only [AluOp.apply, addCarry_fst]
+
 /-- The low half of a signed multiply is the product: what `imul` leaves in
 its destination. -/
 @[asm_fact] theorem imulTrunc_fst (a b : BitVec 64) : (imulTrunc a b).1 = a * b := by

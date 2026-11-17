@@ -60,7 +60,9 @@ inductive At : Label → Ctx → Prop
 
 asm_typing At
 
-/-! ## The program is well typed -/
+/-! ## What the program computes
+
+Three facts of arithmetic are all the checker is given. -/
 
 /-- What the multiply at the end of a call computes: the argument times the
 factorial of one less is the factorial of the argument. -/
@@ -74,17 +76,12 @@ zero, the argument is below `2 ^ 64`, and the factorial of zero is 1. -/
   obtain rfl : n = 0 := by simp only [num] at hz; bv_omega
   rfl
 
-/-- The program is well typed where it may end only with status 120. The
-two facts of arithmetic above are what the checker is given; the one block
-typed by hand is the one that calls the function with one less. -/
-theorem blocksOk : BlocksOk Φ fetch (linux.exitsOnly (· = 120)) Ψ := by
-  ty_program
-  case again n saved ret rest room hK hn h64 =>
-    -- the argument is not zero, so the caller left at least sixteen bytes
-    have hroom : 16 * n ≤ room := hK.room
-    obtain ⟨m, rfl⟩ : ∃ m, room = m + 16 := ⟨room - 16, by omega⟩
-    -- the inner call gets exactly one less
-    ty_call (factSig (n - 1))
+/-- One less than a number that is not zero, as a machine value: what the
+function calls itself with. -/
+@[asm_fact] theorem num_pred {n : Nat} (hn : 0 < n) : num n - 1 = num (n - 1) := by
+  obtain ⟨k, rfl⟩ : ∃ k, n = k + 1 := ⟨n - 1, by omega⟩
+  simp only [num, Nat.add_sub_cancel, BitVec.ofNat_add]
+  exact BitVec.add_sub_cancel _ _
 
 /-! ## Safety, and the result -/
 
