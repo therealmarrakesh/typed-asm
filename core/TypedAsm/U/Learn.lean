@@ -143,19 +143,19 @@ theorem CtxS.learn_regards {ρ : Env} {p : CmpT} {b : Bool} (Γ : CtxS) (hp : p.
   · exact CmpT.rangeFacts_hasTy hp hr Ψ' n
   · exact hg _ (List.mem_map.mpr ⟨g, hs, rfl⟩)
 
-/-- **The context on one side of a conditional jump**: knowing what the
-condition's being so, or not, teaches, where the flags say what comparison
-the condition comes to. -/
-def CtxS.side (Γ : CtxS) (c : Cond) (b : Bool) : CtxS :=
-  match Γ.flags.says c with
+/-- **The context on one side of a choice made on a condition**: knowing
+what the condition's being so, or not, teaches, where the flags it is a
+condition on say what comparison it comes to. -/
+def CtxS.side (Γ : CtxS) (fl : FlagsT) (c : Cond) (b : Bool) : CtxS :=
+  match fl.says c with
   | some p => Γ.learn p b
   | none => Γ
 
-theorem CtxS.side_regards {ρ : Env} (Γ : CtxS) {c : Cond} {b : Bool}
-    (h : c.eval (Γ.flags.den ρ) = some b) :
-    Regards fetch sys Ψ (Γ.den ρ) ((Γ.side c b).den ρ) := by
+theorem CtxS.side_regards {ρ : Env} (Γ : CtxS) {fl : FlagsT} {c : Cond} {b : Bool}
+    (h : c.eval (fl.den ρ) = some b) :
+    Regards fetch sys Ψ (Γ.den ρ) ((Γ.side fl c b).den ρ) := by
   unfold CtxS.side
-  cases hs : Γ.flags.says c with
+  cases hs : fl.says c with
   | none => exact Regards.refl _
   | some p =>
     have := FlagsT.says_den ρ hs

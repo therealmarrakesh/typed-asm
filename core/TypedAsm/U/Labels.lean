@@ -490,8 +490,8 @@ def Walk.closes (cc : CtxS → CtxS → Nat → Option (CtxS × OpenL)) (labels 
   | _, .sys2 k a b => a.closes cc labels (k + 1) && b.closes cc labels (k + 1)
   | _, .ends => true
   | _, .vacuous => true
-  | k, .branch c Γ taken fall =>
-    Γ.flags.decides c && taken.closes cc labels k && fall.closes cc labels k
+  | k, .branch c fl taken fall =>
+    fl.decides c && taken.closes cc labels k && fall.closes cc labels k
 
 /-- Such a walk holds, where the code at each label is typed for every
 member of the label's family. -/
@@ -555,9 +555,9 @@ theorem Walk.holds_of_closes {n : Nat} {labels : List Label}
     exact fun x => ⟨Walk.holds_of_closes hcc H a _ _ h.1, Walk.holds_of_closes hcc H b _ _ h.2⟩
   | .ends, _, _, _ => trivial
   | .vacuous, _, _, _ => trivial
-  | .branch c Γ taken fall, k, ρ, h => by
+  | .branch c fl taken fall, k, ρ, h => by
     simp only [Walk.closes, Bool.and_eq_true] at h
-    exact ⟨FlagsT.decides_den ρ Γ.flags c h.1.1,
+    exact ⟨FlagsT.decides_den ρ fl c h.1.1,
       fun _ => Walk.holds_of_closes hcc H taken k ρ h.1.2,
       fun _ => Walk.holds_of_closes hcc H fall k ρ h.2⟩
 

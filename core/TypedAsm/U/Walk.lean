@@ -42,9 +42,10 @@ inductive Walk
   | sys2 (k : Nat) (a b : Walk)
   /-- A system call ends the program: nothing is left. -/
   | ends
-  /-- A conditional jump, from a context: the flags decide the condition,
-  and each way holds where the flags send control that way. -/
-  | branch (c : Cond) (Γ : CtxS) (taken fall : Walk)
+  /-- Control goes one of two ways, as a condition on some flags is: the
+  flags decide the condition, and each way holds where they send control
+  that way. -/
+  | branch (c : Cond) (fl : FlagsT) (taken fall : Walk)
   /-- The context reached is one no state matches: nothing is left. -/
   | vacuous
 
@@ -64,10 +65,10 @@ def Walk.holds (P A : BitVec 64 → Ctx → Prop) : Walk → Env → Prop
   | .sys k rest, ρ => ∀ x, rest.holds P A (ρ.setVal k x)
   | .sys2 k a b, ρ => ∀ x, a.holds P A (ρ.setVal k x) ∧ b.holds P A (ρ.setVal k x)
   | .ends, _ => True
-  | .branch c Γ taken fall, ρ =>
-    (∃ b, c.eval (Γ.flags.den ρ) = some b) ∧
-    (c.eval (Γ.flags.den ρ) = some true → taken.holds P A ρ) ∧
-    (c.eval (Γ.flags.den ρ) = some false → fall.holds P A ρ)
+  | .branch c fl taken fall, ρ =>
+    (∃ b, c.eval (fl.den ρ) = some b) ∧
+    (c.eval (fl.den ρ) = some true → taken.holds P A ρ) ∧
+    (c.eval (fl.den ρ) = some false → fall.holds P A ρ)
   | .vacuous, _ => True
 
 /-- Whether the walk got anywhere: it stepped over an instruction or a call,
@@ -124,47 +125,21 @@ def walk (code : List (BitVec 64 × Instr × BitVec 64)) (stops : BitVec 64 → 
                     .sys k (walk code stops false fuel (k + 1) (a + len) Γh)
                   else .stop a Γ
                 | none => .stop a Γ
-      else if let .jcc c d := i then
-        if (Γ.side c true).under k && (Γ.side c false).under k then
-          .branch c Γ (walk code stops false fuel k (a + len + d.signExtend 64) (Γ.side c true))
-            (walk code stops false fuel k (a + len) (Γ.side c false))
-        else .stop a Γ
       else
         match stepHeld Γ k (a + len) i with
         | none => .stop a Γ
         | some (Γ', t) =>
           if Γ'.under (k + 1) then
-            match t.lit? with
-            | some t' => .step i Γ (a + len) k (walk code stops false fuel (k + 1) t' Γ')
-            | none => .step i Γ (a + len) k (.arrive t Γ')
+            match t with
+            | .lit t' => .step i Γ (a + len) k (walk code stops false fuel (k + 1) t' Γ')
+            | .fop (.cmov c .w64) fl (.lit n) (.lit tk) =>
+              if (Γ'.side fl c true).under (k + 1) && (Γ'.side fl c false).under (k + 1) then
+                .step i Γ (a + len) k
+                  (.branch c fl (walk code stops false fuel (k + 1) tk (Γ'.side fl c true))
+                    (walk code stops false fuel (k + 1) n (Γ'.side fl c false)))
+              else .stop a Γ
+            | t => .step i Γ (a + len) k (.arrive t Γ')
           else .stop a Γ
-
-theorem CtxOf.apply_none (Γ : Ctx) : Γ.apply ⟨[], Γ.flags, 0⟩ = Γ := by
-  cases Γ; rfl
-
-/-- **A conditional jump**, where the flags decide the condition: control
-goes to the target if it holds and to the next instruction if not, and the
-context is as it was. -/
-theorem jcc_steps {Γ : Ctx} {next : BitVec 64} {c : Cond} {d : BitVec 32}
-    (hb : ∃ b, c.eval Γ.flags = some b) :
-    Steps fetch sys Ψ (.jcc c d) next Γ fun t Δ => Δ = Γ ∧
-      ((c.eval Γ.flags = some true ∧ t = next + d.signExtend 64) ∨
-        (c.eval Γ.flags = some false ∧ t = next)) := by
-  obtain ⟨b, hb⟩ := hb
-  refine Steps.mono (Steps.desc (i := .jcc c d) (R := fun x Γr => x = 0 ∧ Γr = Γ)
-    (W := fun _ Γr Γw => Γw = Γr) rfl ⟨rfl, rfl⟩ (fun x Γr _ => ⟨Γr, rfl, rfl⟩) ?_) ?_
-  · intro x Γr _
-    show (c.eval Γ.flags).isSome = true
-    rw [hb]; rfl
-  · rintro t Δ ⟨x, Γr, Γw, ⟨rfl, rfl⟩, rfl, rfl, rfl⟩
-    refine ⟨CtxOf.apply_none _, ?_⟩
-    cases b
-    · refine .inr ⟨hb, ?_⟩
-      show (some (FOp.eval (.cmov c .w64) Γw.flags next (next + d.signExtend 64))).getD next = next
-      rw [cmov64, hb]; rfl
-    · refine .inl ⟨hb, ?_⟩
-      show (some (FOp.eval (.cmov c .w64) Γw.flags next (next + d.signExtend 64))).getD next = _
-      rw [cmov64, hb]; rfl
 
 theorem Ok.zero (a : BitVec 64) (Γ : Ctx) : Ok fetch sys Ψ 0 a Γ := by
   intro k hk Ψ' _ _ s _ _
@@ -315,48 +290,47 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
                   · subst hW; exact ⟨h, fun hm => nomatch hm⟩
                 · subst hW; exact ⟨h, fun hm => nomatch hm⟩
       · split at hW
-        · next =>
+        · subst hW; exact ⟨h, fun hm => nomatch hm⟩
+        · next Γ' t hstep =>
           split at hW
-          · next hus =>
-            subst hW
-            rw [Bool.and_eq_true] at hus
-            obtain ⟨hdec, htk, hfl⟩ := h
-            have hb := both fun m hm => by
-              refine Ok.step hf (jcc_steps (Γ := Γ.den ρ) hdec) ?_
-              rintro t Δ ⟨rfl, ⟨hc, rfl⟩ | ⟨hc, rfl⟩⟩
-              · exact ((Ok.regard (Γ.side_regards hc) (walk_sound hD hkind hpre code stops hcode
-                  false fuel k _ _ ρ hus.1 (htk hc)).1).mono hm).arrives
-              · exact ((Ok.regard (Γ.side_regards hc) (walk_sound hD hkind hpre code stops hcode
-                  false fuel k _ _ ρ hus.2 (hfl hc)).1).mono hm).arrives
-            exact ⟨hb.1, fun _ => hb.2⟩
-          · subst hW; exact ⟨h, fun hm => nomatch hm⟩
-        · split at hW
-          · subst hW; exact ⟨h, fun hm => nomatch hm⟩
-          · next Γ' t hstep =>
+          · next hu' =>
+            have key : ∀ (rest : Walk),
+                (GuardOk ρ Γ (e + len) i ∧ ∀ x, rest.holds (Ok fetch sys Ψ n)
+                  (Arrives fetch sys Ψ n) (ρ.setVal k x)) →
+                (∀ x, rest.holds (Ok fetch sys Ψ n) (Arrives fetch sys Ψ n) (ρ.setVal k x) →
+                  Arrives fetch sys Ψ n (t.den (ρ.setVal k x)) (Γ'.den (ρ.setVal k x))) →
+                Ok fetch sys Ψ n e (Γ.den ρ) ∧ Ok fetch sys Ψ (n + 1) e (Γ.den ρ) := by
+              intro rest ⟨hg, hrest⟩ harr
+              refine both fun m hm => ?_
+              refine Ok.step hf (stepHeld_sound hstep hu hg) ?_
+              rintro t' Δ ⟨x, rfl, rfl⟩
+              exact (harr x (hrest x)).mono hm
             split at hW
-            · next hu' =>
-              have key : ∀ (rest : Walk),
-                  (GuardOk ρ Γ (e + len) i ∧ ∀ x, rest.holds (Ok fetch sys Ψ n)
-                    (Arrives fetch sys Ψ n) (ρ.setVal k x)) →
-                  (∀ x, rest.holds (Ok fetch sys Ψ n) (Arrives fetch sys Ψ n) (ρ.setVal k x) →
-                    Arrives fetch sys Ψ n (t.den (ρ.setVal k x)) (Γ'.den (ρ.setVal k x))) →
-                  Ok fetch sys Ψ n e (Γ.den ρ) ∧ Ok fetch sys Ψ (n + 1) e (Γ.den ρ) := by
-                intro rest ⟨hg, hrest⟩ harr
-                refine both fun m hm => ?_
-                refine Ok.step hf (stepHeld_sound hstep hu hg) ?_
-                rintro t' Δ ⟨x, rfl, rfl⟩
-                exact (harr x (hrest x)).mono hm
+            · next t' =>
+              subst hW
+              have hb := key _ h (fun x hx =>
+                (walk_sound hD hkind hpre code stops hcode false fuel (k + 1) t' Γ' (ρ.setVal k x) hu'
+                  hx).1.arrives)
+              exact ⟨hb.1, fun _ => hb.2⟩
+            · next c fl nx tk =>
               split at hW
-              · next t' ht =>
+              · next hus =>
                 subst hW
-                have hb := key _ h (fun x hx => by
-                  rw [Val.lit?_den ht]
-                  exact (walk_sound hD hkind hpre code stops hcode false fuel (k + 1) t' Γ' (ρ.setVal k x) hu'
-                    hx).1.arrives)
+                rw [Bool.and_eq_true] at hus
+                have hb := key _ h (fun x ⟨⟨b, hc⟩, htk, hfl⟩ => by
+                  show Arrives fetch sys Ψ n
+                    (FOp.eval (.cmov c .w64) (fl.den (ρ.setVal k x)) nx tk) _
+                  rw [cmov64, hc]
+                  cases b
+                  · exact (Ok.regard (Γ'.side_regards hc) (walk_sound hD hkind hpre code stops
+                      hcode false fuel (k + 1) nx _ (ρ.setVal k x) hus.2 (hfl hc)).1).arrives
+                  · exact (Ok.regard (Γ'.side_regards hc) (walk_sound hD hkind hpre code stops
+                      hcode false fuel (k + 1) tk _ (ρ.setVal k x) hus.1 (htk hc)).1).arrives)
                 exact ⟨hb.1, fun _ => hb.2⟩
-              · subst hW
-                have hb := key _ h (fun x hx => hx)
-                exact ⟨hb.1, fun _ => hb.2⟩
-            · subst hW; exact ⟨h, fun hm => nomatch hm⟩
+              · subst hW; exact ⟨h, fun hm => nomatch hm⟩
+            · subst hW
+              have hb := key _ h (fun x hx => hx)
+              exact ⟨hb.1, fun _ => hb.2⟩
+          · subst hW; exact ⟨h, fun hm => nomatch hm⟩
 
 end TypedAsm.U
