@@ -3302,7 +3302,8 @@ def solveJumpVia (g : MVarId) (c : ViaJump) (cs : List Sym.CondS) (atoms : Sym.A
 /-- Looks at a jump through an operand that holds a pointer to code: the
 context the code wants is the one the context reached is compared with. -/
 def findJumpVia (atoms : Sym.Atoms) (named : Array (Nat × Reg)) (cur : Sym.CtxS) (at' : Nat)
-    (τ : Sym.TyS) (hc : List Sym.CondS) : TacticM (Option (ViaJump × Sym.Atoms)) := do
+    (τ : Sym.TyS) (hc : List Sym.CondS) (notCode? : Option (IO.Ref Bool) := none) :
+    TacticM (Option (ViaJump × Sym.Atoms)) := do
   if ← enterOff.get then return none
   let bv := mkApp (mkConst ``BitVec) (mkNatLit 64)
   let decls := named.map fun (_, r) => (Name.mkSimple s!"{r.name64}₀", bv)
@@ -3349,6 +3350,7 @@ def findJumpVia (atoms : Sym.Atoms) (named : Array (Nat × Reg)) (cur : Sym.CtxS
       if cands.isEmpty then
         trace[TypedAsm.fast] "jump through a value: its type is not that of a pointer to code, \
           nor of a function this code's caller is ready for"
+        if let some r := notCode? then r.set true
         return none
       let mut found : Option (ViaJump × Sym.Atoms) := none
       for (Δ0, pf) in cands do
@@ -3671,7 +3673,17 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           let some stops := stops? | break
           unless ← labelsKnown.get do break
           if advanced && stops.contains at' then break
-          unless at' < t && !stops.contains t do break
+          unless at' < t && !stops.contains t do
+            -- back to a label with no context of its own: refused, since
+            -- what is jumped back to must say what holds each time round
+            if !stops.contains t && moves.isEmpty then
+              if let some (_, _, _, labels) ← labelInfo Φ then
+                let name := match labels.find? (·.1 == t) with
+                  | some (_, l) => m!"label `{l.components.getLast!}`"
+                  | none => m!"address {t}"
+                refusal.set (some m!"no context is declared at {name}: a label that is jumped \
+                  back to, called, or returned to must say what holds there")
+            break
           moves := moves.push (.jump at' i len')
           at' := t
           advanced := true
@@ -3992,7 +4004,16 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
       let some (τ, hc) := Sym.held (BitVec.ofNat 64 (at' + len'.toNat))
           { cur with blocks := (prog?.map fun x => x.1.blocks).getD [] } rm
         | do trace[TypedAsm.fast] "`{i.toAsm}`: what the operand holds is not read"; return none
-      let some (info, atoms') ← findJumpVia atoms (named' moves) cur at' τ hc | return none
+      let notCode ← IO.mkRef false
+      let some (info, atoms') ← findJumpVia atoms (named' moves) cur at' τ hc (some notCode)
+        | do
+          if ← notCode.get then
+            refusal.set (some m!"`{i.toAsm}`: the operand does not hold a pointer to code here. \
+              Control would go to whatever number it holds: a general-protection fault where \
+              the processor has no such address, a page fault where there is no code. A \
+              register holding the exact address of a label becomes a pointer to code with \
+              `ty_fn_ptr` (a function) or `ty_code_ptr` (any other label)")
+          return none
       return some (info, atoms', .jump at' i len')
     -- When a call ends the program, for the system the block is typed
     -- against: any status, or one exactly known and as wanted.
@@ -4021,14 +4042,18 @@ partial def fastStep (goal : MVarId) (ty : Expr) (named : Bool) :
           (mkLambda `o .default (mkConst ``Sym.Offered) (mkConst ``False))
         (wr, mkApp3 (mkConst ``Sym.offersNone) sys Ψ wr)
     -- A call that ends the program: the walk ends there. Where the status
-    -- is to be as wanted and is not exactly known, it is left to the long
-    -- way, which says so.
+    -- is to be as wanted and is not exactly known, the call is refused.
     let exitEnd (at' : Nat) (cur : Sym.CtxS) : TacticM (Option WalkMove) := do
       unless endsKnown do return none
       if ← enterOff.get then return none
       let some (i, len') := instrs[at']? | return none
       let some (.exit v) := Sym.exitAt cur i | return none
-      if wantQ?.isSome && v.isNone then return none
+      if wantQ?.isSome && v.isNone then
+        -- refused: the status is to be as wanted, and is not exactly known
+        let actual ← try ppTy (← Sym.denTy atoms (cur.regs.get .rdi)) catch _ => pure "not known"
+        refusal.set (some m!"`syscall`: what the program ends with is being shown, so the \
+          status in `rdi` must be exactly known here, but its type is `{actual}`")
+        return none
       return some (.jump at' i len')
     -- the first variable a name may take: the table may grow past it later
     let k₀ := atoms.val.size
