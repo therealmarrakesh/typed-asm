@@ -124,6 +124,21 @@ theorem alu_sub64 (f : Flags) (a b : BitVec 64) : FOp.eval (.alu .sub .w64) f a 
   rw [sub_res64]
   simp only [BitVec.setWidth_eq, BitVec.sub_eq_add_neg]
 
+/-- The low half of a value's sign extension to twice its width is the value. -/
+theorem signExtend_low (a : BitVec 64) : (a.signExtend (64 + 64)).setWidth 64 = a := by
+  ext i hi
+  rw [BitVec.getElem_setWidth, BitVec.getLsbD_signExtend]
+  simp only [show i < 64 + 64 from by omega, decide_true, Bool.true_and, hi, ↓reduceIte]
+  exact BitVec.getLsbD_eq_getElem hi
+
+/-- **What a multiply of two 64-bit values computes is their product**, as
+64-bit values. -/
+theorem imul64 (a b : BitVec 64) : Bin.eval (.imul .w64) a b = a * b := by
+  show (((a.setWidth 64).signExtend (64 + 64) * (b.setWidth 64).signExtend (64 + 64)).setWidth
+    64).setWidth 64 = a * b
+  rw [BitVec.setWidth_eq, BitVec.setWidth_eq, BitVec.setWidth_eq,
+    BitVec.setWidth_mul _ _ (by decide), signExtend_low, signExtend_low]
+
 theorem alu_xorSelf (w : Width) (f : Flags) (a : BitVec 64) : FOp.eval (.alu .xor w) f a a = 0 := by
   show wide (BitVec.setWidth w.bits a ^^^ BitVec.setWidth w.bits a) = 0
   rw [BitVec.xor_self]

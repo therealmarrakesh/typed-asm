@@ -33,14 +33,104 @@ variable {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
 /-- Whether two terms stand for the same value, as far as their being the
 same term, or coming apart into the same multiples and the same number,
 shows. -/
-def Val.same (a b : Val) : Bool :=
+def Val.sameFlat (a b : Val) : Bool :=
   a == b || a.linSame b
 
-theorem Val.same_den (ρ : Env) {a b : Val} (h : a.same b = true) : a.den ρ = b.den ρ := by
-  unfold Val.same at h
+theorem Val.sameFlat_den (ρ : Env) {a b : Val} (h : a.sameFlat b = true) : a.den ρ = b.den ρ := by
+  unfold Val.sameFlat at h
   rcases Bool.or_eq_true _ _ |>.mp h with h | h
   · rw [beq_iff_eq.mp h]
   · exact Val.linSame_den ρ h
+
+/-- **Whether two terms stand for the same value**: so, as terms or as
+sums; or the same operator, or the same function of the author's, on what
+are the same values in that sense. -/
+def Val.same : Val → Val → Bool
+  | .un o x, b =>
+    (Val.un o x).sameFlat b ||
+      match b with
+      | .un o' y => o == o' && Val.same x y
+      | _ => false
+  | .bin o x y, b =>
+    (Val.bin o x y).sameFlat b ||
+      match b with
+      | .bin o' x' y' => o == o' && Val.same x x' && Val.same y y'
+      | _ => false
+  | .tri o x y z, b =>
+    (Val.tri o x y z).sameFlat b ||
+      match b with
+      | .tri o' x' y' z' => o == o' && Val.same x x' && Val.same y y' && Val.same z z'
+      | _ => false
+  | .fop o fl x y, b =>
+    (Val.fop o fl x y).sameFlat b ||
+      match b with
+      | .fop o' fl' x' y' => o == o' && fl == fl' && Val.same x x' && Val.same y y'
+      | _ => false
+  | .app f x y, b =>
+    (Val.app f x y).sameFlat b ||
+      match b with
+      | .app f' x' y' => f == f' && Val.same x x' && Val.same y y'
+      | _ => false
+  | .lit v, b => (Val.lit v).sameFlat b
+  | .var i, b => (Val.var i).sameFlat b
+  | .bvar d i, b => (Val.bvar d i).sameFlat b
+  | .slot s, b => (Val.slot s).sameFlat b
+
+theorem Val.same_den (ρ : Env) : {a b : Val} → a.same b = true → a.den ρ = b.den ρ
+  | .un o x, b, h => by
+    unfold Val.same at h
+    rcases Bool.or_eq_true _ _ |>.mp h with h | h
+    · exact Val.sameFlat_den ρ h
+    · cases b with
+      | un o' y =>
+        simp only [Bool.and_eq_true, beq_iff_eq] at h
+        show o.eval (x.den ρ) = o'.eval (y.den ρ)
+        rw [h.1, Val.same_den ρ h.2]
+      | _ => cases h
+  | .bin o x y, b, h => by
+    unfold Val.same at h
+    rcases Bool.or_eq_true _ _ |>.mp h with h | h
+    · exact Val.sameFlat_den ρ h
+    · cases b with
+      | bin o' x' y' =>
+        simp only [Bool.and_eq_true, beq_iff_eq] at h
+        show o.eval (x.den ρ) (y.den ρ) = o'.eval (x'.den ρ) (y'.den ρ)
+        rw [h.1.1, Val.same_den ρ h.1.2, Val.same_den ρ h.2]
+      | _ => cases h
+  | .tri o x y z, b, h => by
+    unfold Val.same at h
+    rcases Bool.or_eq_true _ _ |>.mp h with h | h
+    · exact Val.sameFlat_den ρ h
+    · cases b with
+      | tri o' x' y' z' =>
+        simp only [Bool.and_eq_true, beq_iff_eq] at h
+        show o.eval (x.den ρ) (y.den ρ) (z.den ρ) = o'.eval (x'.den ρ) (y'.den ρ) (z'.den ρ)
+        rw [h.1.1.1, Val.same_den ρ h.1.1.2, Val.same_den ρ h.1.2, Val.same_den ρ h.2]
+      | _ => cases h
+  | .fop o fl x y, b, h => by
+    unfold Val.same at h
+    rcases Bool.or_eq_true _ _ |>.mp h with h | h
+    · exact Val.sameFlat_den ρ h
+    · cases b with
+      | fop o' fl' x' y' =>
+        simp only [Bool.and_eq_true, beq_iff_eq] at h
+        show o.eval (fl.den ρ) (x.den ρ) (y.den ρ) = o'.eval (fl'.den ρ) (x'.den ρ) (y'.den ρ)
+        rw [h.1.1.1, h.1.1.2, Val.same_den ρ h.1.2, Val.same_den ρ h.2]
+      | _ => cases h
+  | .app f x y, b, h => by
+    unfold Val.same at h
+    rcases Bool.or_eq_true _ _ |>.mp h with h | h
+    · exact Val.sameFlat_den ρ h
+    · cases b with
+      | app f' x' y' =>
+        simp only [Bool.and_eq_true, beq_iff_eq] at h
+        show ρ.fn f (x.den ρ) (y.den ρ) = ρ.fn f' (x'.den ρ) (y'.den ρ)
+        rw [h.1.1, Val.same_den ρ h.1.2, Val.same_den ρ h.2]
+      | _ => cases h
+  | .lit _, _, h => Val.sameFlat_den ρ (by unfold Val.same at h; exact h)
+  | .var _, _, h => Val.sameFlat_den ρ (by unfold Val.same at h; exact h)
+  | .bvar _ _, _, h => Val.sameFlat_den ρ (by unfold Val.same at h; exact h)
+  | .slot _, _, h => Val.sameFlat_den ρ (by unfold Val.same at h; exact h)
 
 def allRegs : List Reg :=
   [.rax, .rcx, .rdx, .rbx, .rsp, .rbp, .rsi, .rdi, .r8, .r9, .r10, .r11, .r12, .r13, .r14, .r15]
