@@ -55,14 +55,38 @@ keep clear of them are left. -/
 def HeldS.clearT (K : List (Val × TyS)) (S : HeldS) (o : Val) (ls : List Val) (n : Nat) : HeldS :=
   ⟨S.size, S.slots.filter fun p => sumLe K (o :: ls) n [p.1] 0 || leS K p.1 8 o 0⟩
 
-/-- A region with `n` of its bytes, from a place, given a value. -/
+/-- The value a byte stored at a place falls in, where the region is said
+to hold a number written out there and the byte stored is of a number
+written out: where that value is, and the number with the byte replaced. -/
+def HeldS.byteInto (S : HeldS) (o v : Val) : Option (Val × Val) :=
+  match v with
+  | .lit x =>
+    S.slots.findSome? fun p =>
+      match o.minus p.1, p.2 with
+      | some d, .lit w =>
+        if d.toNat < 8 then some (p.1, .lit (setByte w d.toNat (x.setWidth 8))) else none
+      | _, _ => none
+  | _ => none
+
+/-- A region with `n` of its bytes, from a place, given a value. Of eight
+bytes, the region then holds the value there. Of one byte stored into a
+number the region held, it holds the number with that byte replaced. -/
 def HeldS.put (K : List (Val × TyS)) (S : HeldS) (o : Val) (n : Nat) (v : Val) : HeldS :=
-  if n = 8 then ⟨S.size, (o, v) :: (S.clearT K o [] 8).slots⟩ else S.clearT K o [] n
+  if n = 8 then ⟨S.size, (o, v) :: (S.clearT K o [] 8).slots⟩
+  else if n = 1 then
+    match S.byteInto o v with
+    | some c => ⟨S.size, c :: (S.clearT K o [] 1).slots⟩
+    | none => S.clearT K o [] 1
+  else S.clearT K o [] n
 
 theorem HeldS.put_size (K : List (Val × TyS)) (S : HeldS) (o : Val) (n : Nat) (v : Val) :
     (S.put K o n v).size = S.size := by
   unfold HeldS.put
-  split <;> rfl
+  split
+  · rfl
+  · split
+    · split <;> rfl
+    · rfl
 
 variable {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
 
@@ -80,23 +104,65 @@ theorem HeldS.clearT_mem {ρ : Env} {Ψ' : MemTy} {m : Nat} {K : List (Val × Ty
   · have := leS_den h hg
     exact .inl (by show q.1.nat ρ + 8 ≤ _; omega)
 
+theorem HeldS.byteInto_den {ρ : Env} {S : HeldS} {o v : Val} {c : Val × Val}
+    (h : S.byteInto o v = some c) :
+    ∃ w d, slotDen ρ c = ((c.1.den ρ).toNat, setByte w d ((v.den ρ).setWidth 8)) ∧
+      ((c.1.den ρ).toNat, w) ∈ (S.den ρ).vals ∧
+      BitVec.ofNat 64 (o.nat ρ) = BitVec.ofNat 64 (c.1.den ρ).toNat + BitVec.ofNat 64 d ∧
+      d < 8 := by
+  unfold HeldS.byteInto at h
+  split at h
+  · next x =>
+    obtain ⟨p, hp, hx⟩ := List.exists_of_findSome?_eq_some h
+    split at hx
+    · next d w hd hlit =>
+      split at hx
+      · next hlt =>
+        cases hx
+        refine ⟨w, d.toNat, rfl, List.mem_map.mpr ⟨p, hp, ?_⟩, ?_, hlt⟩
+        · show ((p.1.den ρ).toNat, p.2.den ρ) = _
+          rw [hlit]
+          rfl
+        · rw [Val.nat, BitVec.ofNat_toNat, BitVec.setWidth_eq, BitVec.ofNat_toNat,
+            BitVec.setWidth_eq, BitVec.ofNat_toNat, BitVec.setWidth_eq]
+          exact Val.minus_den ρ hd
+      · cases hx
+    · cases hx
+  · cases h
+
 theorem HeldS.put_mem {ρ : Env} {Ψ' : MemTy} {m : Nat} {K : List (Val × TyS)}
     (hg : ∀ g ∈ K, HasTy fetch sys Ψ' m (g.2.den ρ) (g.1.den ρ)) {S : HeldS} {o : Val}
     {n : Nat} {v : Val} {p : Nat × BitVec 64} (hp : p ∈ ((S.put K o n v).den ρ).vals) :
     (p ∈ (S.den ρ).vals ∧ (p.1 + 8 ≤ o.nat ρ ∨ o.nat ρ + n ≤ p.1)) ∨
-      (n = 8 ∧ p = (o.nat ρ, v.den ρ)) := by
+      (n = 8 ∧ p = (o.nat ρ, v.den ρ)) ∨
+      (n = 1 ∧ ∃ c w d, p = (c, setByte w d ((v.den ρ).setWidth 8)) ∧ (c, w) ∈ (S.den ρ).vals ∧
+        BitVec.ofNat 64 (o.nat ρ) = BitVec.ofNat 64 c + BitVec.ofNat 64 d ∧ d < 8) := by
+  have clr : ∀ k, p ∈ ((S.clearT K o [] k).den ρ).vals →
+      p ∈ (S.den ρ).vals ∧ (p.1 + 8 ≤ o.nat ρ ∨ o.nat ρ + k ≤ p.1) := fun k hp => by
+    have := HeldS.clearT_mem hg (S := S) (o := o) (ls := []) (n := k) hp
+    simp only [sumNat, Nat.zero_add] at this
+    exact this
   unfold HeldS.put at hp
   split at hp
   · next h8 =>
     rcases List.mem_cons.mp (show p ∈ slotDen ρ (o, v) ::
         (S.clearT K o [] 8).slots.map (slotDen ρ) from hp) with rfl | hp
-    · exact .inr ⟨h8, rfl⟩
-    · have := HeldS.clearT_mem hg (S := S) (o := o) (ls := []) (n := 8) hp
-      simp only [sumNat, Nat.zero_add] at this
+    · exact .inr (.inl ⟨h8, rfl⟩)
+    · have := clr 8 hp
       exact .inl ⟨this.1, by omega⟩
-  · have := HeldS.clearT_mem hg hp
-    simp only [sumNat, Nat.zero_add] at this
-    exact .inl this
+  · split at hp
+    · next h1 =>
+      split at hp
+      · next c hc =>
+        rcases List.mem_cons.mp (show p ∈ slotDen ρ c ::
+            (S.clearT K o [] 1).slots.map (slotDen ρ) from hp) with rfl | hp
+        · obtain ⟨w, d, he, hmem, ho, hd⟩ := HeldS.byteInto_den (ρ := ρ) hc
+          exact .inr (.inr ⟨h1, _, w, d, he, hmem, ho, hd⟩)
+        · have := clr 1 hp
+          exact .inl ⟨this.1, by omega⟩
+      · have := clr 1 hp
+        exact .inl ⟨this.1, by omega⟩
+    · exact .inl (clr n hp)
 
 /-- What is shown of reading given what a context knows, is so of reading. -/
 theorem Reads.withKnown {Γ : Ctx} {a : BitVec 64} {n : Nat} {P : BitVec 64 → Ctx → Prop}

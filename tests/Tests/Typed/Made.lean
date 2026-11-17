@@ -5,7 +5,8 @@ import Tests.Typed.Lent
 
 A number a region held is said to hold is its eight bytes, the least
 significant first. A `write` from such a region offers those bytes, and a
-program can be proved to write them and nothing else. Each is checked by
+program can be proved to write them and nothing else. A byte stored into
+such a number leaves it known, with that byte replaced. Each is checked by
 the kernel as this file is compiled: what the checker accepts, and what it
 refuses.
 -/
@@ -53,5 +54,30 @@ example : heldBytes twoCells (.add (.bvar 0 16) (.lit 38)) 4 = some [7, 8, 0x11,
   decide +kernel
 -- where nothing is said to be held: no answer
 example : heldBytes twoCells (.add (.bvar 0 16) (.lit 46)) 4 = none := by decide +kernel
+
+/-! ## A byte stored into a number -/
+
+/-- The number pushed; `mov ecx, 0x4a; mov [rsp + k], cl`, a `J` stored
+into its `k`th byte; three bytes written; and the program ends. -/
+def codeByte (k : BitVec 32) : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .mov .w32 (.rm_i (.reg .rax) 0x0a6948), 5), (5, .push .rax, 1),
+   (6, .mov .w32 (.rm_i (.reg .rcx) 0x4a), 5), (11, .store8 (.sib (some .rsp) none k) .rcx, 4),
+   (15, .mov .w32 (.rm_i (.reg .rax) 1), 5), (20, .mov .w32 (.rm_i (.reg .rdi) 1), 5),
+   (25, .mov .w64 (.rm_r (.reg .rsi) .rsp), 3), (28, .mov .w32 (.rm_i (.reg .rdx) 3), 5),
+   (33, .syscall, 2),
+   (35, .mov .w32 (.rm_i (.reg .rax) 60), 5), (40, .mov .w32 (.rm_i (.reg .rdi) 0), 5),
+   (45, .syscall, 2)]
+
+def pgByte (k : BitVec 32) (want : List (BitVec 8)) : Prog :=
+  { code := codeByte k, pre := preOut [] (· == 0) (fun fd bs => fd == 1 && bs == want) }
+
+-- the first byte replaced: `J`, `i`, a new line
+example : checkProgram (pgByte 0 [0x4a, 0x69, 0x0a]) [lab 0 Pw] 20 0 = true := by decide +kernel
+-- no longer `H`
+example : checkProgram (pgByte 0 [0x48, 0x69, 0x0a]) [lab 0 Pw] 20 0 = false := by decide +kernel
+-- the third replaced
+example : checkProgram (pgByte 2 [0x48, 0x69, 0x4a]) [lab 0 Pw] 20 0 = true := by decide +kernel
+-- the sixth: the first three are as they were
+example : checkProgram (pgByte 5 [0x48, 0x69, 0x0a]) [lab 0 Pw] 20 0 = true := by decide +kernel
 
 end Tests.Unified

@@ -54,7 +54,8 @@ What exists and is checked today:
   every list of arguments.
 - Beyond safety, what a program ends with: a program can be proved to exit
   only with a status satisfying a stated condition. And what it writes:
-  data that is never written can say the bytes it holds, and a program can
+  data that is never written can say the bytes it holds, a number the
+  program stored in memory it holds is its eight bytes, and a program can
   be proved to offer the kernel, at every `write`, only bytes satisfying a
   stated condition. `examples/Hello` is proved to end with 0 and to write
   its message and nothing else, on standard output.
@@ -97,7 +98,9 @@ What is not there:
 - A program is refused with the place its check stops and a short reason
   (`explain`), not yet with an account in the program's own terms of what
   the instruction would need.
-- What a program writes is followed only for bytes the program's data says
-  it holds, not for bytes the program made or read.
+- What a program writes is followed for bytes its data says it holds and
+  for bytes it made, not for bytes it read. A store of two or four bytes
+  into a number it made leaves that number unknown; a store of one or of
+  eight does not.
 - The examples are written as constructor terms; there is no notation for
   instructions or labels.
