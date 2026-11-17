@@ -115,12 +115,28 @@ theorem roomS_den (ρ : Env) (Γ : CtxS) {room : Reg ⊕ Nat} {n : Nat} (h : roo
     show ((Γ.regs.get r).den ρ).toNat = x.toNat
     rw [Val.lit?_den hx]
 
+/-- Whether no typed value of a block reaches into the `n` bytes from `o`. -/
+def ValsS.free (o n : Nat) : ValsS → Bool
+  | .nil => true
+  | .cons o' _ rest => (o' + 8 ≤ o || o + n ≤ o') && rest.free o n
+
+theorem ValsS.free_den (ρ : Env) (o n : Nat) :
+    (vs : ValsS) → (vs.den ρ).all (ShapeOf.clearOf o n) = vs.free o n
+  | .nil => rfl
+  | .cons o' τ rest => by
+    show (ShapeOf.clearOf o n (o', τ.den ρ) && (rest.den ρ).all _) = _
+    rw [ValsS.free_den ρ o n rest]
+    rfl
+
 /-- **A call that stores bytes at an address the program gives, as a step
 on terms**: where the call number and the room are written out and the
 bytes lie in a region held, the two contexts it may return in, with the
 name `k` for what it hands back: the context as it was, and the context
-saying nothing of those bytes. -/
-def sysFills (Γ : CtxS) (k : Nat) (next : BitVec 64) : Option (CtxS × CtxS) :=
+saying nothing of those bytes. Or the bytes lie in a block a value is known
+to point into, that may be written through it, where the block has no
+typed value: the context is then as it was either way. -/
+def sysFills (kinds : Nat → Option ShapeS) (Γ : CtxS) (k : Nat) (next : BitVec 64) :
+    Option (CtxS × CtxS) :=
   match Γ.regs.rax.lit? with
   | some nr =>
     match linuxKind nr with
@@ -131,14 +147,21 @@ def sysFills (Γ : CtxS) (k : Nat) (next : BitVec 64) : Option (CtxS × CtxS) :=
         | some (j, base, S, o) =>
           some (Γ.afterSys (.var k) next,
             CtxS.afterSys { Γ with held := Γ.held.set j (base, S.clear o n) } (.var k) next)
-        | none => none
+        | none =>
+          match findFact kinds (Γ.regs.get b) n Γ.known with
+          | some (_, Sh, w, _, o) =>
+            if w && Sh.vals.free o n then
+              some (Γ.afterSys (.var k) next, Γ.afterSys (.var k) next)
+            else none
+          | none => none
       | none => none
     | _ => none
   | none => none
 
 theorem sysFills_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
-    (hpre : ∀ s, D.pre s) {ρ : Env} {Γ Γe Γh : CtxS} {k : Nat} {next : BitVec 64}
-    (h : sysFills Γ k next = some (Γe, Γh)) (hu : Γ.under k = true) :
+    (hpre : ∀ s, D.pre s) {ρ : Env} {kinds : Nat → Option ShapeS} (hkd : KindsOk Ψ kinds)
+    {Γ Γe Γh : CtxS} {k : Nat} {next : BitVec 64}
+    (h : sysFills kinds Γ k next = some (Γe, Γh)) (hu : Γ.under k = true) :
     Steps fetch sys Ψ .syscall next (Γ.den ρ) fun t Δ =>
       ∃ x, t = next ∧ (Δ = Γe.den (ρ.setVal k x) ∨ Δ = Γh.den (ρ.setVal k x)) := by
   unfold sysFills at h
@@ -198,7 +221,36 @@ theorem sysFills_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
             rw [e]
             show _ = CtxOf.afterSys _ ((ρ.setVal k x).val k) t
             rw [Env.setVal_get_self]
-        · cases h
+        · split at h
+          · next p Sh w off o hfind =>
+            split at h
+            · next hc =>
+              cases h
+              rw [Bool.and_eq_true] at hc
+              obtain ⟨hw, hfree⟩ := hc
+              subst hw
+              obtain ⟨τ, hmem, hpt, hin, ha⟩ := findFact_spec (ρ := ρ) Γ.known hfind
+              have hf : (p.den ρ, τ.den ρ) ∈ (Γ.den ρ).known :=
+                List.mem_map.mpr ⟨(p, τ), hmem, rfl⟩
+              have hrax : (Γ.den ρ).val .rax = nr := Val.lit?_den hnr
+              have hH := Havoc.shared (fetch := fetch) (sys := sys) (Ψ := Ψ) (n := n) hf
+                (TyS.pointee_den hkd ρ hpt) ha (by rw [ShapeS.den_size]; exact hin)
+                (by
+                  show (Sh.den ρ).vals.all _ = true
+                  rw [ShapeS.den_vals, ValsS.free_den]
+                  exact hfree)
+              refine Steps.mono (Steps.fills hD (by rw [hkind, hrax]; exact hk)
+                (fun _ _ _ _ s _ _ => hpre s) (by rw [roomS_den ρ Γ hroom]; exact hH)) ?_
+              rintro t Δ ⟨rfl, x, hcase⟩
+              have hΓ : Γ.den (ρ.setVal k x) = Γ.den ρ := CtxS.den_setVal ρ k x Γ hu
+              have e : (Γ.afterSys (.var k) t).den (ρ.setVal k x) = (Γ.den ρ).afterSys x t := by
+                rw [CtxS.afterSys_den, hΓ]
+                show CtxOf.afterSys (Γ.den ρ) ((ρ.setVal k x).val k) t = _
+                rw [Env.setVal_get_self]
+              refine ⟨x, rfl, .inl ?_⟩
+              rcases hcase with rfl | rfl <;> exact e.symm
+            · cases h
+          · cases h
       · cases h
     · cases h
   · cases h

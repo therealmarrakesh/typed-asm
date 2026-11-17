@@ -534,6 +534,31 @@ example : checkProgram { code := codeList } [lab 0 Pl] 10 0 = false := by decide
 example : checkProgram { code := codeList, kinds := kinds7 } [lab 0 Pl, lab 5 Pl] 10 0 = false := by
   decide +kernel
 
+/-! ## A call that stores bytes in a block others may point into -/
+
+/-- `mov eax, 0; mov edx, 8; syscall; exit`: read eight bytes to where `rsi`
+points. -/
+def codeRdS : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .mov .w32 (.rm_i (.reg .rax) 0), 5), (5, .mov .w32 (.rm_i (.reg .rdx) 8), 5),
+   (10, .syscall, 2), (12, .mov .w32 (.rm_i (.reg .rax) 60), 5), (17, .syscall, 2)]
+
+/-- `rsi` points four bytes into a block of the given shape. -/
+def buf (Sh : ShapeS) (w : Bool) : CtxS := { Pw with known := [(.bvar 0 6, .ptr Sh w 4)] }
+
+-- sixteen plain bytes that may be written: the eight from the fourth lie in them
+example : checkProgram codeRdS [lab 0 (buf (.mk 16 .nil) true)] 10 0 = true := by decide +kernel
+-- through a pointer that may not be written through: refused
+example : checkProgram codeRdS [lab 0 (buf (.mk 16 .nil) false)] 10 0 = false := by
+  decide +kernel
+-- over bytes that hold a pointer: refused, the block would no longer hold one
+example : checkProgram codeRdS
+    [lab 0 (buf (.mk 16 (.cons 8 (.ptr (.mk 8 .nil) false 0) .nil)) true)] 10 0 = false := by
+  decide +kernel
+-- past the end of the block: refused
+example : checkProgram codeRdS [lab 0 (buf (.mk 8 .nil) true)] 10 0 = false := by decide +kernel
+-- to an address nothing is known of: refused
+example : checkProgram codeRdS [lab 0 Pw] 10 0 = false := by decide +kernel
+
 /-! ## Text -/
 
 /-- `rdi` points to text. -/
