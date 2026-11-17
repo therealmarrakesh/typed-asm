@@ -123,8 +123,11 @@ theorem outputs_of_checked {Q : BitVec 32 → Prop} {q : BitVec 32 → Bool}
     (hst : StaticsOk fetch ((linux.exitsOnly Q).writesOnly R) Ψ pg.statics) (hwf : Ψ.WF)
     (h : checkProgram pg labels fuel k = true)
     {l : Label} (hl : l ∈ labels) {s : State} (hrip : s.rip = l.addr) (ρ : Env) (fam : Fam)
-    (hw : ∀ n, WellTyped fetch ((linux.exitsOnly Q).writesOnly R) Ψ n
-      (l.pat.den { ρ with bound := fam :: ρ.bound }) s) :
+    (hw : ∀ n, (∀ l' ∈ labels, ∀ (ρ' : Env) (fam' : Fam),
+        Ok fetch ((linux.exitsOnly Q).writesOnly R) Ψ n l'.addr
+          (l'.pat.den { ρ' with bound := fam' :: ρ'.bound })) →
+      WellTyped fetch ((linux.exitsOnly Q).writesOnly R) Ψ n
+        (l.pat.den { ρ with bound := fam :: ρ.bound }) s) :
     Safe fetch linux s ∧
       (∀ s', TypedAsm.Steps fetch linux s s' → ∀ len c, fetch s'.rip = some (.syscall, len) →
         linux { s' with rip := s'.rip + len } = .exit c → Q c) ∧

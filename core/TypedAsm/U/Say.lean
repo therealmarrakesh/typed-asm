@@ -89,6 +89,17 @@ def inProgram (n : Nat) (pushed : Nat := 0) (regs : List (Reg × Val) := [])
       known := known
       held := (entryPatStack (stackSize n)).held ++ held }
 
+/-- Things known, one after another, from a list. -/
+def factsOf : List (Val × TyS) → FactsS
+  | [] => .nil
+  | f :: fs => .cons f.1 f.2 (factsOf fs)
+
+/-- **A pointer to code wanting a context**: what a value is known to be
+where it is the address of code that may be entered in any member of the
+context's family. A pointer to a function is a pointer to code wanting what
+the function's label wants. -/
+def codeOf (E : CtxS) : TyS := .code E.regs E.flags E.held (factsOf E.known) E.rest
+
 /-- What a program says of something in one of its segments: that its
 address is that of a byte of the segment's block. -/
 def staticIn (blocks : List (BitVec 64 × LayoutS)) (a : BitVec 64) : List (Val × TyS) :=

@@ -61,6 +61,11 @@ def blocksOf (code : List (Asm L)) (l : L) : List (BitVec 64 × LayoutS) :=
         writable := g.2.1.writable
         said := if g.2.1.writable then none else some (pageData g) })
 
+/-- Whether an address is code wanting a family, by a program's labels:
+asked of each address a said block's shape says is code. -/
+def codeJ (pg : Prog) (labels : List Label) (fuel : Nat) : BitVec 64 → CtxS → Bool :=
+  fun a E => justifyF pg labels (fun a => labels.any fun l' => l'.addr == a) fuel fuel 0 a E
+
 /-- **Whether a program as written is typed and starts as its entry asks.**
 The checker's program is the assembled table; the entry label is among the
 labels, with the entry context; the labels' code is typed; and the state
@@ -93,7 +98,7 @@ def wholeOkWith (code : List (Asm L)) (l : L) (n : Nat) (ks : List (Nat × Shape
     (st :: segStretches segs []).all
       (stretchIn ((stackBase n, stackSize n) :: blocks.map fun x => (x.1, x.2.size)))) &&
   pg.statics.all (staticS bs) && blocksIn segs blocks &&
-  valsHold segs bs && kindsCheck ks bs
+  valsHold (codeJ pg labels fuel) segs bs && kindsCheck ks bs
 
 /-- The same, each segment taken as one block of plain bytes, and no kinds. -/
 abbrev wholeOk (code : List (Asm L)) (l : L) (n : Nat) (pg : Prog) (labels : List Label)
@@ -108,6 +113,9 @@ structure WholeFacts (code : List (Asm L)) (l : L) (n : Nat) (ks : List (Nat × 
   wf : (MemTy.ofList (denBlocks bs) (kindsDen ks)).WF
   nd : (denBlocks bs).Pairwise fun x y => x.1 ≠ y.1
   heap : ∀ (fetch : Fetch) (sys : Syscall) (w : World) (k : Nat),
+    (∀ a E, codeJ pg labels fuel a E = true → ∀ (ρ : Env) (fam : Fam),
+      Ok fetch sys (MemTy.ofList (denBlocks bs) (kindsDen ks)) k a
+        (E.den { ρ with bound := fam :: ρ.bound })) →
     ∀ x ∈ denBlocks bs, ∀ p ∈ x.2.shape.vals,
       HasTy fetch sys (MemTy.ofList (denBlocks bs) (kindsDen ks)) k p.2
         ((startIn code l n w).load64 (x.1 + BitVec.ofNat 64 p.1))
@@ -132,7 +140,7 @@ theorem wholeOk_facts {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat ×
       (Asm.prepared_holds State.init (Asm.base code) code l (stackStretch n).1 (stackStretch n).2
         0x80000000 hholds hhead hoffp g hg).congr rfl rfl
   refine ⟨?_, blocksWf_wf hwf (tags_of_check hkc), hnd,
-    fun _ _ w k => heap_of_check (t := startIn code l n w) hsegs rfl hnd hplain k,
+    fun _ _ w k hj => heap_of_check (t := startIn code l n w) hsegs rfl hnd hplain k hj,
     kindsOk_of_check hkc _, hchk, ?_,
     fun _ _ => staticsOk_of_holds hnd hstat,
     fun w => Asm.loaded (hparts w), fun w ρ => ?_⟩
@@ -165,7 +173,14 @@ says. -/
 theorem WholeFacts.wellTyped {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat × ShapeS)}
     {bs : List (BitVec 64 × LayoutS)} {pg : Prog}
     {labels : List Label} {fuel : Nat} (f : WholeFacts code l n ks bs pg labels fuel)
-    (fetch : Fetch) (sys : Syscall) (w : World) (k : Nat) :
+    {fetch : Fetch} {sys : Syscall} {D : SysDesc} (hD : Describes sys D)
+    (hkind : D.kind = linuxKind)
+    (hpre : PreSound fetch sys (MemTy.ofList (denBlocks bs) (kindsDen ks)) D pg.pre)
+    (hcode : ∀ e ∈ pg.code, fetch e.1 = some (e.2.1, e.2.2)) (hpk : pg.kinds = kindsOf ks)
+    (w : World) (k : Nat)
+    (H : ∀ l' ∈ labels, ∀ (ρ' : Env) (fam' : Fam),
+      Ok fetch sys (MemTy.ofList (denBlocks bs) (kindsDen ks)) k l'.addr
+        (l'.pat.den { ρ' with bound := fam' :: ρ'.bound })) :
     WellTyped fetch sys (MemTy.ofList (denBlocks bs) (kindsDen ks)) k
       ((entryOf n).den { ({} : Env) with bound := entryFam code l n :: [] }) (startIn code l n w) :=
   (f.starts w {}).matches f.nd
@@ -175,7 +190,8 @@ theorem WholeFacts.wellTyped {code : List (Asm L)} {l : L} {n : Nat} {ks : List 
         split <;> rfl
       rw [hk] at hg
       cases hg)
-    (f.heap fetch sys w k)
+    (f.heap fetch sys w k fun a E hj ρ fam =>
+      justifyF_sound hD hkind hpre hcode (hpk ▸ f.kindsOk) (f.statics _ _) H fuel 0 a E hj ρ fam)
 
 /-- **A program that checks is safe, on the machine that decodes its
 instructions from memory.** -/
@@ -187,7 +203,8 @@ theorem whole_safe {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat × Sh
   have f := wholeOk_facts h
   SafeMem.of_safe linux_frame (f.loaded w)
     (safe_of_checked linux_describes rfl (PreSound.all (fun _ => trivial) _) f.hcode (hpk ▸ f.kindsOk)
-      (f.statics _ _) f.wf f.check f.entry rfl {} (entryFam code l n) (f.wellTyped _ _ w))
+      (f.statics _ _) f.wf f.check f.entry rfl {} (entryFam code l n) fun k H =>
+        f.wellTyped linux_describes rfl (PreSound.all (fun _ => trivial) _) f.hcode hpk w k H)
 
 /-- **And where it checks against the wanted status, ends only with it.** -/
 theorem whole_exits {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat × ShapeS)}
@@ -201,7 +218,9 @@ theorem whole_exits {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat × S
         linux { s' with rip := s'.rip + len } = .exit c → Q c := fun w =>
   have f := wholeOk_facts h
   have r := exits_of_checked hq hpg f.hcode (hpk ▸ f.kindsOk) (f.statics _ _) f.wf f.check f.entry
-    rfl {} (entryFam code l n) (f.wellTyped _ _ w)
+    rfl {} (entryFam code l n) fun k H =>
+      f.wellTyped (D := exitsDesc Q) (linux_describes.exitsOnly Q) rfl
+        (by rw [hpg]; exact preExits_sound hq) f.hcode hpk w k H
   ⟨SafeMem.of_safe linux_frame (f.loaded w) r.1, r.2⟩
 
 /-- **And against the wanted status and the wanted writes: both.** -/
@@ -222,7 +241,9 @@ theorem whole_outputs {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat ×
         s'.getReg .rax = 1 → R (s'.getReg .rdi) s'.offered) := fun w =>
   have f := wholeOk_facts h
   have o := outputs_of_checked hq hr (saidOk_of_check f.nd hsaid) hpg f.hcode (hpk ▸ f.kindsOk)
-    (f.statics _ _) f.wf f.check f.entry rfl {} (entryFam code l n) (f.wellTyped _ _ w)
+    (f.statics _ _) f.wf f.check f.entry rfl {} (entryFam code l n) fun k H =>
+      f.wellTyped (D := outDesc Q R) ((linux_describes.exitsOnly Q).writesOnly R) rfl
+        (by rw [hpg]; exact preOut_sound hq hr (saidOk_of_check f.nd hsaid)) f.hcode hpk w k H
   ⟨SafeMem.of_safe linux_frame (f.loaded w) o.1, o.2.1, o.2.2⟩
 
 end TypedAsm.U

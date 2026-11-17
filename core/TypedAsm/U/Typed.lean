@@ -2,6 +2,7 @@ import TypedAsm.U.Blocks
 import TypedAsm.U.Loaded
 import TypedAsm.U.LayoutS
 import TypedAsm.Bytes
+import TypedAsm.U.Labels
 
 /-!
 # The typed values of the blocks a program says
@@ -56,20 +57,27 @@ theorem ValsS.den_toList (ρ : Env) : (vs : ValsS) →
 
 /-- Whether a thing is so of a value, as far as the blocks said show: that
 it is the address of a byte of one of them, of a shape or a kind; that it
-is nought, where it may be; that it lies in a range. -/
-def tyHolds (bs : List (BitVec 64 × LayoutS)) : TyS → BitVec 64 → Bool
+is nought, where it may be; that it lies in a range; and, as far as `j`
+shows, that it is code wanting a family. -/
+def tyHolds (j : BitVec 64 → CtxS → Bool) (bs : List (BitVec 64 × LayoutS)) :
+    TyS → BitVec 64 → Bool
   | .any, _ => true
   | .range lo hi, v => decide (v - lo ≤ hi - lo)
-  | .nullable τ, v => v == 0 || tyHolds bs τ v
+  | .nullable τ, v => v == 0 || tyHolds j bs τ v
+  | .code regs flags held known rest, v => j v (codeCtx regs flags held known rest)
   | .ptr S w off, v => bs.any fun b =>
       b.2.shape == S && (!w || b.2.writable) && v == b.1 + BitVec.ofNat 64 off
   | .ref tag w off, v => bs.any fun b =>
       b.2.tag == some tag && (!w || b.2.writable) && v == b.1 + BitVec.ofNat 64 off
   | _, _ => false
 
-theorem tyHolds_hasTy {bs : List (BitVec 64 × LayoutS)} {kinds : Nat → Option Shape}
-    (hnd : (denBlocks bs).Pairwise fun x y => x.1 ≠ y.1) (n : Nat) :
-    (τ : TyS) → (v : BitVec 64) → tyHolds bs τ v = true →
+theorem tyHolds_hasTy {j : BitVec 64 → CtxS → Bool} {bs : List (BitVec 64 × LayoutS)}
+    {kinds : Nat → Option Shape}
+    (hnd : (denBlocks bs).Pairwise fun x y => x.1 ≠ y.1) (n : Nat)
+    (hj : ∀ a E, j a E = true → ∀ (ρ : Env) (fam : Fam),
+      Ok fetch sys (MemTy.ofList (denBlocks bs) kinds) n a
+        (E.den { ρ with bound := fam :: ρ.bound })) :
+    (τ : TyS) → (v : BitVec 64) → tyHolds j bs τ v = true →
     HasTy fetch sys (MemTy.ofList (denBlocks bs) kinds) n (τ.den {}) v
   | .any, _, _ => HasTy.any _
   | .range lo hi, v, h => hasTy_range.mpr (of_decide_eq_true h)
@@ -78,7 +86,7 @@ theorem tyHolds_hasTy {bs : List (BitVec 64 × LayoutS)} {kinds : Nat → Option
     refine (hasTy_nullable (τ := τ.den {})).mpr ?_
     rcases h with h | h
     · exact .inl h
-    · exact .inr (tyHolds_hasTy hnd n τ v h)
+    · exact .inr (tyHolds_hasTy hnd n hj τ v h)
   | .ptr S w off, v, h => by
     simp only [tyHolds, List.any_eq_true, Bool.and_eq_true, beq_iff_eq, Bool.or_eq_true,
       Bool.not_eq_true'] at h
@@ -104,24 +112,31 @@ theorem tyHolds_hasTy {bs : List (BitVec 64 × LayoutS)} {kinds : Nat → Option
   | .orErr _, _, h => nomatch h
   | .str _, _, h => nomatch h
   | .atom _, _, h => nomatch h
-  | .code .., _, h => nomatch h
+  | .code regs flags held known rest, v, h => by
+    rw [code_den, hasTy_code]
+    intro x k hk Ψ' he hwf s hs hw
+    exact hj v _ h {} x k (Nat.le_of_lt hk) Ψ' he hwf s hs hw
 
 /-- Whether each typed value of each block is so of the eight bytes the
 block's segment has there. -/
-def valsHold (segs : List (Nat × Perm × List Byte)) (bs : List (BitVec 64 × LayoutS)) : Bool :=
+def valsHold (j : BitVec 64 → CtxS → Bool) (segs : List (Nat × Perm × List Byte))
+    (bs : List (BitVec 64 × LayoutS)) : Bool :=
   bs.all fun x => x.2.shape.vals.toList.all fun p =>
     match segs.find? fun g => blockOf g (x.1, x.2.den) with
     | some g =>
       decide (x.1.toNat - g.1 + p.1 + 8 ≤ (pageData g).length) &&
-        tyHolds bs p.2 (wordAt (pageData g) (x.1.toNat - g.1 + p.1))
+        tyHolds j bs p.2 (wordAt (pageData g) (x.1.toNat - g.1 + p.1))
     | none => false
 
 /-- **Each block holds what its shape says**, in a state whose memory is
 that of the segments placed. -/
 theorem heap_of_check {segs : List (Nat × Perm × List Byte)} (hok : segsOk segs = true)
     {t : State} (hmem : t.mem = (State.init.loadSegs segs).mem)
-    {bs : List (BitVec 64 × LayoutS)} {kinds : Nat → Option Shape}
-    (hnd : (denBlocks bs).Pairwise fun x y => x.1 ≠ y.1) (h : valsHold segs bs = true) (n : Nat) :
+    {j : BitVec 64 → CtxS → Bool} {bs : List (BitVec 64 × LayoutS)} {kinds : Nat → Option Shape}
+    (hnd : (denBlocks bs).Pairwise fun x y => x.1 ≠ y.1) (h : valsHold j segs bs = true) (n : Nat)
+    (hj : ∀ a E, j a E = true → ∀ (ρ : Env) (fam : Fam),
+      Ok fetch sys (MemTy.ofList (denBlocks bs) kinds) n a
+        (E.den { ρ with bound := fam :: ρ.bound })) :
     ∀ x ∈ denBlocks bs, ∀ p ∈ x.2.shape.vals,
       HasTy fetch sys (MemTy.ofList (denBlocks bs) kinds) n p.2
         (t.load64 (x.1 + BitVec.ofNat 64 p.1)) := by
@@ -150,7 +165,7 @@ theorem heap_of_check {segs : List (Nat × Perm × List Byte)} (hok : segsOk seg
     rw [Bool.and_eq_true, decide_eq_true_eq] at hc
     show HasTy fetch sys _ n (q.2.den {}) (t.load64 (y.1 + BitVec.ofNat 64 q.1))
     rw [block_addr (g := g) (x := (y.1, y.2.den)) h1 q.1, load64_pageData hok hg hmem hc.1]
-    exact tyHolds_hasTy hnd n q.2 _ hc.2
+    exact tyHolds_hasTy hnd n hj q.2 _ hc.2
   · cases hc
 
 /-- Whether something a program says of its static data is seen in the
@@ -158,7 +173,7 @@ blocks it says: of an address written out, something that mentions nothing
 and is so of it by the blocks; or that it is text. -/
 def staticS (bs : List (BitVec 64 × LayoutS)) (f : Val × TyS) : Bool :=
   (match f.1 with
-   | .lit v => f.2.ground && tyHolds bs f.2 v
+   | .lit v => f.2.ground && tyHolds (fun _ _ => false) bs f.2 v
    | _ => false) || staticOk (denBlocks bs) f
 
 /-- **What is seen so is so**, under the typing of those blocks and every
@@ -175,7 +190,8 @@ theorem staticsOk_of_holds {bs : List (BitVec 64 × LayoutS)} {kinds : Nat → O
     | lit v =>
       simp only [Bool.and_eq_true] at hc
       rw [TyS.den_ground ρ {} τ hc.1]
-      exact (tyHolds_hasTy hnd n τ v hc.2).ext hext
+      exact (tyHolds_hasTy (j := fun _ _ => false) hnd n (fun _ _ h => Bool.noConfusion h) τ v
+        hc.2).ext hext
     | _ => cases hc
   · exact staticsOk_of_check (st := [f]) hnd (by simp only [List.all_cons, hc, List.all_nil,
       Bool.and_self]) ρ f List.mem_cons_self n Ψ' hext hwf
