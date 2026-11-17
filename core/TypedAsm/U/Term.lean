@@ -19,9 +19,8 @@ namespace TypedAsm.U
 
 /-- What the names of terms stand for. -/
 structure Env where
-  val : List (BitVec 64) := []
-  flags : List Flags := []
-  deriving Inhabited
+  val : Nat → BitVec 64 := fun _ => 0
+  flags : Nat → Flags := fun _ => ⟨none, none, none, none⟩
 
 mutual
 
@@ -70,7 +69,7 @@ mutual
 /-- The value a term stands for. -/
 def Val.den (ρ : Env) : Val → BitVec 64
   | .lit v => v
-  | .var i => ρ.val.getD i 0
+  | .var i => ρ.val i
   | .add a b => a.den ρ + b.den ρ
   | .shl a k => a.den ρ <<< k
   | .out i k a b c fl next ea cell =>
@@ -84,7 +83,7 @@ def Val.den (ρ : Env) : Val → BitVec 64
 /-- The flags a term stands for. -/
 def FlagsT.den (ρ : Env) : FlagsT → Flags
   | .lit f => f
-  | .var i => ρ.flags.getD i ⟨none, none, none, none⟩
+  | .var i => ρ.flags i
   | .out i a b c fl next ea cell =>
     (effectOf i [a.den ρ, b.den ρ, c.den ρ] (fl.den ρ) next (ea.den ρ) (cell.den ρ)).flags
 
