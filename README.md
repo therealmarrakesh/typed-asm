@@ -107,5 +107,10 @@ What is not there:
   for bytes it made, not for bytes it read. A store of two or four bytes
   into a number it made leaves that number unknown; a store of one or of
   eight does not.
+- A program started with arguments has, in the model, no stack below its
+  arguments: it cannot push or call. Programs started without arguments
+  have the stack they ask for.
+- There are no signals in the model. An exit status is the value handed to
+  `exit`; a parent process sees its low eight bits.
 - The examples are written as constructor terms; there is no notation for
   instructions or labels.
