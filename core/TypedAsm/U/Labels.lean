@@ -491,6 +491,7 @@ def Walk.closes (cc : CtxS → CtxS → Nat → Option (CtxS × OpenL)) (labels 
   | _, .step i Γ _ k rest => guardS i Γ.flags && rest.closes cc labels (k + 1)
   | _, .sys k rest => rest.closes cc labels (k + 1)
   | _, .ends => true
+  | _, .vacuous => true
   | k, .branch c Γ taken fall =>
     Γ.flags.decides c && taken.closes cc labels k && fall.closes cc labels k
 
@@ -552,6 +553,7 @@ theorem Walk.holds_of_closes {n : Nat} {labels : List Label}
       fun x => Walk.holds_of_closes hcc H rest _ _ h.2⟩
   | .sys k rest, _, ρ, h => fun x => Walk.holds_of_closes hcc H rest _ _ h
   | .ends, _, _, _ => trivial
+  | .vacuous, _, _, _ => trivial
   | .branch c Γ taken fall, k, ρ, h => by
     simp only [Walk.closes, Bool.and_eq_true] at h
     exact ⟨FlagsT.decides_den ρ Γ.flags c h.1.1,

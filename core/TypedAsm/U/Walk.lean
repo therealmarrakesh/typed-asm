@@ -40,6 +40,8 @@ inductive Walk
   /-- A conditional jump, from a context: the flags decide the condition,
   and each way holds where the flags send control that way. -/
   | branch (c : Cond) (Γ : CtxS) (taken fall : Walk)
+  /-- The context reached is one no state matches: nothing is left. -/
+  | vacuous
 
 /-- That an instruction does not fault for a reason of its own, in a
 context, whatever it reads. -/
@@ -60,11 +62,12 @@ def Walk.holds (P A : BitVec 64 → Ctx → Prop) : Walk → Env → Prop
     (∃ b, c.eval (Γ.flags.den ρ) = some b) ∧
     (c.eval (Γ.flags.den ρ) = some true → taken.holds P A ρ) ∧
     (c.eval (Γ.flags.den ρ) = some false → fall.holds P A ρ)
+  | .vacuous, _ => True
 
 /-- Whether the walk got anywhere: it stepped over an instruction or a call,
 or the program ended. -/
 def Walk.moved : Walk → Bool
-  | .step .. | .sys .. | .ends | .branch .. => true
+  | .step .. | .sys .. | .ends | .branch .. | .vacuous => true
   | _ => false
 
 /-- **The checker walked from an address**, for at most so many
@@ -76,6 +79,7 @@ def walk (code : List (BitVec 64 × Instr × BitVec 64)) (stops : BitVec 64 → 
   | _, 0, _, a, Γ => .stop a Γ
   | start, fuel + 1, k, a, Γ =>
     if !start && stops a then .stop a Γ else
+    if Γ.impossible then .vacuous else
     match code.find? fun e => e.1 = a with
     | none => .stop a Γ
     | some (_, i, len) =>
@@ -87,8 +91,10 @@ def walk (code : List (BitVec 64 × Instr × BitVec 64)) (stops : BitVec 64 → 
             if Γ'.under (k + 1) then .sys k (walk code stops false fuel (k + 1) (a + len) Γ') else .stop a Γ
           | none => .stop a Γ
       else if let .jcc c d := i then
-        .branch c Γ (walk code stops false fuel k (a + len + d.signExtend 64) (Γ.side c true))
-          (walk code stops false fuel k (a + len) (Γ.side c false))
+        if (Γ.side c true).under k && (Γ.side c false).under k then
+          .branch c Γ (walk code stops false fuel k (a + len + d.signExtend 64) (Γ.side c true))
+            (walk code stops false fuel k (a + len) (Γ.side c false))
+        else .stop a Γ
       else
         match stepHeld Γ k (a + len) i with
         | none => .stop a Γ
@@ -155,6 +161,11 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
     split at hW
     · subst hW; exact ⟨h, fun hm => nomatch hm⟩
     split at hW
+    · next himp =>
+      subst hW
+      exact ⟨fun k _ Ψ' _ _ s _ hw => absurd hw (CtxS.impossible_sound himp Ψ' k s),
+        fun _ k _ Ψ' _ _ s _ hw => absurd hw (CtxS.impossible_sound himp Ψ' k s)⟩
+    split at hW
     · subst hW; exact ⟨h, fun hm => nomatch hm⟩
     · next e i len hfind =>
       have hmem := List.mem_of_find?_eq_some hfind
@@ -191,16 +202,20 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
           · subst hW; exact ⟨h, fun hm => nomatch hm⟩
       · split at hW
         · next =>
-          subst hW
-          obtain ⟨hdec, htk, hfl⟩ := h
-          have hb := both fun m hm => by
-            refine Ok.step hf (jcc_steps (Γ := Γ.den ρ) hdec) ?_
-            rintro t Δ ⟨rfl, ⟨hc, rfl⟩ | ⟨hc, rfl⟩⟩
-            · exact ((Ok.regard (Γ.side_regards hc) (walk_sound hD hkind hpre code stops hcode false fuel k _
-                _ ρ (CtxS.side_under _ _ _ _ hu) (htk hc)).1).mono hm).arrives
-            · exact ((Ok.regard (Γ.side_regards hc) (walk_sound hD hkind hpre code stops hcode false fuel k _
-                _ ρ (CtxS.side_under _ _ _ _ hu) (hfl hc)).1).mono hm).arrives
-          exact ⟨hb.1, fun _ => hb.2⟩
+          split at hW
+          · next hus =>
+            subst hW
+            rw [Bool.and_eq_true] at hus
+            obtain ⟨hdec, htk, hfl⟩ := h
+            have hb := both fun m hm => by
+              refine Ok.step hf (jcc_steps (Γ := Γ.den ρ) hdec) ?_
+              rintro t Δ ⟨rfl, ⟨hc, rfl⟩ | ⟨hc, rfl⟩⟩
+              · exact ((Ok.regard (Γ.side_regards hc) (walk_sound hD hkind hpre code stops hcode
+                  false fuel k _ _ ρ hus.1 (htk hc)).1).mono hm).arrives
+              · exact ((Ok.regard (Γ.side_regards hc) (walk_sound hD hkind hpre code stops hcode
+                  false fuel k _ _ ρ hus.2 (hfl hc)).1).mono hm).arrives
+            exact ⟨hb.1, fun _ => hb.2⟩
+          · subst hW; exact ⟨h, fun hm => nomatch hm⟩
         · split at hW
           · subst hW; exact ⟨h, fun hm => nomatch hm⟩
           · next Γ' t hstep =>

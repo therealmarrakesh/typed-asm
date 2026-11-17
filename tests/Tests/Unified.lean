@@ -415,4 +415,19 @@ example : callOk movRaxRdi (fExit (.bvar 1 7) .none) Pw = false := by decide +ke
 example : callOk movRaxRdi (fExit (.bvar 1 7) (.bvar 1))
     { Pw with regs := Pw.regs.set .rsp (.add (.bvar 0 16) (.lit 4)) } = false := by decide +kernel
 
+/-! ## Ranges, and ways that cannot be taken -/
+
+/-- `cmp rdi, 5; jb out; cmp rdi, 3; jb nowhere; out: mov eax, 60; syscall`:
+the second jump goes where there is no code, and can never be taken. -/
+def codeR : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .alu .cmp .w64 (.rm_i (.reg .rdi) 5), 4), (4, .jcc .b 6, 2),
+   (6, .alu .cmp .w64 (.rm_i (.reg .rdi) 3), 4), (10, .jcc .b 188, 2),
+   (12, .mov .w32 (.rm_i (.reg .rax) 60), 5), (17, .syscall, 2)]
+
+-- past the first jump `rdi` is at least five; taking the second would make it
+-- less than three: that way is seen to be impossible, and nothing is asked of it
+example : checkProgram codeR [lab 0 Pw] 10 0 = true := by decide +kernel
+-- entered past the first comparison, the second jump may be taken, to nowhere: refused
+example : checkProgram codeR [lab 6 Pw] 10 0 = false := by decide +kernel
+
 end Tests.Unified
