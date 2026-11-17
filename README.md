@@ -59,11 +59,11 @@ What exists and is checked today:
   be proved to offer the kernel, at every `write`, only bytes satisfying a
   stated condition. `examples/Hello` is proved to end with 0 and to write
   its message and nothing else, on standard output.
-- Twenty-four example programs in `examples/`, each built into an executable
+- Twenty-five example programs in `examples/`, each built into an executable
   whose theorems depend only on Lean's three standard axioms.
 - Tests against real tools: 79,628 instructions against the GNU assembler,
   13,579 instruction sequences against a real processor, including which
-  fault each bad access raises, and 46 whole-program runs compared with the
+  fault each bad access raises, and 49 whole-program runs compared with the
   same programs run as Linux executables. The memory each program starts
   with in the model is checked to be its executable file, byte for byte.
   What the checker answers is tested case by case: what it accepts, and,
@@ -82,9 +82,9 @@ and two commands:
   status `q` holds of. `asm_checked_args` is the same for a program started
   with arguments: safe whatever its arguments. Such a program has the
   stack it asks for below its arguments, and may push and call as any
-  program may.
+  program may: `examples/Lengths` keeps a total there across calls.
 
-No proof is written for twenty-three of the twenty-four. In
+No proof is written for twenty-four of the twenty-five. In
 `examples/Fact`, the recursive factorial, two laws of the factorial are
 proved, in a dozen lines; with them its function is typed once for every
 argument: that it needs sixteen bytes of stack for each unit of its

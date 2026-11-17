@@ -21,6 +21,7 @@ import FreshProgram
 import PairProgram
 import LendProgram
 import PickProgram
+import LengthsProgram
 import HelloProgram
 
 /-!
@@ -106,6 +107,10 @@ def cases : List Case := [
   { label := "pick-none", program := Pick.program },
   { label := "pick-two", program := Pick.program, args := ["a", "b"] },
   { label := "pick-many", program := Pick.program, args := ["a", "b", "c", "d"] },
+  { label := "lengths-none", program := Lengths.program },
+  { label := "lengths-one", program := Lengths.program, args := ["hello"] },
+  { label := "lengths-several", program := Lengths.program,
+    args := ["one", "two words", "", "héllo", "--flag=3"] },
   { label := "hello", program := Hello.program }]
 
 /-- A run as it is recorded: the exit status as Linux reports it, then what
