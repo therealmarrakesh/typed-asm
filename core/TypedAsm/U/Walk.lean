@@ -40,6 +40,9 @@ structure Prog where
   /-- The points at which a region held becomes a block others may point
   into. -/
   pubs : List Pub := []
+  /-- What is always so of its static data: of addresses written out, that
+  they point into blocks of given shapes, or to text. -/
+  statics : List (Val × TyS) := []
 
 instance : Coe (List (BitVec 64 × Instr × BitVec 64)) Prog := ⟨fun c => { code := c }⟩
 

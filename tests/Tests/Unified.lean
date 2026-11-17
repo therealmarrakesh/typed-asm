@@ -141,7 +141,8 @@ what Linux is described to do: by the walk alone, which the kernel runs. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
     (hcode : ∀ e ∈ codeE, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (n : Nat) :
     Ok fetch sys Ψ (n + 1) 0 (Γw.den ρ) :=
-  (walk_sound hD rfl (fun _ => trivial) (pg := ↑codeE) (fun _ => false) hcode (KindsOk.none _) true 10 20 0 Γw ρ (by decide +kernel)
+  (walk_sound hD rfl (fun _ => trivial) (pg := ↑codeE) (fun _ => false) hcode
+    (KindsOk.none _) true 10 20 0 Γw ρ (by decide +kernel)
     (Walk.holds_of_auto _ ρ (by decide +kernel))).2 (by decide +kernel)
 
 /-- `test rdi, rdi; je there; mov eax, 60; syscall; there: mov eax, 231;
@@ -157,7 +158,8 @@ defined, so the jump is decided, and both ways end the program. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
     (hcode : ∀ e ∈ codeB, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (n : Nat) :
     Ok fetch sys Ψ (n + 1) 0 (Γw.den ρ) :=
-  (walk_sound hD rfl (fun _ => trivial) (pg := ↑codeB) (fun _ => false) hcode (KindsOk.none _) true 10 20 0 Γw ρ (by decide +kernel)
+  (walk_sound hD rfl (fun _ => trivial) (pg := ↑codeB) (fun _ => false) hcode
+    (KindsOk.none _) true 10 20 0 Γw ρ (by decide +kernel)
     (Walk.holds_of_auto _ ρ (by decide +kernel))).2 (by decide +kernel)
 
 -- with no comparison before it, the jump is not decided, and nothing is concluded
@@ -222,7 +224,8 @@ asks. The kernel runs the whole check. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
     (hcode : ∀ e ∈ codeL, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (fam : Fam) (n : Nat) :
     Ok fetch sys Ψ n 0 (Pw.den { ρ with bound := fam :: ρ.bound }) :=
-  program_ok hD rfl (fun _ => trivial) (pg := ↑codeL) hcode (KindsOk.none _) (labels := labelsL) (fuel := 10) (k := 0)
+  program_ok hD rfl (fun _ => trivial) (pg := ↑codeL) hcode (KindsOk.none _) StaticsOk.nil
+    (labels := labelsL) (fuel := 10) (k := 0)
     (by decide +kernel) n (lab 0 Pw) (List.mem_cons_self ..) ρ fam
 
 /-- A label asking that `rcx` be five is not one the loop comes back to. -/
@@ -246,7 +249,8 @@ was, as the sums show, so the context reached is the label's again. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
     (hcode : ∀ e ∈ codeF, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (fam : Fam) (n : Nat) :
     Ok fetch sys Ψ n 0 (Pw.den { ρ with bound := fam :: ρ.bound }) :=
-  program_ok hD rfl (fun _ => trivial) (pg := ↑codeF) hcode (KindsOk.none _) (labels := [lab 0 Pw]) (fuel := 10) (k := 0)
+  program_ok hD rfl (fun _ => trivial) (pg := ↑codeF) hcode (KindsOk.none _) StaticsOk.nil
+    (labels := [lab 0 Pw]) (fuel := 10) (k := 0)
     (by decide +kernel) n (lab 0 Pw) (List.mem_cons_self ..) ρ fam
 
 /-! ## What one context being regarded as another comes to
@@ -472,7 +476,7 @@ example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linux
     (n : Nat) :
     Ok fetch sys Ψ n 100
       ((fEntry (fExit (.bvar 1 7) (.bvar 1))).den { ρ with bound := fam :: ρ.bound }) :=
-  program_ok hD rfl (fun _ => trivial) (pg := ↑(codeCall movRaxRdi)) hcode (KindsOk.none _)
+  program_ok hD rfl (fun _ => trivial) (pg := ↑(codeCall movRaxRdi)) hcode (KindsOk.none _) StaticsOk.nil
     (labels := [lab 0 Pw, lab 100 (fEntry (fExit (.bvar 1 7) (.bvar 1)))]) (fuel := 10) (k := 0)
     (by decide +kernel) n _ (List.mem_cons_of_mem _ (List.mem_cons_self ..)) ρ fam
 
@@ -707,6 +711,24 @@ example : checkProgram { code := codePub, kinds := kinds7, pubs := [⟨0, .rbx, 
 -- as a kind the program does not give the shape of: refused
 example : checkProgram { code := codePub, pubs := [⟨0, .rbx, node, some 7⟩] }
     [lab 0 (Phold rdiNode), lab 1 Pref] 10 0 = false := by decide +kernel
+
+/-! ## Static data -/
+
+/-- `mov edi, 0x5000; movzx eax, byte [rdi]; exit`: a byte read from an
+address written out. -/
+def codeStat : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .mov .w32 (.rm_i (.reg .rdi) 0x5000), 5),
+   (5, .movzx .w32 .rax .w8 (.mem (.sib (some .rdi) none 0)), 3),
+   (8, .mov .w32 (.rm_i (.reg .rax) 60), 5), (13, .syscall, 2)]
+
+-- the program says its static data has text there: every walk starts out knowing it
+example : checkProgram { code := codeStat, statics := [(.lit 0x5000, .str (.lit 0))] }
+    [lab 0 Pw] 10 0 = true := by decide +kernel
+-- said of another address: refused
+example : checkProgram { code := codeStat, statics := [(.lit 0x6000, .str (.lit 0))] }
+    [lab 0 Pw] 10 0 = false := by decide +kernel
+-- not said at all: refused
+example : checkProgram codeStat [lab 0 Pw] 10 0 = false := by decide +kernel
 
 /-! ## Divides -/
 

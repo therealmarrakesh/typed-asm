@@ -632,6 +632,31 @@ else is held take the first. It is only where the walk's new names start
 from: that they are new is checked each time, by computing. -/
 def CtxS.width (Γ : CtxS) : Nat := max Γ.bmax 1
 
+/-! ## What is always so of a program's static data -/
+
+/-- What a program says of its static data is so: under the memory typing
+and every one it grows to, at every step count, whatever names stand for. -/
+def StaticsOk (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (st : List (Val × TyS)) : Prop :=
+  ∀ (ρ : Env), ∀ f ∈ st, ∀ (n : Nat) (Ψ' : MemTy), Ψ.Ext Ψ' → Ψ'.WF →
+    HasTy fetch sys Ψ' n (f.2.den ρ) (f.1.den ρ)
+
+/-- A program with no static data says nothing of it. -/
+theorem StaticsOk.nil : StaticsOk fetch sys Ψ [] := fun _ _ h => nomatch h
+
+/-- **Code typed in a context that also knows what is always so of the
+static data is typed in the context.** -/
+theorem ok_statics {n : Nat} {a : BitVec 64} {Γ : CtxS} {st : List (Val × TyS)}
+    (hs : StaticsOk fetch sys Ψ st) (ρ : Env)
+    (h : Ok fetch sys Ψ n a ((Γ.addKnown st).den ρ)) : Ok fetch sys Ψ n a (Γ.den ρ) := by
+  refine Ok.learn (st.map fun f => (f.1.den ρ, f.2.den ρ)) (fun f hf k _ Ψ' he hwf => ?_) ?_
+  · obtain ⟨g, hg, rfl⟩ := List.mem_map.mp hf
+    exact hs ρ g hg k Ψ' he hwf
+  · have e : (Γ.addKnown st).den ρ
+        = { Γ.den ρ with known := (st.map fun f => (f.1.den ρ, f.2.den ρ)) ++ (Γ.den ρ).known } :=
+      ctx_ext rfl rfl rfl List.map_append
+    rw [← e]
+    exact h
+
 /-! ## Code wanting one family, known to be code wanting another -/
 
 /-- **Whether a value known to be code wanting one family is thereby code
@@ -690,19 +715,20 @@ def justifyF (pg : Prog) (labels : List Label)
     (stops : BitVec 64 → Bool) (fuelW : Nat) : Nat → Nat → BitVec 64 → CtxS → Bool
   | 0, _, _, _ => false
   | f + 1, k, a, E =>
-    E.under k && (E.open (freshOpening k)).under (k + E.width) &&
+    E.under k && ((E.open (freshOpening k)).addKnown pg.statics).under (k + E.width) &&
       ((match labels.find? fun l => l.addr == a with
         | some l =>
-          (closeCtx (entF fuelW) (justifyF pg labels stops fuelW f) l.pat (E.open (freshOpening k))
+          (closeCtx (entF fuelW) (justifyF pg labels stops fuelW f) l.pat ((E.open (freshOpening k)).addKnown pg.statics)
             (k + E.width)).isSome
         | none => false) ||
-       (walk pg stops true fuelW (k + E.width) a (E.open (freshOpening k))).closes
+       (walk pg stops true fuelW (k + E.width) a ((E.open (freshOpening k)).addKnown pg.statics)).closes
           (closeCtx (entF fuelW) (justifyF pg labels stops fuelW f)) labels (k + E.width))
 
 theorem justifyF_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
     (hpre : ∀ s, D.pre s) {n : Nat} {pg : Prog}
     {labels : List Label} {stops : BitVec 64 → Bool} {fuelW : Nat}
     (hcode : ∀ e ∈ pg.code, fetch e.1 = some (e.2.1, e.2.2)) (hk : KindsOk Ψ pg.kinds)
+    (hst : StaticsOk fetch sys Ψ pg.statics)
     (H : ∀ l ∈ labels, ∀ (ρ' : Env) (fam : Fam),
       Ok fetch sys Ψ n l.addr (l.pat.den { ρ' with bound := fam :: ρ'.bound })) :
     (f : Nat) → JustSound fetch sys Ψ n (justifyF pg labels stops fuelW f)
@@ -710,11 +736,11 @@ theorem justifyF_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
   | f + 1 => by
     intro k a E hj ρ fam
     have hcc := closeCtx_sound (entF_sound fuelW)
-      (justifyF_sound hD hkind hpre (stops := stops) (fuelW := fuelW) hcode hk H f)
+      (justifyF_sound hD hkind hpre (stops := stops) (fuelW := fuelW) hcode hk hst H f)
     unfold justifyF at hj
     simp only [Bool.and_eq_true, Bool.or_eq_true] at hj
     obtain ⟨⟨hE, hΔ⟩, hor⟩ := hj
-    refine ok_of_open hE (fun ρ' => ?_) ρ fam
+    refine ok_of_open hE (fun ρ' => ok_statics hst ρ' ?_) ρ fam
     rcases hor with hl | hw
     · cases hfind : labels.find? fun l => l.addr == a with
       | none => rw [hfind] at hl; cases hl
@@ -731,7 +757,7 @@ theorem justifyF_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
         rw [← ha]
         exact H l hmem ρ'' _
     · exact (walk_sound hD hkind hpre pg stops hcode hk true fuelW (k + E.width) a
-        (E.open (freshOpening k)) ρ' hΔ (Walk.holds_of_closes hcc H _ (k + E.width) ρ' hw)).1
+        ((E.open (freshOpening k)).addKnown pg.statics) ρ' hΔ (Walk.holds_of_closes hcc H _ (k + E.width) ρ' hw)).1
 
 /-! ## A program -/
 
@@ -741,9 +767,9 @@ the walk gets somewhere and leaves nothing to be shown. -/
 def checkProgram (pg : Prog) (labels : List Label)
     (fuel k : Nat) : Bool :=
   labels.all fun l =>
-    l.pat.under k && (l.start k).under (k + l.pat.width) &&
+    l.pat.under k && ((l.start k).addKnown pg.statics).under (k + l.pat.width) &&
       (let W := walk pg (fun a => labels.any fun l' => l'.addr == a) true fuel (k + l.pat.width) l.addr
-        (l.start k)
+        ((l.start k).addKnown pg.statics)
        W.moved &&
         W.closes (closeCtx (entF fuel) (justifyF pg labels (fun a => labels.any fun l' => l'.addr == a)
           fuel fuel)) labels (k + l.pat.width))
@@ -756,6 +782,7 @@ theorem program_ok {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
     (hpre : ∀ s, D.pre s) {pg : Prog}
     {labels : List Label} {fuel k : Nat}
     (hcode : ∀ e ∈ pg.code, fetch e.1 = some (e.2.1, e.2.2)) (hk : KindsOk Ψ pg.kinds)
+    (hst : StaticsOk fetch sys Ψ pg.statics)
     (h : checkProgram pg labels fuel k = true) :
     ∀ n, ∀ l ∈ labels, ∀ (ρ : Env) (fam : Fam),
       Ok fetch sys Ψ n l.addr (l.pat.den { ρ with bound := fam :: ρ.bound }) := by
@@ -769,9 +796,10 @@ theorem program_ok {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
     simp only [Bool.and_eq_true] at this
     obtain ⟨⟨hfree, hu⟩, hm, hc⟩ := this
     have hcc := closeCtx_sound (entF_sound fuel) (justifyF_sound hD hkind hpre
-      (stops := fun a => labels.any fun l' => l'.addr == a) (fuelW := fuel) hcode hk ih fuel)
-    refine ok_of_open (k := k) hfree (fun ρ' => ?_) ρ fam
-    exact (walk_sound hD hkind hpre pg _ hcode hk true fuel (k + l.pat.width) l.addr (l.start k) ρ' hu
+      (stops := fun a => labels.any fun l' => l'.addr == a) (fuelW := fuel) hcode hk hst ih fuel)
+    refine ok_of_open (k := k) hfree (fun ρ' => ok_statics hst ρ' ?_) ρ fam
+    exact (walk_sound hD hkind hpre pg _ hcode hk true fuel (k + l.pat.width) l.addr
+      ((l.start k).addKnown pg.statics) ρ' hu
       (Walk.holds_of_closes hcc ih _ (k + l.pat.width) ρ' hc)).2 hm
 
 end TypedAsm.U
