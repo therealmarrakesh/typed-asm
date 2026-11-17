@@ -116,4 +116,29 @@ example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linux
 -- with no comparison before it, the jump is not decided, and nothing is concluded
 example : (walk (codeB.drop 1) 10 20 3 Γw).auto = false := by decide +kernel
 
+/-! ## What a branch teaches -/
+
+/-- `rdi` may be null, and otherwise points at a block of sixteen bytes. -/
+def Γn : CtxS :=
+  { Γw with known := [(.var 7, .nullable (.ptr (.mk 16 (.cons 8 .any .nil)) true 0))] }
+
+/-- `test rdi, rdi; j<c> out; mov rax, [rdi+8]; mov eax, 60; syscall;
+out: mov eax, 231; syscall`. -/
+def codeN (c : Cond) : List (BitVec 64 × Instr × BitVec 64) :=
+  [(0, .test .w64 (.reg .rdi) (.reg .rdi), 3), (3, .jcc c 11, 2),
+   (5, .mov .w64 (.r_m .rax (.sib (some .rdi) none 8)), 4),
+   (9, .mov .w32 (.rm_i (.reg .rax) 60), 5), (14, .syscall, 2),
+   (16, .mov .w32 (.rm_i (.reg .rax) 231), 5), (21, .syscall, 2)]
+
+/-- **Jumping away when the pointer is null, the load is typed**: past the
+jump the pointer is known not to be null, by the walk alone. -/
+example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
+    (hcode : ∀ e ∈ codeN .e, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (n : Nat) :
+    Ok fetch sys Ψ (n + 1) 0 (Γn.den ρ) :=
+  (walk_sound hD rfl (fun _ => trivial) (codeN .e) hcode 10 20 0 Γn ρ (by decide +kernel)
+    (Walk.holds_of_auto _ _ _ ρ (by decide +kernel))).2 (by decide +kernel)
+
+-- jumping away when it is not null, the load is of a pointer that is null: refused
+example : (walk (codeN .ne) 10 20 0 Γn).auto = false := by decide +kernel
+
 end Tests.Unified

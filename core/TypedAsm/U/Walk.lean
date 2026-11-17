@@ -1,6 +1,7 @@
 import TypedAsm.U.Step
 import TypedAsm.U.SysStep
 import TypedAsm.U.Guard
+import TypedAsm.U.Learn
 
 /-!
 # A block walked
@@ -82,8 +83,8 @@ def walk (code : List (BitVec 64 × Instr × BitVec 64)) : Nat → Nat → BitVe
             if Γ'.under (k + 1) then .sys k (walk code fuel (k + 1) (a + len) Γ') else .stop a Γ
           | none => .stop a Γ
       else if let .jcc c d := i then
-        .branch c Γ (walk code fuel k (a + len + d.signExtend 64) Γ)
-          (walk code fuel k (a + len) Γ)
+        .branch c Γ (walk code fuel k (a + len + d.signExtend 64) (Γ.side c true))
+          (walk code fuel k (a + len) (Γ.side c false))
       else
         match stepHeld Γ k (a + len) i with
         | none => .stop a Γ
@@ -182,16 +183,16 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
             · subst hW; exact ⟨h, fun hm => nomatch hm⟩
           · subst hW; exact ⟨h, fun hm => nomatch hm⟩
       · split at hW
-        · next c d =>
+        · next =>
           subst hW
           obtain ⟨hdec, htk, hfl⟩ := h
           have hb := both fun m hm => by
             refine Ok.step hf (jcc_steps (Γ := Γ.den ρ) hdec) ?_
             rintro t Δ ⟨rfl, ⟨hc, rfl⟩ | ⟨hc, rfl⟩⟩
-            · exact (((walk_sound hD hkind hpre code hcode fuel k _ Γ ρ hu (htk hc)).1).mono
-                hm).arrives
-            · exact (((walk_sound hD hkind hpre code hcode fuel k _ Γ ρ hu (hfl hc)).1).mono
-                hm).arrives
+            · exact ((Ok.regard (Γ.side_regards hc) (walk_sound hD hkind hpre code hcode fuel k _
+                _ ρ (by rw [CtxS.side_under]; exact hu) (htk hc)).1).mono hm).arrives
+            · exact ((Ok.regard (Γ.side_regards hc) (walk_sound hD hkind hpre code hcode fuel k _
+                _ ρ (by rw [CtxS.side_under]; exact hu) (hfl hc)).1).mono hm).arrives
           exact ⟨hb.1, fun _ => hb.2⟩
         · split at hW
           · subst hW; exact ⟨h, fun hm => nomatch hm⟩

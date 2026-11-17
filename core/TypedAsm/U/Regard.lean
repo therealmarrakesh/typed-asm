@@ -40,19 +40,34 @@ theorem Ok.regard {n : Nat} {a : BitVec 64} {Γ Δ : Ctx} (h : Regards fetch sys
   obtain ⟨Ψ'', he', hwf', hw'⟩ := h k Ψ' he hwf s hw
   exact SafeN.mono (hΔ k hk Ψ'' (he.trans he') hwf' s hrip hw') (Nat.le_refl _)
 
+/-- What is known of a value one way is known of it another: at every step
+count, under every memory typing. `Sub` is the part of this that is read off
+the two forms; the rest is what follows of the value itself. -/
+def Follows (fetch : Fetch) (sys : Syscall) (v : BitVec 64) (τ υ : Ty) : Prop :=
+  ∀ (Ψ : MemTy) (n : Nat), HasTy fetch sys Ψ n τ v → HasTy fetch sys Ψ n υ v
+
+theorem Follows.refl (v : BitVec 64) (τ : Ty) : Follows fetch sys v τ τ := fun _ _ h => h
+
+theorem Follows.trans {v : BitVec 64} {τ υ φ : Ty} (h₁ : Follows fetch sys v τ υ)
+    (h₂ : Follows fetch sys v υ φ) : Follows fetch sys v τ φ :=
+  fun Ψ n h => h₂ Ψ n (h₁ Ψ n h)
+
+theorem Sub.follows {v : BitVec 64} {τ υ : Ty} (h : Sub v τ υ) : Follows fetch sys v τ υ :=
+  fun _ _ hv => hv.sub h
+
 /-- A context with the same registers, flags and held regions, of which
-each thing known follows from something known before: of the same value,
-by `Sub`. Facts may be dropped. -/
-theorem Regards.known {Γ : Ctx} (fs : List Fact)
-    (h : ∀ f ∈ fs, ∃ τ, (f.1, τ) ∈ Γ.known ∧ Sub f.1 τ f.2) :
+each thing known follows from something known before of the same value.
+Facts may be dropped. -/
+theorem Regards.follows {Γ : Ctx} (fs : List Fact)
+    (h : ∀ f ∈ fs, ∃ τ, (f.1, τ) ∈ Γ.known ∧ Follows fetch sys f.1 τ f.2) :
     Regards fetch sys Ψ Γ { Γ with known := fs } := by
   intro k Ψ' he hwf s hw
   refine ⟨Ψ', MemTy.Ext.refl _, hwf, ?_⟩
   exact
     { val := hw.val
       known := fun f hf => by
-        obtain ⟨τ, hτ, hsub⟩ := h f hf
-        exact (hw.known _ hτ).sub hsub
+        obtain ⟨τ, hτ, hfol⟩ := h f hf
+        exact hfol _ _ (hw.known _ hτ)
       flags := hw.flags
       heapPerm := hw.heapPerm
       heap := hw.heap
@@ -65,6 +80,14 @@ theorem Regards.known {Γ : Ctx} (fs : List Fact)
           vals := hw.held.vals
           heap := hw.held.heap
           apart := hw.held.apart } }
+
+/-- And so where each follows by `Sub`. -/
+theorem Regards.known {Γ : Ctx} (fs : List Fact)
+    (h : ∀ f ∈ fs, ∃ τ, (f.1, τ) ∈ Γ.known ∧ Sub f.1 τ f.2) :
+    Regards fetch sys Ψ Γ { Γ with known := fs } :=
+  Regards.follows fs fun f hf =>
+    let ⟨τ, hτ, hsub⟩ := h f hf
+    ⟨τ, hτ, hsub.follows⟩
 
 /-- The regions held, in any order. -/
 theorem Regards.perm {Γ : Ctx} {L : List Region} (h : L.Perm Γ.held) :
