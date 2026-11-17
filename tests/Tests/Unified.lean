@@ -7,6 +7,7 @@ import TypedAsm.Linux
 import TypedAsm.U.Stack
 import TypedAsm.U.Loaded
 import TypedAsm.U.Whole
+import TypedAsm.U.Order
 import TypedAsm.U.Labels
 import TypedAsm.U.Open
 
@@ -938,6 +939,17 @@ example : checkProgram { code := codeHi 1 3, pre := want [72, 105] } [lab 0 Pw] 
 -- its first two bytes, where those are wanted
 example : checkProgram { code := codeHi 1 2, pre := want [72, 105] } [lab 0 Pw] 12 0 = true := by
   decide +kernel
+
+/-! ## Which is the larger -/
+
+-- x ≤ 4, 4 - x ≠ 0 taken as 1 ≤ 4 - x: so x + 1 ≤ 4
+example : entails 4 [⟨[(1, .var 0)], -4⟩, ⟨[(1, .var 0)], -3⟩] ⟨[(1, .var 0)], -3⟩ = true := by
+  decide +kernel
+-- x ≤ y, y ≤ 7: so x ≤ 7; and not x ≤ 6
+example : entails 4 [⟨[(1, .var 0), (-1, .var 1)], 0⟩, ⟨[(1, .var 1)], -7⟩] ⟨[(1, .var 0)], -7⟩
+    = true := by decide +kernel
+example : entails 4 [⟨[(1, .var 0), (-1, .var 1)], 0⟩, ⟨[(1, .var 1)], -7⟩] ⟨[(1, .var 0)], -6⟩
+    = false := by decide +kernel
 
 /-! ## All the memory a first state has -/
 
