@@ -23,8 +23,8 @@ theorem Arrives.code {n : Nat} {t : BitVec 64} {Γ : Ctx} {pre : Seq → Ctx} (x
     (hf : (t, Ty.code pre) ∈ Γ.known) (hreg : Regards fetch sys Ψ Γ (pre x)) :
     Arrives fetch sys Ψ n t Γ := by
   intro k _ Ψ' he hwf s hs hw
-  obtain ⟨Ψ'', he', hwf', hw'⟩ := hreg (k + 1) Ψ' he hwf s hw
-  exact hasTy_code.mp (hw.known _ hf) x k (Nat.lt_succ_self k) Ψ'' he' hwf' s hs
+  have hw' := hreg (k + 1) Ψ' he hwf s hw
+  exact hasTy_code.mp (hw.known _ hf) x k (Nat.lt_succ_self k) Ψ' (MemTy.Ext.refl _) hwf s hs
     (hw'.mono (Nat.le_succ k))
 
 /-- **And at a value known to be a function**, in a context that may be
@@ -35,9 +35,9 @@ theorem Arrives.fn {n : Nat} {t : BitVec 64} {Γ : Ctx} {sig : Sig} (p : Seq)
     (hreg : Regards fetch sys Ψ Γ (sig.entry p saved lo m ra frame fl)) :
     Arrives fetch sys Ψ n t Γ := by
   intro k _ Ψ' he hwf s hs hw
-  obtain ⟨Ψ'', he', hwf', hw'⟩ := hreg (k + 1) Ψ' he hwf s hw
-  exact hasTy_fn.mp (hw.known _ hf) k (Nat.lt_succ_self k) Ψ'' he' hwf' p saved lo m ra frame fl
-    s hs (hw'.mono (Nat.le_succ k))
+  have hw' := hreg (k + 1) Ψ' he hwf s hw
+  exact hasTy_fn.mp (hw.known _ hf) k (Nat.lt_succ_self k) Ψ' (MemTy.Ext.refl _) hwf p saved lo
+    m ra frame fl s hs (hw'.mono (Nat.le_succ k))
 
 /-- A fact that is so, for as many steps as matter and however the memory
 typing grows, may be taken as known. -/

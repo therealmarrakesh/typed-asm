@@ -34,6 +34,7 @@ theorem WellTyped.setWorld {n : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch
     heap := h.heap
     text := h.text
     said := h.said
+    complete := h.complete
     held :=
       { perm := h.held.perm
         size_lt := h.held.size_lt
@@ -92,11 +93,13 @@ def Maps (s : State) (size : Nat) (t : State) : Prop :=
   ∃ a w, a.toNat % 4096 = 0 ∧ a.toNat + size ≤ addrTop ∧ s.unmapped a size = true ∧
     t = Linux.ret { s.mapZero a size with world := w } a
 
-/-- `t` is `s` after a call that refused and touched nothing, or made the
-`size` bytes at `a` inaccessible, `a` being the start of a page. -/
+/-- `t` is `s` after a call that refused, handing back an error number, and
+touched nothing; or made the `size` bytes at `a` inaccessible, `a` being the
+start of a page, and handed back zero. Which it did is told by what it
+handed back: a program that still holds the memory must be able to know. -/
 def Unmaps (s : State) (a : BitVec 64) (size : Nat) (t : State) : Prop :=
-  (∃ v, t = Linux.ret s v) ∨
-  (a.toNat % 4096 = 0 ∧ a.toNat + size ≤ addrTop ∧ ∃ v, t = Linux.ret (s.unmap a size) v)
+  (∃ v, SysErr v ∧ t = Linux.ret s v) ∨
+  (a.toNat % 4096 = 0 ∧ a.toNat + size ≤ addrTop ∧ t = Linux.ret (s.unmap a size) 0)
 
 /-- `Describes sys D`: the system does what `D` says, for every call `D`
 describes that it lets through. -/

@@ -6,28 +6,34 @@ import TypedAsm.U.Split
 A context says five kinds of thing of a state: what each register holds;
 what the flags are; what is known of values; which regions are held, alone;
 and what values lie in them. One context may be regarded as another when
-every state that matches the first matches the second. Taking the five in
-turn, with the memory typing left as it is, that comes to this:
+every state that matches the first matches the second: the same state,
+under the same memory typing, described another way. Taking the five in
+turn, that comes to this:
 
 * the registers hold the same values, and the flags are the same: both
   contexts say all of them, so nothing less will do;
 * each thing the second knows is so whenever everything the first knows is:
   which covers a fact that follows from another, facts dropped, and facts
-  that are so of any value;
-* each region the second holds, written out, is a **part** of one the first holds: it lies
-  within it, and each value it says is there the first says is there, at
-  that place; and parts of the same region do not overlap. Which covers the
-  same regions, in any order, saying less of what they hold, fewer of them,
-  and one taken as several.
+  that are so of any value. To know is something one may do less of and
+  still be right;
+* to hold is not. A context says all that is held, so the second holds
+  every byte the first does: each region it holds, written out, is a
+  **part** of one the first holds, lying within it and saying of values
+  only what the first says is there; the parts of each region do not
+  overlap, and between them take in the whole of it; and what else the
+  first holds, the second holds as it was. Which covers the same regions,
+  in any order, saying less of what they hold, and one taken as several.
 
 That is one statement, `Regards.parts`, and everything of the kind is a case
 of it. Two things are not, and are stated beside it. A context may come to
 name the value in bytes it holds and said nothing of: the value is whatever
 the memory holds, which no context before it says, so this is a choice made
 of the state (`Ok.nameSlot`). And regions end to end may be taken as one
-(`Regards.join`): the one is then part of several, not of one. Regions
-passing into the memory typing, for others to point into, change the memory
-typing, and are `Regards.publish`.
+(`Regards.join`): the one is then part of several, not of one.
+
+Coming to hold memory and ceasing to are no part of this: memory mapped,
+unmapped, or made a block others may point into is a thing that happens,
+with a statement of its own.
 -/
 
 namespace TypedAsm.U
@@ -85,20 +91,21 @@ theorem partRegion_eq {E : List Region} {x : Part} {b : Region} (h : E[x.1]? = s
 
 /-- **One context may be regarded as another** that says the same of the
 registers and the flags, knows only what follows from what the first knows,
-and holds parts of what the first holds, apart from one another; with what
-else the first holds, `F`, held as it was, or some of it. -/
-theorem Regards.parts {Γ Δ : Ctx} {E F F' : List Region} {L : List Part}
+and holds what the first holds as parts: apart from one another, and
+between them the whole of each region; with what else the first holds,
+`F`, held as it was. -/
+theorem Regards.parts {Γ Δ : Ctx} {E F : List Region} {L : List Part}
     (hval : Δ.val = Γ.val) (hflags : Δ.flags = Γ.flags)
     (hknown : ∀ f ∈ Δ.known, ∀ (Ψ' : MemTy) (n : Nat),
       (∀ g ∈ Γ.known, HasTy fetch sys Ψ' n g.2 g.1) → HasTy fetch sys Ψ' n f.2 f.1)
-    (hΓ : Γ.held = E ++ F) (hΔ : Δ.held = L.map (partRegion E) ++ F') (hF' : F'.Sublist F)
-    (hok : ∀ x ∈ L, PartOk E x) (hap : L.Pairwise PartsApart) :
+    (hΓ : Γ.held = E ++ F) (hΔ : Δ.held = L.map (partRegion E) ++ F)
+    (hok : ∀ x ∈ L, PartOk E x) (hap : L.Pairwise PartsApart)
+    (hcov : ∀ i b, E[i]? = some b → ∀ o, o < b.2.size →
+      ∃ x ∈ L, x.1 = i ∧ x.2.1 ≤ o ∧ o < x.2.1 + x.2.2.size) :
     Regards fetch sys Ψ Γ Δ := by
   intro k Ψ' he hwf s hw
-  refine ⟨Ψ', MemTy.Ext.refl _, hwf, ?_⟩
   have hE : ∀ b ∈ E, b ∈ Γ.held := fun b hb => by rw [hΓ]; exact List.mem_append_left _ hb
-  have hF : ∀ b ∈ F', b ∈ Γ.held := fun b hb => by
-    rw [hΓ]; exact List.mem_append_right _ (hF'.subset hb)
+  have hF : ∀ b ∈ F, b ∈ Γ.held := fun b hb => by rw [hΓ]; exact List.mem_append_right _ hb
   have hap0 : (E ++ F).Pairwise fun b c => Disjoint b.1 b.2.size c.1 c.2.size := by
     rw [← hΓ]; exact hw.held.apart
   obtain ⟨hapE, hapF, hapEF⟩ := List.pairwise_append.mp hap0
@@ -125,6 +132,21 @@ theorem Regards.parts {Γ Δ : Ctx} {E F F' : List Region} {L : List Part}
       heap := hw.heap
       text := hw.text
       said := hw.said
+      complete := fun a ha => by
+        rcases hw.complete a ha with ⟨b, hb, hin⟩ | hr
+        · rw [hΓ] at hb
+          rcases List.mem_append.mp hb with hb | hb
+          · obtain ⟨i, hi, rfl⟩ := List.mem_iff_getElem.mp hb
+            have hEi : E[i]? = some E[i] := List.getElem?_eq_getElem hi
+            obtain ⟨x, hx, hxi, hlo, hhi⟩ := hcov i _ hEi _ hin
+            refine .inl ⟨partRegion E x, by
+              rw [hΔ]; exact List.mem_append_left _ (List.mem_map.mpr ⟨x, hx, rfl⟩), ?_⟩
+            rw [partRegion_eq (b := E[i]) (by rw [hxi]; exact hEi)]
+            show (a - (E[i].1 + BitVec.ofNat 64 x.2.1)).toNat < x.2.2.size
+            have hsz := hlt E[i] (hE _ (List.getElem_mem hi))
+            bv_omega
+          · exact .inl ⟨b, by rw [hΔ]; exact List.mem_append_right _ hb, hin⟩
+        · exact .inr hr
       held :=
         { perm := fun c hc => by
             obtain ⟨b, hb, o, hc1, hle, _⟩ := key c hc
@@ -147,7 +169,7 @@ theorem Regards.parts {Γ Δ : Ctx} {E F F' : List Region} {L : List Part}
             exact (hw.held.heap b hb a l hl).part_left hle (hlt b hb) (hwf.size_lt a l hl)
           apart := by
             rw [hΔ]
-            refine List.pairwise_append.mpr ⟨?_, hapF.sublist hF', ?_⟩
+            refine List.pairwise_append.mpr ⟨?_, hapF, ?_⟩
             · refine List.pairwise_map.mpr (hap.imp_of_mem ?_)
               intro x y hx hy hxy
               obtain ⟨bx, hbx, hlex, _⟩ := hok x hx
@@ -176,8 +198,7 @@ theorem Regards.parts {Γ Δ : Ctx} {E F F' : List Region} {L : List Part}
               obtain ⟨b, hb, hle, _⟩ := hok x hx
               rw [partRegion_eq hb]
               have hbE := List.mem_of_getElem? hb
-              exact (hapEF b hbE f (hF'.subset hf)).part_left hle (hlt b (hE b hbE))
-                (hlt f (hF f hf)) } }
+              exact (hapEF b hbE f hf).part_left hle (hlt b (hE b hbE)) (hlt f (hF f hf)) } }
 
 /-- **The case where only what is known changes**: each thing known
 following from something known before of the same value. -/
@@ -188,7 +209,7 @@ theorem Regards.follows {Γ : Ctx} (fs : List Fact)
     (fun f hf Ψ' n hg =>
       let ⟨τ, hτ, hfol⟩ := h f hf
       hfol Ψ' n (hg _ hτ))
-    rfl rfl (List.Sublist.refl _) (fun _ hx => nomatch hx) .nil
+    rfl rfl (fun _ hx => nomatch hx) .nil (fun i b hb => by simp at hb)
 
 /-! ## Naming what a region holds -/
 
@@ -214,6 +235,16 @@ theorem WellTyped.nameSlot {n : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch
       heap := h.heap
       text := h.text
       said := h.said
+      complete := fun x hx => by
+        rcases h.complete x hx with ⟨c, hc, hin⟩ | hr
+        · obtain ⟨m, hm, rfl⟩ := List.mem_iff_getElem.mp hc
+          refine .inl ⟨(Γ.held.set i (b, ⟨S.size, (o, s.load64 (b + BitVec.ofNat 64 o)) ::
+            S.vals⟩))[m]'(by rw [List.length_set]; exact hm), List.getElem_mem _, ?_⟩
+          rw [List.getElem_set]
+          split
+          · next him => subst him; rw [hieq] at hin; exact hin
+          · exact hin
+        · exact .inr hr
       held :=
         { perm := fun c hc => by
             rcases hmem c hc with hc | rfl

@@ -94,6 +94,13 @@ theorem writeHeld {s' : State} {k : Nat} {a : BitVec 64} {S S' : Held} {lo cnt :
       rw [hM _ (fun hc => ((hhp b l hl).mono (o := lo) (p := j) (n' := cnt) (m' := 1)
         hsz (hΨ.size_lt b l hl) (by omega) (by omega) (by omega) (by omega)).1 (by decide))]
       exact h.said b l bs hl hs j hj
+    complete := fun x hx => by
+      rcases h.complete x (by rw [← hperm]; exact hx) with ⟨c, hc, hlt⟩ | hr
+      · obtain ⟨m, hm, rfl⟩ := List.mem_iff_getElem.mp hc
+        refine .inl ⟨(Γ.held.set k (a, S'))[m]'(hlen ▸ hm), List.getElem_mem _, ?_⟩
+        rw [(hkey m hm).1, (hkey m hm).2]
+        exact hlt
+      · exact .inr hr
     held := {
       perm := fun c hc' => by
         obtain ⟨m, hm, rfl⟩ := List.mem_iff_getElem.mp hc'

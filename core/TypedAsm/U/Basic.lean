@@ -149,7 +149,8 @@ theorem Matches.imp {H H' : Ty → BitVec 64 → Prop} {Γ : Ctx} {s : State}
     heap := fun a l hl p hp => himp _ _ (h.heap a l hl p hp)
     text := h.text
     said := h.said
-    held := h.held }
+    held := h.held
+    complete := h.complete }
 
 /-- A state well typed at a step count is well typed at every smaller one. -/
 theorem WellTyped.mono {m : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch sys Ψ n Γ s)

@@ -167,6 +167,64 @@ theorem apartS_den (ρ : Env) : (P : List (Nat × Nat × HeldS)) → apartS P = 
     · exact .inr (.inl h1)
     · exact .inr (.inr h1)
 
+/-- Whether the parts of the region at place `i`, of `size` bytes, take in
+the whole of it from byte `cur` on: one starts there, another where that one
+ends, and so on to the end. -/
+def coverFrom (P : List (Nat × Nat × HeldS)) (i size : Nat) : Nat → Nat → Bool
+  | fuel, cur =>
+    if cur = size then true
+    else
+      match fuel with
+      | 0 => false
+      | fuel + 1 =>
+        match P.find? fun x => x.1 == i && x.2.1 == cur && decide (0 < x.2.2.size) with
+        | some x => coverFrom P i size fuel (cur + x.2.2.size)
+        | none => false
+
+theorem coverFrom_spec (P : List (Nat × Nat × HeldS)) (i size : Nat) :
+    (fuel cur : Nat) → coverFrom P i size fuel cur = true →
+    ∀ o, cur ≤ o → o < size → ∃ x ∈ P, x.1 = i ∧ x.2.1 ≤ o ∧ o < x.2.1 + x.2.2.size
+  | fuel, cur, h, o, hlo, hhi => by
+    unfold coverFrom at h
+    split at h
+    · next he => omega
+    · cases fuel with
+      | zero => cases h
+      | succ fuel =>
+        simp only at h
+        cases hf : P.find? fun x => x.1 == i && x.2.1 == cur && decide (0 < x.2.2.size) with
+        | none => rw [hf] at h; cases h
+        | some x =>
+          rw [hf] at h
+          have hx := List.find?_some hf
+          simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at hx
+          by_cases ho : o < cur + x.2.2.size
+          · exact ⟨x, List.mem_of_find?_eq_some hf, hx.1.1, by omega, by omega⟩
+          · exact coverFrom_spec P i size fuel _ h o (by omega) hhi
+
+/-- Whether the parts take in the whole of every region of a list. -/
+def coverS (G : List (Val × HeldS)) (P : List (Nat × Nat × HeldS)) : Bool :=
+  (List.range G.length).all fun i =>
+    match G[i]? with
+    | some g => coverFrom P i g.2.size P.length 0
+    | none => true
+
+theorem coverS_den (ρ : Env) (G : List (Val × HeldS)) (P : List (Nat × Nat × HeldS))
+    (h : coverS G P = true) (i : Nat) (b : Region) (hb : (G.map (regionDen ρ))[i]? = some b)
+    (o : Nat) (ho : o < b.2.size) :
+    ∃ x ∈ P.map (partDen ρ), x.1 = i ∧ x.2.1 ≤ o ∧ o < x.2.1 + x.2.2.size := by
+  rw [List.getElem?_map] at hb
+  cases hg : G[i]? with
+  | none => rw [hg] at hb; cases hb
+  | some g =>
+    rw [hg] at hb
+    cases hb
+    have hi : i < G.length := (List.getElem?_eq_some_iff.mp hg).1
+    have := List.all_eq_true.mp h i (List.mem_range.mpr hi)
+    rw [hg] at this
+    obtain ⟨x, hx, h1, h2, h3⟩ := coverFrom_spec P i g.2.size _ _ this o (Nat.zero_le _) ho
+    exact ⟨partDen ρ x, List.mem_map.mpr ⟨x, hx, rfl⟩, h1, h2, h3⟩
+
 /-! ## What is known -/
 
 /-- Whether what is known one way is known another, read off the two. -/
@@ -279,9 +337,9 @@ def factFrom (G : List (Val × TyS)) (f : Val × TyS) : Bool :=
 def regardS (Γ Δ : CtxS) : Bool :=
   (allRegs.all fun r => (Γ.regs.get r).same (Δ.regs.get r)) && Γ.flags == Δ.flags &&
     (match partsS Γ.held Δ.held with
-     | some P => apartS P
+     | some P => apartS P && coverS Γ.held P
      | none => false) &&
-    Δ.known.all (factFrom Γ.known) && (Δ.rest == Γ.rest || Δ.rest == none)
+    Δ.known.all (factFrom Γ.known) && Δ.rest == Γ.rest
 
 theorem regardS_sound (ρ : Env) {Γ Δ : CtxS} (h : regardS Γ Δ = true) :
     Regards fetch sys Ψ (Γ.den ρ) (Δ.den ρ) := by
@@ -291,9 +349,11 @@ theorem regardS_sound (ρ : Env) {Γ Δ : CtxS} (h : regardS Γ Δ = true) :
   | none => rw [hP] at hh; cases hh
   | some P =>
     rw [hP] at hh
+    simp only [Bool.and_eq_true] at hh
     obtain ⟨hmap, hok⟩ := partsS_den ρ Γ.held Δ.held P hP
     refine Regards.parts (E := Γ.held.map (regionDen ρ)) (F := restDen ρ Γ.rest)
-      (F' := restDen ρ Δ.rest) (L := P.map (partDen ρ)) ?_ ?_ ?_ rfl ?_ ?_ hok (apartS_den ρ P hh)
+      (L := P.map (partDen ρ)) ?_ ?_ ?_ rfl ?_ hok (apartS_den ρ P hh.1)
+      (coverS_den ρ Γ.held P hh.2)
     · funext r
       exact (Val.same_den ρ (hr r (mem_allRegs r))).symm
     · show Δ.flags.den ρ = Γ.flags.den ρ
@@ -309,9 +369,6 @@ theorem regardS_sound (ρ : Env) {Γ Δ : CtxS} (h : regardS Γ Δ = true) :
         rw [← Val.same_den ρ hs]
         exact hsrc.sub (followsS_sub ρ _ _ _ hfo)
     · show Δ.held.map (regionDen ρ) ++ restDen ρ Δ.rest = _
-      rw [hmap]
-    · rcases Bool.or_eq_true _ _ |>.mp hrest with h | h
-      · rw [beq_iff_eq.mp h]; exact List.Sublist.refl _
-      · rw [beq_iff_eq.mp h]; exact List.nil_sublist _
+      rw [hmap, hrest]
 
 end TypedAsm.U

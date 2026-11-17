@@ -269,6 +269,13 @@ structure Matches (H : Ty → BitVec 64 → Prop) (Ψ : MemTy) (Γ : Ctx) (s : S
     ∀ k (hk : k < bs.length), s.mem (a + BitVec.ofNat 64 k) = bs[k]
   /-- The held regions are there and hold what the context says. -/
   held : HeldOk Ψ Γ s
+  /-- Every byte of memory the machine can touch lies in a region the
+  context holds or in a block of the memory typing. With the rest, the held
+  regions and the blocks are the accessible memory, each byte once: the
+  context says all that is held, not some of it. -/
+  complete : ∀ a : BitVec 64, s.perm a ≠ .none →
+    (∃ b ∈ Γ.held, (a - b.1).toNat < b.2.size) ∨
+    (∃ base l, Ψ base = some l ∧ (a - base).toNat < l.size)
 
 /-- `HasTy fetch sys Ψ n τ v`: `τ` is so of the value `v`, at step count `n`. -/
 def HasTy (fetch : Fetch) (sys : Syscall) : MemTy → Nat → Ty → BitVec 64 → Prop

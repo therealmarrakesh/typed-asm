@@ -47,8 +47,8 @@ theorem munmap_unmaps (s : State) :
   unfold Linux.munmap
   simp only
   split
-  · next hok => exact .inr ⟨hok.1, hok.2.2.1, _, rfl⟩
-  · exact .inl ⟨_, rfl⟩
+  · next hok => exact .inr ⟨hok.1, hok.2.2.1, rfl⟩
+  · exact .inl ⟨_, by decide, rfl⟩
 
 /-- **The Linux model does what it is described to do.** -/
 theorem linux_describes : Describes linux linuxDesc := by

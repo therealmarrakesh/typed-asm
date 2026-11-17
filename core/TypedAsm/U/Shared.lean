@@ -118,6 +118,7 @@ theorem writeShared {a : BitVec 64} {l : Layout} {lo cnt : Nat} {s' : State}
     said := fun b l' bs hl' hs k hk => by
       rw [hM _ (fun hc => hΨ.said_outside_bytes hl (hΨ.said_none hl hwr) hle hc hl' hs hk)]
       exact h.said b l' bs hl' hs k hk
+    complete := fun x hx => h.complete x (by rw [← hperm]; exact hx)
     held :=
       { perm := fun c hc => by rw [State.canWrite_congr hperm]; exact h.held.perm c hc
         size_lt := h.held.size_lt
@@ -145,6 +146,7 @@ theorem addKnown (h : WellTyped fetch sys Ψ n Γ s) (fs : List Fact)
     heap := h.heap
     text := h.text
     said := h.said
+    complete := h.complete
     held :=
       { perm := h.held.perm
         size_lt := h.held.size_lt

@@ -77,21 +77,29 @@ theorem add_wf (hΨ : Ψ.WF) (hpos : 0 < L.size) (hlt : L.size < 2 ^ 64)
 
 end MemTy
 
-/-- A block that is there, holds what its layout says and overlaps nothing
-the context holds may join the memory typing. -/
-theorem WellTyped.addBlock {n : Nat} {Γ : Ctx} {s : State} {a : BitVec 64} {L : Layout}
-    (h : WellTyped fetch sys Ψ n Γ s) (hN : Ψ a = none)
-    (hperm : s.canRead a L.size = true ∧ (L.writable = true → s.canWrite a L.size = true))
+/-- **A region held becomes a block of the memory typing**: one of the
+same size, that holds what its layout says. The state then matches the
+context without the region, under the memory typing with the block. Every
+byte that was held is the block's: none is let go. -/
+theorem WellTyped.toBlock {n : Nat} {Γ : Ctx} {s : State} {a : BitVec 64} {L : Layout} {k : Nat}
+    {S : Held} (h : WellTyped fetch sys Ψ n Γ s) (hk : Γ.held[k]? = some (a, S))
+    (hsize : L.size = S.size) (hN : Ψ a = none)
     (hvals : ∀ p ∈ L.shape.vals, HasTy fetch sys Ψ n p.2 (s.load64 (a + BitVec.ofNat 64 p.1)))
-    (htext : L.text = 0) (hheld : ∀ c ∈ Γ.held, Disjoint c.1 c.2.size a L.size)
-    (hsaid : L.said = none) : WellTyped fetch sys (Ψ.add a L) n Γ s :=
+    (htext : L.text = 0) (hsaid : L.said = none) :
+    WellTyped fetch sys (Ψ.add a L) n { Γ with held := Γ.held.eraseIdx k } s :=
   have he := MemTy.add_ext (L := L) hN
+  have hklt := (List.getElem?_eq_some_iff.mp hk).1
+  have hkeq := (List.getElem?_eq_some_iff.mp hk).2
+  have hin : (a, S) ∈ Γ.held := hkeq ▸ List.getElem_mem hklt
+  have hsub : ∀ c ∈ Γ.held.eraseIdx k, c ∈ Γ.held :=
+    fun c hc => (List.eraseIdx_sublist _ _).subset hc
+  have hpm : s.canWrite a L.size = true := by rw [hsize]; exact h.held.perm _ hin
   { val := h.val
     known := fun f hf => (h.known f hf).ext he
     flags := h.flags
     heapPerm := fun x l hl => by
       rcases MemTy.add_cases hl with ⟨rfl, rfl⟩ | ⟨-, hl'⟩
-      · exact hperm
+      · exact ⟨State.canRead_of_canWrite hpm, fun _ => hpm⟩
       · exact h.heapPerm x l hl'
     heap := fun x l hl p hp => by
       rcases MemTy.add_cases hl with ⟨rfl, rfl⟩ | ⟨-, hl'⟩
@@ -105,16 +113,43 @@ theorem WellTyped.addBlock {n : Nat} {Γ : Ctx} {s : State} {a : BitVec 64} {L :
       rcases MemTy.add_cases hl with ⟨rfl, rfl⟩ | ⟨-, hl'⟩
       · rw [hsaid] at hb; cases hb
       · exact h.said x l b hl' hb
+    complete := fun x hx => by
+      rcases h.complete x hx with ⟨c, hc, hlt⟩ | ⟨base, l, hl, hlt⟩
+      · obtain ⟨i, hi, rfl⟩ := List.mem_iff_getElem.mp hc
+        by_cases hik : i = k
+        · subst hik
+          rw [hkeq] at hlt
+          exact .inr ⟨a, L, MemTy.add_self, by rw [hsize]; exact hlt⟩
+        · exact .inl ⟨_, List.mem_eraseIdx_iff_getElem.mpr ⟨i, hi, hik, rfl⟩, hlt⟩
+      · exact .inr ⟨base, l, he.blocks base l hl, hlt⟩
     held :=
-      { perm := h.held.perm
-        size_lt := h.held.size_lt
-        fits := h.held.fits
-        vals := h.held.vals
+      { perm := fun c hc => h.held.perm c (hsub c hc)
+        size_lt := fun c hc => h.held.size_lt c (hsub c hc)
+        fits := fun c hc => h.held.fits c (hsub c hc)
+        vals := fun c hc => h.held.vals c (hsub c hc)
         heap := fun c hc x l hl => by
           rcases MemTy.add_cases hl with ⟨rfl, rfl⟩ | ⟨-, hl'⟩
-          · exact hheld c hc
-          · exact h.held.heap c hc x l hl'
-        apart := h.held.apart } }
+          · obtain ⟨i, hi, hik, rfl⟩ := List.mem_eraseIdx_iff_getElem.mp hc
+            have hd := h.held_apart hi hklt hik
+            rw [hkeq, ← hsize] at hd
+            exact hd.symm
+          · exact h.held.heap c (hsub c hc) x l hl'
+        apart := h.held.apart.sublist (List.eraseIdx_sublist _ _) } }
+
+/-- `Publishes Γ Δ`: every state that matches `Γ` matches `Δ` once the
+memory typing has grown. It is not a way of regarding: memory held alone
+has become memory others may point into, and stays so. It is asked only
+where a program says so. -/
+def Publishes (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (Γ Δ : Ctx) : Prop :=
+  ∀ k, ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, WellTyped fetch sys Ψ' k Γ s →
+    ∃ Ψ'' : MemTy, Ψ'.Ext Ψ'' ∧ Ψ''.WF ∧ WellTyped fetch sys Ψ'' k Δ s
+
+/-- Code typed in the context after is typed in the context before. -/
+theorem Ok.publish {n : Nat} {a : BitVec 64} {Γ Δ : Ctx} (h : Publishes fetch sys Ψ Γ Δ)
+    (hΔ : Ok fetch sys Ψ n a Δ) : Ok fetch sys Ψ n a Γ := by
+  intro k hk Ψ' he hwf s hrip hw
+  obtain ⟨Ψ'', he', hwf', hw'⟩ := h k Ψ' he hwf s hw
+  exact hΔ k hk Ψ'' (he.trans he') hwf' s hrip hw'
 
 /-- What is known of a block's address besides its shape: that it is a block
 of a kind, where it is one. -/
@@ -122,19 +157,19 @@ def tagFacts (b : BitVec 64) : Option Nat → List Fact
   | some t => [(b, Ty.ref t true 0)]
   | none => []
 
-/-- **A held region may be regarded as a block others may point into**, of
-any shape its first bytes stand for: where the shape gives a type, the
-region holds a value there that is known to be of it, or the type asks
-nothing. The region is no longer held; its address is known to point to the
-block, and to a block of the kind, if it is made one of a kind. What is
-past the shape's bytes is given up. -/
-theorem Regards.publish {Γ : Ctx} {k : Nat} {b : BitVec 64} {S : Held} {K : Shape}
+/-- **A held region becomes a block others may point into**, of any shape
+of its size: where the shape gives a type, the region holds a value there
+that is known to be of it, or the type asks nothing. The region is no
+longer held; its address is known to point to the block, and to a block of
+the kind, if it is made one of a kind. The whole region becomes the block:
+a part of it is first taken as a region of its own. -/
+theorem Publishes.region {Γ : Ctx} {k : Nat} {b : BitVec 64} {S : Held} {K : Shape}
     (tag : Option Nat) (hk : Γ.held[k]? = some (b, S)) (hne : 0 < K.size)
-    (hle : K.size ≤ S.size) (hfit : ∀ q ∈ K.vals, q.1 + 8 ≤ K.size)
+    (hKS : K.size = S.size) (hfit : ∀ q ∈ K.vals, q.1 + 8 ≤ K.size)
     (hvals : ∀ q ∈ K.vals, q.2 = .any ∨
       ∃ v τ', (q.1, v) ∈ S.vals ∧ (v, τ') ∈ Γ.known ∧ Sub v τ' q.2)
     (hkind : ∀ t, tag = some t → Ψ.kinds t = some K) :
-    Regards fetch sys Ψ Γ
+    Publishes fetch sys Ψ Γ
       { Γ with
         held := Γ.held.eraseIdx k
         known := (b, Ty.ptr K true 0) :: (tagFacts b tag ++ Γ.known) } := by
@@ -145,6 +180,7 @@ theorem Regards.publish {Γ : Ctx} {k : Nat} {b : BitVec 64} {S : Held} {K : Sha
   have hpm := h.held.perm _ hin
   have hhp := h.held.heap _ hin
   simp only at hsz hpm hhp
+  have hle : K.size ≤ S.size := Nat.le_of_eq hKS
   -- no block of the memory typing starts where this region does
   have hN : Ψ' b = none := by
     cases hl : Ψ' b with
@@ -154,21 +190,13 @@ theorem Regards.publish {Γ : Ctx} {k : Nat} {b : BitVec 64} {S : Held} {K : Sha
       exact absurd hd (by bv_omega)
   have hsize : (⟨K, true, tag, 0, none⟩ : Layout).size = K.size := by simp [Layout.size]
   have hpmK : s.canWrite b K.size = true := Linux.canWrite_le hpm hle
-  have hB := (h.eraseHeld k).addBlock (a := b) (L := ⟨K, true, tag, 0, none⟩) hN
-    (by rw [hsize]; exact ⟨State.canRead_of_canWrite hpmK, fun _ => hpmK⟩)
+  have hB := h.toBlock (a := b) (L := ⟨K, true, tag, 0, none⟩) hk (by rw [hsize]; exact hKS) hN
     (fun q hq => by
       rcases hvals q hq with hany | ⟨v, τ', hv, hτ', hsub⟩
       · rw [hany]; exact HasTy.any _
       · rw [h.held.vals _ hin (q.1, v) hv]
         exact (h.known _ hτ').sub hsub)
-    rfl
-    (fun c hc => by
-      obtain ⟨i, hi, hik, rfl⟩ := List.mem_eraseIdx_iff_getElem.mp hc
-      have hd := h.held_apart hi hklt hik
-      rw [hkeq] at hd
-      rw [hsize]
-      exact (hd.prefix_left hle hsz (h.held.size_lt _ (List.getElem_mem hi))).symm)
-    rfl
+    rfl rfl
   have hwf' : (Ψ'.add b ⟨K, true, tag, 0, none⟩).WF :=
     MemTy.add_wf hwf (by rw [hsize]; omega) (by rw [hsize]; omega)
       (fun x lx hl => by rw [hsize]; exact (hhp x lx hl).prefix_left hle hsz (hwf.size_lt x lx hl))

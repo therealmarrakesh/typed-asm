@@ -101,6 +101,7 @@ theorem WellTyped.apply {n : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch sy
       heap := fun a l hl p hp => by rw [hload]; exact h.heap a l hl p hp
       text := fun a l hl ht => by rw [hmem]; exact h.text a l hl ht
       said := fun a l bs hl hs k hk => by rw [hmem]; exact h.said a l bs hl hs k hk
+      complete := fun a ha => by rw [hperm] at ha; exact h.complete a ha
       held :=
         { perm := fun b hb => by rw [hcw]; exact h.held.perm b hb
           size_lt := h.held.size_lt

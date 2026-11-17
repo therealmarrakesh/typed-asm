@@ -188,7 +188,8 @@ example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linux
 
 Each consequence of the one statement, and each thing it does not allow,
 at a label reached from a context that holds one stack region of sixty-four
-bytes and says nothing of what is in it. -/
+bytes and says nothing of what is in it. The same bytes must be held after
+as before: in any order and any division, never fewer. -/
 
 /-- `start: jmp there; there: jmp there`. -/
 def codeJ : List (BitVec 64 × Instr × BitVec 64) :=
@@ -200,12 +201,17 @@ def mayHold (h : List (Val × HeldS)) : Bool :=
 
 -- the same region
 example : mayHold [(.var 16, ⟨64, []⟩)] = true := by decide +kernel
--- nothing: what is held may be given up
-example : mayHold [] = true := by decide +kernel
--- the region as two that lie end to end, and as one part of it alone
+-- nothing: refused. A context says all that is held; memory does not cease
+-- to be held by a label leaving it out
+example : mayHold [] = false := by decide +kernel
+-- the region as two that lie end to end
 example : mayHold [(.var 16, ⟨32, []⟩), (.add (.var 16) (.lit 32), ⟨32, []⟩)] = true := by
   decide +kernel
-example : mayHold [(.add (.var 16) (.lit 8), ⟨16, []⟩)] = true := by decide +kernel
+-- one part of it alone, the rest left out: refused
+example : mayHold [(.add (.var 16) (.lit 8), ⟨16, []⟩)] = false := by decide +kernel
+-- two parts with bytes between them left out: refused
+example : mayHold [(.var 16, ⟨24, []⟩), (.add (.var 16) (.lit 32), ⟨32, []⟩)] = false := by
+  decide +kernel
 -- two parts that overlap: refused
 example : mayHold [(.var 16, ⟨40, []⟩), (.add (.var 16) (.lit 32), ⟨32, []⟩)] = false := by
   decide +kernel
@@ -234,12 +240,12 @@ example : checkProgram codeJ
      (5, { Γw with held := [(.var 16, ⟨64, []⟩)] })] 10 20 = false := by
   decide +kernel
 
--- with a name for whatever else is held: the label may keep it, or give it
--- up; and a label that names a rest is typed for any rest, so it may be
--- reached holding none
+-- with a name for whatever else is held: the label keeps it, and may not
+-- leave it out; and a label that names a rest is typed for any rest, so it
+-- may be reached holding none
 example : checkProgram codeJ [(0, { Γw with rest := some 0 }), (5, { Γw with rest := some 0 })]
     10 20 = true := by decide +kernel
-example : checkProgram codeJ [(0, { Γw with rest := some 0 }), (5, Γw)] 10 20 = true := by
+example : checkProgram codeJ [(0, { Γw with rest := some 0 }), (5, Γw)] 10 20 = false := by
   decide +kernel
 example : checkProgram codeJ [(0, Γw), (5, { Γw with rest := some 0 })] 10 20 = true := by
   decide +kernel
