@@ -1,44 +1,53 @@
 import AllocProgram
-import TypedAsm.Tactic
+import TypedAsm.U.Checked
 
 /-!
 # Alloc: typing and safety
 
-The program is in `AllocProgram.lean`. This file types it and proves it safe.
-It is kept separate so that running the program does not link the tactics.
+The program is in `AllocProgram.lean`. This file says what its labels want
+and checks it: one check, run by Lean's kernel, that the code is typed and
+that the state the kernel loads the program into starts as its entry asks.
+Nothing is proved by hand.
+
+The theorems hold whatever the program is given to read and wherever the
+kernel puts the memory it asks for.
+
+It is kept separate so that running the program does not link the checker.
 -/
 
-open TypedAsm
+open TypedAsm TypedAsm.U
 
 namespace Alloc
 
-/-! ## The typing -/
+/-! ## What the labels want -/
 
-/-- A link: null, or a writable pointer to a node. -/
-def link : Ty := .nullable (.ref 1 true 0)
+/-- A link: nought, or a pointer to a node that may be written. -/
+def link : TyS := .nullable (.ref 1 true 0)
 
-/-- A node, 80 bytes: the link to the node before it, how many bytes it
-holds, and room for 64 of them. The link admits zero, so fresh memory is a
-node. -/
-def nodeShape : Shape := ⟨80, [(0, link)]⟩
+/-- A node: the page `mmap` hands back, with a link in its first eight
+bytes. The count and the bytes read are plain bytes after it. -/
+def node : ShapeS := .mk 4096 (.cons 0 link .nil)
 
-/-- The list so far is in `rbx`; nothing is known about the other registers. -/
-def listCtx : Ctx := ⟨fun r => if r = .rbx then link else .int, [], 0, Flags.Any, [], 0⟩
+/-- The one kind of block there is: kind 1 is a node. -/
+def kinds : List (Nat × ShapeS) := [(1, node)]
 
-/-- The contexts allowed at each label. -/
-inductive At : Label → Ctx → Prop
-  | start : At .start (entryCtx 0)
-  | next : At .next listCtx
-  | print : At .print listCtx
+/-- The program for the checker: its instructions; its kinds; and where a
+page it holds becomes a node others may point to: once the link has been
+stored in it, before its address is kept in `rbx`. -/
+def pg : Prog :=
+  { code := progCode (Asm.table base code)
+    kinds := kindsOf kinds
+    pubs := [⟨instrAddr code 13, .r12, node, some 1⟩] }
 
--- No blocks of note to begin with, and one kind of block there will be: kind 1
--- is a node.
-asm_typing At kinds [(1, nodeShape)]
+/-- The labels: the start; and the two loops, where `rbx` is a link. That
+memory was handed back is asked of each `mmap` before it is used. -/
+def labels : List U.Label :=
+  [⟨entry, inProgram 0⟩,
+   ⟨Asm.addr code base .next, inProgram 0 (known := [(.was .rbx, link)])⟩,
+   ⟨Asm.addr code base .print, inProgram 0 (known := [(.was .rbx, link)])⟩]
 
-/-! ## Safety -/
+/-! ## The check, and what it shows -/
 
--- Safe whatever the program is given to read and wherever the kernel puts the
--- memory it asks for.
-asm_safety At.start
+asm_checked code start .start stack 0 program pg labels labels kinds kinds fuel 60
 
 end Alloc

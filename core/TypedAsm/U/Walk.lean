@@ -139,11 +139,13 @@ theorem pubAt_sound {ρ : Env} {pg : Prog} (hk : KindsOk Ψ pg.kinds) {k : Nat} 
 /-- **The checker walked from an address**, for at most so many
 instructions, `k` being a name no term yet mentions. It stops where `stops`
 says, unless that is where it starts: at the labels of a program, which are
-typed each by a walk of its own. -/
+typed each by a walk of its own. A context no state matches leaves nothing
+to walk, wherever it is reached: at a label too. -/
 def walk (pg : Prog) (stops : BitVec 64 → Bool) :
     Bool → Nat → Nat → BitVec 64 → CtxS → Walk
   | _, 0, _, a, Γ => .stop a Γ
   | start, fuel + 1, k, a, Γ₀ =>
+    if Γ₀.impossible then .vacuous else
     if !start && stops a then .stop a Γ₀ else
     match pubAt pg k a Γ₀ with
     | none => .stop a Γ₀
@@ -230,6 +232,11 @@ theorem walk_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
   | start, fuel + 1, k, a, Γ₀, ρ, hu₀, h => by
     generalize hW : walk pg stops start (fuel + 1) k a Γ₀ = W at h ⊢
     unfold walk at hW
+    split at hW
+    · next himp₀ =>
+      subst hW
+      exact ⟨fun k _ Ψ' _ _ s _ hw => absurd hw (CtxS.impossible_sound himp₀ Ψ' k s),
+        fun _ k _ Ψ' _ _ s _ hw => absurd hw (CtxS.impossible_sound himp₀ Ψ' k s)⟩
     split at hW
     · subst hW; exact ⟨h, fun hm => nomatch hm⟩
     split at hW

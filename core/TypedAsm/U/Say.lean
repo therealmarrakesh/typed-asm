@@ -120,4 +120,9 @@ def blocksWith (code : List (Asm L)) (l : L) (says : List (BitVec 64 × LayoutS)
     cutSeg g g.1 (says.filter fun x =>
       decide (g.1 ≤ x.1.toNat) && decide (x.1.toNat < g.1 + pageBytes g.2.2.length))
 
+/-- The address of a program's instruction, counted from nought in the
+order they are written. -/
+def instrAddr (code : List (Asm L)) (i : Nat) : BitVec 64 :=
+  ((Asm.table (Asm.base code) code).map (·.1)).getD i 0
+
 end TypedAsm.U
