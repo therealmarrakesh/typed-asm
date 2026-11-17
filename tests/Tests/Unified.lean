@@ -140,7 +140,23 @@ example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linux
 -- jumping away when it is not null, the load is of a pointer that is null: refused
 example : (walk (codeN .ne) (fun _ => false) true 10 20 0 Γn).auto = false := by decide +kernel
 
-/-! ## A program with labels -/
+/-! ## A program with labels
+
+A label is an address and the family of contexts its code wants, written as
+a context whose terms speak of the family's own values. -/
+
+/-- The family of contexts in which the registers hold any values, the
+stack pointer is thirty-two bytes into a region of sixty-four that is held,
+and nothing else is. -/
+def Pw : CtxS where
+  regs := ⟨.bvar 0 0, .bvar 0 1, .bvar 0 2, .bvar 0 3, .add (.bvar 0 16) (.lit 32), .bvar 0 5,
+    .bvar 0 6, .bvar 0 7, .bvar 0 8, .bvar 0 9, .bvar 0 10, .bvar 0 11, .bvar 0 12, .bvar 0 13,
+    .bvar 0 14, .bvar 0 15⟩
+  flags := .bvar 0
+  held := [(.bvar 0 16, ⟨64, []⟩)]
+
+/-- A label whose family ranges over twenty values. -/
+def lab (a : BitVec 64) (P : CtxS) : Label := ⟨a, 20, P⟩
 
 /-- `start: mov ecx, 5; loop: sub rcx, 1; jne loop; mov eax, 60; syscall`. -/
 def codeL : List (BitVec 64 × Instr × BitVec 64) :=
@@ -149,23 +165,23 @@ def codeL : List (BitVec 64 × Instr × BitVec 64) :=
    (11, .mov .w32 (.rm_i (.reg .rax) 60), 5), (16, .syscall, 2)]
 
 /-- Both labels ask the same: a stack, and nothing of any register. -/
-def labelsL : List (BitVec 64 × CtxS) := [(0, Γw), (5, Γw)]
+def labelsL : List Label := [lab 0 Pw, lab 5 Pw]
 
 /-- **The loop is typed at both labels, for any number of steps**: the
 walk from `start` stops at `loop`, the walk from `loop` comes back to it or
 ends the program, and each context reached is decided to be one the label
 asks. The kernel runs the whole check. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
-    (hcode : ∀ e ∈ codeL, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (n : Nat) :
-    Ok fetch sys Ψ n 0 (Γw.den ρ) :=
-  program_ok hD rfl (fun _ => trivial) hcode (labels := labelsL) (fuel := 10) (k := 20)
-    (by decide +kernel) n (0, Γw) (List.mem_cons_self ..) ρ
+    (hcode : ∀ e ∈ codeL, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (fam : Fam) (n : Nat) :
+    Ok fetch sys Ψ n 0 (Pw.den { ρ with bound := fam :: ρ.bound }) :=
+  program_ok hD rfl (fun _ => trivial) hcode (labels := labelsL) (fuel := 10) (k := 0)
+    (by decide +kernel) n (lab 0 Pw) (List.mem_cons_self ..) ρ fam
 
 /-- A label asking that `rcx` be five is not one the loop comes back to. -/
-def labelsBad : List (BitVec 64 × CtxS) :=
-  [(0, Γw), (5, { Γw with regs := Γw.regs.set .rcx (.lit 5) })]
+def labelsBad : List Label :=
+  [lab 0 Pw, lab 5 { Pw with regs := Pw.regs.set .rcx (.lit 5) }]
 
-example : checkProgram codeL labelsBad 10 20 = false := by decide +kernel
+example : checkProgram codeL labelsBad 10 0 = false := by decide +kernel
 
 /-! ## Arithmetic on the stack pointer -/
 
@@ -180,10 +196,10 @@ def codeF : List (BitVec 64 × Instr × BitVec 64) :=
 /-- **Typed as a loop on one label**: the stack pointer is back where it
 was, as the sums show, so the context reached is the label's again. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
-    (hcode : ∀ e ∈ codeF, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (n : Nat) :
-    Ok fetch sys Ψ n 0 (Γw.den ρ) :=
-  program_ok hD rfl (fun _ => trivial) hcode (labels := [(0, Γw)]) (fuel := 10) (k := 20)
-    (by decide +kernel) n (0, Γw) (List.mem_cons_self ..) ρ
+    (hcode : ∀ e ∈ codeF, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (fam : Fam) (n : Nat) :
+    Ok fetch sys Ψ n 0 (Pw.den { ρ with bound := fam :: ρ.bound }) :=
+  program_ok hD rfl (fun _ => trivial) hcode (labels := [lab 0 Pw]) (fuel := 10) (k := 0)
+    (by decide +kernel) n (lab 0 Pw) (List.mem_cons_self ..) ρ fam
 
 /-! ## What one context being regarded as another comes to
 
@@ -198,71 +214,71 @@ def codeJ : List (BitVec 64 × Instr × BitVec 64) :=
 
 /-- Whether the label `there` may ask to hold these regions. -/
 def mayHold (h : List (Val × HeldS)) : Bool :=
-  checkProgram codeJ [(0, Γw), (5, { Γw with held := h })] 10 20
+  checkProgram codeJ [lab 0 Pw, lab 5 ({ Pw with held := h })] 10 0
 
 -- the same region
-example : mayHold [(.var 16, ⟨64, []⟩)] = true := by decide +kernel
+example : mayHold [(.bvar 0 16, ⟨64, []⟩)] = true := by decide +kernel
 -- nothing: refused. A context says all that is held; memory does not cease
 -- to be held by a label leaving it out
 example : mayHold [] = false := by decide +kernel
 -- the region as two that lie end to end
-example : mayHold [(.var 16, ⟨32, []⟩), (.add (.var 16) (.lit 32), ⟨32, []⟩)] = true := by
+example : mayHold [(.bvar 0 16, ⟨32, []⟩), (.add (.bvar 0 16) (.lit 32), ⟨32, []⟩)] = true := by
   decide +kernel
 -- one part of it alone, the rest left out: refused
-example : mayHold [(.add (.var 16) (.lit 8), ⟨16, []⟩)] = false := by decide +kernel
+example : mayHold [(.add (.bvar 0 16) (.lit 8), ⟨16, []⟩)] = false := by decide +kernel
 -- two parts with bytes between them left out: refused
-example : mayHold [(.var 16, ⟨24, []⟩), (.add (.var 16) (.lit 32), ⟨32, []⟩)] = false := by
+example : mayHold [(.bvar 0 16, ⟨24, []⟩), (.add (.bvar 0 16) (.lit 32), ⟨32, []⟩)] = false := by
   decide +kernel
 -- two parts that overlap: refused
-example : mayHold [(.var 16, ⟨40, []⟩), (.add (.var 16) (.lit 32), ⟨32, []⟩)] = false := by
+example : mayHold [(.bvar 0 16, ⟨40, []⟩), (.add (.bvar 0 16) (.lit 32), ⟨32, []⟩)] = false := by
   decide +kernel
 -- a part that runs past the end of the region: refused
-example : mayHold [(.add (.var 16) (.lit 32), ⟨40, []⟩)] = false := by decide +kernel
+example : mayHold [(.add (.bvar 0 16) (.lit 32), ⟨40, []⟩)] = false := by decide +kernel
 -- a region somewhere else: refused
-example : mayHold [(.var 15, ⟨8, []⟩)] = false := by decide +kernel
+example : mayHold [(.bvar 0 15, ⟨8, []⟩)] = false := by decide +kernel
 -- the region, with a name for the value in eight of its bytes, of which
 -- the context reached says nothing: whatever is there is given the name
-example : mayHold [(.var 16, ⟨64, [(24, .var 17)]⟩)] = true := by decide +kernel
+example : mayHold [(.bvar 0 16, ⟨64, [(24, .bvar 0 17)]⟩)] = true := by decide +kernel
 -- the region said to hold there what `rdi` holds, which nothing shows: refused
-example : mayHold [(.var 16, ⟨64, [(24, .var 7)]⟩)] = false := by decide +kernel
+example : mayHold [(.bvar 0 16, ⟨64, [(24, .bvar 0 7)]⟩)] = false := by decide +kernel
 -- a value said to lie across the end of the region: refused
-example : mayHold [(.var 16, ⟨64, [(60, .var 17)]⟩)] = false := by decide +kernel
+example : mayHold [(.bvar 0 16, ⟨64, [(60, .bvar 0 17)]⟩)] = false := by decide +kernel
 
 -- from two regions that lie end to end, with a value in each, the label may
 -- ask for the one region they make, the values where they then are
 example : checkProgram codeJ
-    [(0, { Γw with held := [(.add (.var 16) (.lit 32), ⟨32, [(0, .var 18)]⟩),
-                            (.var 16, ⟨32, [(8, .var 17)]⟩)] }),
-     (5, { Γw with held := [(.var 16, ⟨64, [(8, .var 17), (32, .var 18)]⟩)] })] 10 20 = true := by
+    [lab 0 { Pw with held := [(.add (.bvar 0 16) (.lit 32), ⟨32, [(0, .bvar 0 18)]⟩),
+                            (.bvar 0 16, ⟨32, [(8, .bvar 0 17)]⟩)] },
+     lab 5 { Pw with held := [(.bvar 0 16, ⟨64, [(8, .bvar 0 17), (32, .bvar 0 18)]⟩)] }] 10 0 = true := by
   decide +kernel
 -- but not for one region where they do not meet
 example : checkProgram codeJ
-    [(0, { Γw with held := [(.add (.var 16) (.lit 40), ⟨24, []⟩), (.var 16, ⟨32, []⟩)] }),
-     (5, { Γw with held := [(.var 16, ⟨64, []⟩)] })] 10 20 = false := by
+    [lab 0 { Pw with held := [(.add (.bvar 0 16) (.lit 40), ⟨24, []⟩), (.bvar 0 16, ⟨32, []⟩)] },
+     lab 5 { Pw with held := [(.bvar 0 16, ⟨64, []⟩)] }] 10 0 = false := by
   decide +kernel
 
 -- with a name for whatever else is held: the label keeps it, and may not
 -- leave it out; and a label that names a rest is typed for any rest, so it
 -- may be reached holding none
-example : checkProgram codeJ [(0, { Γw with rest := .name 0 }), (5, { Γw with rest := .name 0 })]
-    10 20 = true := by decide +kernel
-example : checkProgram codeJ [(0, { Γw with rest := .name 0 }), (5, Γw)] 10 20 = false := by
+example : checkProgram codeJ [lab 0 { Pw with rest := .bvar 0 }, lab 5 ({ Pw with rest := .bvar 0 })]
+    10 0 = true := by decide +kernel
+example : checkProgram codeJ [lab 0 { Pw with rest := .bvar 0 }, lab 5 (Pw)] 10 0 = false := by
   decide +kernel
-example : checkProgram codeJ [(0, Γw), (5, { Γw with rest := .name 0 })] 10 20 = true := by
+example : checkProgram codeJ [lab 0 Pw, lab 5 ({ Pw with rest := .bvar 0 })] 10 0 = true := by
   decide +kernel
 
 -- the frame loop again: the label may say the slot holds what `rdi` holds,
 -- which the body puts there, and may not say it holds what `rsi` holds
-example : checkProgram codeF [(0, { Γw with held := [(.var 16, ⟨64, [(16, .var 7)]⟩)] })] 10 20
+example : checkProgram codeF [lab 0 { Pw with held := [(.bvar 0 16, ⟨64, [(16, .bvar 0 7)]⟩)] }] 10 0
     = true := by decide +kernel
-example : checkProgram codeF [(0, { Γw with held := [(.var 16, ⟨64, [(16, .var 6)]⟩)] })] 10 20
+example : checkProgram codeF [lab 0 { Pw with held := [(.bvar 0 16, ⟨64, [(16, .bvar 0 6)]⟩)] }] 10 0
     = false := by decide +kernel
 
 /-- `start: mov ecx, <n>; there: jmp there`, the label `there` asking that
 `rcx` may be null and is otherwise a pointer. -/
 def checkZ (n : BitVec 32) : Bool :=
   checkProgram [(0, .mov .w32 (.rm_i (.reg .rcx) n), 5), (5, .jmp (.rel (-5)), 5)]
-    [(0, Γw), (5, { Γw with known := [(.var 1, .nullable (.ptr (.mk 16 .nil) true 0))] })] 10 20
+    [lab 0 Pw, lab 5 { Pw with known := [(.bvar 0 1, .nullable (.ptr (.mk 16 .nil) true 0))] }] 10 0
 
 -- zero may be null, whatever else is known; one may not
 example : checkZ 0 = true := by decide +kernel
@@ -300,20 +316,22 @@ def anyRegs : Regs Val :=
     .bvar 0 8, .bvar 0 9, .bvar 0 10, .bvar 0 11, .bvar 0 12, .bvar 0 13, .bvar 0 14, .bvar 0 15⟩
 
 /-- Whether `jmp rax` is typed where `rax` is known to be code wanting
-these registers and regions, the context holding the stack of `Γw`. -/
+these registers and regions, the label's family holding the stack of `Pw`.
+The code's family is one further in: its own values are the nearest, and
+the label's are one out. -/
 def mayJump (regs : Regs Val) (held : List (Val × HeldS)) : Bool :=
   checkProgram [(0, .jmp (.ind (.reg .rax)), 2)]
-    [(0, { Γw with known := [(.var 0, .code regs (.bvar 0) held .nil .none)] })] 10 20
+    [lab 0 { Pw with known := [(.bvar 0 0, .code regs (.bvar 0) held .nil .none)] }] 10 0
 
 -- code wanting any registers and the stack: the jump is typed
-example : mayJump anyRegs [(.var 16, ⟨64, []⟩)] = true := by decide +kernel
+example : mayJump anyRegs [(.bvar 1 16, ⟨64, []⟩)] = true := by decide +kernel
 -- code wanting `rdi` to be zero, which nothing shows: refused
-example : mayJump (anyRegs.set .rdi (.lit 0)) [(.var 16, ⟨64, []⟩)] = false := by decide +kernel
+example : mayJump (anyRegs.set .rdi (.lit 0)) [(.bvar 1 16, ⟨64, []⟩)] = false := by decide +kernel
 -- code wanting `rdi` and `rsi` to hold one value, which nothing shows they
 -- do: refused, whichever of the two the family's value is written for
-example : mayJump (anyRegs.set .rdi (.bvar 0 6)) [(.var 16, ⟨64, []⟩)] = false := by
+example : mayJump (anyRegs.set .rdi (.bvar 0 6)) [(.bvar 1 16, ⟨64, []⟩)] = false := by
   decide +kernel
-example : mayJump (anyRegs.set .rsi (.bvar 0 7)) [(.var 16, ⟨64, []⟩)] = false := by
+example : mayJump (anyRegs.set .rsi (.bvar 0 7)) [(.bvar 1 16, ⟨64, []⟩)] = false := by
   decide +kernel
 -- code that would hold nothing: refused, the stack would be left out
 example : mayJump anyRegs [] = false := by decide +kernel
@@ -322,14 +340,14 @@ example : mayJump anyRegs [] = false := by decide +kernel
 wanting the stack pointer eight bytes on and the stack held. -/
 def mayReturn (rsp' : Val) : Bool :=
   checkProgram [(0, .ret, 1)]
-    [(0, { Γw with
-            held := [(.var 16, ⟨64, [(32, .var 17)]⟩)]
-            known := [(.var 17, .code (anyRegs.set .rsp rsp') (.bvar 0)
-                        [(.var 16, ⟨64, []⟩)] .nil .none)] })] 10 20
+    [lab 0 { Pw with
+              held := [(.bvar 0 16, ⟨64, [(32, .bvar 0 17)]⟩)]
+              known := [(.bvar 0 17, .code (anyRegs.set .rsp rsp') (.bvar 0)
+                          [(.bvar 1 16, ⟨64, []⟩)] .nil .none)] }] 10 0
 
 -- the return address wants the stack pointer just past it: typed
-example : mayReturn (.add (.var 16) (.lit 40)) = true := by decide +kernel
+example : mayReturn (.add (.bvar 1 16) (.lit 40)) = true := by decide +kernel
 -- it wants the stack pointer where it was before the return: refused
-example : mayReturn (.add (.var 16) (.lit 32)) = false := by decide +kernel
+example : mayReturn (.add (.bvar 1 16) (.lit 32)) = false := by decide +kernel
 
 end Tests.Unified
