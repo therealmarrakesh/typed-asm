@@ -65,12 +65,6 @@ def Val.under (k : Nat) : Val → Bool
   | .bin _ a b => a.under k && b.under k
   | .tri _ a b c => a.under k && b.under k && c.under k
   | .fop _ fl a b => fl.under k && a.under k && b.under k
-  | .out _ _ a b c fl _ ea cell =>
-    a.under k && b.under k && c.under k && fl.under k && ea.under k && cell.under k
-  | .stored _ a b c fl _ ea cell =>
-    a.under k && b.under k && c.under k && fl.under k && ea.under k && cell.under k
-  | .goes _ a b c fl _ ea cell =>
-    a.under k && b.under k && c.under k && fl.under k && ea.under k && cell.under k
 
 def FlagsT.under (k : Nat) : FlagsT → Bool
   | .lit _ => true
@@ -78,8 +72,6 @@ def FlagsT.under (k : Nat) : FlagsT → Bool
   | .bvar _ => true
   | .old => true
   | .src _ fl a b c => fl.under k && a.under k && b.under k && c.under k
-  | .out _ a b c fl _ ea cell =>
-    a.under k && b.under k && c.under k && fl.under k && ea.under k && cell.under k
 
 end
 
@@ -112,21 +104,6 @@ theorem Val.under_mono {k k' : Nat} (hk : k ≤ k') : (a : Val) → a.under k = 
   | .fop _ fl a b, h => by
     simp only [Val.under, Bool.and_eq_true] at h ⊢
     exact ⟨⟨FlagsT.under_mono hk fl h.1.1, Val.under_mono hk a h.1.2⟩, Val.under_mono hk b h.2⟩
-  | .out _ _ a b c fl _ ea cell, h => by
-    simp only [Val.under, Bool.and_eq_true] at h ⊢
-    obtain ⟨⟨⟨⟨⟨ha, hb⟩, hc⟩, hf⟩, he⟩, hcell⟩ := h
-    exact ⟨⟨⟨⟨⟨Val.under_mono hk a ha, Val.under_mono hk b hb⟩, Val.under_mono hk c hc⟩,
-      FlagsT.under_mono hk fl hf⟩, Val.under_mono hk ea he⟩, Val.under_mono hk cell hcell⟩
-  | .stored _ a b c fl _ ea cell, h => by
-    simp only [Val.under, Bool.and_eq_true] at h ⊢
-    obtain ⟨⟨⟨⟨⟨ha, hb⟩, hc⟩, hf⟩, he⟩, hcell⟩ := h
-    exact ⟨⟨⟨⟨⟨Val.under_mono hk a ha, Val.under_mono hk b hb⟩, Val.under_mono hk c hc⟩,
-      FlagsT.under_mono hk fl hf⟩, Val.under_mono hk ea he⟩, Val.under_mono hk cell hcell⟩
-  | .goes _ a b c fl _ ea cell, h => by
-    simp only [Val.under, Bool.and_eq_true] at h ⊢
-    obtain ⟨⟨⟨⟨⟨ha, hb⟩, hc⟩, hf⟩, he⟩, hcell⟩ := h
-    exact ⟨⟨⟨⟨⟨Val.under_mono hk a ha, Val.under_mono hk b hb⟩, Val.under_mono hk c hc⟩,
-      FlagsT.under_mono hk fl hf⟩, Val.under_mono hk ea he⟩, Val.under_mono hk cell hcell⟩
 
 theorem FlagsT.under_mono {k k' : Nat} (hk : k ≤ k') :
     (f : FlagsT) → f.under k = true → f.under k' = true
@@ -140,11 +117,6 @@ theorem FlagsT.under_mono {k k' : Nat} (hk : k ≤ k') :
     simp only [FlagsT.under, Bool.and_eq_true] at h ⊢
     exact ⟨⟨⟨FlagsT.under_mono hk fl h.1.1.1, Val.under_mono hk a h.1.1.2⟩,
       Val.under_mono hk b h.1.2⟩, Val.under_mono hk c h.2⟩
-  | .out _ a b c fl _ ea cell, h => by
-    simp only [FlagsT.under, Bool.and_eq_true] at h ⊢
-    obtain ⟨⟨⟨⟨⟨ha, hb⟩, hc⟩, hf⟩, he⟩, hcell⟩ := h
-    exact ⟨⟨⟨⟨⟨Val.under_mono hk a ha, Val.under_mono hk b hb⟩, Val.under_mono hk c hc⟩,
-      FlagsT.under_mono hk fl hf⟩, Val.under_mono hk ea he⟩, Val.under_mono hk cell hcell⟩
 
 end
 
@@ -183,21 +155,6 @@ theorem Val.den_under {k : Nat} {ρ₁ ρ₂ : Env} (hs : Env.SameBelow k ρ₁ 
     simp only [Val.under, Bool.and_eq_true] at h
     simp only [Val.den, FlagsT.den_under hs fl h.1.1, Val.den_under hs a h.1.2,
       Val.den_under hs b h.2]
-  | .out i j a b c fl next ea cell, h => by
-    simp only [Val.under, Bool.and_eq_true] at h
-    obtain ⟨⟨⟨⟨⟨ha, hb⟩, hc⟩, hf⟩, he⟩, hcell⟩ := h
-    simp only [Val.den, Val.den_under hs a ha, Val.den_under hs b hb, Val.den_under hs c hc,
-      FlagsT.den_under hs fl hf, Val.den_under hs ea he, Val.den_under hs cell hcell]
-  | .stored i a b c fl next ea cell, h => by
-    simp only [Val.under, Bool.and_eq_true] at h
-    obtain ⟨⟨⟨⟨⟨ha, hb⟩, hc⟩, hf⟩, he⟩, hcell⟩ := h
-    simp only [Val.den, Val.den_under hs a ha, Val.den_under hs b hb, Val.den_under hs c hc,
-      FlagsT.den_under hs fl hf, Val.den_under hs ea he, Val.den_under hs cell hcell]
-  | .goes i a b c fl next ea cell, h => by
-    simp only [Val.under, Bool.and_eq_true] at h
-    obtain ⟨⟨⟨⟨⟨ha, hb⟩, hc⟩, hf⟩, he⟩, hcell⟩ := h
-    simp only [Val.den, Val.den_under hs a ha, Val.den_under hs b hb, Val.den_under hs c hc,
-      FlagsT.den_under hs fl hf, Val.den_under hs ea he, Val.den_under hs cell hcell]
 
 theorem FlagsT.den_under {k : Nat} {ρ₁ ρ₂ : Env} (hs : Env.SameBelow k ρ₁ ρ₂) :
     (f : FlagsT) → f.under k = true → f.den ρ₁ = f.den ρ₂
@@ -215,11 +172,6 @@ theorem FlagsT.den_under {k : Nat} {ρ₁ ρ₂ : Env} (hs : Env.SameBelow k ρ�
     simp only [FlagsT.under, Bool.and_eq_true] at h
     simp only [FlagsT.den, FlagsT.den_under hs fl h.1.1.1, Val.den_under hs a h.1.1.2,
       Val.den_under hs b h.1.2, Val.den_under hs c h.2]
-  | .out i a b c fl next ea cell, h => by
-    simp only [FlagsT.under, Bool.and_eq_true] at h
-    obtain ⟨⟨⟨⟨⟨ha, hb⟩, hc⟩, hf⟩, he⟩, hcell⟩ := h
-    simp only [FlagsT.den, Val.den_under hs a ha, Val.den_under hs b hb, Val.den_under hs c hc,
-      FlagsT.den_under hs fl hf, Val.den_under hs ea he, Val.den_under hs cell hcell]
 
 end
 

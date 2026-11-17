@@ -590,17 +590,9 @@ def Val.bmax (d : Nat) : Val → Nat
   | .bin _ a b => max (a.bmax d) (b.bmax d)
   | .tri _ a b c => max (max (a.bmax d) (b.bmax d)) (c.bmax d)
   | .fop _ fl a b => max (max (fl.bmax d) (a.bmax d)) (b.bmax d)
-  | .out _ _ a b c fl _ ea cell =>
-    max (max (max (a.bmax d) (b.bmax d)) (max (c.bmax d) (fl.bmax d))) (max (ea.bmax d) (cell.bmax d))
-  | .stored _ a b c fl _ ea cell =>
-    max (max (max (a.bmax d) (b.bmax d)) (max (c.bmax d) (fl.bmax d))) (max (ea.bmax d) (cell.bmax d))
-  | .goes _ a b c fl _ ea cell =>
-    max (max (max (a.bmax d) (b.bmax d)) (max (c.bmax d) (fl.bmax d))) (max (ea.bmax d) (cell.bmax d))
 
 def FlagsT.bmax (d : Nat) : FlagsT → Nat
   | .src _ fl a b c => max (max (fl.bmax d) (a.bmax d)) (max (b.bmax d) (c.bmax d))
-  | .out _ a b c fl _ ea cell =>
-    max (max (max (a.bmax d) (b.bmax d)) (max (c.bmax d) (fl.bmax d))) (max (ea.bmax d) (cell.bmax d))
   | _ => 0
 
 end

@@ -5,30 +5,14 @@ import TypedAsm.U.Norm
 /-!
 # What is known of the flags, from their term
 
-Whether a flag is defined, looked up through the instructions the term
-records; whether a condition can therefore be decided; and the flags an
-instruction leaves, said as the flags before it where it touches none.
+What each way flags arise does to each flag; whether a flag is therefore
+defined, looking back through the operations the term records; and whether
+a condition can therefore be decided.
 -/
 
 namespace TypedAsm.U
 
 open TypedAsm
-
-/-- An instruction with no description does nothing that can be said to
-any flag. -/
-theorem fate_of_no_desc {i : Instr} (h : i.desc = none) (x : Flag) : i.fate x = .lost := by
-  cases hi : i.desc1 with
-  | some d₁ => rw [desc_of_desc1 hi] at h; cases h
-  | none =>
-    cases i with
-    | jmp t => rcases t with rel | (r | m) <;> cases h
-    | jcc cnd rel => cases h
-    | call t => rcases t with rel | (r | m) <;> cases h
-    | ret => cases h
-    | ud2 => rfl
-    | syscall => rfl
-    | unary op w dst => cases op <;> cases hi
-    | _ => cases hi
 
 /-- **What each way flags arise does to each flag**, given the second
 operand where it is a number written out: the count of a shift. -/
@@ -93,12 +77,6 @@ def FlagsT.defined : FlagsT → Flag → Bool
     | .definesIf y => fl.defined y
     | .keeps => fl.defined x
     | .lost => false
-  | .out i _ _ _ fl _ _ _, x =>
-    match i.fate x with
-    | .defines => true
-    | .definesIf y => fl.defined y
-    | .keeps => fl.defined x
-    | .lost => false
 
 theorem FlagsT.defined_den (ρ : Env) : (t : FlagsT) → (x : Flag) → t.defined x = true →
     ((t.den ρ).get x).isSome = true
@@ -121,26 +99,6 @@ theorem FlagsT.defined_den (ρ : Env) : (t : FlagsT) → (x : Flag) → t.define
       rw [show Flags.get _ x = _ from hf]
       exact FlagsT.defined_den ρ fl x h
     | lost => rw [hfate] at h; cases h
-  | .out i a b c fl next ea cell, x, h => by
-    unfold FlagsT.defined at h
-    show ((effectOf i _ (fl.den ρ) next _ _).flags.get x).isSome = true
-    unfold effectOf
-    cases hd : i.desc with
-    | none => rw [fate_of_no_desc hd] at h; cases h
-    | some d =>
-      have hf := desc_fate hd ([a.den ρ, b.den ρ, c.den ρ].take d.srcs.length) (fl.den ρ) next
-        (ea.den ρ) (cell.den ρ) x
-      cases hfate : i.fate x with
-      | defines => rw [hfate] at hf; exact hf
-      | definesIf y =>
-        rw [hfate] at hf h
-        exact hf (FlagsT.defined_den ρ fl y h)
-      | keeps =>
-        rw [hfate] at hf h
-        show (Flags.get (d.run _ _ _ _ _).flags x).isSome = true
-        rw [show Flags.get (d.run _ _ _ _ _).flags x = _ from hf]
-        exact FlagsT.defined_den ρ fl x h
-      | lost => rw [hfate] at h; cases h
 
 /-- The flags a condition looks at. -/
 def _root_.TypedAsm.Cond.uses : Cond → List Flag
@@ -169,39 +127,5 @@ theorem FlagsT.decides_den (ρ : Env) (t : FlagsT) (c : Cond) (h : t.decides c =
   unfold FlagsT.decides at h
   rw [List.all_eq_true] at h ⊢
   exact fun x hx => FlagsT.defined_den ρ t x (h x hx)
-
-/-- Whether an instruction leaves every flag as it was. -/
-def _root_.TypedAsm.Instr.keepsFlags (i : Instr) : Bool :=
-  i.fate .cf = .keeps && i.fate .zf = .keeps && i.fate .sf = .keeps && i.fate .of = .keeps
-
-theorem effectOf_keepsFlags {i : Instr} (h : i.keepsFlags = true) (vals : List (BitVec 64))
-    (fl : Flags) (next ea cell : BitVec 64) : (effectOf i vals fl next ea cell).flags = fl := by
-  unfold effectOf
-  cases hd : i.desc with
-  | none => rfl
-  | some d =>
-    simp only [Instr.keepsFlags, Bool.and_eq_true, decide_eq_true_eq] at h
-    obtain ⟨⟨⟨h1, h2⟩, h3⟩, h4⟩ := h
-    have k := fun x => desc_fate hd (vals.take d.srcs.length) fl next ea cell x
-    have k1 := k .cf; have k2 := k .zf; have k3 := k .sf; have k4 := k .of
-    rw [h1] at k1; rw [h2] at k2; rw [h3] at k3; rw [h4] at k4
-    show (d.run _ _ _ _ _).flags = fl
-    generalize (d.run _ _ _ _ _).flags = g at k1 k2 k3 k4
-    cases g; cases fl
-    cases k1; cases k2; cases k3; cases k4
-    rfl
-
-/-- **The flags an instruction leaves, as plainly as they can be said**: the
-flags before it, where it touches none. -/
-def flagsOut (i : Instr) (a b c : Val) (fl : FlagsT) (next : BitVec 64) (ea cell : Val) : FlagsT :=
-  if i.keepsFlags then fl else .out i a b c fl next ea cell
-
-theorem flagsOut_den (ρ : Env) (i : Instr) (a b c : Val) (fl : FlagsT) (next : BitVec 64)
-    (ea cell : Val) :
-    (flagsOut i a b c fl next ea cell).den ρ = (FlagsT.out i a b c fl next ea cell).den ρ := by
-  unfold flagsOut
-  split
-  · next h => exact (effectOf_keepsFlags h _ _ _ _ _).symm
-  · rfl
 
 end TypedAsm.U

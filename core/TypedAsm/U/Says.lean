@@ -3,8 +3,9 @@ import TypedAsm.U.FlagSrc
 /-!
 # What a condition says, as a term
 
-A comparison between two operands at a width, as data; and, for the flags
-an instruction left, the comparison a condition on them comes to.
+A comparison between two operands at a width, as data; and, for each way
+flags arise, the comparison a condition on them comes to: of the values the
+flags arose from, or of the result.
 -/
 
 namespace TypedAsm.U
@@ -66,68 +67,6 @@ theorem FlagKind.cond_eval {k : FlagKind} {w : Width} {x y : BitVec w.bits} {F :
     cases hzero rfl
     cases h
     exact condZero_eval x c
-
-/-- An operand of an instruction, as a term. -/
-def Opnd.term (i : Instr) (a b c : Val) (fl : FlagsT) (next : BitVec 64) (ea cell : Val) :
-    Opnd → OpT
-  | .arg 0 => .val a
-  | .arg 1 => .val b
-  | .arg 2 => .val c
-  | .arg _ => .zero
-  | .cell => .val cell
-  | .imm v => .imm v
-  | .zero => .zero
-  | .out => .val (.out i 0 a b c fl next ea cell)
-  | .stored => .val (.stored i a b c fl next ea cell)
-
-theorem Opnd.term_den (ρ : Env) (i : Instr) (a b c : Val) (fl : FlagsT) (next : BitVec 64)
-    (ea cell : Val) (w : Width) (o : Opnd) :
-    (o.term i a b c fl next ea cell).den ρ w
-      = o.sem i [a.den ρ, b.den ρ, c.den ρ] (fl.den ρ) next (ea.den ρ) (cell.den ρ) w := by
-  cases o with
-  | arg j =>
-    rcases j with _ | _ | _ | j
-    · rfl
-    · rfl
-    · rfl
-    · show (0 : BitVec w.bits) = BitVec.setWidth w.bits 0
-      simp
-  | _ => rfl
-
-theorem flagSrc_zero {i : Instr} {w : Width} {A B : Opnd}
-    (h : i.flagSrc = some (.zero, w, A, B)) : B = A := by
-  cases i with
-  | alu op w' ops => cases op <;> cases h
-  | test w' dst src => cases src <;> cases h
-  | unary op w' dst => cases op <;> cases h
-  | popcnt w' dst src => cases h; rfl
-  | shift op w' dst cnt =>
-    cases cnt with
-    | cl => cases h
-    | imm c =>
-      by_cases hc : c.toNat % w'.bits = 0
-      · simp only [Instr.flagSrc, hc, ↓reduceIte] at h
-        cases h
-      · simp only [Instr.flagSrc, hc, ↓reduceIte] at h
-        cases op <;> cases h
-  | _ => cases h
-
-theorem flagSrc_res {i : Instr} {w : Width} {A B : Opnd} (h : i.flagSrc = some (.res, w, A, B)) :
-    B = A := by
-  cases i with
-  | alu op w' ops => cases op <;> cases h <;> rfl
-  | test w' dst src => cases src <;> cases h
-  | unary op w' dst => cases op <;> cases h
-  | shift op w' dst cnt =>
-    cases cnt with
-    | cl => cases h
-    | imm c =>
-      by_cases hc : c.toNat % w'.bits = 0
-      · simp only [Instr.flagSrc, hc, ↓reduceIte] at h
-        cases h
-      · simp only [Instr.flagSrc, hc, ↓reduceIte] at h
-        cases op <;> first | (cases h; rfl) | (cases h; done)
-  | _ => cases h
 
 /-- A comparison of a value with itself, where a condition has a form for
 flags that say whether a result is nought and whether it is negative. -/
@@ -240,13 +179,6 @@ theorem FSrc.says_den (ρ : Env) {o : FSrc} {fl : FlagsT} {a b : Val} {cnd : Con
 /-- **What a condition on the flags comes to**, where the flags are those an
 instruction left and the table says where they came from. -/
 def FlagsT.says : FlagsT → Cond → Option CmpT
-  | .out i a b c fl next ea cell, cnd =>
-    match i.flagSrc with
-    | some (k, w, A, B) =>
-      match k.cond cnd with
-      | some f => some ⟨f, w, A.term i a b c fl next ea cell, B.term i a b c fl next ea cell⟩
-      | none => none
-    | none => none
   | .src o fl a b _, cnd => o.says fl a b cnd
   | _, _ => none
 
@@ -258,25 +190,5 @@ theorem FlagsT.says_den (ρ : Env) {t : FlagsT} {cnd : Cond} {p : CmpT} (h : t.s
   | bvar _ => cases h
   | old => cases h
   | src o fl a b c => exact FSrc.says_den ρ h (c.den ρ)
-  | out i a b c fl next ea cell =>
-    rw [FlagsT.says] at h
-    cases hs : i.flagSrc with
-    | none => rw [hs] at h; cases h
-    | some q =>
-      obtain ⟨k, w, A, B⟩ := q
-      rw [hs] at h
-      simp only at h
-      cases hc : k.cond cnd with
-      | none => rw [hc] at h; cases h
-      | some f =>
-        rw [hc] at h
-        cases h
-        show cnd.eval (effectOf i _ (fl.den ρ) next _ _).flags = some (f.eval _ _)
-        rw [Opnd.term_den, Opnd.term_den]
-        refine FlagKind.cond_eval (flagSrc_sound hs _ _ _ _ _ _ _) (fun hk => ?_) (fun hk => ?_) hc
-        · subst hk
-          rw [flagSrc_res hs]
-        · subst hk
-          rw [flagSrc_zero hs]
 
 end TypedAsm.U

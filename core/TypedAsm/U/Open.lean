@@ -80,15 +80,6 @@ def Val.open (o : Opening) (n : Nat) : Val → Val
   | .bin u x y => .bin u (x.open o n) (y.open o n)
   | .tri u x y z => .tri u (x.open o n) (y.open o n) (z.open o n)
   | .fop u fl x y => .fop u (fl.open o n) (x.open o n) (y.open o n)
-  | .out i k x y c fl next ea cell =>
-    .out i k (x.open o n) (y.open o n) (c.open o n) (fl.open o n) next (ea.open o n)
-      (cell.open o n)
-  | .stored i x y c fl next ea cell =>
-    .stored i (x.open o n) (y.open o n) (c.open o n) (fl.open o n) next (ea.open o n)
-      (cell.open o n)
-  | .goes i x y c fl next ea cell =>
-    .goes i (x.open o n) (y.open o n) (c.open o n) (fl.open o n) next (ea.open o n)
-      (cell.open o n)
 
 def FlagsT.open (o : Opening) (n : Nat) : FlagsT → FlagsT
   | .lit f => .lit f
@@ -96,9 +87,6 @@ def FlagsT.open (o : Opening) (n : Nat) : FlagsT → FlagsT
   | .bvar d => if d = n then o.f else if n < d then .bvar (d - 1) else .bvar d
   | .old => .old
   | .src u fl x y z => .src u (fl.open o n) (x.open o n) (y.open o n) (z.open o n)
-  | .out i x y c fl next ea cell =>
-    .out i (x.open o n) (y.open o n) (c.open o n) (fl.open o n) next (ea.open o n)
-      (cell.open o n)
 
 end
 
@@ -138,18 +126,6 @@ theorem Val.den_open (ρ : Env) (o : Opening) (ho : o.Closed) (pre zs : List Fam
   | .fop u fl x y => by
     simp only [Val.open, Val.den, FlagsT.den_open ρ o ho pre zs fl,
       Val.den_open ρ o ho pre zs x, Val.den_open ρ o ho pre zs y]
-  | .out i j x y c fl next ea cell => by
-    simp only [Val.open, Val.den, Val.den_open ρ o ho pre zs x, Val.den_open ρ o ho pre zs y,
-      Val.den_open ρ o ho pre zs c, FlagsT.den_open ρ o ho pre zs fl,
-      Val.den_open ρ o ho pre zs ea, Val.den_open ρ o ho pre zs cell]
-  | .stored i x y c fl next ea cell => by
-    simp only [Val.open, Val.den, Val.den_open ρ o ho pre zs x, Val.den_open ρ o ho pre zs y,
-      Val.den_open ρ o ho pre zs c, FlagsT.den_open ρ o ho pre zs fl,
-      Val.den_open ρ o ho pre zs ea, Val.den_open ρ o ho pre zs cell]
-  | .goes i x y c fl next ea cell => by
-    simp only [Val.open, Val.den, Val.den_open ρ o ho pre zs x, Val.den_open ρ o ho pre zs y,
-      Val.den_open ρ o ho pre zs c, FlagsT.den_open ρ o ho pre zs fl,
-      Val.den_open ρ o ho pre zs ea, Val.den_open ρ o ho pre zs cell]
 
 theorem FlagsT.den_open (ρ : Env) (o : Opening) (ho : o.Closed) (pre zs : List Fam) :
     (f : FlagsT) → (f.open o pre.length).den { ρ with bound := pre ++ zs }
@@ -176,11 +152,6 @@ theorem FlagsT.den_open (ρ : Env) (o : Opening) (ho : o.Closed) (pre zs : List 
   | .src u fl x y z => by
     simp only [FlagsT.open, FlagsT.den, FlagsT.den_open ρ o ho pre zs fl,
       Val.den_open ρ o ho pre zs x, Val.den_open ρ o ho pre zs y, Val.den_open ρ o ho pre zs z]
-  | .out i x y c fl next ea cell => by
-    simp only [FlagsT.open, FlagsT.den, Val.den_open ρ o ho pre zs x,
-      Val.den_open ρ o ho pre zs y, Val.den_open ρ o ho pre zs c,
-      FlagsT.den_open ρ o ho pre zs fl, Val.den_open ρ o ho pre zs ea,
-      Val.den_open ρ o ho pre zs cell]
 
 end
 

@@ -1,5 +1,7 @@
 import TypedAsm.U.Says
-import TypedAsm.U.Simp
+import TypedAsm.U.Check
+import TypedAsm.U.CondRel
+import TypedAsm.U.Norm
 
 /-!
 # The values a comparison leaves

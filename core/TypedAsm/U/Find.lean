@@ -1,4 +1,6 @@
-import TypedAsm.U.Simp
+import TypedAsm.U.Check
+import TypedAsm.U.CondRel
+import TypedAsm.U.Norm
 
 /-!
 # Which bytes an address names
@@ -46,9 +48,6 @@ theorem Val.summands_den (ρ : Env) : (a : Val) → a.den ρ = sumDen ρ a.summa
   | .tri .. => by simp [Val.summands, sumDen]
   | .fop .. => by simp [Val.summands, sumDen]
   | .shl a k => by simp [Val.summands, sumDen]
-  | .out .. => by simp [Val.summands, sumDen]
-  | .stored .. => by simp [Val.summands, sumDen]
-  | .goes .. => by simp [Val.summands, sumDen]
 
 /-- How far an address is past another, where the two are sums of the same
 terms: the difference of the numbers added. -/

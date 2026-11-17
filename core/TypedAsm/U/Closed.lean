@@ -31,15 +31,6 @@ def Val.closedAt (n : Nat) : Val → Bool
   | .bin _ a b => a.closedAt n && b.closedAt n
   | .tri _ a b c => a.closedAt n && b.closedAt n && c.closedAt n
   | .fop _ fl a b => fl.closedAt n && a.closedAt n && b.closedAt n
-  | .out _ _ a b c fl _ ea cell =>
-    a.closedAt n && b.closedAt n && c.closedAt n && fl.closedAt n && ea.closedAt n &&
-      cell.closedAt n
-  | .stored _ a b c fl _ ea cell =>
-    a.closedAt n && b.closedAt n && c.closedAt n && fl.closedAt n && ea.closedAt n &&
-      cell.closedAt n
-  | .goes _ a b c fl _ ea cell =>
-    a.closedAt n && b.closedAt n && c.closedAt n && fl.closedAt n && ea.closedAt n &&
-      cell.closedAt n
 
 def FlagsT.closedAt (n : Nat) : FlagsT → Bool
   | .lit _ => true
@@ -47,9 +38,6 @@ def FlagsT.closedAt (n : Nat) : FlagsT → Bool
   | .bvar d => decide (d < n)
   | .old => true
   | .src _ fl a b c => fl.closedAt n && a.closedAt n && b.closedAt n && c.closedAt n
-  | .out _ a b c fl _ ea cell =>
-    a.closedAt n && b.closedAt n && c.closedAt n && fl.closedAt n && ea.closedAt n &&
-      cell.closedAt n
 
 end
 
@@ -97,24 +85,6 @@ theorem Val.den_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n zs 
     simp only [Val.closedAt, Bool.and_eq_true] at h
     simp only [Val.den, FlagsT.den_agree ρ n zs zs' hz fl h.1.1,
       Val.den_agree ρ n zs zs' hz a h.1.2, Val.den_agree ρ n zs zs' hz b h.2]
-  | .out i j a b c fl next ea cell, h => by
-    simp only [Val.closedAt, Bool.and_eq_true] at h
-    obtain ⟨⟨⟨⟨⟨ha, hb⟩, hc⟩, hf⟩, he⟩, hcell⟩ := h
-    simp only [Val.den, Val.den_agree ρ n zs zs' hz a ha, Val.den_agree ρ n zs zs' hz b hb,
-      Val.den_agree ρ n zs zs' hz c hc, FlagsT.den_agree ρ n zs zs' hz fl hf,
-      Val.den_agree ρ n zs zs' hz ea he, Val.den_agree ρ n zs zs' hz cell hcell]
-  | .stored i a b c fl next ea cell, h => by
-    simp only [Val.closedAt, Bool.and_eq_true] at h
-    obtain ⟨⟨⟨⟨⟨ha, hb⟩, hc⟩, hf⟩, he⟩, hcell⟩ := h
-    simp only [Val.den, Val.den_agree ρ n zs zs' hz a ha, Val.den_agree ρ n zs zs' hz b hb,
-      Val.den_agree ρ n zs zs' hz c hc, FlagsT.den_agree ρ n zs zs' hz fl hf,
-      Val.den_agree ρ n zs zs' hz ea he, Val.den_agree ρ n zs zs' hz cell hcell]
-  | .goes i a b c fl next ea cell, h => by
-    simp only [Val.closedAt, Bool.and_eq_true] at h
-    obtain ⟨⟨⟨⟨⟨ha, hb⟩, hc⟩, hf⟩, he⟩, hcell⟩ := h
-    simp only [Val.den, Val.den_agree ρ n zs zs' hz a ha, Val.den_agree ρ n zs zs' hz b hb,
-      Val.den_agree ρ n zs zs' hz c hc, FlagsT.den_agree ρ n zs zs' hz fl hf,
-      Val.den_agree ρ n zs zs' hz ea he, Val.den_agree ρ n zs zs' hz cell hcell]
 
 theorem FlagsT.den_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n zs zs') :
     (f : FlagsT) → f.closedAt n = true →
@@ -131,12 +101,6 @@ theorem FlagsT.den_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n 
     simp only [FlagsT.den, FlagsT.den_agree ρ n zs zs' hz fl h.1.1.1,
       Val.den_agree ρ n zs zs' hz a h.1.1.2, Val.den_agree ρ n zs zs' hz b h.1.2,
       Val.den_agree ρ n zs zs' hz c h.2]
-  | .out i a b c fl next ea cell, h => by
-    simp only [FlagsT.closedAt, Bool.and_eq_true] at h
-    obtain ⟨⟨⟨⟨⟨ha, hb⟩, hc⟩, hf⟩, he⟩, hcell⟩ := h
-    simp only [FlagsT.den, Val.den_agree ρ n zs zs' hz a ha, Val.den_agree ρ n zs zs' hz b hb,
-      Val.den_agree ρ n zs zs' hz c hc, FlagsT.den_agree ρ n zs zs' hz fl hf,
-      Val.den_agree ρ n zs zs' hz ea he, Val.den_agree ρ n zs zs' hz cell hcell]
 
 end
 

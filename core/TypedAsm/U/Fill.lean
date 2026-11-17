@@ -39,12 +39,6 @@ def Val.fill (σ : Filling) : Val → Val
   | .bin o a b => .bin o (a.fill σ) (b.fill σ)
   | .tri o a b c => .tri o (a.fill σ) (b.fill σ) (c.fill σ)
   | .fop o fl a b => .fop o (fl.fill σ) (a.fill σ) (b.fill σ)
-  | .out i k a b c fl next ea cell =>
-    .out i k (a.fill σ) (b.fill σ) (c.fill σ) (fl.fill σ) next (ea.fill σ) (cell.fill σ)
-  | .stored i a b c fl next ea cell =>
-    .stored i (a.fill σ) (b.fill σ) (c.fill σ) (fl.fill σ) next (ea.fill σ) (cell.fill σ)
-  | .goes i a b c fl next ea cell =>
-    .goes i (a.fill σ) (b.fill σ) (c.fill σ) (fl.fill σ) next (ea.fill σ) (cell.fill σ)
 
 def FlagsT.fill (σ : Filling) : FlagsT → FlagsT
   | .lit f => .lit f
@@ -52,8 +46,6 @@ def FlagsT.fill (σ : Filling) : FlagsT → FlagsT
   | .bvar d => .bvar d
   | .old => σ.old
   | .src o fl a b c => .src o (fl.fill σ) (a.fill σ) (b.fill σ) (c.fill σ)
-  | .out i a b c fl next ea cell =>
-    .out i (a.fill σ) (b.fill σ) (c.fill σ) (fl.fill σ) next (ea.fill σ) (cell.fill σ)
 
 end
 
@@ -74,15 +66,6 @@ theorem Val.den_fill (ρ : Env) (σ : Filling) : (a : Val) → (a.fill σ).den �
     simp only [Val.fill, Val.den, Val.den_fill ρ σ a, Val.den_fill ρ σ b, Val.den_fill ρ σ c]
   | .fop o fl a b => by
     simp only [Val.fill, Val.den, FlagsT.den_fill ρ σ fl, Val.den_fill ρ σ a, Val.den_fill ρ σ b]
-  | .out i k a b c fl next ea cell => by
-    simp only [Val.fill, Val.den, Val.den_fill ρ σ a, Val.den_fill ρ σ b, Val.den_fill ρ σ c,
-      FlagsT.den_fill ρ σ fl, Val.den_fill ρ σ ea, Val.den_fill ρ σ cell]
-  | .stored i a b c fl next ea cell => by
-    simp only [Val.fill, Val.den, Val.den_fill ρ σ a, Val.den_fill ρ σ b, Val.den_fill ρ σ c,
-      FlagsT.den_fill ρ σ fl, Val.den_fill ρ σ ea, Val.den_fill ρ σ cell]
-  | .goes i a b c fl next ea cell => by
-    simp only [Val.fill, Val.den, Val.den_fill ρ σ a, Val.den_fill ρ σ b, Val.den_fill ρ σ c,
-      FlagsT.den_fill ρ σ fl, Val.den_fill ρ σ ea, Val.den_fill ρ σ cell]
 
 theorem FlagsT.den_fill (ρ : Env) (σ : Filling) :
     (f : FlagsT) → (f.fill σ).den ρ = f.den (ρ.filled σ)
@@ -93,9 +76,6 @@ theorem FlagsT.den_fill (ρ : Env) (σ : Filling) :
   | .src o fl a b c => by
     simp only [FlagsT.fill, FlagsT.den, FlagsT.den_fill ρ σ fl, Val.den_fill ρ σ a,
       Val.den_fill ρ σ b, Val.den_fill ρ σ c]
-  | .out i a b c fl next ea cell => by
-    simp only [FlagsT.fill, FlagsT.den, Val.den_fill ρ σ a, Val.den_fill ρ σ b,
-      Val.den_fill ρ σ c, FlagsT.den_fill ρ σ fl, Val.den_fill ρ σ ea, Val.den_fill ρ σ cell]
 
 end
 
@@ -150,9 +130,6 @@ theorem Val.den_slots {ρ₁ ρ₂ : Env} (hs : ρ₁.slot = ρ₂.slot) (ho : �
   | .bvar _ _, h => nomatch h
   | .add _ _, h => nomatch h
   | .shl _ _, h => nomatch h
-  | .out .., h => nomatch h
-  | .stored .., h => nomatch h
-  | .goes .., h => nomatch h
 
 theorem FlagsT.den_slots {ρ₁ ρ₂ : Env} (hs : ρ₁.slot = ρ₂.slot) (ho : ρ₁.old = ρ₂.old) :
     (f : FlagsT) → f.slotOnly = true → f.den ρ₁ = f.den ρ₂
@@ -164,7 +141,6 @@ theorem FlagsT.den_slots {ρ₁ ρ₂ : Env} (hs : ρ₁.slot = ρ₂.slot) (ho 
       Val.den_slots hs ho b h.1.2, Val.den_slots hs ho c h.2]
   | .var _, h => nomatch h
   | .bvar _, h => nomatch h
-  | .out .., h => nomatch h
 
 end
 

@@ -225,8 +225,5 @@ theorem Val.den_fillN (ρ : Env) (σ : Filling) : (a : Val) → (a.fillN σ).den
   | .bvar d j => Val.den_fill ρ σ (.bvar d j)
   | .add a b => Val.den_fill ρ σ (.add a b)
   | .shl a n => Val.den_fill ρ σ (.shl a n)
-  | .out i k a b c fl next ea cell => Val.den_fill ρ σ (.out i k a b c fl next ea cell)
-  | .stored i a b c fl next ea cell => Val.den_fill ρ σ (.stored i a b c fl next ea cell)
-  | .goes i a b c fl next ea cell => Val.den_fill ρ σ (.goes i a b c fl next ea cell)
 
 end TypedAsm.U
