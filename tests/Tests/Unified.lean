@@ -4,6 +4,7 @@ import TypedAsm.U.Exits
 import TypedAsm.U.Writes
 import TypedAsm.U.Pages
 import TypedAsm.Linux
+import TypedAsm.U.Stack
 import TypedAsm.U.Labels
 import TypedAsm.U.Open
 
@@ -1072,5 +1073,83 @@ theorem helloMem : SafeMem linux start :=
   SafeMem.of_safe linux_frame (Asm.loaded hparts) hello.1
 
 end HelloU
+
+/-! ## A program end to end, with a stack
+
+The stack's page is a region the entry context holds, the stack pointer at
+its end. -/
+
+namespace PushU
+
+inductive Label
+  | start
+  deriving DecidableEq
+/-- `push rbx; pop rbx; mov eax, 60; xor edi, edi; syscall`. -/
+def code : List (Asm Label) := [
+  .label .start,
+  .ins (.push .rbx),
+  .ins (.pop .rbx),
+  .ins (.mov .w32 (.rm_i (.reg .rax) 60)),
+  .ins (.alu .xor .w32 (.rm_r (.reg .rdi) .rdi)),
+  .ins .syscall]
+def base : BitVec 64 := Asm.base code
+def entry : BitVec 64 := Asm.addr code base .start
+def blocks : List (BitVec 64 × U.Layout) := [(0x400000, ⟨⟨4096, []⟩, false, none, 0, none⟩)]
+def pg : Prog := { code := progCode (Asm.table base code), pre := preExits (· == 0) }
+def labels : List U.Label := [⟨entry, entryPatStack 4096⟩]
+def start : State :=
+  { ((Asm.load State.init base code .start).setPerm (0x80000000 - 8) 8 .rw).setReg .rsp 0x80000000
+    with rip := entry }
+theorem hcheck : checkProgram pg labels 12 0 = true := by decide +kernel
+theorem htable : tableOk (Asm.table base code) = true := by decide +kernel
+theorem hwfb : blocksWf blocks = true := by decide +kernel
+theorem hperm : blocksPerm start blocks = true := by decide +kernel
+theorem hstack : start.canWrite 0x7ffff000 4096 = true := by decide +kernel
+theorem hcover : ((0x80000000 - 8, 8) :: segStretches (Asm.image base code .start) []).all
+    (stretchIn ((0x7ffff000, 4096) :: blocks.map fun x => (x.1, x.2.size))) = true := by
+  decide +kernel
+theorem hparts : ∀ g ∈ Asm.parts base code, start.Holds g := fun g hg =>
+  (Asm.prepared_holds State.init base code .start (0x80000000 - 8) 8 0x80000000
+    (by decide +kernel) (by decide +kernel) (by decide +kernel) g hg).congr rfl rfl
+theorem hwithin :
+    PermsWithin start ((0x80000000 - 8, 8) :: segStretches (Asm.image base code .start) []) :=
+  (((PermsWithin.init.loadSegs (Asm.image base code .start)).setPerm (0x80000000 - 8) 8 .rw).congr
+    rfl).congr rfl
+
+theorem hstarts (ρ : Env) :
+    Starts blocks (fun _ => none)
+      ((entryPatStack 4096).den { ρ with bound := Fam.ofStack start 0x7ffff000 :: ρ.bound })
+      start :=
+  starts_stack ρ hperm
+    (fun x hx bs hs => by
+      simp only [blocks, List.mem_cons, List.mem_nil_iff, or_false] at hx
+      subst hx
+      cases hs)
+    (fun x hx => by
+      simp only [blocks, List.mem_cons, List.mem_nil_iff, or_false] at hx
+      subst hx
+      rfl)
+    hstack (by decide) (by decide +kernel) (by decide +kernel) hwithin hcover
+
+/-- **A program that pushes and pops is safe, on the machine that decodes
+its instructions from memory, and ends only with status nought.** -/
+theorem pushPop :
+    SafeMem linux start ∧
+      ∀ s', TypedAsm.Steps (Asm.fetch base code) linux start s' → ∀ len c,
+        Asm.fetch base code s'.rip = some (.syscall, len) →
+        linux { s' with rip := s'.rip + len } = .exit c → c = 0 :=
+  have h := exits_of_checked (Ψ := MemTy.ofList blocks fun _ => none)
+    (Q := fun c => c = 0) (q := fun c => c == 0) (fun c h => by simpa using h) (pg := pg) rfl
+    (hcode_of_tableOk htable) (KindsOk.none _) StaticsOk.nil (blocksWf_wf hwfb) hcheck
+    (l := ⟨entry, entryPatStack 4096⟩) List.mem_cons_self rfl {} (Fam.ofStack start 0x7ffff000)
+    (fun n => (hstarts {}).matches (by decide) (fun _ h => nomatch h)
+      (fun x hx p hp => by
+        simp only [blocks, List.mem_cons, List.mem_nil_iff, or_false] at hx
+        subst hx
+        cases hp))
+  ⟨SafeMem.of_safe linux_frame (Asm.loaded hparts) h.1, h.2⟩
+
+
+end PushU
 
 end Tests.Unified
