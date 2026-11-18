@@ -29,7 +29,7 @@ returns in `rax`: for whatever address the kernel chose. In the loop the
 program holds that page, at the address in `rbx`, besides its stack. -/
 def labels : List U.Label :=
   [⟨entry, inProgram 1⟩,
-   ⟨Asm.addr code base .page, inFunction (gives := [(.rax, 4096)])⟩,
+   ⟨Asm.addr code base .page, inFunction (gives := [(.given .rax, 4096)])⟩,
    ⟨Asm.addr code base .loop, inProgram 1 (held := [(.was .rbx, ⟨4096, []⟩)])⟩]
 
 /-! ## The check, and what it shows -/

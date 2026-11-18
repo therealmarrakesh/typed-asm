@@ -189,7 +189,7 @@ def leftover (held : List (Val × HeldS)) (Γ : CtxS) : List (Val × HeldS) :=
 far in their values are as terms of the context reached, by what the
 registers give. What the values are is left as the family says it. -/
 def wantedRegions (P Γ : CtxS) : List (Val × HeldS) :=
-  let bs₁ := allRegs.flatMap fun r => bindB (P.regs.get r) (Γ.regs.get r)
+  let bs₁ := bindRegs P.regs.get Γ.regs.get
   let o₁ : Opening := { b := fun j => (bs₁.lookup j).getD (.lit 0), f := Γ.flags }
   P.held.map fun d => (d.1.open o₁ 0,
     ⟨d.2.size.open o₁ 0, d.2.slots.map fun p => (p.1.open o₁ 0, p.2)⟩)
@@ -199,7 +199,7 @@ the registers, then from the regions at the addresses those give; and,
 where the family ranges over whatever else is held, all that the context
 holds besides. -/
 def matchOpen (P Γ : CtxS) : OpenL :=
-  let bs₁ := allRegs.flatMap fun r => bindB (P.regs.get r) (Γ.regs.get r)
+  let bs₁ := bindRegs P.regs.get Γ.regs.get
   let bs₂ := (wantedRegions P Γ).flatMap fun d =>
     match hostExtent Γ.known d.1 d.2.size Γ.held with
     | some (_, off, G) =>

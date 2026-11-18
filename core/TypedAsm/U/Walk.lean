@@ -395,6 +395,58 @@ def Val.whole : Val → Val
 def Val.wholeIf (K : List (Val × TyS)) (v : Val) : Val :=
   if same32 K v v.whole then v.whole else v
 
+/-- A choice between two values on a condition, as the one chosen: where
+the condition is so, or is not. Any other term, itself. -/
+def Val.chosen (c : Cond) (fl : FlagsT) (b : Bool) : Val → Val
+  | .fop (.cmov c' w) fl' x y =>
+    if c' = c ∧ fl' = fl then
+      match w with
+      | .w64 => if b then y else x
+      | .w32 => mkUn (.trunc .w32) (if b then y else x)
+    else .fop (.cmov c' w) fl' x y
+  | v => v
+
+theorem Val.chosen_den {ρ : Env} {c : Cond} {fl : FlagsT} {b : Bool}
+    (h : c.eval (fl.den ρ) = some b) : (v : Val) → (v.chosen c fl b).den ρ = v.den ρ := by
+  intro v
+  unfold Val.chosen
+  split
+  · next c' w fl' x y =>
+    split
+    · next he =>
+      obtain ⟨rfl, rfl⟩ := he
+      cases w with
+      | w64 =>
+        show Val.den ρ (if b then y else x) = FOp.eval (.cmov c' .w64) (fl'.den ρ) (x.den ρ) (y.den ρ)
+        rw [cmov64, h]
+        cases b <;> rfl
+      | w32 =>
+        show (mkUn (.trunc .w32) (if b then y else x)).den ρ
+          = wide (w := .w32) (if (c'.eval (fl'.den ρ)).getD false then (y.den ρ).setWidth 32
+              else (x.den ρ).setWidth 32)
+        rw [mkUn_den, h]
+        cases b <;> rfl
+    · rfl
+  · rfl
+
+/-- The first choice on a condition a register holds, where the flags it
+is on say how the condition comes out: the condition and the flags. -/
+def CtxS.choice (Γ : CtxS) : Option (Cond × FlagsT) :=
+  allRegs.findSome? fun r =>
+    match Γ.regs.get r with
+    | .fop (.cmov c _) fl _ _ => if fl.decides c then some (c, fl) else none
+    | _ => none
+
+/-- A context with each such choice made, the condition being so or not. -/
+def CtxS.chose (Γ : CtxS) (c : Cond) (fl : FlagsT) (b : Bool) : CtxS :=
+  { Γ with regs := Γ.regs.map (Val.chosen c fl b) }
+
+theorem CtxS.chose_den {ρ : Env} (Γ : CtxS) {c : Cond} {fl : FlagsT} {b : Bool}
+    (h : c.eval (fl.den ρ) = some b) : (Γ.chose c fl b).den ρ = Γ.den ρ :=
+  ctx_ext (funext fun r => by
+    show ((Γ.regs.map (Val.chosen c fl b)).get r).den ρ = (Γ.regs.get r).den ρ
+    rw [Regs.get_map, Val.chosen_den h]) rfl rfl rfl
+
 /-- **A context with each register's sum of low halves taken as the sum**,
 where the context may be regarded so: where what is known shows the sum to
 have nothing above its low half. Else the context. -/
@@ -546,7 +598,19 @@ def walkFrom (pg : Prog) (ix : Index) (stops : BitVec 64 → Bool) :
         | some (Γ', t) =>
           if Γ'.under (k + 1) then
             match t with
-            | .lit t' => .step i Γ (a + len) k (walkFrom pg ix stops tl false fuel (k + 1) t' Γ')
+            | .lit t' =>
+              match Γ'.choice with
+              | some (c, fl) =>
+                if ((Γ'.chose c fl true).side fl c true).under (k + 1) &&
+                    ((Γ'.chose c fl false).side fl c false).under (k + 1) then
+                  .step i Γ (a + len) k
+                    (.branch c fl
+                      (walkFrom pg ix stops tl false fuel (k + 1) t'
+                        ((Γ'.chose c fl true).side fl c true))
+                      (walkFrom pg ix stops tl false fuel (k + 1) t'
+                        ((Γ'.chose c fl false).side fl c false)))
+                else .step i Γ (a + len) k (walkFrom pg ix stops tl false fuel (k + 1) t' Γ')
+              | none => .step i Γ (a + len) k (walkFrom pg ix stops tl false fuel (k + 1) t' Γ')
             | .fop (.cmov c .w64) fl (.lit n) (.lit tk) =>
               if (Γ'.side fl c true).under (k + 1) && (Γ'.side fl c false).under (k + 1) then
                 .step i Γ (a + len) k
@@ -756,11 +820,36 @@ theorem walkFrom_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
               exact (harr x (hrest x)).mono hm
             split at hW
             · next t' =>
-              subst hW
-              have hb := key _ h (fun x hx =>
-                (walkFrom_sound hD hkind pg hpre stops hcode hk ix hix tl false fuel (k + 1) t' Γ' (ρ.setVal k x) hu'
-                  hx).1.arrives)
-              exact ⟨hb.1, fun _ => hb.2⟩
+              have plain : ∀ (h : (Walk.step i Γ (e + len) k
+                    (walkFrom pg ix stops tl false fuel (k + 1) t' Γ')).holds
+                    (Ok fetch sys Ψ n) (Arrives fetch sys Ψ n) ρ),
+                  Ok fetch sys Ψ n e (Γ.den ρ) ∧ Ok fetch sys Ψ (n + 1) e (Γ.den ρ) :=
+                fun h => key _ h (fun x hx =>
+                  (walkFrom_sound hD hkind pg hpre stops hcode hk ix hix tl false fuel (k + 1) t' Γ'
+                    (ρ.setVal k x) hu' hx).1.arrives)
+              split at hW
+              · next c fl hch =>
+                split at hW
+                · next hus =>
+                  subst hW
+                  rw [Bool.and_eq_true] at hus
+                  have hb := key _ h (fun x ⟨⟨b, hc⟩, htk, hfl⟩ => by
+                    show Arrives fetch sys Ψ n t' (Γ'.den (ρ.setVal k x))
+                    rw [← Γ'.chose_den hc]
+                    cases b
+                    · exact (Ok.regard ((Γ'.chose c fl false).side_regards hc)
+                        (walkFrom_sound hD hkind pg hpre stops hcode hk ix hix tl false fuel (k + 1)
+                          t' _ (ρ.setVal k x) hus.2 (hfl hc)).1).arrives
+                    · exact (Ok.regard ((Γ'.chose c fl true).side_regards hc)
+                        (walkFrom_sound hD hkind pg hpre stops hcode hk ix hix tl false fuel (k + 1)
+                          t' _ (ρ.setVal k x) hus.1 (htk hc)).1).arrives)
+                  exact ⟨hb.1, fun _ => hb.2⟩
+                · subst hW
+                  have hb := plain h
+                  exact ⟨hb.1, fun _ => hb.2⟩
+              · subst hW
+                have hb := plain h
+                exact ⟨hb.1, fun _ => hb.2⟩
             · next c fl nx tk =>
               split at hW
               · next hus =>

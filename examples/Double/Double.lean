@@ -29,8 +29,8 @@ def pg : Prog := { code := progCode (Asm.table base code) }
 own, and after it the caller's again. The loop inside it is the same. -/
 def labels : List U.Label :=
   [⟨entry, inProgram 1⟩,
-   ⟨Asm.addr code base .double, inFunction (takes := [(.rdi, 4096)])⟩,
-   ⟨Asm.addr code base .loop, inFunction (takes := [(.rdi, 4096)])⟩]
+   ⟨Asm.addr code base .double, inFunction (takes := [(.was .rdi, 4096)])⟩,
+   ⟨Asm.addr code base .loop, inFunction (takes := [(.was .rdi, 4096)])⟩]
 
 /-! ## The check, and what it shows -/
 

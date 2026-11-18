@@ -29,7 +29,7 @@ def lendLabels (result : Val) (taken : Val) (first second : Val) : List U.Label 
   [⟨Lend.entry, inProgram 4⟩,
    ⟨Asm.addr Lend.code Lend.base .work, inFunction (room := 24) (results := [(.rax, result)])⟩,
    ⟨Asm.addr Lend.code Lend.base .fill,
-     inFunction (takes := [(.rdi, taken)]) (leaves := [(.rdi, [(0, first), (8, second)])])⟩]
+     inFunction (takes := [(.was .rdi, taken)]) (leaves := [(.was .rdi, [(0, first), (8, second)])])⟩]
 
 -- sixteen bytes of `work`'s stack are `fill`'s for the call; what `fill`
 -- leaves there is what `work` adds up
@@ -50,18 +50,18 @@ example : wholeOk Lend.code .start 4 pgLend (lendLabels 7 8 3 4) 80 = false := b
 def pgPair : Prog := { code := progCode (Asm.table Pair.base Pair.code) }
 
 /-- The labels: `two` handing its caller these. -/
-def pairLabels (gives : List (Reg × Val)) : List U.Label :=
+def pairLabels (gives : List (Val × Val)) : List U.Label :=
   [⟨Pair.entry, inProgram 2⟩,
    ⟨Asm.addr Pair.code Pair.base .two, inFunction (room := 8) (gives := gives)⟩]
 
 -- a page at each of the two addresses returned
-example : wholeOk Pair.code .start 2 pgPair (pairLabels [(.rax, 4096), (.rdx, 4096)]) 80
+example : wholeOk Pair.code .start 2 pgPair (pairLabels [(.given .rax, 4096), (.given .rdx, 4096)]) 80
     = true := by decide +kernel
 -- said to hand back only one, the caller has no second page to use: refused
-example : wholeOk Pair.code .start 2 pgPair (pairLabels [(.rax, 4096)]) 80 = false := by
+example : wholeOk Pair.code .start 2 pgPair (pairLabels [(.given .rax, 4096)]) 80 = false := by
   decide +kernel
 -- said to hand back two pages at the second address, it does not: refused
-example : wholeOk Pair.code .start 2 pgPair (pairLabels [(.rax, 4096), (.rdx, 8192)]) 80
+example : wholeOk Pair.code .start 2 pgPair (pairLabels [(.given .rax, 4096), (.given .rdx, 8192)]) 80
     = false := by decide +kernel
 
 end Tests.Unified

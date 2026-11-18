@@ -51,7 +51,7 @@ example : saysDetail (explain (pgMade 9 [0x48]) [lab 0 Pw] 20)
 
 -- a function said to hand back one page that hands back two: what is held
 -- that the return does not account for
-example : (explain pgPair (pairLabels [(.rax, 4096)]) 80).any
+example : (explain pgPair (pairLabels [(.given .rax, 4096)]) 80).any
     (fun f => f.detail.any fun d =>
       d.startsWith "more is held than is wanted, and what is wanted does not range over the rest")
     = true := by decide +kernel

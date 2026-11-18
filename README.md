@@ -105,7 +105,9 @@ value it gives back is one of a few numbers, or a pointer to text; or that
 a count it keeps in a region its caller lends it stays within bounds. A
 table of records is so many rows side by side, each a record's length
 apart, and a function that wants one record (`recordAt`) is handed the
-address of any, at an index found as the program runs.
+address of any, at an index found as the program runs. A region a function
+is lent is said by its address, which a label inside the function may name
+where the function has moved its pointer on from it.
 
 No proof is written for twenty-five of the twenty-six. In
 `examples/Fact`, the recursive factorial, two laws of the factorial are

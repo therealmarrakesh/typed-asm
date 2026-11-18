@@ -48,6 +48,32 @@ def bindB (pat got : Val) : List (Nat × Val) :=
     else []
   | _ => []
 
+/-- The same, where the pattern is a sum of one name not yet given and
+values already given: what is left of the value when those are taken from
+it. So a pointer said to be so far past a named address gives the address. -/
+def bindMore (bs : List (Nat × Val)) (pat got : Val) : List (Nat × Val) :=
+  match pat.lin.ms.filter fun m =>
+      match m.2 with
+      | .bvar 0 j => (bs.lookup j).isNone
+      | _ => false with
+  | [(c, .bvar 0 j)] =>
+    if pat.lin.ms.length ≤ 1 then []
+    else if c = 1 then
+      [(j, .add got (.un (.neg .w64)
+        (pat.open { b := fun i => if i = j then .lit 0 else (bs.lookup i).getD (.lit 0),
+                    f := .lit Flags.unknown } 0)))]
+    else if c = -1 then
+      [(j, .add (pat.open { b := fun i => if i = j then .lit 0 else (bs.lookup i).getD (.lit 0),
+                            f := .lit Flags.unknown } 0) (.un (.neg .w64) got))]
+    else []
+  | _ => []
+
+/-- The values of a family the registers give: each name a register is
+said to hold, then each a register is said to hold a sum with. -/
+def bindRegs (pats gots : Reg → Val) : List (Nat × Val) :=
+  let bs := allRegs.flatMap fun r => bindB (pats r) (gots r)
+  bs ++ allRegs.flatMap fun r => bindMore bs (pats r) (gots r)
+
 /-- What a member of a family is, as terms in lists. -/
 structure OpenL where
   bs : List (Nat × Val) := []

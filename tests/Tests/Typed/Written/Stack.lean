@@ -95,13 +95,13 @@ def labels : List U.Label :=
    ⟨Asm.addr code base .popLoop, inProgram 33 (pushed := [.bytes 248, .val top])
      (known := [(top, .range 0 31)])⟩,
    ⟨Asm.addr code base .push,
-     inFunction (takes := [(.rdi, 256)]) (holds := [(.rdi, [(0, top)])])
+     inFunction (takes := [(.was .rdi, 256)]) (holds := [(.was .rdi, [(0, top)])])
        (known := [(top, .range 0 31)])
-       (leaves := [(.rdi, [(0, .made 0)])]) (returns := [(.made 0, .range 0 31)])⟩,
+       (leaves := [(.was .rdi, [(0, .made 0)])]) (returns := [(.made 0, .range 0 31)])⟩,
    ⟨Asm.addr code base .pop,
-     inFunction (takes := [(.rdi, 256)]) (holds := [(.rdi, [(0, top)])])
+     inFunction (takes := [(.was .rdi, 256)]) (holds := [(.was .rdi, [(0, top)])])
        (known := [(top, .range 0 31)])
-       (leaves := [(.rdi, [(0, .made 0)])]) (returns := [(.made 0, .range 0 31)])⟩]
+       (leaves := [(.was .rdi, [(0, .made 0)])]) (returns := [(.made 0, .range 0 31)])⟩]
 
 asm_checked code start .start stack 33 program pg labels labels
 

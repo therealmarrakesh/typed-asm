@@ -85,8 +85,8 @@ def pg : Prog := { code := progCode (Asm.table base code) }
 def labels : List U.Label :=
   [⟨entry, inProgram 5⟩,
    ⟨Asm.addr code base .loop, inProgram 5 (pushed := [.bytes 32])⟩,
-   ⟨Asm.addr code base .put, inFunction (takes := [(.rdi, 32)])⟩,
-   ⟨Asm.addr code base .get, inFunction (takes := [(.rdi, 32)])⟩]
+   ⟨Asm.addr code base .put, inFunction (takes := [(.was .rdi, 32)])⟩,
+   ⟨Asm.addr code base .get, inFunction (takes := [(.was .rdi, 32)])⟩]
 
 asm_checked code start .start stack 5 program pg labels labels
 

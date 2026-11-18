@@ -41,7 +41,7 @@ def labels : List U.Label :=
   [⟨entry, inProgram 4⟩,
    ⟨Asm.addr code base .work, inFunction (room := 24) (results := [(.rax, 7)])⟩,
    ⟨Asm.addr code base .fill,
-     inFunction (takes := [(.rdi, 16)]) (leaves := [(.rdi, [(0, 3), (8, 4)])])⟩]
+     inFunction (takes := [(.was .rdi, 16)]) (leaves := [(.was .rdi, [(0, 3), (8, 4)])])⟩]
 
 /-! ## The check, and what it shows -/
 

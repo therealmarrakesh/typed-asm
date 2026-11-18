@@ -42,7 +42,7 @@ example : checkProgram (prog codeIdx)
 /-! ## A region as large as a register says -/
 
 /-- A function given, at `rdi`, a region of as many bytes as `rsi` says. -/
-def Pfill : CtxS := inFunction (takes := [(.rdi, Val.was .rsi)])
+def Pfill : CtxS := inFunction (takes := [(.was .rdi, Val.was .rsi)])
 
 /-- It asks the kernel to read into the region as many bytes as that, and
 returns. -/

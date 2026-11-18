@@ -387,7 +387,7 @@ def stepWhy (nm : Names) (pg : Prog) (path : List Was) (Γ : CtxS) (k : Nat) (a 
           (s!"`{i.toAsm}` reads memory that is not shown to be the program's",
             (match s.rd with
              | some (m, n) =>
-               [s!"{n} bytes at {(eaS Γ.regs (a + len) m).say nm}"] ++
+               [s!"{n} byte{if n = 1 then "" else "s"} at {(eaS Γ.regs (a + len) m).say nm}"] ++
                  (memRegs m).map (regSay path Γ · nm)
              | none => []) ++
             ["wanted: bytes of a region the code holds, of a block a value is known to point " ++
@@ -408,7 +408,7 @@ def stepWhy (nm : Names) (pg : Prog) (path : List Was) (Γ : CtxS) (k : Nat) (a 
               (s!"`{i.toAsm}` writes memory that is not shown to be the program's to write",
                 (match s.wr with
                  | some (m, n) =>
-                   [s!"{n} bytes at {(eaS Γ.regs (a + len) m).say nm}"] ++
+                   [s!"{n} byte{if n = 1 then "" else "s"} at {(eaS Γ.regs (a + len) m).say nm}"] ++
                      (memRegs m).map (regSay path Γ · nm)
                  | none => []) ++
                 ["wanted: bytes of a region the code holds, or of a block that may be " ++
