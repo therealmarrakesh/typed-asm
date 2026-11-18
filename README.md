@@ -165,6 +165,13 @@ What is not there:
   a system call that stores or maps memory; and it says of each value its
   own type, not how the values stand to one another: that a row is sorted
   is not said.
+- A program may be proved to write only what it read: the world keeps what
+  each `read` stored, a `read` leaves its buffer said to be those bytes, and
+  a `write` from that buffer, of no more than were read, is seen to offer a
+  stretch of them (`preEcho`, `whole_echoes`). A store into the buffer, or
+  another `read`, ends that. It is not yet said of bytes the program has
+  changed on the way (made upper case, say), nor of a buffer written out in
+  pieces from a moving pointer, nor in a label.
 - There are no signals in the model. An exit status is the value handed to
   `exit`; a parent process sees its low eight bits.
 - The examples are written as constructor terms; there is no notation for

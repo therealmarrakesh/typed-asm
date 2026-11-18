@@ -436,7 +436,7 @@ def stepWhy (nm : Names) (pg : Prog) (path : List Was) (Γ : CtxS) (k : Nat) (a 
           match linuxKind nr with
           | none =>
             (s!"system call {nr.toNat} is not one the model of the kernel has", [])
-          | some (.fills b room) =>
+          | some (.fills b room _) =>
             (s!"system call {nr.toNat} stores bytes at the address in {b.name64}",
               [regSay path Γ b nm,
                 match room with

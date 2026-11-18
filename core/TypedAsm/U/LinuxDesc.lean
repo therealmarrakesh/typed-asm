@@ -18,7 +18,7 @@ answers such a call as one there is none of, which is not what the kernel
 does with the calls it has, so a program that makes one is not typed. -/
 def linuxKind (nr : BitVec 64) : Option SysKind :=
   if nr = 60 ∨ nr = 231 then some .ends
-  else if nr = 0 then some (.fills .rsi (.inl .rdx))
+  else if nr = 0 then some (.fills .rsi (.inl .rdx) true)
   else if nr = 5 then some (.fills .rsi (.inr 144))
   else if nr = 228 then some (.fills .rsi (.inr 16))
   else if nr = 318 then some (.fills .rdi (.inl .rsi))
@@ -69,25 +69,28 @@ theorem linux_describes : Describes linux linuxDesc := by
     · next h =>
       cases hk
       exact ⟨Linux.read s, by simp [linux, h], by simpa [roomOf] using Linux.read_fills s,
-        by simpa [roomOf] using Linux.read_answered s⟩
+        by simpa [roomOf] using Linux.read_answered s,
+        fun _ => by simpa [roomOf] using Linux.read_logged s⟩
     · next h0 =>
       split at hk
       · next h =>
         cases hk
-        exact ⟨Linux.fstat s, by simp [linux, h], Linux.fstat_fills s, Linux.fstat_answered s⟩
+        exact ⟨Linux.fstat s, by simp [linux, h], Linux.fstat_fills s, Linux.fstat_answered s,
+          fun hl => nomatch hl⟩
       · next h5 =>
         split at hk
         · next h =>
           cases hk
           exact ⟨Linux.clockGettime s, by simp [linux, h], Linux.clockGettime_fills s,
-            Linux.clockGettime_answered s⟩
+            Linux.clockGettime_answered s, fun hl => nomatch hl⟩
         · next h228 =>
           split at hk
           · next h =>
             cases hk
             exact ⟨Linux.getrandom s, by simp [linux, h],
               by simpa [roomOf] using Linux.getrandom_fills s,
-              by simpa [roomOf] using Linux.getrandom_answered s⟩
+              by simpa [roomOf] using Linux.getrandom_answered s,
+              fun hl => nomatch hl⟩
           · next h318 =>
             split at hk
             · next h9 =>
@@ -132,7 +135,7 @@ theorem Describes.exitsOnly {sys : Syscall} {D : SysDesc} (h : Describes sys D)
   | world =>
     obtain ⟨t, ht, hw⟩ := this
     exact ⟨t, Syscall.exitsOnly_next ht, hw⟩
-  | fills b room =>
+  | fills b room logs =>
     obtain ⟨t, ht, hw⟩ := this
     exact ⟨t, Syscall.exitsOnly_next ht, hw⟩
   | ends =>
@@ -148,14 +151,20 @@ theorem Describes.exitsOnly {sys : Syscall} {D : SysDesc} (h : Describes sys D)
 
 /-- And one that lets through only writes whose bytes are as wanted,
 likewise, where the bytes a `write` offers are. -/
+theorem Describes.writesIf {sys : Syscall} {D : SysDesc} (h : Describes sys D)
+    (Q : State → Prop) :
+    Describes (sys.writesIf Q)
+      { D with pre := fun s => D.pre s ∧ (s.getReg .rax = 1 → Q s) } := by
+  intro s k hk hpre
+  have := h s k hk hpre.1
+  rw [show sys.writesIf Q s = sys s from Syscall.writesIf_eq hpre.2]
+  exact this
+
 theorem Describes.writesOnly {sys : Syscall} {D : SysDesc} (h : Describes sys D)
     (R : BitVec 64 → List (BitVec 8) → Prop) :
     Describes (sys.writesOnly R)
-      { D with pre := fun s => D.pre s ∧ (s.getReg .rax = 1 → R (s.getReg .rdi) s.offered) } := by
-  intro s k hk hpre
-  have := h s k hk hpre.1
-  rw [show sys.writesOnly R s = sys s from Syscall.writesOnly_eq hpre.2]
-  exact this
+      { D with pre := fun s => D.pre s ∧ (s.getReg .rax = 1 → R (s.getReg .rdi) s.offered) } :=
+  h.writesIf _
 
 /-- The status Linux ends a program with, at an `exit` or an `exit_group`,
 is the low half of `rdi`. -/

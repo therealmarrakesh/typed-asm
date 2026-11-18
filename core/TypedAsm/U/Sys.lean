@@ -65,7 +65,7 @@ inductive SysKind
   | world
   /-- It stores at most so many bytes at the address in a register: as many
   as another register says, or a fixed number. -/
-  | fills (buf : Reg) (room : Reg ⊕ Nat)
+  | fills (buf : Reg) (room : Reg ⊕ Nat) (logs : Bool := false)
   /-- It ends the program. -/
   | ends
   /-- It hands back fresh memory, of as many whole pages as the length in
@@ -116,8 +116,9 @@ def Describes (sys : Syscall) (D : SysDesc) : Prop :=
   ∀ (s : State) (k : SysKind), D.kind (s.getReg .rax) = some k → D.pre s →
     match k with
     | .world => ∃ t, sys s = .next t ∧ Linux.OnlyWorld s t
-    | .fills b room => ∃ t, sys s = .next t ∧ Linux.Fills s (s.getReg b) (roomOf s room) t ∧
-      Linux.Answered (roomOf s room) (t.getReg .rax)
+    | .fills b room logs => ∃ t, sys s = .next t ∧ Linux.Fills s (s.getReg b) (roomOf s room) t ∧
+      Linux.Answered (roomOf s room) (t.getReg .rax) ∧
+      (logs = true → Linux.Logged s (s.getReg b) (roomOf s room) t)
     | .ends => ∃ c, sys s = .exit c
     | .map => s.getReg .rdi = 0 → ∃ t, sys s = .next t ∧ Maps s (pages (s.getReg .rsi)) t
     | .unmap => ∃ t, sys s = .next t ∧ Unmaps s (s.getReg .rdi) (pages (s.getReg .rsi)) t
@@ -149,7 +150,8 @@ def Havoc (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (Γ : Ctx) (a : BitVec 64
 /-- **A call that stores bytes at an address the program gives** returns
 with a value in `rax`, the context saying nothing of those bytes. -/
 theorem Steps.fills {D : SysDesc} (hD : Describes sys D) {Γ Γh : Ctx} {next : BitVec 64}
-    {b : Reg} {room : Reg ⊕ Nat} (hk : D.kind (Γ.val .rax) = some (.fills b room))
+    {b : Reg} {room : Reg ⊕ Nat} {logs : Bool}
+    (hk : D.kind (Γ.val .rax) = some (.fills b room logs))
     (hpre : ∀ n, ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, s.rip = next →
       WellTyped fetch sys Ψ' n Γ s → D.pre s)
     (hh : Havoc fetch sys Ψ Γ (Γ.val b) (roomVal Γ.val room) Γh)
@@ -158,7 +160,7 @@ theorem Steps.fills {D : SysDesc} (hD : Describes sys D) {Γ Γh : Ctx} {next : 
       t = next ∧ ∃ v r, (Γ' = Γ.afterSys v r next ∨ Γ' = Γh.afterSys v r next) ∧
         Linux.Answered (roomVal Γ.val room) v := by
   intro n Ψ' he hwf s hrip hw
-  obtain ⟨t, hst, hfills, hans⟩ := hD s (.fills b room) (by rw [hw.val]; exact hk)
+  obtain ⟨t, hst, hfills, hans, -⟩ := hD s (.fills b room logs) (by rw [hw.val]; exact hk)
     (hpre n Ψ' he hwf s hrip hw)
   have hroom : roomOf s room = roomVal Γ.val room := by
     cases room with
@@ -178,6 +180,64 @@ theorem Steps.fills {D : SysDesc} (hD : Describes sys D) {Γ Γh : Ctx} {next : 
     have h₁ := hh.2.2 n Ψ' he hwf s hw data hlen hcw
     rw [← hrip, hb]
     exact h₁.ret v w (.inr hrowsh)
+
+/-- **A call that stores what it reads**: it returns having stored nothing,
+the context as it was and its answer known to be nought or an error number;
+or with the bytes it stored a row the context then has, of as many bytes as
+it answered, said to be the last read's from its start. -/
+theorem Steps.reads {D : SysDesc} (hD : Describes sys D) {Γ Γh : Ctx} {next : BitVec 64}
+    {b : Reg} {room : Reg ⊕ Nat} (hk : D.kind (Γ.val .rax) = some (.fills b room true))
+    (hpre : ∀ n, ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, s.rip = next →
+      WellTyped fetch sys Ψ' n Γ s → D.pre s)
+    (hh : Havoc fetch sys Ψ Γ (Γ.val b) (roomVal Γ.val room) Γh)
+    (hrows : Γ.rows = []) (hrowsh : Γh.rows = []) :
+    Steps fetch sys Ψ .syscall next Γ fun t Γ' =>
+      t = next ∧ ∃ v r,
+        (Γ' = { Γ.afterSys v r next with
+            known := [(v, Ty.orErr (.range 0 0))] ++ (Γ.afterSys v r next).known } ∨
+          Γ' = { Γh.afterSys v r next with rows := [⟨Γ.val b, v, 1, true, .any, some 0⟩] }) ∧
+        Linux.Answered (roomVal Γ.val room) v := by
+  intro n Ψ' he hwf s hrip hw
+  obtain ⟨t, hst, -, hans, hlogged⟩ := hD s (.fills b room true) (by rw [hw.val]; exact hk)
+    (hpre n Ψ' he hwf s hrip hw)
+  have hroom : roomOf s room = roomVal Γ.val room := by
+    cases room with
+    | inl r => show (s.getReg r).toNat = (Γ.val r).toNat; rw [hw.val]
+    | inr k => rfl
+  have hL := hlogged rfl
+  rw [hroom] at hans hL
+  rcases hL with ⟨v, w, hv, rfl⟩ | ⟨data, w, hlen, hcw, hbig, hhead, rfl⟩
+  · rw [Linux.ret_rax] at hans
+    refine ⟨_, hst, _, ⟨hrip, v, w.saved 0, .inl rfl, hans⟩, ?_⟩
+    rw [← hrip]
+    refine (hw.ret v w (.inr hrows)).addKnown [(v, Ty.orErr (.range 0 0))] fun f hf => ?_
+    cases List.mem_singleton.mp hf
+    refine hasTy_orErr.mpr (hv.elim (fun e => .inr ?_) .inl)
+    rw [e]
+    exact hasTy_range.mpr (by decide)
+  · rw [Linux.give_rax] at hans
+    refine ⟨_, hst, _, ⟨hrip, BitVec.ofNat 64 data.length, w.saved 0, .inr rfl, hans⟩, ?_⟩
+    have hb : s.getReg b = Γ.val b := hw.val b
+    rw [hb] at hcw
+    have h₁ := hh.2.2 n Ψ' he hwf s hw data hlen hcw
+    have hl : (BitVec.ofNat 64 data.length).toNat = data.length := by
+      rw [BitVec.toNat_ofNat]
+      exact Nat.mod_eq_of_lt (by omega)
+    rw [← hrip, hb]
+    refine (h₁.ret _ w (.inr hrowsh)).setRows _ (fun r hr i _ => ?_) (fun r hr off ho => ?_)
+    · cases List.mem_singleton.mp hr
+      exact HasTy.any _
+    · cases List.mem_singleton.mp hr
+      cases ho
+      refine ⟨rfl, rfl, data, hhead, ?_, ?_⟩
+      · show (0 : BitVec 64).toNat + (BitVec.ofNat 64 data.length).toNat ≤ data.length
+        rw [hl]
+        exact Nat.le_of_eq (Nat.zero_add _)
+      · show (Linux.give s (Γ.val b) data (BitVec.ofNat 64 data.length) w).loadBytes (Γ.val b)
+            (BitVec.ofNat 64 data.length).toNat
+          = (data.drop (0 : BitVec 64).toNat).take (BitVec.ofNat 64 data.length).toNat
+        rw [hl, Linux.give_loadBytes s _ data _ w (by omega) (Nat.le_refl _)]
+        rfl
 
 /-- **A call that ends the program** is typed, whatever follows it. -/
 theorem Ok.ends {D : SysDesc} (hD : Describes sys D) {Γ : Ctx} {a len : BitVec 64} {n : Nat}

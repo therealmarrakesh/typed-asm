@@ -477,4 +477,28 @@ theorem whole_outputs {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat ×
           (f.statics _ _) hlaws H fuel 0 a E hj ρ fam hfn
   ⟨SafeMem.of_safe linux_frame f.loaded o.1, o.2.1, o.2.2⟩
 
+/-- **And against the wanted status and that what is written is what was
+read: both.** -/
+theorem whole_echoes {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat × ShapeS)}
+    {bs : List (BitVec 64 × LayoutS)} {pg : Prog} {labels : List Label} {fuel : Nat}
+    (h : wholeOkWith code l n ks bs pg labels fuel = true)
+    {Q : BitVec 32 → Prop} {q : BitVec 32 → Bool} (hq : ∀ c, q c = true → Q c)
+    (hpg : pg.pre = preEcho q) (hpk : pg.kinds = kindsOf ks) (hlaws : LawsHold pg.fns pg.laws) :
+    ∀ args w, SafeMem linux (startIn code l n args w) ∧
+      (∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startIn code l n args w) s' →
+        ∀ len c, Asm.fetch (Asm.base code) code s'.rip = some (.syscall, len) →
+        linux { s' with rip := s'.rip + len } = .exit c → Q c) ∧
+      (∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startIn code l n args w) s' →
+        ∀ len, Asm.fetch (Asm.base code) code s'.rip = some (.syscall, len) →
+        s'.getReg .rax = 1 → Echoes { s' with rip := s'.rip + len }) := fun args w =>
+  have f := wholeOk_facts h args w
+  have o := echoes_of_checked hq hpg f.hcode (hpk ▸ f.kindsOk) (f.statics _ _) f.ext f.wf
+    f.check f.entry rfl { fn := pg.fns } (startFam (startIn code l n args w) n args) rfl hlaws
+    fun k H =>
+      f.typed _ _ k fun a E hj ρ fam hfn =>
+        justifyF_sound (D := echoDesc Q) ((linux_describes.exitsOnly Q).writesIf Echoes) rfl
+          (by rw [hpg]; exact preEcho_sound hq) pg.index_mem (fun _ _ => labelIx_find) f.hcode
+          (hpk ▸ f.kindsOk) (f.statics _ _) hlaws H fuel 0 a E hj ρ fam hfn
+  ⟨SafeMem.of_safe linux_frame f.loaded o.1, o.2.1, o.2.2⟩
+
 end TypedAsm.U

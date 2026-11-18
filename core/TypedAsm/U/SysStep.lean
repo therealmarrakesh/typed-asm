@@ -169,8 +169,8 @@ def fillsHeld (plain : Bool) (Γ : CtxS) (k : Nat) (next : BitVec 64) (b : Reg) 
   | none => none
 
 theorem fillsHeld_sound {D : SysDesc} (hD : Describes sys D) {ρ : Env} {plain : Bool}
-    {Γ Γe Γh : CtxS} {k : Nat} {next : BitVec 64} {b : Reg} {room : Reg ⊕ Nat}
-    (hk : D.kind ((Γ.den ρ).val .rax) = some (.fills b room))
+    {Γ Γe Γh : CtxS} {k : Nat} {next : BitVec 64} {b : Reg} {room : Reg ⊕ Nat} {logs : Bool}
+    (hk : D.kind ((Γ.den ρ).val .rax) = some (.fills b room logs))
     (h : fillsHeld plain Γ k next b room = some (Γe, Γh)) (hu : Γ.under k = true)
     (hpre : PreAt fetch sys Ψ D (Γ.den ρ)) (hrows : Γ.rows = []) :
     Steps fetch sys Ψ .syscall next (Γ.den ρ) fun t Δ =>
@@ -243,6 +243,104 @@ theorem fillsHeld_sound {D : SysDesc} (hD : Describes sys D) {ρ : Env} {plain :
       rw [Env.setSys_k, Env.setSys_k1]
   · cases h
 
+theorem readsHeld_sound {D : SysDesc} (hD : Describes sys D) {ρ : Env} {plain : Bool}
+    {Γ Γe Γh : CtxS} {k : Nat} {next : BitVec 64} {b : Reg} {room : Reg ⊕ Nat}
+    (hk : D.kind ((Γ.den ρ).val .rax) = some (.fills b room true))
+    (h : fillsHeld plain Γ k next b room = some (Γe, Γh)) (hu : Γ.under k = true)
+    (hpre : PreAt fetch sys Ψ D (Γ.den ρ)) (hrows : Γ.rows = []) :
+    Steps fetch sys Ψ .syscall next (Γ.den ρ) fun t Δ =>
+      ∃ x y, t = next ∧
+        (Δ = CtxS.den (ρ.setSys k x y) (Γe.addKnown [(.var k, .orErr (.range 0 0))]) ∨
+          Δ = CtxS.den (ρ.setSys k x y)
+            { Γh with rows := [⟨Γ.regs.get b, .var k, 1, true, .any, some 0⟩] }) ∧
+        Linux.Answered (roomVal (Γ.den ρ).val room) x := by
+  simp only [fillsHeld] at h
+  split at h
+  · next j base S o hfind =>
+    cases h
+    obtain ⟨i, hi, hl, hraw, ho⟩ := findHeldP_raw Γ.held 0 hfind
+    have hji : j = i := by omega
+    subst hji
+    generalize hls : (roomLs Γ room).1 = ls at hraw
+    generalize hn : (roomLs Γ room).2 = n at hraw
+    have hroom : sumNat ρ ls + n = roomVal (Γ.den ρ).val room := by
+      rw [← hls, ← hn]; exact roomLs_den ρ Γ room
+    have hjlt : j < (Γ.held.map fun b => (b.1.den ρ, b.2.den ρ)).length := by
+      rw [List.length_map]; exact (List.getElem?_eq_some_iff.mp hl).1
+    have hH : Havoc fetch sys Ψ (Γ.den ρ) ((Γ.den ρ).val b) (roomVal (Γ.den ρ).val room)
+        { Γ.den ρ with
+          held := (Γ.den ρ).held.set j (base.den ρ, (S.clearT Γ.known o ls n).den ρ) } := by
+      refine ⟨rfl, rfl, fun k' Ψ' he hwf s hw data hlen hcw => ?_⟩
+      have hg := knownS hw.known
+      have hin := sumLe_den hraw hg
+      simp only [sumNat, Nat.add_zero] at hin
+      have H := Havoc.heldTo (fetch := fetch) (sys := sys) (Ψ := Ψ)
+        (S' := (S.clearT Γ.known o ls n).den ρ) (CtxS.held_den ρ Γ hl)
+        (o := o.nat ρ) (n := roomVal (Γ.den ρ).val room)
+        (by show o.nat ρ + _ ≤ S.size.nat ρ; omega) rfl
+        (fun p hp => by
+          have := HeldS.clearT_mem hg hp
+          exact ⟨this.1, by omega⟩) (by show Γ.rows.map _ = []; rw [hrows]; rfl)
+      have ha' : (Γ.den ρ).val b = base.den ρ + BitVec.ofNat 64 (o.nat ρ) := by
+        show (Γ.regs.get b).den ρ = _
+        rw [ho, Val.nat, BitVec.ofNat_toNat, BitVec.setWidth_eq]
+        exact offTerm_den ρ _ _
+      rw [ha'] at hcw ⊢
+      exact H.2.2 k' Ψ' he hwf s hw data hlen hcw
+    refine Steps.mono (Steps.reads hD hk
+      (fun n Ψ' he hwf s _ hw => hpre n Ψ' he hwf s hw) hH
+      (by show Γ.rows.map _ = []; rw [hrows]; rfl)
+      (by show Γ.rows.map _ = []; rw [hrows]; rfl)) ?_
+    rintro t Δ ⟨rfl, x, y, hcase, hans⟩
+    have hΓ : Γ.den (ρ.setSys k x y) = Γ.den ρ := CtxS.den_setSys ρ k x y Γ hu
+    refine ⟨x, y, rfl, ?_, hans⟩
+    rcases hcase with rfl | rfl
+    · refine .inl ?_
+      have E0 : (CtxS.afterSys Γ (.var k) (.var (k + 1)) t).den (ρ.setSys k x y)
+          = CtxOf.afterSys (Γ.den ρ) x y t := by
+        rw [CtxS.afterSys_den, hΓ]
+        show CtxOf.afterSys (Γ.den ρ) ((ρ.setSys k x y).val k) ((ρ.setSys k x y).val (k + 1)) t = _
+        rw [Env.setSys_k, Env.setSys_k1]
+      show ({ CtxOf.afterSys _ x y t with known := _ } : Ctx)
+        = { CtxS.den (ρ.setSys k x y) (CtxS.afterSys Γ (.var k) (.var (k + 1)) t) with
+            known := [((ρ.setSys k x y).val k, Ty.orErr (.range 0 0))]
+              ++ (CtxS.den (ρ.setSys k x y) (CtxS.afterSys Γ (.var k) (.var (k + 1)) t)).known }
+      rw [E0, Env.setSys_k]
+    · refine .inr ?_
+      have hu' : CtxS.under k
+          { Γ with held := Γ.held.set j (base, S.clearT Γ.known o ls n) } = true := by
+        simp only [CtxS.under, Bool.and_eq_true] at hu ⊢
+        exact ⟨⟨⟨⟨hu.1.1.1.1, heldUnder_set hu.1.1.1.2 hl rfl
+          (fun p hp => (List.mem_filter.mp hp).1)⟩, hu.1.1.2⟩, hu.1.2⟩, hu.2⟩
+      have e : CtxS.den (ρ.setSys k x y)
+            { Γ with held := Γ.held.set j (base, S.clearT Γ.known o ls n) }
+          = { Γ.den ρ with
+              held := (Γ.den ρ).held.set j (base.den ρ, (S.clearT Γ.known o ls n).den ρ) } := by
+        rw [CtxS.den_setSys ρ k x y _ hu']
+        refine ctx_ext rfl rfl ?_ rfl
+        show (Γ.held.set j (base, S.clearT Γ.known o ls n)).map (fun b => (b.1.den ρ, b.2.den ρ))
+            ++ restDen ρ Γ.rest
+          = ((Γ.held.map fun b => (b.1.den ρ, b.2.den ρ)) ++ restDen ρ Γ.rest).set j _
+        rw [List.set_append_left _ _ hjlt, List.map_set]
+      have E : (CtxS.afterSys { Γ with held := Γ.held.set j (base, S.clearT Γ.known o ls n) }
+            (.var k) (.var (k + 1)) t).den (ρ.setSys k x y)
+          = CtxOf.afterSys { Γ.den ρ with
+              held := (Γ.den ρ).held.set j (base.den ρ, (S.clearT Γ.known o ls n).den ρ) } x y t := by
+        rw [CtxS.afterSys_den, e]
+        show CtxOf.afterSys _ ((ρ.setSys k x y).val k) ((ρ.setSys k x y).val (k + 1)) t = _
+        rw [Env.setSys_k, Env.setSys_k1]
+      have hb : (Γ.regs.get b).den (ρ.setSys k x y) = (Γ.den ρ).val b :=
+        congrArg (fun c : Ctx => c.val b) hΓ
+      show ({ CtxOf.afterSys _ x y t with rows := _ } : Ctx)
+        = { CtxS.den (ρ.setSys k x y) (CtxS.afterSys
+              { Γ with held := Γ.held.set j (base, S.clearT Γ.known o ls n) }
+              (.var k) (.var (k + 1)) t) with
+            rows := [RowOf.mk ((Γ.regs.get b).den (ρ.setSys k x y)) ((ρ.setSys k x y).val k) 1
+              true Ty.any (some (BitVec.ofNat 64 0))] }
+      rw [E, hb, Env.setSys_k]
+      rfl
+  · cases h
+
 /-- What is known of the answer of a call given room for so many bytes,
 where it is no error number: that it is no more than the room. -/
 def roomTy (Γ : CtxS) : Reg ⊕ Nat → TyS
@@ -258,7 +356,7 @@ def ansTy (Γ : CtxS) : TyS :=
   match Γ.regs.rax.lit? with
   | some nr =>
     match linuxKind nr with
-    | some (.fills _ room) => .orErr (roomTy Γ room)
+    | some (.fills _ room _) => .orErr (roomTy Γ room)
     | _ => .any
   | none => .any
 
@@ -316,7 +414,7 @@ def sysFills (kinds : Nat → Option ShapeS) (Γ : CtxS) (k : Nat) (next : BitVe
   match Γ.regs.rax.lit? with
   | some nr =>
     match linuxKind nr with
-    | some (.fills b room) =>
+    | some (.fills b room _) =>
       match fillsHeld true Γ k next b room with
       | some r => some r
       | none =>
@@ -332,6 +430,59 @@ def sysFills (kinds : Nat → Option ShapeS) (Γ : CtxS) (k : Nat) (next : BitVe
     | _ => none
   | none => none
 
+/-- **A call that stores what it reads, as a step on terms**: where the
+bytes lie in a region held, the two contexts it may return in, with the
+name `k` for what it hands back: the context as it was, the answer nought
+or an error number; and the context saying the bytes are the last read's,
+as many as the answer. -/
+def sysReads (Γ : CtxS) (k : Nat) (next : BitVec 64) : Option (CtxS × CtxS) :=
+  if !Γ.rows.isEmpty then none else
+  match Γ.regs.rax.lit? with
+  | some nr =>
+    match linuxKind nr with
+    | some (.fills b room true) =>
+      (fillsHeld true Γ k next b room).map fun r =>
+        (r.1.addKnown [(.var k, .orErr (.range 0 0))],
+          { r.2 with rows := [⟨Γ.regs.get b, .var k, 1, true, .any, some 0⟩] })
+    | _ => none
+  | none => none
+
+theorem sysReads_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
+    {ρ : Env} {Γ Γe Γh : CtxS} {k : Nat} {next : BitVec 64}
+    (h : sysReads Γ k next = some (Γe, Γh)) (hu : Γ.under k = true)
+    (hpre : PreAt fetch sys Ψ D (Γ.den ρ)) :
+    Steps fetch sys Ψ .syscall next (Γ.den ρ) fun t Δ =>
+      ∃ x y, t = next ∧ (Δ = Γe.den (ρ.setSys k x y) ∨ Δ = Γh.den (ρ.setSys k x y)) ∧
+        ∀ (Ψ' : MemTy) (n : Nat), HasTy fetch sys Ψ' n ((ansTy Γ).den (ρ.setSys k x y)) x := by
+  unfold sysReads at h
+  split at h
+  · cases h
+  next hnr =>
+  have hrows : Γ.rows = [] := by
+    cases hre : Γ.rows with
+    | nil => rfl
+    | cons r rs => exact absurd (by rw [hre]; rfl) hnr
+  split at h
+  · next nr hnr =>
+    have hrax : (Γ.den ρ).val .rax = nr := Val.lit?_den hnr
+    split at h
+    · next b room hk =>
+      have hk' : D.kind ((Γ.den ρ).val .rax) = some (.fills b room true) := by
+        rw [hkind, hrax]; exact hk
+      obtain ⟨r, hr, hE⟩ := Option.map_eq_some_iff.mp h
+      cases hE
+      refine Steps.mono (readsHeld_sound hD hk' (by rw [hr]) hu hpre hrows) ?_
+      rintro t Δ ⟨x, y, e, hc, ha⟩
+      refine ⟨x, y, e, hc, fun Ψ' n => ?_⟩
+      have e' : ansTy Γ = .orErr (roomTy Γ room) := by
+        unfold ansTy
+        rw [hnr]
+        simp only [hk]
+      rw [e']
+      exact roomTy_has hu ha Ψ' n
+    · cases h
+  · cases h
+
 theorem sysFills_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
     {ρ : Env} {kinds : Nat → Option ShapeS} (hkd : KindsOk Ψ kinds)
     {Γ Γe Γh : CtxS} {k : Nat} {next : BitVec 64}
@@ -340,11 +491,12 @@ theorem sysFills_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
     Steps fetch sys Ψ .syscall next (Γ.den ρ) fun t Δ =>
       ∃ x y, t = next ∧ (Δ = Γe.den (ρ.setSys k x y) ∨ Δ = Γh.den (ρ.setSys k x y)) ∧
         ∀ (Ψ' : MemTy) (n : Nat), HasTy fetch sys Ψ' n ((ansTy Γ).den (ρ.setSys k x y)) x := by
-  have hty : ∀ {b : Reg} {room : Reg ⊕ Nat} {nr : BitVec 64}, Γ.regs.rax.lit? = some nr →
-      linuxKind nr = some (.fills b room) → ∀ {x y : BitVec 64},
+  have hty : ∀ {b : Reg} {room : Reg ⊕ Nat} {logs : Bool} {nr : BitVec 64},
+      Γ.regs.rax.lit? = some nr →
+      linuxKind nr = some (.fills b room logs) → ∀ {x y : BitVec 64},
       Linux.Answered (roomVal (Γ.den ρ).val room) x → ∀ (Ψ' : MemTy) (n : Nat),
       HasTy fetch sys Ψ' n ((ansTy Γ).den (ρ.setSys k x y)) x := by
-    intro b room nr hnr hk x y hans Ψ' n
+    intro b room logs nr hnr hk x y hans Ψ' n
     have e : ansTy Γ = .orErr (roomTy Γ room) := by
       unfold ansTy
       rw [hnr]
@@ -363,8 +515,8 @@ theorem sysFills_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
   · next nr hnr =>
     have hrax : (Γ.den ρ).val .rax = nr := Val.lit?_den hnr
     split at h
-    · next b room hk =>
-      have hk' : D.kind ((Γ.den ρ).val .rax) = some (.fills b room) := by
+    · next b room logs hk =>
+      have hk' : D.kind ((Γ.den ρ).val .rax) = some (.fills b room logs) := by
         rw [hkind, hrax]; exact hk
       split at h
       · next r hr =>
