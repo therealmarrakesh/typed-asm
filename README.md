@@ -110,7 +110,8 @@ is lent is said by its address, which a label inside the function may name
 where the function has moved its pointer on from it. A function may
 return in more ways than one, the code it returns to typed for each: with
 nought, say, or with the address of memory that is then its caller's, as
-one that allocates does.
+one that allocates does; and a function lent memory (`uses`) may hand back
+part of it at the address it returns and the rest after it.
 
 No proof is written for twenty-five of the twenty-six. In
 `examples/Fact`, the recursive factorial, two laws of the factorial are

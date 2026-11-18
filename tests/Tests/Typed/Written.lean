@@ -10,6 +10,7 @@ import Tests.Typed.Written.Head
 import Tests.Typed.Written.ReadFull
 import Tests.Typed.Written.Digits
 import Tests.Typed.Written.OrNull
+import Tests.Typed.Written.Arena
 
 /-!
 # Programs written as an author would, each needing something of the type checker
@@ -23,6 +24,7 @@ number the program made, the number known still; a count chosen by a
 conditional move; a function that moves its pointer through a buffer lent;
 a number written out in digits, each byte stored known to be a digit and
 what is written to standard output proved to be digits and an end of line; a
-function that hands its caller a page, or nought. Each is typed as
+function that hands its caller a page, or nought; a function that carves a
+piece off memory it is lent and gives back the rest. Each is typed as
 it is compiled.
 -/
