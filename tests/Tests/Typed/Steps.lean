@@ -143,10 +143,17 @@ fetches those instructions at those addresses, under any system that does
 what Linux is described to do: by the walk alone, which the kernel runs. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
     (hcode : ∀ e ∈ codeE, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (n : Nat) :
-    Ok fetch sys Ψ (n + 1) 0 (Γw.den ρ) :=
-  (walk_sound hD rfl (PreSound.all (fun _ => trivial) _) (pg := ↑codeE) (fun _ => false) hcode
-    (KindsOk.none _) true 10 20 0 Γw ρ (by decide +kernel)
-    (Walk.holds_of_auto _ ρ (by decide +kernel))).2 (by decide +kernel)
+    Ok fetch sys Ψ (n + 1) 0 (Γw.den ρ) := by
+  have hu : Γw.under 20 = true := by decide +kernel
+  have ha : (walk (↑(codeE) : Prog) (fun _ => false) true 10 20 0 Γw).auto = true := by
+    decide +kernel
+  have hm : (walk (↑(codeE) : Prog) (fun _ => false) true 10 20 0 Γw).moved = true := by
+    decide +kernel
+  have hh := Walk.holds_of_auto (fetch := fetch) (sys := sys) (Ψ := Ψ) (n := n)
+    (walk (↑(codeE) : Prog) (fun _ => false) true 10 20 0 Γw) ρ ha
+  have typed := walk_sound (n := n) hD rfl (PreSound.all (fun _ => trivial) _) (pg := ↑(codeE))
+    (fun _ => false) hcode (KindsOk.none _) true 10 20 0 Γw ρ hu hh
+  exact typed.2 hm
 
 /-- `test rdi, rdi; je there; mov eax, 60; syscall; there: mov eax, 231;
 syscall`: a branch on a comparison, each
@@ -160,10 +167,17 @@ def codeB : List (BitVec 64 × Instr × BitVec 64) :=
 defined, so the jump is decided, and both ways end the program. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
     (hcode : ∀ e ∈ codeB, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (n : Nat) :
-    Ok fetch sys Ψ (n + 1) 0 (Γw.den ρ) :=
-  (walk_sound hD rfl (PreSound.all (fun _ => trivial) _) (pg := ↑codeB) (fun _ => false) hcode
-    (KindsOk.none _) true 10 20 0 Γw ρ (by decide +kernel)
-    (Walk.holds_of_auto _ ρ (by decide +kernel))).2 (by decide +kernel)
+    Ok fetch sys Ψ (n + 1) 0 (Γw.den ρ) := by
+  have hu : Γw.under 20 = true := by decide +kernel
+  have ha : (walk (↑(codeB) : Prog) (fun _ => false) true 10 20 0 Γw).auto = true := by
+    decide +kernel
+  have hm : (walk (↑(codeB) : Prog) (fun _ => false) true 10 20 0 Γw).moved = true := by
+    decide +kernel
+  have hh := Walk.holds_of_auto (fetch := fetch) (sys := sys) (Ψ := Ψ) (n := n)
+    (walk (↑(codeB) : Prog) (fun _ => false) true 10 20 0 Γw) ρ ha
+  have typed := walk_sound (n := n) hD rfl (PreSound.all (fun _ => trivial) _) (pg := ↑(codeB))
+    (fun _ => false) hcode (KindsOk.none _) true 10 20 0 Γw ρ hu hh
+  exact typed.2 hm
 
 -- with no comparison before it, the jump is not decided, and nothing is concluded
 example : (walk (codeB.drop 1) (fun _ => false) true 10 20 3 Γw).auto = false := by decide +kernel
@@ -186,10 +200,17 @@ def codeN (c : Cond) : List (BitVec 64 × Instr × BitVec 64) :=
 jump the pointer is known not to be null, by the walk alone. -/
 example (fetch : Fetch) (sys : Syscall) (Ψ : U.MemTy) (hD : Describes sys linuxDesc)
     (hcode : ∀ e ∈ codeN .e, fetch e.1 = some (e.2.1, e.2.2)) (ρ : Env) (n : Nat) :
-    Ok fetch sys Ψ (n + 1) 0 (Γn.den ρ) :=
-  (walk_sound hD rfl (codeN .e) (PreSound.all (fun _ => trivial) _) (fun _ => false) hcode
-    (KindsOk.none _) true 10 20 0 Γn ρ (by decide +kernel)
-    (Walk.holds_of_auto _ ρ (by decide +kernel))).2 (by decide +kernel)
+    Ok fetch sys Ψ (n + 1) 0 (Γn.den ρ) := by
+  have hu : Γn.under 20 = true := by decide +kernel
+  have ha : (walk (↑(codeN .e) : Prog) (fun _ => false) true 10 20 0 Γn).auto = true := by
+    decide +kernel
+  have hm : (walk (↑(codeN .e) : Prog) (fun _ => false) true 10 20 0 Γn).moved = true := by
+    decide +kernel
+  have hh := Walk.holds_of_auto (fetch := fetch) (sys := sys) (Ψ := Ψ) (n := n)
+    (walk (↑(codeN .e) : Prog) (fun _ => false) true 10 20 0 Γn) ρ ha
+  have typed := walk_sound (n := n) hD rfl (PreSound.all (fun _ => trivial) _) (pg := ↑(codeN .e))
+    (fun _ => false) hcode (KindsOk.none _) true 10 20 0 Γn ρ hu hh
+  exact typed.2 hm
 
 -- jumping away when it is not null, the load is of a pointer that is null: refused
 example : (walk (codeN .ne) (fun _ => false) true 10 20 0 Γn).auto = false := by decide +kernel

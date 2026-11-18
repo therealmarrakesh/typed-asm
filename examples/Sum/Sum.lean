@@ -27,7 +27,7 @@ def blocks : List (BitVec 64 × U.LayoutS) :=
 row of five values. -/
 def pg : Prog :=
   { code := progCode (Asm.table base code)
-    statics := staticRow (Asm.addr code base .array) 5 .any }
+    statics := staticIn blocks (Asm.addr code base .array) }
 
 /-- `rdi` is the address of a row of as many values as `rsi` says. -/
 def row : List (Val × TyS) := [(.was .rdi, .arr (.was .rsi) .any)]

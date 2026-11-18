@@ -30,7 +30,7 @@ def blocks : List (BitVec 64 × U.LayoutS) :=
 and that the buffer is one of the blocks said. -/
 def pg : Prog :=
   { code := progCode (Asm.table base code)
-    statics := staticText (Asm.addr code base .path) ++
+    statics := staticIn blocks (Asm.addr code base .path) ++
       staticIn blocks (Asm.addr code base .buffer) }
 
 /-- One label: the start, with nothing known. What each call may be given,

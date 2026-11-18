@@ -158,17 +158,18 @@ regions it takes from its caller and gives back, each at the address a
 register holds at the label and so many bytes; the regions it hands its
 caller when it returns; whatever else its caller holds; and the registers
 and facts said. How many bytes are terms: a number, or what a value at the
-label comes to. `leaves` says what values a region taken holds when the
-function gives it back. -/
+label comes to. `holds` says what values a region taken holds where the
+label is, by the register it is taken at, how far in each value is, and the
+value; `leaves`, what it holds when the function gives it back. -/
 def inFunction (regs : List (Reg × Val) := []) (known : List (Val × TyS) := [])
     (room : Val := 0) (results : List (Reg × Val) := []) (takes : List (Reg × Val) := [])
     (gives : List (Reg × Val) := []) (leaves : List (Reg × List (Val × Val)) := [])
-    (pushed : List Pushed := []) : CtxS where
+    (pushed : List Pushed := []) (holds : List (Reg × List (Val × Val)) := []) : CtxS where
   regs := regsWith anyRegs regs
   flags := .bvar 0
   held := (((Val.bvar 0 4).upBy (pushedBytes pushed)).lessBy room,
       ⟨room.plus 8, (room, .bvar 0 16) :: pushedSlots room 0 pushed⟩) ::
-    takes.map fun t => (.bvar 0 (allRegs.idxOf t.1), ⟨t.2, []⟩)
+    takes.map fun t => (.bvar 0 (allRegs.idxOf t.1), ⟨t.2, (holds.lookup t.1).getD []⟩)
   known := (.bvar 0 16, returnsWith results room takes gives leaves pushed) :: known
   rest := .bvar 0
 
@@ -246,23 +247,35 @@ context's family. A pointer to a function is a pointer to code wanting what
 the function's label wants. -/
 def codeOf (E : CtxS) : TyS := .code E.regs E.flags E.held (factsOf E.known) E.rest
 
-/-- What a program says of something in one of its segments: that its
-address is that of a byte of the segment's block. -/
+/-- How many values of which `τ` is known a shape has in a row from byte
+`o`, eight bytes apart: looked for at most `fuel` far. -/
+def rowRun (vals : List (Nat × TyS)) (τ : TyS) : Nat → Nat → Nat
+  | 0, _ => 0
+  | fuel + 1, o => if vals.contains (o, τ) then 1 + rowRun vals τ fuel (o + 8) else 0
+
+/-- **What a program says of an address in its static data**: all that the
+block it lies in shows of it. That it points so far into a block of that
+shape, or of that kind where the block is of one; that it is the address
+of as many values in a row as the block has there of one type; or, in the
+block's text, that it is the address of text, with more after it where
+there is. One way of saying it, whatever the data is: a record, a table to
+be gone through by a number, a node of a kind, a line of text. -/
 def staticIn (blocks : List (BitVec 64 × LayoutS)) (a : BitVec 64) : List (Val × TyS) :=
   match blocks.find? fun b =>
-      decide (b.1 ≤ a) && decide (a.toNat < b.1.toNat + b.2.shape.size) with
-  | some b => [(.lit a, .ptr b.2.shape b.2.writable (a - b.1).toNat)]
+      decide (b.1 ≤ a) && decide (a.toNat < b.1.toNat + b.2.size) with
   | none => []
-
-/-- What a program says of a block of a kind among its segments' blocks:
-that its address is that of a block of the kind. -/
-def staticRef (blocks : List (BitVec 64 × LayoutS)) (a : BitVec 64) : List (Val × TyS) :=
-  match blocks.find? fun b => b.1 == a with
   | some b =>
-    match b.2.tag with
-    | some t => [(.lit a, .ref t b.2.writable 0)]
-    | none => []
-  | none => []
+    if (a - b.1).toNat < b.2.shape.size then
+      (match b.2.tag with
+       | some t => [(.lit a, .ref t b.2.writable (a - b.1).toNat)]
+       | none => [(.lit a, .ptr b.2.shape b.2.writable (a - b.1).toNat)]) ++
+      (match b.2.shape.vals.toList.find? fun p => p.1 == (a - b.1).toNat with
+       | some p =>
+         [(.lit a, .arr (.lit (BitVec.ofNat 64
+            (rowRun b.2.shape.vals.toList p.2 (b.2.shape.size / 8 + 1) (a - b.1).toNat))) p.2)]
+       | none => [])
+    else
+      [(.lit a, .str (.lit (if (a - b.1).toNat + 1 < b.2.size then 1 else 0)))]
 
 /-- A block of plain bytes. -/
 def plainBlock (size : Nat) (writable : Bool) : LayoutS :=
@@ -291,19 +304,10 @@ def rowVals (τ : TyS) : Nat → Nat → ValsS
 def rowBlock (n : Nat) (τ : TyS) (writable : Bool) : LayoutS :=
   { shape := .mk (8 * n) (rowVals τ 0 n), writable := writable }
 
-/-- What a program says of a row among its segments' blocks: that its
-address is that of so many values of which `τ` is known. -/
-def staticRow (a : BitVec 64) (n : Nat) (τ : TyS) : List (Val × TyS) :=
-  [(.lit a, .arr (.lit (BitVec.ofNat 64 n)) τ)]
-
 /-- A block of text that is not written: the bytes given, which are to end
 in one of nought, and are said. -/
 def textBlock (bytes : List Byte) : LayoutS :=
   { shape := .mk 0 .nil, writable := false, text := bytes.length, said := some bytes }
-
-/-- What a program says of text in one of its blocks: that its address is
-that of the text's first byte, with more after it. -/
-def staticText (a : BitVec 64) : List (Val × TyS) := [(.lit a, .str (.lit 1))]
 
 variable {L : Type} [IsLabel L]
 

@@ -232,6 +232,100 @@ theorem narrow_den (ρ : Env) (n : Nat) (x : Val) : (narrow n x).den ρ = cutN n
       · unfold narrow cutN
         split <;> first | contradiction | (split <;> first | contradiction | rfl)
 
+/-- **Eight bytes read in a region held are then held as what was read**:
+the region says, of those bytes, that they hold the value. -/
+theorem Reads.heldName {Γ : Ctx} {k : Nat} {b : BitVec 64} {S : Held} {o : Nat}
+    (hk : Γ.held[k]? = some (b, S)) (hin : o + 8 ≤ S.size) :
+    Reads fetch sys Ψ Γ (b + BitVec.ofNat 64 o) 8
+      (fun x Γr => Γr = { Γ with held := Γ.held.set k (b, ⟨S.size, (o, x) :: S.vals⟩) }) := by
+  intro j Ψ' he hwf s hw
+  have hmem : (b, S) ∈ Γ.held := List.mem_of_getElem? hk
+  exact ⟨State.canRead_of_canWrite (State.canWrite_sub (n := S.size) (hw.held.perm (b, S) hmem) hin),
+    _, rfl, rfl, rfl, hw.nameSlot hk hin⟩
+
+/-- **The regions held once eight bytes of one are read that it says
+nothing of**: that region saying, of those bytes, that they hold the name
+`k`, which is what was read. So what is learnt of the value read is known
+of what the region holds. Nothing where the bytes are not eight, are not
+in a region held at a place written out, or hold a value already. -/
+def nameRead (Γ : CtxS) (k : Nat) (next : BitVec 64) :
+    Option (Mem × Nat) → Option (List (Val × HeldS))
+  | some (m, n) =>
+    if n = 8 then
+      match findHeldP true Γ.known (eaS Γ.regs next m) [] 8 Γ.held 0 with
+      | some (j, b, S, o) =>
+        match S.slotAt o with
+        | none =>
+          if o.under k then some (Γ.held.set j (b, ⟨S.size, (o, .var k) :: S.slots⟩)) else none
+        | some _ => none
+      | none => none
+    else none
+  | none => none
+
+theorem nameRead_sound {ρ : Env} {Γ : CtxS} {k : Nat} {next : BitVec 64} {m : Mem} {n : Nat}
+    {heldN : List (Val × HeldS)} (hu : Γ.under k = true)
+    (h : nameRead Γ k next (some (m, n)) = some heldN) :
+    Reads fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n
+      (fun x Γr => Γr = CtxS.den (ρ.setVal k x) { Γ with held := heldN } ∧
+        (Val.var k).den (ρ.setVal k x) = x) := by
+  simp only [nameRead] at h
+  split at h
+  · next h8 =>
+    subst h8
+    split at h
+    · next j b S o hfind =>
+      split at h
+      · split at h
+        · next hou =>
+          cases h
+          refine Reads.withKnown fun k' Ψ' hg0 => ?_
+          obtain ⟨i, hi, hl, hin, ha⟩ := findHeldP_spec (ρ := ρ) Γ.held 0 hfind (knownS hg0)
+          have hji : j = i := by omega
+          subst hji
+          rw [← eaS_den, ha]
+          simp only [sumNat, Nat.zero_add] at hin
+          refine (Reads.heldName (CtxS.held_den ρ Γ hl) hin).mono ?_
+          rintro x Γr rfl
+          refine ⟨?_, Env.setVal_get_self ρ k x⟩
+          have hΓ : Γ.den (ρ.setVal k x) = Γ.den ρ := CtxS.den_setVal ρ k x Γ hu
+          have hjlt : j < (Γ.held.map fun b =>
+              (b.1.den (ρ.setVal k x), b.2.den (ρ.setVal k x))).length := by
+            rw [List.length_map]; exact (List.getElem?_eq_some_iff.mp hl).1
+          have hreg : (b.den (ρ.setVal k x), S.den (ρ.setVal k x)) = (b.den ρ, S.den ρ) := by
+            have h1 := CtxS.held_den (ρ.setVal k x) Γ hl
+            have h2 := CtxS.held_den ρ Γ hl
+            rw [hΓ] at h1
+            exact Option.some.inj (h1.symm.trans h2)
+          have hb : b.den (ρ.setVal k x) = b.den ρ := congrArg Prod.fst hreg
+          have hS : S.den (ρ.setVal k x) = S.den ρ := congrArg Prod.snd hreg
+          refine ctx_ext (congrArg CtxOf.val hΓ).symm (congrArg CtxOf.flags hΓ).symm ?_
+            (congrArg CtxOf.known hΓ).symm
+          show (Γ.den ρ).held.set j _
+            = (Γ.held.set j (b, ⟨S.size, (o, .var k) :: S.slots⟩)).map
+                (fun b => (b.1.den (ρ.setVal k x), b.2.den (ρ.setVal k x)))
+              ++ restDen (ρ.setVal k x) Γ.rest
+          rw [List.map_set, ← List.set_append_left _ _ hjlt]
+          have hheld : (Γ.held.map fun b => (b.1.den (ρ.setVal k x), b.2.den (ρ.setVal k x)))
+              ++ restDen (ρ.setVal k x) Γ.rest = (Γ.den ρ).held := congrArg CtxOf.held hΓ
+          rw [hheld]
+          congr 1
+          show (b.den ρ, (⟨(S.den ρ).size, (o.nat ρ, x) :: (S.den ρ).vals⟩ : Held))
+            = (b.den (ρ.setVal k x),
+                (⟨(S.size.den (ρ.setVal k x)).toNat,
+                  ((o.den (ρ.setVal k x)).toNat, (Val.var k).den (ρ.setVal k x))
+                    :: S.slots.map (slotDen (ρ.setVal k x))⟩ : Held))
+          have hsz : (S.size.den (ρ.setVal k x)).toNat = (S.den ρ).size :=
+            congrArg (fun H : Held => H.size) hS
+          have hvals : S.slots.map (slotDen (ρ.setVal k x)) = (S.den ρ).vals :=
+            congrArg (fun H : Held => H.vals) hS
+          rw [hb, hsz, hvals, Val.den_setVal ρ k x o hou,
+            show (Val.var k).den (ρ.setVal k x) = x from Env.setVal_get_self ρ k x]
+          rfl
+        · cases h
+      · cases h
+    · cases h
+  · cases h
+
 /-- The bytes read in a region the context holds, of those an address is a
 number into (`plain`) or of the others: the value held there, where one is
 held at those eight bytes, and otherwise the name `k`. -/
@@ -846,6 +940,43 @@ theorem setRegs_den (ρ : Env) (σ : Filling) :
     · rfl
     · exact hm r'
 
+/-- **What an instruction reads**: as `readAny` has it; but where it is
+eight bytes of a region held that the region says nothing of, the region
+then says they hold what was read. -/
+def readFull (kinds : Nat → Option ShapeS) (Γ : CtxS) (k : Nat) (next : BitVec 64)
+    (rd : Option (Mem × Nat)) : Option (Val × List (Val × TyS) × List (Val × HeldS)) :=
+  match nameRead Γ k next rd with
+  | some heldN => some (.var k, [], heldN)
+  | none => (readAny kinds Γ k next rd).map fun r => (r.1, r.2, Γ.held)
+
+theorem readFull_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk Ψ kinds) {Γ : CtxS}
+    {k : Nat} {next : BitVec 64} {cell : Val} {extra : List (Val × TyS)}
+    {heldR : List (Val × HeldS)} (hu : Γ.under k = true) :
+    (rd : Option (Mem × Nat)) → readFull kinds Γ k next rd = some (cell, extra, heldR) →
+    match rd with
+    | some (m, n) => Reads fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n
+        (fun x Γr => Γr = CtxS.den (ρ.setVal k x)
+            { Γ with known := extra ++ Γ.known, held := heldR } ∧
+          cell.den (ρ.setVal k x) = x)
+    | none => extra = [] ∧ heldR = Γ.held ∧ cell.den (ρ.setVal k 0) = 0 := by
+  intro rd h
+  unfold readFull at h
+  split at h
+  · next heldN hn =>
+    cases h
+    cases rd with
+    | none => cases hn
+    | some mn =>
+      obtain ⟨m, n⟩ := mn
+      exact nameRead_sound hu hn
+  · obtain ⟨r, hr, he⟩ := Option.map_eq_some_iff.mp h
+    obtain ⟨c, e⟩ := r
+    cases he
+    have hR := readAny_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) (ρ := ρ) hk hu rd hr
+    cases rd with
+    | none => exact ⟨hR.1, rfl, hR.2⟩
+    | some mn => exact hR
+
 /-- **The checker's step.** The context after an instruction, and the term
 for where control goes. `k` is a name no term yet mentions, for what is
 read where the context does not say. -/
@@ -853,9 +984,9 @@ def stepHeld (kinds : Nat → Option ShapeS) (Γ : CtxS) (k : Nat) (next : BitVe
     Option (CtxS × Val) :=
   match i.sem with
   | some s =>
-    match readAny kinds Γ k next s.rd with
-    | some (cell, extra) =>
-      let Γ₁ : CtxS := { Γ with known := extra ++ Γ.known }
+    match readFull kinds Γ k next s.rd with
+    | some (cell, extra, heldR) =>
+      let Γ₁ : CtxS := { Γ with known := extra ++ Γ.known, held := heldR }
       let σ := fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell
       if !s.guard.okS Γ₁ Γ.flags (s.ga.fillN σ) (s.gb.fillN σ) (s.gc.fillN σ) then none else
       match writeAny kinds Γ₁ next (s.store.fillN σ) s.wr with
@@ -887,12 +1018,12 @@ theorem stepHeld_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
     simp only [Sem.slotOnly, Bool.and_eq_true] at hso
     obtain ⟨⟨⟨⟨⟨⟨hga, hgb⟩, hgc⟩, houts⟩, hflags⟩, hstore⟩, hgoes⟩ := hso
     split at h
-    · next cell extra hrc =>
-      have hgd : s.guard.okS { Γ with known := extra ++ Γ.known } Γ.flags
+    · next cell extra heldR hrc =>
+      have hgd : s.guard.okS { Γ with known := extra ++ Γ.known, held := heldR } Γ.flags
           (s.ga.fillN (fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell))
           (s.gb.fillN (fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell))
           (s.gc.fillN (fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell)) = true := by
-        cases hq : s.guard.okS { Γ with known := extra ++ Γ.known } Γ.flags
+        cases hq : s.guard.okS { Γ with known := extra ++ Γ.known, held := heldR } Γ.flags
           (s.ga.fillN (fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell))
           (s.gb.fillN (fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell))
           (s.gc.fillN (fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell)) with
@@ -904,9 +1035,9 @@ theorem stepHeld_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
       split at h
       · next held' hwc =>
         cases h
-        have hR := readAny_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) (ρ := ρ) hk hu s.rd hrc
+        have hR := readFull_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) (ρ := ρ) hk hu s.rd hrc
         refine Steps.mono (Steps.desc
-          (R := fun x Γr => Γr = CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known } ∧
+          (R := fun x Γr => Γr = CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known, held := heldR } ∧
             cell.den (ρ.setVal k x) = x)
           (W := fun x _ Γw => Γw = CtxS.den (ρ.setVal k x)
             { Γ with known := extra ++ Γ.known, held := held' }) hd ?_ ?_ ?_) ?_
@@ -916,17 +1047,18 @@ theorem stepHeld_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
           cases hrd : s.rd with
           | none =>
             rw [hrd] at hR
-            obtain ⟨he, hc⟩ := hR
+            obtain ⟨he, hh, hc⟩ := hR
             subst he
+            subst hh
             exact ⟨(CtxS.den_setVal ρ k 0 Γ hu).symm, hc⟩
           | some mn => rw [hrd] at hR; exact hR
         · rintro x Γr ⟨rfl, hx⟩
           refine ⟨_, rfl, ?_⟩
           have hΓ : Γ.den (ρ.setVal k x) = Γ.den ρ := CtxS.den_setVal ρ k x Γ hu
-          have hval : (CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known }).val
+          have hval : (CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known, held := heldR }).val
               = (Γ.den ρ).val := (congrArg CtxOf.val hΓ : (Γ.den (ρ.setVal k x)).val = _)
           have hW := writeAny_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) (ρ := ρ.setVal k x) hk
-            (Γ := { Γ with known := extra ++ Γ.known }) s.wr hwc
+            (Γ := { Γ with known := extra ++ Γ.known, held := heldR }) s.wr hwc
           show match s.wr with
             | some (m, n) => _
             | none => _

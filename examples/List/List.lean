@@ -42,7 +42,7 @@ first node is a node. -/
 def pg : Prog :=
   { code := progCode (Asm.table base code)
     kinds := kindsOf kinds
-    statics := staticRef blocks (Asm.addr code base .first) }
+    statics := staticIn blocks (Asm.addr code base .first) }
 
 /-- The labels: the start; and the loop, where `rdi` is a link. The program
 never loads through the nought that ends the list: its own test of the link

@@ -27,7 +27,7 @@ def blocks : List (BitVec 64 × U.LayoutS) :=
 row of five values. -/
 def pg : Prog :=
   { code := progCode (Asm.table base code)
-    statics := staticRow (Asm.addr code base .array) 5 .any }
+    statics := staticIn blocks (Asm.addr code base .array) }
 
 /-- The labels. `get` takes in `rdi` a row of as many values as `rsi` says:
 whatever row, and however many. In `rdx` it takes any number at all as the

@@ -4,6 +4,7 @@ import TypedAsm.U.Guard
 import TypedAsm.U.Learn
 import TypedAsm.U.PublishS
 import TypedAsm.U.Laws
+import TypedAsm.U.JoinS
 
 /-!
 # A block walked
@@ -438,21 +439,41 @@ theorem narrowFor_regards (ρ : Env) (Γ : CtxS) (k : Nat) :
       exact regardWith_sound noEnt_sound ρ (fun _ _ hg _ _ hs => same32_den hg hs) h.2
     · exact Regards.refl _
 
+/-- A context with its regions that lie end to end taken as one, so that
+bytes held are found whichever of them they are in: as a buffer is, part of
+which was lent and given back. Not at a system call, where a region may
+have just been taken as its parts to be given back. -/
+def joinFor (Γ : CtxS) (k : Nat) (isSys : Bool) : CtxS :=
+  if !isSys && (joinAll Γ.held.length Γ).under k then joinAll Γ.held.length Γ else Γ
+
+theorem joinFor_sound (ρ : Env) (Γ : CtxS) {k : Nat} (isSys : Bool) (hu : Γ.under k = true) :
+    (joinFor Γ k isSys).under k = true ∧
+      Regards fetch sys Ψ (Γ.den ρ) ((joinFor Γ k isSys).den ρ) := by
+  unfold joinFor
+  split
+  · next h =>
+    rw [Bool.and_eq_true] at h
+    exact ⟨h.2, joinAll_regards ρ _ Γ⟩
+  · exact ⟨hu, Regards.refl _⟩
+
 /-- **The context made ready at an address**: what the program publishes
 there published; at a system call, a region that memory is to be given back
-out of taken as its parts; and each sum of low halves that is seen to be
-the sum, taken as it. -/
+out of taken as its parts; regions that lie end to end taken as one; and
+each sum of low halves that is seen to be the sum, taken as it. -/
 def pubAtI (pg : Prog) (k : Nat) (isSys : Bool) (a : BitVec 64) (Γ : CtxS) : Option CtxS :=
-  (pubAtI0 pg k isSys a Γ).map (narrowFor · k)
+  (pubAtI0 pg k isSys a Γ).map fun Γ' => narrowFor (joinFor Γ' k isSys) k
 
 theorem pubAtI_sound {ρ : Env} {pg : Prog} (hk : KindsOk Ψ pg.kinds) {k : Nat} {a : BitVec 64}
     {isSys : Bool} {Γ Γ' : CtxS} (h : pubAtI pg k isSys a Γ = some Γ') (hu : Γ.under k = true) :
     Γ'.under k = true ∧ Publishes fetch sys Ψ (Γ.den ρ) (Γ'.den ρ) := by
   obtain ⟨Γ₁, h₁, rfl⟩ := Option.map_eq_some_iff.mp h
   obtain ⟨hu₁, hp₁⟩ := pubAtI0_sound (fetch := fetch) (sys := sys) (ρ := ρ) hk h₁ hu
-  obtain ⟨hu₂, hr₂⟩ := narrowFor_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) ρ Γ₁ hu₁
+  obtain ⟨huj, _⟩ := joinFor_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) ρ Γ₁ isSys hu₁
+  obtain ⟨hu₂, _⟩ := narrowFor_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) ρ _ huj
   exact ⟨hu₂, hp₁.trans fun Ψ' _ =>
-    Publishes.of_regards (narrowFor_sound (fetch := fetch) (sys := sys) (Ψ := Ψ') ρ Γ₁ hu₁).2⟩
+    Publishes.of_regards
+      ((joinFor_sound (fetch := fetch) (sys := sys) (Ψ := Ψ') ρ Γ₁ isSys hu₁).2.trans
+        (narrowFor_sound (fetch := fetch) (sys := sys) (Ψ := Ψ') ρ _ huj).2)⟩
 
 theorem pubAt_sound {ρ : Env} {pg : Prog} (hk : KindsOk Ψ pg.kinds) {k : Nat} {a : BitVec 64}
     {Γ Γ' : CtxS} (h : pubAt pg k a Γ = some Γ') (hu : Γ.under k = true) :

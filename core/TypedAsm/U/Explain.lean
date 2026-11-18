@@ -318,7 +318,7 @@ def stepWhy (nm : Names) (pg : Prog) (path : List Was) (Γ : CtxS) (k : Nat) (a 
       match i.sem with
       | none => (s!"`{i.toAsm}` is not an instruction the checker has a description of", [])
       | some s =>
-        match readAny pg.kinds Γ k (a + len) s.rd with
+        match readFull pg.kinds Γ k (a + len) s.rd with
         | none =>
           (s!"`{i.toAsm}` reads memory that is not shown to be the program's",
             (match s.rd with
@@ -330,8 +330,8 @@ def stepWhy (nm : Names) (pg : Prog) (path : List Was) (Γ : CtxS) (k : Nat) (a 
                 "into, of text, or of a row of values",
               "what is held: " ++ heldSay Γ.held nm,
               "on the machine: it could read memory the program does not have, and fault"])
-        | some (cell, extra) =>
-          let Γ₁ : CtxS := { Γ with known := extra ++ Γ.known }
+        | some (cell, extra, heldR) =>
+          let Γ₁ : CtxS := { Γ with known := extra ++ Γ.known, held := heldR }
           let σ := fillOf Γ s.srcs (a + len) (eaTerm Γ (a + len) s.ea) cell
           if !s.guard.okS Γ₁ Γ.flags (s.ga.fillN σ) (s.gb.fillN σ) (s.gc.fillN σ) then
             (s!"`{i.toAsm}` may fault of itself",
