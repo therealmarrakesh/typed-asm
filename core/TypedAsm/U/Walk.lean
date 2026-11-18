@@ -207,12 +207,6 @@ def pubAt (pg : Prog) (k : Nat) (a : BitVec 64) (Γ : CtxS) : Option CtxS :=
     | none => some Γ'
   | none => none
 
-/-- The same, told whether the instruction there is a system call. -/
-def pubAtI0 (pg : Prog) (k : Nat) (isSys : Bool) (a : BitVec 64) (Γ : CtxS) : Option CtxS :=
-  match pubOnly pg k a Γ with
-  | some Γ' => if isSys then some (splitFor Γ' k) else some Γ'
-  | none => none
-
 /-- A table from numbers to numbers, by the bits of the number asked for,
 the lowest first. -/
 inductive Trie
@@ -304,20 +298,6 @@ theorem seek_spec {ix : Index} {hint : Nat} {a : BitVec 64}
 /-- An index of a program has only the program's instructions. -/
 theorem Prog.index_mem (pg : Prog) : ∀ e ∈ pg.index.arr, e ∈ pg.code :=
   fun _ he => List.mem_toArray.mp he
-
-theorem pubAtI0_sound {ρ : Env} {pg : Prog} (hk : KindsOk Ψ pg.kinds) {k : Nat} {a : BitVec 64}
-    {isSys : Bool} {Γ Γ' : CtxS} (h : pubAtI0 pg k isSys a Γ = some Γ') (hu : Γ.under k = true) :
-    Γ'.under k = true ∧ Publishes fetch sys Ψ (Γ.den ρ) (Γ'.den ρ) := by
-  unfold pubAtI0 at h
-  split at h
-  · next Γp hp =>
-    obtain ⟨hup, hpub⟩ := pubOnly_sound (fetch := fetch) (sys := sys) (ρ := ρ) hk hp hu
-    split at h
-    · cases h
-      exact ⟨(splitFor_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) ρ Γp hup).1,
-        hpub.trans fun Ψ' _ => Publishes.of_regards (splitFor_sound ρ Γp hup).2⟩
-    · cases h; exact ⟨hup, hpub⟩
-  · cases h
 
 /-! ## Sums of the low halves
 
@@ -497,24 +477,84 @@ theorem joinFor_sound (ρ : Env) (Γ : CtxS) {k : Nat} (isSys : Bool) (hu : Γ.u
     exact ⟨h.2, joinAll_regards ρ _ Γ⟩
   · exact ⟨hu, Regards.refl _⟩
 
+/-- A way a context is regarded before an instruction, `k` being a name
+no term of it mentions. -/
+abbrev Prep := CtxS → Nat → CtxS
+
+/-- That a context may be regarded so, and then mentions no more names. -/
+def Prep.Sound (fetch : Fetch) (sys : Syscall) (p : Prep) : Prop :=
+  ∀ (Ψ : MemTy) (ρ : Env) (Γ : CtxS) (k : Nat), Γ.under k = true →
+    (p Γ k).under k = true ∧ Regards fetch sys Ψ (Γ.den ρ) ((p Γ k).den ρ)
+
+/-- A context regarded in each of some ways, one after another. -/
+def prepAll (ps : List Prep) (Γ : CtxS) (k : Nat) : CtxS := ps.foldl (fun Γ p => p Γ k) Γ
+
+theorem prepAll_sound : (ps : List Prep) → (∀ p ∈ ps, Prep.Sound fetch sys p) →
+    Prep.Sound fetch sys (prepAll ps)
+  | [], _ => fun _ _ _ _ hu => ⟨hu, Regards.refl _⟩
+  | p :: ps, h => fun Ψ ρ Γ k hu => by
+    obtain ⟨hu1, hr1⟩ := h p List.mem_cons_self Ψ ρ Γ k hu
+    obtain ⟨hu2, hr2⟩ :=
+      prepAll_sound ps (fun q hq => h q (List.mem_cons_of_mem _ hq)) Ψ ρ (p Γ k) k hu1
+    exact ⟨hu2, hr1.trans hr2⟩
+
+/-- A context with what it says of rows let go, before a system call that
+stores in memory or hands back fresh memory: such a call would not keep
+it. A store keeps what it can, and other calls leave memory as it was. -/
+def dropRowsFor (isSys : Bool) : Prep := fun Γ _ =>
+  if isSys && !Γ.rows.isEmpty &&
+      (match Γ.regs.rax.lit? with
+       | some nr =>
+         (match linuxKind nr with
+          | some (.fills _ _) => true
+          | some .map => true
+          | _ => false)
+       | none => false) then { Γ with rows := [] }
+  else Γ
+
+/-- **The ways a context is made ready before an instruction**, in order:
+what it says of rows let go where the instruction would not keep it; at a
+system call, a region that memory is to be given back out of taken as its
+parts; regions that lie end to end taken as one; and each sum of low halves
+that is seen to be the sum, taken as it. Each is the context regarded as
+another, and one more such way is one more entry here. -/
+def preps (isSys : Bool) : List Prep :=
+  [dropRowsFor isSys, fun Γ k => if isSys then splitFor Γ k else Γ,
+    fun Γ k => joinFor Γ k isSys, narrowFor]
+
+theorem preps_sound (isSys : Bool) : ∀ p ∈ preps isSys, Prep.Sound fetch sys p := by
+  intro p hp Ψ ρ Γ k hu
+  simp only [preps, List.mem_cons, List.not_mem_nil, or_false] at hp
+  rcases hp with rfl | rfl | rfl | rfl
+  · have drop : (({ Γ with rows := [] } : CtxS)).under k = true ∧
+        Regards fetch sys Ψ (Γ.den ρ) (CtxS.den ρ { Γ with rows := [] }) := by
+      refine ⟨?_, fun k' Ψ' he hwf s hw => hw.dropRows⟩
+      simp only [CtxS.under, Bool.and_eq_true, List.all_eq_true] at hu ⊢
+      exact ⟨hu.1, fun _ hr => nomatch hr⟩
+    unfold dropRowsFor
+    repeat' split
+    all_goals first | exact drop | exact ⟨hu, Regards.refl _⟩
+  · show (if isSys then splitFor Γ k else Γ).under k = true ∧ _
+    split
+    · exact splitFor_sound ρ Γ hu
+    · exact ⟨hu, Regards.refl _⟩
+  · exact joinFor_sound ρ Γ isSys hu
+  · exact narrowFor_sound ρ Γ hu
+
 /-- **The context made ready at an address**: what the program publishes
-there published; at a system call, a region that memory is to be given back
-out of taken as its parts; regions that lie end to end taken as one; and
-each sum of low halves that is seen to be the sum, taken as it. -/
+there published, and then regarded in each of the ways an instruction
+wants. -/
 def pubAtI (pg : Prog) (k : Nat) (isSys : Bool) (a : BitVec 64) (Γ : CtxS) : Option CtxS :=
-  (pubAtI0 pg k isSys a Γ).map fun Γ' => narrowFor (joinFor Γ' k isSys) k
+  (pubOnly pg k a Γ).map fun Γ' => prepAll (preps isSys) Γ' k
 
 theorem pubAtI_sound {ρ : Env} {pg : Prog} (hk : KindsOk Ψ pg.kinds) {k : Nat} {a : BitVec 64}
     {isSys : Bool} {Γ Γ' : CtxS} (h : pubAtI pg k isSys a Γ = some Γ') (hu : Γ.under k = true) :
     Γ'.under k = true ∧ Publishes fetch sys Ψ (Γ.den ρ) (Γ'.den ρ) := by
   obtain ⟨Γ₁, h₁, rfl⟩ := Option.map_eq_some_iff.mp h
-  obtain ⟨hu₁, hp₁⟩ := pubAtI0_sound (fetch := fetch) (sys := sys) (ρ := ρ) hk h₁ hu
-  obtain ⟨huj, _⟩ := joinFor_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) ρ Γ₁ isSys hu₁
-  obtain ⟨hu₂, _⟩ := narrowFor_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) ρ _ huj
-  exact ⟨hu₂, hp₁.trans fun Ψ' _ =>
-    Publishes.of_regards
-      ((joinFor_sound (fetch := fetch) (sys := sys) (Ψ := Ψ') ρ Γ₁ isSys hu₁).2.trans
-        (narrowFor_sound (fetch := fetch) (sys := sys) (Ψ := Ψ') ρ _ huj).2)⟩
+  obtain ⟨hu₁, hp₁⟩ := pubOnly_sound (fetch := fetch) (sys := sys) (ρ := ρ) hk h₁ hu
+  have hs := prepAll_sound (fetch := fetch) (sys := sys) (preps isSys) (preps_sound isSys)
+  exact ⟨(hs Ψ ρ Γ₁ k hu₁).1, hp₁.trans fun Ψ' _ =>
+    Publishes.of_regards (hs Ψ' ρ Γ₁ k hu₁).2⟩
 
 theorem pubAt_sound {ρ : Env} {pg : Prog} (hk : KindsOk Ψ pg.kinds) {k : Nat} {a : BitVec 64}
     {Γ Γ' : CtxS} (h : pubAt pg k a Γ = some Γ') (hu : Γ.under k = true) :
@@ -532,38 +572,6 @@ theorem pubAt_sound {ρ : Env} {pg : Prog} (hk : KindsOk Ψ pg.kinds) {k : Nat} 
     · cases h; exact ⟨hup, hpub⟩
   · cases h
 
-/-- **A context with what it says of rows let go, where the instruction
-about to run would not keep it**: a system call that stores in memory or
-hands back fresh memory. Else the context. A store keeps what it can. -/
-def rowsFor (ix : Index) (hint : Nat) (a : BitVec 64) (Γ : CtxS) : CtxS :=
-  if Γ.rows.isEmpty then Γ else
-  match seek ix hint a with
-  | some ((_, i, _), _) =>
-    if (if i = .syscall then
-          (match Γ.regs.rax.lit? with
-           | some nr =>
-             (match linuxKind nr with
-              | some (.fills _ _) => true
-              | some .map => true
-              | _ => false)
-           | none => false)
-        else false) then { Γ with rows := [] }
-    else Γ
-  | none => Γ
-
-theorem rowsFor_sound (ρ : Env) (ix : Index) (hint : Nat) (a : BitVec 64) (Γ : CtxS) {k : Nat}
-    (hu : Γ.under k = true) :
-    (rowsFor ix hint a Γ).under k = true ∧
-      Regards fetch sys Ψ (Γ.den ρ) ((rowsFor ix hint a Γ).den ρ) := by
-  have drop : (({ Γ with rows := [] } : CtxS)).under k = true ∧
-      Regards fetch sys Ψ (Γ.den ρ) (CtxS.den ρ { Γ with rows := [] }) := by
-    refine ⟨?_, fun k' Ψ' he hwf s hw => hw.dropRows⟩
-    simp only [CtxS.under, Bool.and_eq_true, List.all_eq_true] at hu ⊢
-    exact ⟨hu.1, fun _ hr => nomatch hr⟩
-  unfold rowsFor
-  repeat' split
-  all_goals first | exact drop | exact ⟨hu, Regards.refl _⟩
-
 /-- **The checker walked from an address**, for at most so many
 instructions, `k` being a name no term yet mentions. It stops where `stops`
 says, unless that is where it starts: at the labels of a program, which are
@@ -578,7 +586,7 @@ def walkFrom (pg : Prog) (ix : Index) (stops : BitVec 64 → Bool) :
     match pubAtI pg k
       (match seek ix rest a with
        | some ((_, i, _), _) => decide (i = .syscall)
-       | none => false) a (rowsFor ix rest a Γ₀) with
+       | none => false) a Γ₀ with
     | none => .stop a Γ₀
     | some Γ =>
     if Γ.impossible then .vacuous else
@@ -698,11 +706,10 @@ theorem walkFrom_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
     split at hW
     · subst hW; exact ⟨h, fun hm => nomatch hm⟩
     rename_i Γ hpub
-    obtain ⟨hur, hrg⟩ := rowsFor_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) ρ ix rest a Γ₀ hu₀
-    obtain ⟨hu, hP⟩ := pubAtI_sound (fetch := fetch) (sys := sys) (ρ := ρ) hk hpub hur
+    obtain ⟨hu, hP⟩ := pubAtI_sound (fetch := fetch) (sys := sys) (ρ := ρ) hk hpub hu₀
     suffices hs : Ok fetch sys Ψ n a (Γ.den ρ) ∧
         (W.moved = true → Ok fetch sys Ψ (n + 1) a (Γ.den ρ)) from
-      ⟨Ok.regard hrg (Ok.publish hP hs.1), fun hm => Ok.regard hrg (Ok.publish hP (hs.2 hm))⟩
+      ⟨Ok.publish hP hs.1, fun hm => Ok.publish hP (hs.2 hm)⟩
     split at hW
     · next himp =>
       subst hW
