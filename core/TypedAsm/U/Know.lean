@@ -87,20 +87,61 @@ theorem sub_res32 (a b : BitVec 32) : (subBorrow a b false).1 = a - b := by
   simp [subBorrow, BitVec.toNat_sub, BitVec.toNat_setWidth]
   omega
 
+/-- **The low `k` bits of a term, as a whole number**: the term read with its
+sign, so many twos to the `k` taken away as often as they go. So of every
+value that is the low part of another. -/
+theorem low_int (ρ : Env) (x : Val) {k : Nat} (hk : k ≤ 64) :
+    (((x.den ρ).toNat % 2 ^ k : Nat) : Int) = (x.int true).den (natOf ρ) % 2 ^ k := by
+  have ex := Val.int_den ρ true x
+  generalize (x.int true).den (natOf ρ) = X at *
+  have h1 : ((x.den ρ).toNat : Int) = X % 2 ^ 64 := by
+    rw [← ex, BitVec.toNat_ofInt]
+    have := Int.emod_nonneg X (by decide : (2 : Int) ^ 64 ≠ 0)
+    omega
+  have hd : (2 : Int) ^ k ∣ 2 ^ 64 := by exact_mod_cast Nat.pow_dvd_pow 2 hk
+  rw [Int.natCast_emod, h1]
+  push_cast
+  exact Int.emod_emod_of_dvd _ hd
+
+/-- A mask of the low `k` bits: what `k` is, where a number written out is
+one and no more than a width holds. -/
+def maskBits (w : Width) (m : BitVec 64) : Option Nat :=
+  if m.toNat + 1 = 2 ^ Nat.log2 (m.toNat + 1) ∧ Nat.log2 (m.toNat + 1) ≤ w.bits then
+    some (Nat.log2 (m.toNat + 1))
+  else none
+
+theorem maskBits_spec {w : Width} {m : BitVec 64} {k : Nat} (h : maskBits w m = some k) :
+    m.toNat = 2 ^ k - 1 ∧ k ≤ w.bits := by
+  unfold maskBits at h
+  split at h
+  · next hc => cases h; exact ⟨by omega, hc.2⟩
+  · cases h
+
 /-- What a term is the low part of, as a whole number, and how much the
 part holds: a sum or difference of low halves is the low half of the sum or
-difference itself, each number with its sign; a value cut to a width, the
-low part of the value. -/
+difference itself, each number with its sign; a value cut to a width, or
+widened with noughts from a narrow one, or masked to its low bits, the low
+part of the value. -/
 def halfOf : Val → Option (Lin Int × Int)
   | .fop (.alu .add .w32) _ x y => some (Lin.addMul 1 (x.int true) (y.int true), 4294967296)
   | .fop (.alu .sub .w32) _ x y => some (Lin.addMul (-1) (y.int true) (x.int true), 4294967296)
-  | .un (.trunc .w32) x => some (x.int true, 4294967296)
+  | .un (.trunc w) x => some (x.int true, 2 ^ w.bits)
+  | .un (.zx _ sw) x => some (x.int true, 2 ^ sw.bits)
   | .un .low8 x => some (x.int true, 256)
   | .un .low16 x => some (x.int true, 65536)
+  | .fop (.alu .and w) _ x (.lit m) => (maskBits w m).map fun k => (x.int true, 2 ^ k)
   | _ => none
 
 theorem halfOf_mod (ρ : Env) {t : Val} {E : Lin Int} {M : Int} (h : halfOf t = some (E, M)) :
     0 < M ∧ natOf ρ t = E.den (natOf ρ) % M := by
+  have low : ∀ (x : Val) (k : Nat), k ≤ 64 → (t.den ρ).toNat = (x.den ρ).toNat % 2 ^ k →
+      E = x.int true → M = 2 ^ k → 0 < M ∧ natOf ρ t = E.den (natOf ρ) % M := by
+    intro x k hk ht hE hM
+    subst hE hM
+    refine ⟨by exact_mod_cast Nat.two_pow_pos k, ?_⟩
+    show ((t.den ρ).toNat : Int) = _
+    rw [ht]
+    exact_mod_cast low_int ρ x hk
   unfold halfOf at h
   split at h
   · next fl x y =>
@@ -129,33 +170,43 @@ theorem halfOf_mod (ρ : Env) {t : Val} {E : Lin Int} {M : Int} (h : halfOf t = 
     rw [sub_res32, ← ex, ← ey]
     simp only [BitVec.toNat_setWidth, BitVec.toNat_sub, BitVec.toNat_ofInt]
     omega
+  · next w x =>
+    cases h
+    refine low x w.bits (by cases w <;> decide) ?_ rfl rfl
+    show (wide (BitVec.setWidth w.bits (x.den ρ))).toNat = _
+    rw [toNat_wide, BitVec.toNat_setWidth]
+  · next w sw x =>
+    cases h
+    refine low x sw.bits (by cases sw <;> decide) ?_ rfl rfl
+    show (wide (w := w) ((BitVec.setWidth sw.bits (x.den ρ)).setWidth w.bits)).toNat = _
+    rw [toNat_wide, BitVec.toNat_setWidth, BitVec.toNat_setWidth]
+    exact Nat.mod_eq_of_lt (Nat.lt_of_lt_of_le (Nat.mod_lt _ (Nat.two_pow_pos _))
+      (Nat.pow_le_pow_right (by omega) (by cases w <;> cases sw <;> decide)))
   · next x =>
     cases h
-    refine ⟨by omega, ?_⟩
-    have ex := Val.int_den ρ true x
-    generalize (x.int true).den (natOf ρ) = X at *
-    show ((BitVec.setWidth 64 (BitVec.setWidth 32 (x.den ρ))).toNat : Int) = _
-    rw [← ex]
-    simp only [BitVec.toNat_setWidth, BitVec.toNat_ofInt]
-    omega
+    refine low x 8 (by decide) ?_ rfl rfl
+    show ((BitVec.setWidth 8 (x.den ρ)).setWidth 64).toNat = _
+    rw [BitVec.toNat_setWidth, BitVec.toNat_setWidth,
+      Nat.mod_eq_of_lt (Nat.lt_of_lt_of_le (Nat.mod_lt _ (Nat.two_pow_pos 8)) (by decide))]
   · next x =>
     cases h
-    refine ⟨by omega, ?_⟩
-    have ex := Val.int_den ρ true x
-    generalize (x.int true).den (natOf ρ) = X at *
-    show ((BitVec.setWidth 64 (BitVec.setWidth 8 (x.den ρ))).toNat : Int) = _
-    rw [← ex]
-    simp only [BitVec.toNat_setWidth, BitVec.toNat_ofInt]
-    omega
-  · next x =>
-    cases h
-    refine ⟨by omega, ?_⟩
-    have ex := Val.int_den ρ true x
-    generalize (x.int true).den (natOf ρ) = X at *
-    show ((BitVec.setWidth 64 (BitVec.setWidth 16 (x.den ρ))).toNat : Int) = _
-    rw [← ex]
-    simp only [BitVec.toNat_setWidth, BitVec.toNat_ofInt]
-    omega
+    refine low x 16 (by decide) ?_ rfl rfl
+    show ((BitVec.setWidth 16 (x.den ρ)).setWidth 64).toNat = _
+    rw [BitVec.toNat_setWidth, BitVec.toNat_setWidth,
+      Nat.mod_eq_of_lt (Nat.lt_of_lt_of_le (Nat.mod_lt _ (Nat.two_pow_pos 16)) (by decide))]
+  · next w fl x m =>
+    obtain ⟨k, hk, hE⟩ := Option.map_eq_some_iff.mp h
+    cases hE
+    obtain ⟨hm, hkw⟩ := maskBits_spec hk
+    refine low x k (Nat.le_trans hkw (by cases w <;> decide)) ?_ rfl rfl
+    show (wide (BitVec.setWidth w.bits (x.den ρ) &&& BitVec.setWidth w.bits m)).toNat = _
+    have hmw : m.toNat < 2 ^ w.bits := by
+      have := Nat.pow_le_pow_right (n := 2) (by omega) hkw
+      have := Nat.two_pow_pos k
+      omega
+    rw [toNat_wide, BitVec.toNat_and, BitVec.toNat_setWidth, BitVec.toNat_setWidth,
+      Nat.mod_eq_of_lt hmw, hm, Nat.and_two_pow_sub_one_eq_mod,
+      Nat.mod_mod_of_dvd _ (Nat.pow_dvd_pow 2 hkw)]
   · cases h
 
 /-- That one sum of multiples is another: each at most the other. -/
