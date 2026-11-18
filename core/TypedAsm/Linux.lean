@@ -239,7 +239,9 @@ def readBy (d : Fate) (s : State) : State :=
         let chunk := data.take room
         let left := data.drop room
         give s buf chunk (BitVec.ofNat 64 chunk.length)
-          { s.world with input := if left.isEmpty then rest else .bytes left :: rest }
+          { s.world with
+            input := if left.isEmpty then rest else .bytes left :: rest
+            reads := chunk :: s.world.reads }
   | some (.file i pos r w app) =>
     if !r then ret s (-9)
     else if 0 < count ∧ room = 0 then ret s (-14)
@@ -252,7 +254,8 @@ def readBy (d : Fate) (s : State) : State :=
         | _ =>
           let data := (f.read pos (taken d room)).take room
           give s buf data (BitVec.ofNat 64 data.length)
-            (s.world.setFd fd (.file i (pos + data.length) r w app))
+            { s.world.setFd fd (.file i (pos + data.length) r w app) with
+              reads := data :: s.world.reads }
   | _ => ret s (-9)
 
 /-- `read(fd, buf, count)`, with the kernel doing what the world says. A
