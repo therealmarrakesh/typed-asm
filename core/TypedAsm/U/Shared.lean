@@ -135,9 +135,11 @@ theorem writeShared {a : BitVec 64} {l : Layout} {lo cnt : Nat} {s' : State}
         heap := h.held.heap
         apart := h.held.apart } }
 
-/-- What is said of rows may be let go. -/
-theorem dropRows (h : WellTyped fetch sys Ψ n Γ s) :
-    WellTyped fetch sys Ψ n { Γ with rows := [] } s :=
+/-- What is said of rows may be anything that is so of memory as it is. -/
+theorem setRows (h : WellTyped fetch sys Ψ n Γ s) (R : List (RowOf Ty))
+    (hR : ∀ r ∈ R, ∀ i, i < r.count.toNat →
+      HasTy fetch sys Ψ n r.ty (cellAt s r.byte (r.addr + BitVec.ofNat 64 (r.stride * i)))) :
+    WellTyped fetch sys Ψ n { Γ with rows := R } s :=
   { val := h.val
     known := h.known
     flags := h.flags
@@ -145,7 +147,7 @@ theorem dropRows (h : WellTyped fetch sys Ψ n Γ s) :
     heap := h.heap
     text := h.text
     said := h.said
-    rows := fun _ hr => nomatch hr
+    rows := hR
     complete := h.complete
     held :=
       { perm := h.held.perm
@@ -154,6 +156,11 @@ theorem dropRows (h : WellTyped fetch sys Ψ n Γ s) :
         vals := h.held.vals
         heap := h.held.heap
         apart := h.held.apart } }
+
+/-- What is said of rows may be let go. -/
+theorem dropRows (h : WellTyped fetch sys Ψ n Γ s) :
+    WellTyped fetch sys Ψ n { Γ with rows := [] } s :=
+  h.setRows [] fun _ hr => nomatch hr
 
 /-- Facts that are so may be added to what a context knows. -/
 theorem addKnown (h : WellTyped fetch sys Ψ n Γ s) (fs : List Fact)
@@ -253,6 +260,23 @@ theorem Reads.arr {Γ : Ctx} {p a c : BitVec 64} {τ : Ty} {st i : Nat}
   rw [List.mem_singleton.mp hf']
   exact hw.heap base l hl _ hmem
 
+/-- **What is read where a row has a value is of the row's type**: the bytes
+being provided to be read, whatever provides them. -/
+theorem Reads.row {Γ : Ctx} {a : BitVec 64} {n : Nat} {P : BitVec 64 → Ctx → Prop}
+    (h : Reads fetch sys Ψ Γ a n P) {r : RowOf Ty} (hr : r ∈ Γ.rows) {i : Nat}
+    (hi : i < r.count.toNat) (ha : a = r.addr + BitVec.ofNat 64 (r.stride * i))
+    (hn : n = if r.byte then 1 else 8) :
+    Reads fetch sys Ψ Γ a n
+      (fun x Γr => ∃ Γ0, P x Γ0 ∧ Γr = { Γ0 with known := (x, r.ty) :: Γ0.known }) := by
+  intro k Ψ' he hwf s hw
+  obtain ⟨hc, Γ0, hP, hv, hf, hw0⟩ := h k Ψ' he hwf s hw
+  refine ⟨hc, _, ⟨Γ0, hP, rfl⟩, hv, hf, hw0.addKnown [(_, r.ty)] (fun f hf' => ?_)⟩
+  rw [List.mem_singleton.mp hf']
+  have hrow := hw.rows r hr i hi
+  rw [← ha] at hrow
+  subst hn
+  cases hb : r.byte <;> rw [hb] at hrow <;> exact hrow
+
 /-- **And to be written**, if the pointer may be written through and each
 typed value of the block either keeps clear of the bytes or is the eight
 bytes written, with a value that is of its type whenever what the context
@@ -289,5 +313,19 @@ theorem Writes.shared {Γ : Ctx} {p a : BitVec 64} {τ : Ty} {Sh : Shape} {off o
       rw [show storeN s 8 (base + BitVec.ofNat 64 o) v = s.store64 _ v from rfl,
         TypedAsm.State.load64_store64_same]
       exact hcons Ψ' j hw.known)
+
+/-- **A store, with what is then so of rows**: the bytes written as a
+context that says nothing of rows provides them, and of memory as the store
+leaves it, each value of each row said being as the row says. -/
+theorem Writes.rows {Γ Γw : Ctx} {a v : BitVec 64} {n : Nat} (R : List (RowOf Ty))
+    (h : Writes fetch sys Ψ { Γ with rows := [] } a n v Γw)
+    (hR : ∀ k, ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, WellTyped fetch sys Ψ' k Γ s →
+      ∀ r ∈ R, ∀ i, i < r.count.toNat →
+        HasTy fetch sys Ψ' k r.ty
+          (cellAt (storeN s n a v) r.byte (r.addr + BitVec.ofNat 64 (r.stride * i)))) :
+    Writes fetch sys Ψ Γ a n v { Γw with rows := R } :=
+  ⟨h.1, h.2.1, fun k Ψ' he hwf s hw =>
+    ⟨(h.2.2 k Ψ' he hwf s (WellTyped.dropRows hw)).1,
+      (h.2.2 k Ψ' he hwf s (WellTyped.dropRows hw)).2.setRows R (hR k Ψ' he hwf s hw)⟩⟩
 
 end TypedAsm.U

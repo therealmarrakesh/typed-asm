@@ -998,6 +998,100 @@ theorem readFull_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
     | none => exact ⟨hR.1, rfl, hR.2⟩
     | some mn => exact hR
 
+/-- The row a context has that the `n` bytes at an address are a value of:
+so many along, and fewer than there are. -/
+def rowAt (Γ : CtxS) (next : BitVec 64) (m : Mem) (n : Nat) : Option RowS :=
+  Γ.rows.find? fun r =>
+    decide (n = if r.byte then 1 else 8) &&
+      (match idxOf r.stride (Lin.addMul (-1) r.addr.lin (eaS Γ.regs next m).lin) with
+       | some P => inCount Γ.known P r.count
+       | none => false)
+
+/-- What a row says of the value an instruction reads: that it is of the
+row's type. -/
+def rowFact (Γ : CtxS) (next : BitVec 64) (cell : Val) : Option (Mem × Nat) → List (Val × TyS)
+  | none => []
+  | some (m, n) =>
+    match rowAt Γ next m n with
+    | some r => [(cell, r.ty)]
+    | none => []
+
+/-- **What an instruction reads**, with what a row says of it. -/
+def readRows (kinds : Nat → Option ShapeS) (Γ : CtxS) (k : Nat) (next : BitVec 64)
+    (rd : Option (Mem × Nat)) : Option (Val × List (Val × TyS) × List (Val × HeldS)) :=
+  match readFull kinds Γ k next rd with
+  | some (c, e, h) => some (c, rowFact Γ next c rd ++ e, h)
+  | none => none
+
+theorem readRows_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk Ψ kinds) {Γ : CtxS}
+    {k : Nat} {next : BitVec 64} {cell : Val} {extra : List (Val × TyS)}
+    {heldR : List (Val × HeldS)} (hu : Γ.under k = true) :
+    (rd : Option (Mem × Nat)) → readRows kinds Γ k next rd = some (cell, extra, heldR) →
+    match rd with
+    | some (m, n) => Reads fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n
+        (fun x Γr => Γr = CtxS.den (ρ.setVal k x)
+            { Γ with known := extra ++ Γ.known, held := heldR } ∧
+          cell.den (ρ.setVal k x) = x)
+    | none => extra = [] ∧ heldR = Γ.held ∧ cell.den (ρ.setVal k 0) = 0 := by
+  intro rd h
+  unfold readRows at h
+  split at h
+  · next c e hh hrf =>
+    cases h
+    have R := readFull_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) (ρ := ρ) hk hu rd hrf
+    cases rd with
+    | none => exact R
+    | some mn =>
+      obtain ⟨m, n⟩ := mn
+      have R' : Reads fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n
+          (fun x Γr => Γr = CtxS.den (ρ.setVal k x) { Γ with known := e ++ Γ.known, held := heldR } ∧
+            cell.den (ρ.setVal k x) = x) := R
+      show Reads fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n _
+      cases hfind : rowAt Γ next m n with
+      | none =>
+        simp only [rowFact, hfind, List.nil_append]
+        exact R'
+      | some r =>
+        simp only [rowFact, hfind]
+        unfold rowAt at hfind
+        have hmem := List.mem_of_find?_eq_some hfind
+        have hp := List.find?_some hfind
+        simp only [Bool.and_eq_true, decide_eq_true_eq] at hp
+        obtain ⟨hn, hidx⟩ := hp
+        split at hidx
+        · next P hP =>
+          have hτu : r.ty.under k = true := by
+            have hu' := hu
+            simp only [CtxS.under, Bool.and_eq_true, List.all_eq_true] at hu'
+            exact (hu'.2 r hmem).2
+          refine Reads.withKnown fun k' Ψ' hg0 => ?_
+          have hg := knownS hg0
+          obtain ⟨i, hi, hd⟩ := idxOf_den ρ hP
+          have hlt := inCount_lt (ρ := ρ) hidx hg
+          have e := Lin.addMul_den (Val.den ρ) (-1) r.addr.lin (eaS Γ.regs next m).lin
+          rw [Val.lin_den, Val.lin_den, hd] at e
+          have ha : eaOf (Γ.den ρ).val next m
+              = (r.den ρ).addr + BitVec.ofNat 64 ((r.den ρ).stride * i) := by
+            rw [← eaS_den]
+            show (eaS Γ.regs next m).den ρ = r.addr.den ρ + BitVec.ofNat 64 (r.stride * i)
+            rw [e]
+            grind
+          have hi' : i < (r.den ρ).count.toNat := by
+            show i < (r.count.den ρ).toNat
+            rw [hi] at hlt
+            simp only [natOf] at hlt
+            omega
+          refine (Reads.row R' (r := r.den ρ) (List.mem_map.mpr ⟨r, hmem, rfl⟩) hi' ha hn).mono ?_
+          rintro x Γr ⟨Γ0, ⟨rfl, hx⟩, rfl⟩
+          refine ⟨?_, hx⟩
+          refine ctx_ext rfl rfl rfl ?_
+          show ((x, r.ty.den ρ) :: _ : List Fact)
+            = (cell.den (ρ.setVal k x), r.ty.den (ρ.setVal k x)) :: _
+          rw [hx, TyS.den_setVal ρ k x r.ty hτu]
+          rfl
+        · cases hidx
+  · cases h
+
 /-- **The checker's step.** The context after an instruction, and the term
 for where control goes. `k` is a name no term yet mentions, for what is
 read where the context does not say. -/
@@ -1006,7 +1100,7 @@ def stepHeld (kinds : Nat → Option ShapeS) (Γ : CtxS) (k : Nat) (next : BitVe
   match i.sem with
   | some s =>
     if s.wr.isSome && !Γ.rows.isEmpty then none else
-    match readFull kinds Γ k next s.rd with
+    match readRows kinds Γ k next s.rd with
     | some (cell, extra, heldR) =>
       let Γ₁ : CtxS := { Γ with known := extra ++ Γ.known, held := heldR }
       let σ := fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell
@@ -1064,7 +1158,7 @@ theorem stepHeld_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
       split at h
       · next held' hwc =>
         cases h
-        have hR := readFull_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) (ρ := ρ) hk hu s.rd hrc
+        have hR := readRows_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) (ρ := ρ) hk hu s.rd hrc
         refine Steps.mono (Steps.desc
           (R := fun x Γr => Γr = CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known, held := heldR } ∧
             cell.den (ρ.setVal k x) = x)

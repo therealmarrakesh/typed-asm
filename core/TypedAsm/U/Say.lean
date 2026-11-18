@@ -252,7 +252,7 @@ def inFunction (regs : List (Reg × Val) := []) (known : List (Val × TyS) := []
     (room : Val := 0) (results : List (Reg × Val) := []) (takes : List (Val × Val) := [])
     (gives : List (Val × Val) := []) (leaves : List (Val × List (Val × Val)) := [])
     (pushed : List Pushed := []) (holds : List (Val × List (Val × Val)) := [])
-    (returns : List (Val × TyS) := []) : CtxS where
+    (returns : List (Val × TyS) := []) (rows : List RowS := []) : CtxS where
   regs := regsWith anyRegs regs
   flags := .bvar 0
   held := (((Val.bvar 0 4).upBy (pushedBytes pushed)).lessBy room,
@@ -260,6 +260,15 @@ def inFunction (regs : List (Reg × Val) := []) (known : List (Val × TyS) := []
     takes.map fun t => (t.1, ⟨t.2, (holds.lookup t.1).getD []⟩)
   known := (.bvar 0 16, returnsWith results room takes gives leaves pushed returns) :: known
   rest := .bvar 0
+  rows := rows
+
+/-- So many bytes in a row from an address, of each of which a thing is
+known: said of memory the code holds, where a label is. -/
+def bytesAt (addr count : Val) (τ : TyS) : RowS := ⟨addr, count, 1, true, τ⟩
+
+/-- So many values of eight bytes in a row from an address, of each of
+which a thing is known. -/
+def cellsAt (addr count : Val) (τ : TyS) : RowS := ⟨addr, count, 8, false, τ⟩
 
 /-- How many arguments the program was handed, its own name among them:
 the value held where the stack pointer is when it starts. -/
@@ -273,7 +282,8 @@ the count, the row of pointers to the arguments' text; the registers and
 facts said; and whatever regions it holds besides. With nothing said it is
 what the program starts with. -/
 def inProgram (n : Nat) (pushed : List Pushed := []) (regs : List (Reg × Val) := [])
-    (known : List (Val × TyS) := []) (held : List (Val × HeldS) := []) : CtxS :=
+    (known : List (Val × TyS) := []) (held : List (Val × HeldS) := [])
+    (rows : List RowS := []) : CtxS :=
   { entryCtx (stackRoom n) with
     regs := regsWith
       ((entryCtx (stackRoom n)).regs.set .rsp
@@ -281,7 +291,8 @@ def inProgram (n : Nat) (pushed : List Pushed := []) (regs : List (Reg × Val) :
     held := (.bvar 0 17, ⟨litNat (stackRoom n + 8),
         (litNat (stackRoom n), .bvar 0 18) :: pushedSlots (litNat (stackRoom n)) 0 pushed⟩) ::
       held
-    known := (entryCtx (stackRoom n)).known ++ known }
+    known := (entryCtx (stackRoom n)).known ++ known
+    rows := rows }
 
 /-- What a program starts with is that label with nothing said. -/
 theorem inProgram_entry (n : Nat) : inProgram n = entryCtx (stackRoom n) := rfl

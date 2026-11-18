@@ -358,4 +358,24 @@ theorem Writes.heldIn {Γ : Ctx} {k : Nat} {b : BitVec 64} {S : Held} {o o' L n 
       decide_eq_true_eq] at hp
     exact .inl ⟨hp.1, by omega⟩
 
+/-- A row's value is as it was after a store that keeps clear of it. -/
+theorem cellAt_storeN_out (s : State) (n : Nat) (a v y : BitVec 64) (byte : Bool) (hn : n ≤ 8)
+    (h : Disjoint a n y (if byte then 1 else 8)) :
+    cellAt (storeN s n a v) byte y = cellAt s byte y := by
+  cases byte
+  · exact storeN_load64_out s n a v y hn h
+  · by_cases h0 : n = 0
+    · subst h0; rfl
+    · exact congrArg (BitVec.setWidth 64) (storeN_mem_out s n a v y hn (h.1 (by decide)))
+
+/-- What a store of a value's one byte, or of its eight, leaves there. -/
+theorem cellAt_storeN_same (s : State) (a v : BitVec 64) (byte : Bool) :
+    cellAt (storeN s (if byte then 1 else 8) a v) byte a
+      = if byte then (v.setWidth 8).setWidth 64 else v := by
+  cases byte
+  · exact State.load64_store64_same s a v
+  · show ((s.store8 a (v.setWidth 8)).mem a).setWidth 64 = (v.setWidth 8).setWidth 64
+    rw [State.mem_store8]
+    simp only [↓reduceIte]
+
 end TypedAsm.U
