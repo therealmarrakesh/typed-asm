@@ -502,6 +502,20 @@ theorem labelIx_find {labels : List Label} {a : BitVec 64} {l : Label}
     · cases h
   · cases h
 
+/-- Whether a thing known says a value is code that the context reached
+may enter: the value is the one gone to, and the context may be made a
+member of the family the code wants. -/
+def arriveFits (cc : CtxS → CtxS → Nat → Option (CtxS × OpenL)) (t : Val) (Γ : CtxS) (k : Nat)
+    (f : Val × TyS) : Bool :=
+  f.1.same t &&
+    (match f.2 with
+     | .code regs flags held known rest =>
+       f.1.under k &&
+         (match cc (codeCtx regs flags held known rest) Γ k with
+          | some (Γ', _) => Γ'.known.contains (f.1, .code regs flags held known rest)
+          | none => false)
+     | _ => false)
+
 /-- Whether a walk leaves nothing to be shown: every instruction it stepped
 over is seen not to fault of itself, every jump is decided, and every way
 through it ends the program, or stops at a label in a context that may be
@@ -516,14 +530,7 @@ def Walk.closes (cc : CtxS → CtxS → Nat → Option (CtxS × OpenL))
     match findL a with
     | some l => (cc l.pat Γ k).isSome
     | none => false
-  | k, .arrive t Γ =>
-    match Γ.known.find? fun f => f.1.same t && f.2.isCode with
-    | some (tv, .code regs flags held known rest) =>
-      tv.under k &&
-        (match cc (codeCtx regs flags held known rest) Γ k with
-         | some (Γ', _) => Γ'.known.contains (tv, .code regs flags held known rest)
-         | none => false)
-    | _ => false
+  | k, .arrive t Γ => Γ.known.any (arriveFits cc t Γ k)
   | _, .step _ _ _ k rest => rest.closes cc findL (k + 1)
   | _, .sys k rest => rest.closes cc findL (k + 2)
   | _, .sys2 k a b => a.closes cc findL (k + 2) && b.closes cc findL (k + 2)
@@ -561,13 +568,15 @@ theorem Walk.holds_of_closes {n : Nat} {labels : List Label}
       exact H l hmem ρ' _ (hag.fn.trans hfn)
   | .arrive t Γ, k, ρ, hfn, h => by
     unfold Walk.closes at h
+    obtain ⟨⟨tv, τ⟩, _, hfit⟩ := List.any_eq_true.mp h
+    unfold arriveFits at hfit
+    rw [Bool.and_eq_true] at hfit
+    obtain ⟨hsame, h⟩ := hfit
     split at h
-    · next tv regs flags held known rest hfind =>
+    · next regs flags held known rest _ =>
       simp only [Bool.and_eq_true] at h
       obtain ⟨htv, h⟩ := h
-      have hsame := (List.find?_some hfind)
-      simp only [Bool.and_eq_true] at hsame
-      have ht : t.den ρ = tv.den ρ := (Val.same_den ρ hsame.1).symm
+      have ht : t.den ρ = tv.den ρ := (Val.same_den ρ hsame).symm
       show Arrives fetch sys Ψ n (t.den ρ) (Γ.den ρ)
       rw [ht]
       cases hc : cc (codeCtx regs flags held known rest) Γ k with

@@ -457,7 +457,7 @@ theorem sysMap_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linu
     (hpre : PreAt fetch sys Ψ D (Γ.den ρ)) :
     Steps fetch sys Ψ .syscall next (Γ.den ρ) fun t Δ =>
       ∃ x y, t = next ∧ ((SysErr x ∧ Δ = Γe.den (ρ.setSys k x y)) ∨
-        (x.toNat + sz ≤ addrTop ∧ Δ = Γo.den (ρ.setSys k x y))) := by
+        (0 < x.toNat ∧ x.toNat + sz ≤ addrTop ∧ Δ = Γo.den (ρ.setSys k x y))) := by
   unfold sysMap at h
   split at h
   · cases h
@@ -484,13 +484,13 @@ theorem sysMap_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linu
         rintro t Δ ⟨rfl, x, y, hcase⟩
         have hΓ : Γ.den (ρ.setSys k x y) = Γ.den ρ := CtxS.den_setSys ρ k x y Γ hu
         refine ⟨x, y, rfl, ?_⟩
-        rcases hcase with ⟨hx, rfl⟩ | ⟨_, hfit, rfl⟩
+        rcases hcase with ⟨hx, rfl⟩ | ⟨_, hpos, hfit, rfl⟩
         · refine .inl ⟨hx, ?_⟩
           rw [CtxS.afterSys_den, hΓ]
           show _ = CtxOf.afterSys (Γ.den ρ) ((ρ.setSys k x y).val k) ((ρ.setSys k x y).val (k + 1)) t
           rw [Env.setSys_k, Env.setSys_k1]
         · rw [hrsi] at hfit
-          refine .inr ⟨hfit, ?_⟩
+          refine .inr ⟨hpos, hfit, ?_⟩
           rw [CtxS.afterSys_den, hrsi]
           have hlt : pages len < 2 ^ 64 := by
             have : addrTop < 2 ^ 64 := by decide

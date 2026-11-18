@@ -41,7 +41,7 @@ theorem mmap_maps (s : State) : Maps s (pages (s.getReg .rsi)) (Linux.mmap s) :=
       · exact .inl ⟨_, _, by decide, rfl⟩
       · next a _ =>
         split
-        · next hok => exact .inr ⟨a, _, hok.1, hok.2.2.1, hok.2.2.2, rfl⟩
+        · next hok => exact .inr ⟨a, _, hok.1, hok.2.1, hok.2.2.1, hok.2.2.2, rfl⟩
         · exact .inl ⟨_, _, by decide, rfl⟩
 
 /-- The model's `munmap` refuses, or makes whole pages inaccessible. -/

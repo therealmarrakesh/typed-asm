@@ -247,18 +247,25 @@ says what is known when the function returns: of what a register holds
 then (`Val.given`), of a value the function has made (`Val.made`, which
 `results`, `leaves` and `gives` may name), each a type. So a function is
 said to return one of a few numbers, or a pointer to text, or to leave a
-count in a region within its bounds. -/
+count in a region within its bounds. A function may return in more ways
+than one (`orReturns`, each said with `returnsWith`): with nought and
+nothing more, say, or with the address of memory it hands its caller; the
+code it returns to is then typed for each. `uses` are regions it takes and
+does not give back as they were: what becomes of them each way of
+returning says. -/
 def inFunction (regs : List (Reg × Val) := []) (known : List (Val × TyS) := [])
     (room : Val := 0) (results : List (Reg × Val) := []) (takes : List (Val × Val) := [])
     (gives : List (Val × Val) := []) (leaves : List (Val × List (Val × Val)) := [])
     (pushed : List Pushed := []) (holds : List (Val × List (Val × Val)) := [])
-    (returns : List (Val × TyS) := []) (rows : List RowS := []) : CtxS where
+    (returns : List (Val × TyS) := []) (rows : List RowS := [])
+    (orReturns : List TyS := []) (uses : List (Val × Val) := []) : CtxS where
   regs := regsWith anyRegs regs
   flags := .bvar 0
   held := (((Val.bvar 0 4).upBy (pushedBytes pushed)).lessBy room,
       ⟨room.plus 8, (room, .bvar 0 16) :: pushedSlots room 0 pushed⟩) ::
-    takes.map fun t => (t.1, ⟨t.2, (holds.lookup t.1).getD []⟩)
-  known := (.bvar 0 16, returnsWith results room takes gives leaves pushed returns) :: known
+    (takes ++ uses).map fun t => (t.1, ⟨t.2, (holds.lookup t.1).getD []⟩)
+  known := (.bvar 0 16, returnsWith results room takes gives leaves pushed returns) ::
+    orReturns.map (fun τ => (.bvar 0 16, τ)) ++ known
   rest := .bvar 0
   rows := rows
 

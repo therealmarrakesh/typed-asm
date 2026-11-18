@@ -107,7 +107,10 @@ table of records is so many rows side by side, each a record's length
 apart, and a function that wants one record (`recordAt`) is handed the
 address of any, at an index found as the program runs. A region a function
 is lent is said by its address, which a label inside the function may name
-where the function has moved its pointer on from it.
+where the function has moved its pointer on from it. A function may
+return in more ways than one, the code it returns to typed for each: with
+nought, say, or with the address of memory that is then its caller's, as
+one that allocates does.
 
 No proof is written for twenty-five of the twenty-six. In
 `examples/Fact`, the recursive factorial, two laws of the factorial are
@@ -139,9 +142,8 @@ What is not there:
   multiples by numbers written out, with wrapping at 32 and 64 bits and
   masks. A bound that rests on more than that, as that a number has at
   most twenty decimal digits, is not seen: the program compares the index.
-- A function cannot hand out part of a region it keeps and say the rest is
-  still its own, so an allocator over its own page is not typed; and the
-  stack a function needs cannot be said by how long a list is.
+- The stack a function needs cannot be said by how long a list is, so a
+  function that goes down a list by calling itself is not typed.
 - A label may say what each of a row of bytes or values in memory the code
   holds is (`rows`), and a store that puts one more of that kind at either
   end keeps it so: a number written out digit by digit is known to be

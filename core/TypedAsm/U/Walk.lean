@@ -597,13 +597,13 @@ def walkFrom (pg : Prog) (ix : Index) (stops : BitVec 64 → Bool) :
             match sysMap Γ k (a + len) with
             | some (Γe, Γo, sz) =>
               if (Γe.addKnown [(.var k, .range (-4095) (-1))]).sharpen.under (k + 2) &&
-                  (Γo.addKnown [(.var k, .range 0 (BitVec.ofNat 64 (addrTop - sz)))]).sharpen.under (k + 2)
+                  (Γo.addKnown [(.var k, .range 1 (BitVec.ofNat 64 (addrTop - sz)))]).sharpen.under (k + 2)
                   && decide (sz ≤ addrTop) then
                 .sys2 k
                   (walkFrom pg ix stops tl false fuel (k + 2) (a + len)
                     (Γe.addKnown [(.var k, .range (-4095) (-1))]).sharpen)
                   (walkFrom pg ix stops tl false fuel (k + 2) (a + len)
-                    (Γo.addKnown [(.var k, .range 0 (BitVec.ofNat 64 (addrTop - sz)))]).sharpen)
+                    (Γo.addKnown [(.var k, .range 1 (BitVec.ofNat 64 (addrTop - sz)))]).sharpen)
               else .stop a Γ
             | none =>
               match sysUnmap Γ k (a + len) with
@@ -762,7 +762,7 @@ theorem walkFrom_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
                     (e + len) _ (ρ.setSys k x y) huo (h x y).2).1
                 have hb := both fun m hm => by
                   refine Ok.step hf (sysMap_sound hD hkind hmap hu hpreΓ) ?_
-                  rintro t Δ ⟨x, y, rfl, ⟨hx, rfl⟩ | ⟨hfit, rfl⟩⟩
+                  rintro t Δ ⟨x, y, rfl, ⟨hx, rfl⟩ | ⟨hpos, hfit, rfl⟩⟩
                   · refine Arrives.learn [((Val.var k).den (ρ.setSys k x y), Ty.range (-4095) (-1))]
                       ?_ (((ihe x y).mono hm).arrives)
                     intro f hf' k' _ Ψ' _ _
@@ -773,11 +773,11 @@ theorem walkFrom_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
                     unfold SysErr at hx
                     bv_omega
                   · refine Arrives.learn [((Val.var k).den (ρ.setSys k x y),
-                        Ty.range 0 (BitVec.ofNat 64 (addrTop - sz)))] ?_ (((iho x y).mono hm).arrives)
+                        Ty.range 1 (BitVec.ofNat 64 (addrTop - sz)))] ?_ (((iho x y).mono hm).arrives)
                     intro f hf' k' _ Ψ' _ _
                     rw [List.mem_singleton.mp hf']
                     refine hasTy_range.mpr ?_
-                    show (ρ.setSys k x y).val k - 0 ≤ BitVec.ofNat 64 (addrTop - sz) - 0
+                    show (ρ.setSys k x y).val k - 1 ≤ BitVec.ofNat 64 (addrTop - sz) - 1
                     rw [Env.setSys_k]
                     have hT : addrTop = 0x7ffffffff000 := rfl
                     bv_omega

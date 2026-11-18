@@ -93,8 +93,8 @@ nothing of the program's, or handed back the address of `size` bytes of
 fresh memory, zero, readable and writable, where nothing was accessible. -/
 def Maps (s : State) (size : Nat) (t : State) : Prop :=
   (∃ v w, SysErr v ∧ t = Linux.ret { s with world := w } v) ∨
-  ∃ a w, a.toNat % 4096 = 0 ∧ a.toNat + size ≤ addrTop ∧ s.unmapped a size = true ∧
-    t = Linux.ret { s.mapZero a size with world := w } a
+  ∃ a w, a.toNat % 4096 = 0 ∧ 0 < a.toNat ∧ a.toNat + size ≤ addrTop ∧
+    s.unmapped a size = true ∧ t = Linux.ret { s.mapZero a size with world := w } a
 
 /-- `t` is `s` after a call that refused, handing back an error number, and
 touched nothing; or made the `size` bytes at `a` inaccessible, `a` being the

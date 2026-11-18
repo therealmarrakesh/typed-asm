@@ -9,6 +9,7 @@ import Tests.Typed.Written.Half
 import Tests.Typed.Written.Head
 import Tests.Typed.Written.ReadFull
 import Tests.Typed.Written.Digits
+import Tests.Typed.Written.OrNull
 
 /-!
 # Programs written as an author would, each needing something of the type checker
@@ -20,6 +21,7 @@ bytes with its indices masked; a sort in place of a row that may be
 written; words counted, the count's low byte the status; four bytes stored into a
 number the program made, the number known still; a count chosen by a
 conditional move; a function that moves its pointer through a buffer lent;
-a number written out in digits, each byte stored known to be a digit. Each is typed as
+a number written out in digits, each byte stored known to be a digit; a
+function that hands its caller a page, or nought. Each is typed as
 it is compiled.
 -/
