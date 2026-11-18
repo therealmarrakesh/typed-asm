@@ -27,7 +27,7 @@ example : (explain (prog codeBelow) [lab 0 (Pbelow 5)] 10).map (fun f => (f.addr
     := by decide +kernel
 -- and what the machine could do
 example : saysDetail (explain (prog codeBelow) [lab 0 (Pbelow 5)] 10)
-    "on the machine: it could read memory the program does not have, and fault" = true := by
+    "on the machine: were these bytes not the program's, the read would fault" = true := by
   decide +kernel
 
 -- a function said to return eight that returns seven: what `rax` holds, the
@@ -40,9 +40,9 @@ example : saysDetail (explain pgLend (lendLabels 8 16 3 4) 80)
 -- the factorial without its laws: what the machine computed, in the
 -- program's terms, against what the label says it returns
 example : saysDetail (explain (pgFac [] 120) (facLabels facOfArg) 80)
-    ("rax holds (fn0(rdi at the label walked from 0x40008b - 1, 0)) * " ++
-      "(rdi at the label walked from 0x40008b), left so by `imul rax, rdi` at 0x4000a5; " ++
-      "wanted there: fn0(rdi at the label walked from 0x40008b, 0)") = true
+    ("rax holds (fn0(rdi at the start walked from 0x40008b - 1, 0)) * " ++
+      "(rdi at the start walked from 0x40008b), left so by `imul rax, rdi` at 0x4000a5; " ++
+      "wanted there: fn0(rdi at the start walked from 0x40008b, 0)") = true
     := by decide +kernel
 
 -- a write of nine bytes where eight are known: each register of the call

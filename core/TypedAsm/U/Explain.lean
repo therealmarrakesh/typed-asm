@@ -35,6 +35,8 @@ structure Frame where
   base : Nat := 0
   width : Nat := 0
   addr : BitVec 64 := 0
+  /-- The names made on the way from there, each with what made it. -/
+  made : List (Nat × String) := []
 
 /-- The names of a walk, and of the walks that led to it, the nearest
 first: the code a call returns to is walked from names of its own, and what
@@ -47,7 +49,7 @@ def addrSay (a : BitVec 64) : String := "0x" ++ String.ofList (Nat.toDigits 16 a
 said by; `at_` says which label, where it is not the walk's own. -/
 def nameSay (j : Nat) (at_ : String := "") : String :=
   match allRegs[j]? with
-  | some r => s!"{r.name64} at the label" ++ at_
+  | some r => s!"{r.name64} at the start" ++ at_
   | none =>
     (if j = 16 then "the return address"
     else if j = 17 then "the start of the stack"
@@ -71,7 +73,16 @@ def namesVar (i : Nat) : Bool → Names → String
     if f.base ≤ i ∧ i < f.base + f.width then
       nameSay (i - f.base) (if own then "" else s!" walked from {addrSay f.addr}")
     else if i < f.base then namesVar i false fs
-    else s!"[a value met on the way, #{i}]"
+    else
+      match f.made.lookup i with
+      | some how => s!"[{how}]"
+      | none => s!"[a value met on the way, #{i}]"
+
+/-- The names of a walk, with one more made on the way. -/
+def Names.making (nm : Names) (i : Nat) (how : String) : Names :=
+  match nm with
+  | [] => []
+  | f :: fs => { f with made := (i, how) :: f.made } :: fs
 
 def Names.var (nm : Names) (i : Nat) : String :=
   if unfixed ≤ i then s!"[{nameSay (i - unfixed)}, of the label reached: nothing fixes it]"
@@ -102,7 +113,8 @@ def Val.sum (nm : Names) : Val → List (Bool × String) × BitVec 64
     ([(false, if d = 0 then nameSay i else s!"[value {i} of the family {d} out]")], 0)
   | .slot _ => ([(false, "[an operand]")], 0)
   | .bin .add a b => ((a.sum nm).1 ++ (b.sum nm).1, (a.sum nm).2 + (b.sum nm).2)
-  | .un (.shl k) a => ([(false, paren (sumFin (a.sum nm)) ++ s!" << {k}")], 0)
+  | .un (.shl k) a =>
+    if k = 0 then a.sum nm else ([(false, paren (sumFin (a.sum nm)) ++ s!" << {k}")], 0)
   | .un (.neg _) a => ([(true, paren (sumFin (a.sum nm)))], 0)
   | .un _ a => ([(false, s!"f({sumFin (a.sum nm)})")], 0)
   | .bin (.imul _) a b =>
@@ -110,6 +122,9 @@ def Val.sum (nm : Names) : Val → List (Bool × String) × BitVec 64
   | .bin _ a b => ([(false, s!"f({sumFin (a.sum nm)}, {sumFin (b.sum nm)})")], 0)
   | .tri _ a b c =>
     ([(false, s!"f({sumFin (a.sum nm)}, {sumFin (b.sum nm)}, {sumFin (c.sum nm)})")], 0)
+  | .fop (.alu op w) _ a b =>
+    ([(false, s!"[{op.mnemonic} of {sumFin (a.sum nm)} and {sumFin (b.sum nm)}" ++
+      (if w = .w32 then ", low halves" else "") ++ ": not taken as arithmetic]")], 0)
   | .fop _ _ a b => ([(false, s!"f({sumFin (a.sum nm)}, {sumFin (b.sum nm)})")], 0)
   | .app f a b => ([(false, s!"fn{f}({sumFin (a.sum nm)}, {sumFin (b.sum nm)})")], 0)
 
@@ -188,11 +203,24 @@ def farSay : String := "with no label and no end reached"
 def Refusal.cut (f : Refusal) : Nat :=
   if f.why == againSay then 1 else if f.why.endsWith farSay then 2 else 0
 
+/-- An instruction, as it is written; and where it jumps or calls by a
+distance, which instruction that is. -/
+def instrSay (pg : Prog) (a : BitVec 64) (i : Instr) (len : BitVec 64) : String :=
+  let to (d : BitVec 32) : String :=
+    match pg.code.findIdx? fun e => e.1 = a + len + d.signExtend 64 with
+    | some n => s!" (to instruction {n})"
+    | none => ""
+  match i with
+  | .jmp (.rel d) => i.toAsm ++ to d
+  | .jcc _ d => i.toAsm ++ to d
+  | .call (.rel d) => i.toAsm ++ to d
+  | i => i.toAsm
+
 /-- An address, to be read: which instruction of the program it is, and
 the instruction. -/
 def whereSay (pg : Prog) (a : BitVec 64) : String :=
   match pg.code.findIdx? fun e => e.1 = a, pg.code.find? fun e => e.1 = a with
-  | some n, some e => s!"instruction {n}, `{e.2.1.toAsm}` ({addrSay a})"
+  | some n, some e => s!"instruction {n}, `{instrSay pg a e.2.1 e.2.2}` ({addrSay a})"
   | _, _ => addrSay a
 
 /-- A refusal, to be read. -/
@@ -206,7 +234,9 @@ all else. -/
 def tidy : List Refusal → List Refusal → List Refusal
   | _, [] => []
   | seen, f :: fs =>
-    if f.cut = 0 then f :: tidy seen fs
+    if fs.any fun g => g.label == f.label && g.addr == f.addr && g.why == f.why &&
+        g.detail == f.detail then tidy seen fs
+    else if f.cut = 0 then f :: tidy seen fs
     else if seen.any fun g => g.label == f.label && g.cut ≤ f.cut then tidy seen fs
     else if f.cut = 2 && fs.any fun g => g.label == f.label && g.cut = 1 then tidy seen fs
     else f :: tidy (f :: seen) fs
@@ -280,9 +310,24 @@ def stepWhy (nm : Names) (pg : Prog) (path : List Was) (Γ : CtxS) (k : Nat) (a 
   | some (_, i, len) =>
     if i = .syscall then
       if !pg.pre Γ then
-        ("the system call here is not seen to meet what is asked of the program",
-          ["the status it ends with, or the bytes it writes, are not shown to be as wanted",
-            regSay path Γ .rax nm, regSay path Γ .rdi nm, regSay path Γ .rsi nm, regSay path Γ .rdx nm])
+        match Γ.regs.rax.lit? with
+        | some nr =>
+          if nr = 60 ∨ nr = 231 then
+            ("the status the program ends with here is not shown to be as wanted",
+              ["wanted: a number written out that is as wanted, or a value what is known " ++
+                  "confines to a few numbers each of which is",
+                regSay path Γ .rdi nm])
+          else if nr = 1 then
+            ("the bytes written here are not shown to be as wanted",
+              ["wanted: a descriptor written out, and bytes the program's data is said to " ++
+                  "hold or the program has stored",
+                regSay path Γ .rdi nm, regSay path Γ .rsi nm, regSay path Γ .rdx nm])
+          else
+            ("the system call here is not seen to meet what is asked of the program",
+              [regSay path Γ .rax nm])
+        | none =>
+          ("the system call here is not seen to meet what is asked of the program",
+            ["which call it is, is not a number written out", regSay path Γ .rax nm])
       else
         match Γ.regs.rax.lit? with
         | none =>
@@ -329,7 +374,7 @@ def stepWhy (nm : Names) (pg : Prog) (path : List Was) (Γ : CtxS) (k : Nat) (a 
             ["wanted: bytes of a region the code holds, of a block a value is known to point " ++
                 "into, of text, or of a row of values",
               "what is held: " ++ heldSay Γ.held nm,
-              "on the machine: it could read memory the program does not have, and fault"])
+              "on the machine: were these bytes not the program's, the read would fault"])
         | some (cell, extra, heldR) =>
           let Γ₁ : CtxS := { Γ with known := extra ++ Γ.known, held := heldR }
           let σ := fillOf Γ s.srcs (a + len) (eaTerm Γ (a + len) s.ea) cell
@@ -350,7 +395,8 @@ def stepWhy (nm : Names) (pg : Prog) (path : List Was) (Γ : CtxS) (k : Nat) (a 
                 ["wanted: bytes of a region the code holds, or of a block that may be " ++
                     "written, where what is stored is of the type the block says",
                   "what is held: " ++ heldSay Γ.held nm,
-                  "on the machine: it could write over memory the program relies on, or fault"])
+                  "on the machine: were these bytes not the program's to write, the store " ++
+                    "would fault, or write over what the program relies on"])
             | some _ =>
               (s!"the context after `{i.toAsm}` mentions a name it may not, or its branch " ++
                 "is on flags not defined", [])
@@ -375,7 +421,15 @@ def Walk.faults (pg : Prog) (ent : Nat → TyS → TyS → Bool)
       if (closeCtx (sameBy pg.fns pg.laws) ent justify l.pat Γ k).isSome then []
       else
         let w := closeWhy nm (sameBy pg.fns pg.laws) ent justify whyJ path l.pat Γ k
-        ⟨from_, a, "arrives at a label in a context the label does not allow", w.1⟩ :: w.2
+        let viaCall := match path.head? with
+          | some h => (match h.i with | .call _ => true | _ => false)
+          | none => false
+        ⟨from_, (path.head?.map (·.addr)).getD a,
+          s!"arrives at the label at {whereSay pg a} in a context that label does not allow",
+          w.1 ++ (if viaCall && w.1.any (·.startsWith "wanted held") then
+            ["a function's label says how much stack it wants below its return address " ++
+              "(`room`), and what it takes: the caller is to hold that much, and what is taken"]
+           else [])⟩ :: w.2
     | none =>
       if (walk pg (fun _ => false) true 1 k a Γ).moved then
         -- the instruction here can be stepped over: the walk was cut short
@@ -414,12 +468,20 @@ def Walk.faults (pg : Prog) (ent : Nat → TyS → TyS → Bool)
             "family the context is a member of",
           "on the machine: control could go anywhere"]⟩]
   | path, _, .step i Γ next k rest =>
-    rest.faults pg ent justify whyJ labels from_ nm fuel (⟨stepAddr pg i next, i, Γ⟩ :: path)
-      (k + 1)
-  | path, _, .sys k rest => rest.faults pg ent justify whyJ labels from_ nm fuel path (k + 2)
+    rest.faults pg ent justify whyJ labels from_
+      (nm.making k s!"what `{i.toAsm}` at {addrSay (stepAddr pg i next)} read or made") fuel
+      (⟨stepAddr pg i next, i, Γ⟩ :: path) (k + 1)
+  | path, _, .sys k rest =>
+    rest.faults pg ent justify whyJ labels from_
+      ((nm.making k "what the system call before answered").making (k + 1)
+        "what the system call before left in r11") fuel path (k + 2)
   | path, _, .sys2 k a b =>
-    a.faults pg ent justify whyJ labels from_ nm fuel path (k + 2) ++
-      b.faults pg ent justify whyJ labels from_ nm fuel path (k + 2)
+    a.faults pg ent justify whyJ labels from_
+        ((nm.making k "what the system call before answered").making (k + 1)
+          "what the system call before left in r11") fuel path (k + 2) ++
+      b.faults pg ent justify whyJ labels from_
+        ((nm.making k "what the system call before answered").making (k + 1)
+          "what the system call before left in r11") fuel path (k + 2)
   | _, _, .ends => []
   | _, _, .vacuous => []
   | path, k, .branch c fl taken fall =>
@@ -441,9 +503,9 @@ def justifyWhy (pg : Prog) (labels : List Label) (stops : BitVec 64 → Bool) (f
     else
       match labels.find? fun l => l.addr == a with
       | some l =>
-        let w := closeWhy (⟨k, E.width, a⟩ :: outer) (sameBy pg.fns pg.laws) (entF fuelW)
+        let w := closeWhy (⟨k, E.width, a, []⟩ :: outer) (sameBy pg.fns pg.laws) (entF fuelW)
           (justifyF pg pg.index (labelIx labels).find stops fuelW f)
-          (justifyWhy pg labels stops fuelW f (⟨k, E.width, a⟩ :: outer)) [] l.pat
+          (justifyWhy pg labels stops fuelW f (⟨k, E.width, a, []⟩ :: outer)) [] l.pat
           ((E.open (freshOpening k)).addKnown pg.statics) (k + E.width)
         ⟨a, a, "the code here is a label, wanted for a family the label does not allow", w.1⟩ ::
           w.2
@@ -452,13 +514,13 @@ def justifyWhy (pg : Prog) (labels : List Label) (stops : BitVec 64 → Bool) (f
           (evalFor pg.fns ((E.open (freshOpening k)).addKnown pg.statics) (k + E.width))
         (if W.moved then []
          else
-           let w := stepWhy (⟨k, E.width, a⟩ :: outer) pg []
+           let w := stepWhy (⟨k, E.width, a, []⟩ :: outer) pg []
              (evalFor pg.fns ((E.open (freshOpening k)).addKnown pg.statics) (k + E.width))
              (k + E.width) a
            [⟨a, a, w.1, w.2⟩]) ++
           W.faults pg (entF fuelW) (justifyF pg pg.index (labelIx labels).find stops fuelW f)
-            (justifyWhy pg labels stops fuelW f (⟨k, E.width, a⟩ :: outer)) labels a
-            (⟨k, E.width, a⟩ :: outer) fuelW [] (k + E.width)
+            (justifyWhy pg labels stops fuelW f (⟨k, E.width, a, []⟩ :: outer)) labels a
+            (⟨k, E.width, a, []⟩ :: outer) fuelW [] (k + E.width)
 
 /-- **Why a program is refused**: for each label, where its walk stops
 short, and what was missing there; and the same of the code each call
@@ -473,10 +535,10 @@ def explain (pg : Prog) (labels : List Label) (fuel : Nat) (k : Nat := 0) : List
       let W := walk pg stops true fuel (k + l.pat.width) l.addr Γs
       if W.moved then
         W.faults pg (entF fuel) (justifyF pg pg.index (labelIx labels).find stops fuel fuel)
-          (justifyWhy pg labels stops fuel fuel [⟨k, l.pat.width, l.addr⟩]) labels l.addr
-          [⟨k, l.pat.width, l.addr⟩] fuel [] (k + l.pat.width)
+          (justifyWhy pg labels stops fuel fuel [⟨k, l.pat.width, l.addr, []⟩]) labels l.addr
+          [⟨k, l.pat.width, l.addr, []⟩] fuel [] (k + l.pat.width)
       else
-        let w := stepWhy [⟨k, l.pat.width, l.addr⟩] pg [] Γs (k + l.pat.width) l.addr
+        let w := stepWhy [⟨k, l.pat.width, l.addr, []⟩] pg [] Γs (k + l.pat.width) l.addr
         [⟨l.addr, l.addr, w.1, w.2⟩]
 
 /-- The same, to be read. -/
