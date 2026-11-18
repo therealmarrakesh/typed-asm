@@ -308,7 +308,7 @@ cut into the blocks said of it, which are to be given in the order of their
 addresses, with plain bytes between. -/
 def blocksWith (code : List (Asm L)) (l : L) (says : List (BitVec 64 × LayoutS)) :
     List (BitVec 64 × LayoutS) :=
-  (Asm.image (Asm.base code) code l).flatMap fun g =>
+  (Asm.imageFast (Asm.base code) code l).flatMap fun g =>
     cutSeg g g.1 (says.filter fun x =>
       decide (g.1 ≤ x.1.toNat) && decide (x.1.toNat < g.1 + pageBytes g.2.2.length))
 

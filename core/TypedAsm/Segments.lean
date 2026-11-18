@@ -358,6 +358,55 @@ def image (base : BitVec 64) (prog : List (Asm L)) (start : L) : List (Nat × Pe
     let head := Elf.headers (addr prog base start).toNat first.length rest
     (a - head.length, p, head ++ first) :: rest
 
+/-- The segments from address `a`, the lines so far of the one being laid
+out kept one by one, the last first, and put together when it ends: what
+`segmentsFrom` gives, come by without going over a segment's bytes again at
+each line. -/
+def segmentsRev (target : L → BitVec 64) :
+    Nat → Nat × Perm × List (List Byte) → List (Asm L) → List (Nat × Perm × List Byte)
+  | _, cur, [] => [(cur.1, cur.2.1, cur.2.2.reverse.flatten)]
+  | a, cur, x :: rest =>
+    match x with
+    | .segment q =>
+      (cur.1, cur.2.1, cur.2.2.reverse.flatten) :: segmentsRev target (pageUp a) (pageUp a, q, []) rest
+    | x => segmentsRev target (next a x) (cur.1, cur.2.1, lineBytes target a x :: cur.2.2) rest
+
+omit [DecidableEq L] in
+theorem segmentsRev_eq (target : L → BitVec 64) : (prog : List (Asm L)) → (a c : Nat) →
+    (p : Perm) → (chunks : List (List Byte)) →
+    segmentsRev target a (c, p, chunks) prog
+      = segmentsFrom target a (c, p, chunks.reverse.flatten) prog
+  | [], _, _, _, _ => rfl
+  | x :: rest, a, c, p, chunks => by
+    have step : segmentsRev target (next a x) (c, p, lineBytes target a x :: chunks) rest
+        = segmentsFrom target (next a x)
+            (c, p, chunks.reverse.flatten ++ lineBytes target a x) rest := by
+      rw [segmentsRev_eq target rest]
+      simp
+    cases x with
+    | segment q =>
+      show (c, p, chunks.reverse.flatten) :: segmentsRev target (pageUp a) (pageUp a, q, []) rest
+        = (c, p, chunks.reverse.flatten) :: segmentsFrom target (pageUp a) (pageUp a, q, []) rest
+      rw [segmentsRev_eq target rest]
+      rfl
+    | _ => exact step
+
+/-- `image`, come by without going over a segment's bytes again at each
+line: the form a check that Lean's kernel runs is to use. -/
+def imageFast (base : BitVec 64) (prog : List (Asm L)) (start : L) :
+    List (Nat × Perm × List Byte) :=
+  match segmentsRev (addr prog base) base.toNat (base.toNat, .rx, []) prog with
+  | [] => []
+  | (a, p, first) :: rest =>
+    let head := Elf.headers (addr prog base start).toNat first.length rest
+    (a - head.length, p, head ++ first) :: rest
+
+theorem imageFast_eq (base : BitVec 64) (prog : List (Asm L)) (start : L) :
+    imageFast base prog start = image base prog start := by
+  unfold imageFast image segments
+  rw [segmentsRev_eq]
+  rfl
+
 /-- A state with the program in memory as the kernel puts the executable
 file there: each segment's bytes where the program puts them, and every
 page a segment touches with the segment's permission. -/

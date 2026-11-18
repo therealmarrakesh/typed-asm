@@ -3,6 +3,7 @@ import TypedAsm.U.Begin
 import TypedAsm.U.LayoutS
 import TypedAsm.U.Typed
 import TypedAsm.Linux
+import TypedAsm.Declare
 
 /-!
 # A whole program, checked
@@ -25,7 +26,7 @@ variable {L : Type} [DecidableEq L]
 /-- The blocks of a program's first memory typing: each segment, as the
 block of its pages. -/
 def blocksOf (code : List (Asm L)) (l : L) : List (BitVec 64 × LayoutS) :=
-  (Asm.image (Asm.base code) code l).map fun g =>
+  (Asm.imageFast (Asm.base code) code l).map fun g =>
     (BitVec.ofNat 64 g.1,
       { shape := .mk (pageBytes g.2.2.length) .nil
         writable := g.2.1.writable
@@ -47,8 +48,19 @@ and so many slots below them, and the instruction pointer at the label it
 starts at; in any world. -/
 def startIn (code : List (Asm L)) (l : L) (n : Nat) (args : List (List Byte)) (w : World) :
     State :=
-  startState (Asm.load State.init (Asm.base code) code l) (Asm.addr code (Asm.base code) l) n args
-    w
+  { Asm.startArgs code l n args with world := w }
+
+/-- It is the program in memory, given its stack and arguments, at its
+entry, in that world. -/
+theorem startIn_eq (code : List (Asm L)) (l : L) (n : Nat) (args : List (List Byte)) (w : World) :
+    startIn code l n args w
+      = startState (Asm.load State.init (Asm.base code) code l)
+          (Asm.addr code (Asm.base code) l) n args w := rfl
+
+/-- The state a program is started in is that state, in the world it has. -/
+theorem startArgs_eq (code : List (Asm L)) (l : L) (n : Nat) (args : List (List Byte)) :
+    Asm.startArgs code l n args = startIn code l n args (Asm.startArgs code l n args).world :=
+  rfl
 
 /-- **The program's bytes are in memory still once the arguments are
 placed**, where they lie below the stack. -/
@@ -226,7 +238,7 @@ says are seen in its segments; and the program lies below the stack. -/
 def wholeOkWith (code : List (Asm L)) (l : L) (n : Nat) (ks : List (Nat × ShapeS))
     (bs : List (BitVec 64 × LayoutS)) (pg : Prog) (labels : List Label) (fuel : Nat) : Bool :=
   let base := Asm.base code
-  let segs := Asm.image base code l
+  let segs := Asm.imageFast base code l
   let blocks := denBlocks bs
   decide (pg.code = progCode (Asm.table base code)) &&
   labels.any (fun x => decide (x.addr = Asm.addr code base l) && decide (x.pat = entryCtx (stackRoom n))) &&
@@ -282,7 +294,8 @@ theorem wholeOk_facts {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat ×
     {bs : List (BitVec 64 × LayoutS)} {pg : Prog} {labels : List Label} {fuel : Nat}
     (h : wholeOkWith code l n ks bs pg labels fuel = true) (args : List (List Byte)) (w : World) :
     WholeFacts code l n ks bs pg labels fuel args w := by
-  simp only [wholeOkWith, Bool.and_eq_true, decide_eq_true_eq, List.any_eq_true] at h
+  simp only [wholeOkWith, Asm.imageFast_eq, Bool.and_eq_true, decide_eq_true_eq,
+    List.any_eq_true] at h
   obtain ⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨hpc, x, hx, hxa, hxp⟩, hn⟩, hchk⟩, htab⟩, hwfB⟩, hndB⟩, hsegs⟩, hfull⟩, hoff⟩,
     hholds⟩, hhead⟩, hpbelow⟩, hsbelow⟩, hcovB⟩, hstat⟩, hin⟩, hvals⟩, hkc⟩ := h
   have hbase : argBase.toNat = 0x7fff0000 := rfl

@@ -117,6 +117,14 @@ def CtxS.strNext (Γ : CtxS) : List (Val × TyS) :=
       else none
     | _ => none
 
+/-- A thing known, made as sharp as the ranges known allow: looked into
+only where it says a value may be null or an error number. -/
+def CtxS.sharp (Γ : CtxS) (f : Val × TyS) : Val × TyS :=
+  match f.2 with
+  | .nullable _ => (f.1, f.2.strip (Γ.knowsIn f.1 .nonZero) (Γ.knowsIn f.1 .noErr))
+  | .orErr _ => (f.1, f.2.strip (Γ.knowsIn f.1 .nonZero) (Γ.knowsIn f.1 .noErr))
+  | _ => f
+
 /-- **A context with each thing known made as sharp as the ranges it knows
 allow**: what may be null and is known to lie clear of zero, is not null;
 what may be an error number and is known to lie clear of them, is not one;
@@ -124,8 +132,7 @@ and past a byte of text known not to be nought there is text. Whenever a
 range comes to be known, by a comparison or of what a call hands back, this
 is done; so it does not matter in which order things were learnt. -/
 def CtxS.sharpen (Γ : CtxS) : CtxS :=
-  { Γ with known := Γ.strNext ++ Γ.known.map fun f =>
-      (f.1, f.2.strip (Γ.knowsIn f.1 .nonZero) (Γ.knowsIn f.1 .noErr)) }
+  { Γ with known := Γ.strNext ++ Γ.known.map Γ.sharp }
 
 theorem CtxS.sharpen_regards (ρ : Env) (Γ : CtxS) :
     Regards fetch sys Ψ (Γ.den ρ) (Γ.sharpen.den ρ) := by
@@ -149,9 +156,15 @@ theorem CtxS.sharpen_regards (ρ : Env) (Γ : CtxS) :
       · cases hsome
     | _ => rw [hτ] at hsome; cases hsome
   · obtain ⟨g₀, hg₀, rfl⟩ := List.mem_map.mp hs
-    exact TyS.strip_follows ρ (fun h => Range.nonZero_has (CtxS.knowsIn_has h hg))
-      (fun h => Range.noErr_has (CtxS.knowsIn_has h hg)) g₀.2 Ψ' n
-      (hg (g₀.1.den ρ, g₀.2.den ρ) (List.mem_map.mpr ⟨g₀, hg₀, rfl⟩))
+    have hsrc := hg (g₀.1.den ρ, g₀.2.den ρ) (List.mem_map.mpr ⟨g₀, hg₀, rfl⟩)
+    have key := TyS.strip_follows (fetch := fetch) (sys := sys) ρ
+      (fun h => Range.nonZero_has (CtxS.knowsIn_has h hg))
+      (fun h => Range.noErr_has (CtxS.knowsIn_has h hg)) g₀.2 Ψ' n hsrc
+    unfold CtxS.sharp
+    split
+    · exact key
+    · exact key
+    · exact hsrc
 
 /-- The ranges a comparison leaves the values it compares: of each, that it
 lies in the range. -/
@@ -308,13 +321,20 @@ theorem CmpT.widen_den {ρ : Env} {Γ : CtxS} (p : CmpT) {Ψ' : MemTy} {n : Nat}
       exact (Form.eval_low (CtxS.fits_has h.1 hg) (CtxS.fits_has h.2 hg)).symm
     · rfl
 
+/-- Whether a thing learnt is news: not that a number written out lies in a
+range it does lie in, and not known already. -/
+def CtxS.news (Γ : CtxS) (f : Val × TyS) : Bool :=
+  (match f.1.lit?, f.2 with
+   | some x, .range lo hi => !decide (x - lo ≤ hi - lo)
+   | _, _ => true) && !Γ.known.contains f
+
 /-- **A context, knowing what a comparison teaches**: the range each value
 compared is left in, which of the two is the less where that is what was
 asked, that it cannot be where it comes out the other way than it must, and
 everything known made as sharp as that allows. -/
 def CtxS.learn (p : CmpT) (b : Bool) (Γ : CtxS) : CtxS :=
-  (Γ.addKnown ((p.widen Γ).rangeFacts b ++ (p.widen Γ).orderFacts b ++
-    (p.widen Γ).fixedFacts b)).sharpen
+  (Γ.addKnown (((p.widen Γ).rangeFacts b ++ (p.widen Γ).orderFacts b ++
+    (p.widen Γ).fixedFacts b).filter Γ.news)).sharpen
 
 /-- **Where the comparison is as said, the context may be regarded as the
 one that has learnt it.** -/
@@ -326,7 +346,7 @@ theorem CtxS.learn_regards {ρ : Env} {p : CmpT} {b : Bool} (Γ : CtxS) (hp : p.
   intro f hf Ψ' n hg
   obtain ⟨g, hg', rfl⟩ := List.mem_map.mp hf
   rcases List.mem_append.mp hg' with hr | hs
-  · rcases List.mem_append.mp hr with hr | hr
+  · rcases List.mem_append.mp (List.mem_filter.mp hr).1 with hr | hr
     · rcases List.mem_append.mp hr with hr | hr
       · exact CmpT.rangeFacts_hasTy ((CmpT.widen_den p hg).trans hp) hr Ψ' n
       · exact CmpT.orderFacts_hasTy ((CmpT.widen_den p hg).trans hp) hr Ψ' n

@@ -205,17 +205,46 @@ def factAtoms : List (Val × TyS) → List Val
   | (u, .upTo t _) :: G => u.lin.ms.map (·.2) ++ t.lin.ms.map (·.2) ++ factAtoms G
   | _ :: G => factAtoms G
 
-/-- **Each way things may be, by the ranges known**: what is so of each
-term whatever is known, and what the ranges say; gone through twice, for a
-range may be of a term another shows not to wrap. -/
-def know (G : List (Val × TyS)) (more : List Val) : List (List (Lin Int)) :=
+/-- Whether a thing known is of a term made of one of some terms. -/
+def touches (as : List Val) (f : Val × TyS) : Bool := (factAtoms [f]).any fun a => as.contains a
+
+/-- **The things known that bear on some terms**: those of terms made of
+them, and so on through the terms those are made of, till no more are
+found. What is known of other terms says nothing of these. -/
+def cone : Nat → List (Val × TyS) → List Val → List (Val × TyS)
+  | 0, G, as => G.filter (touches as)
+  | n + 1, G, as =>
+    if (as ++ factAtoms (G.filter (touches as))).eraseDups.length = as.eraseDups.length then
+      G.filter (touches as)
+    else cone n G (as ++ factAtoms (G.filter (touches as))).eraseDups
+
+theorem cone_sub : (n : Nat) → (G : List (Val × TyS)) → (as : List Val) →
+    ∀ g ∈ cone n G as, g ∈ G
+  | 0, _, _, _, h => (List.mem_filter.mp h).1
+  | n + 1, G, as, g, h => by
+    unfold cone at h
+    split at h
+    · exact (List.mem_filter.mp h).1
+    · exact cone_sub n G _ g h
+
+/-- Each way things may be, by all of some ranges known: what is so of
+each term whatever is known, and what the ranges say; gone through twice,
+for a range may be of a term another shows not to wrap. -/
+def knowAll (G : List (Val × TyS)) (more : List Val) : List (List (Lin Int)) :=
   addFacts ((factAtoms G ++ more).length + 1) G
     (addFacts ((factAtoms G ++ more).length + 1) G [(factAtoms G ++ more).eraseDups.flatMap atomCs])
+
+/-- **Each way things may be, by the ranges known that bear on some
+terms.** -/
+def know (G : List (Val × TyS)) (more : List Val) : List (List (Lin Int)) :=
+  knowAll (cone G.length G more) more
 
 theorem know_le {ρ : Env} {Ψ' : MemTy} {n : Nat} (G : List (Val × TyS)) (more : List Val)
     (hg : ∀ g ∈ G, HasTy fetch sys Ψ' n (g.2.den ρ) (g.1.den ρ)) :
     ∃ cs ∈ know G more, AllLe (natOf ρ) cs :=
-  addFacts_le G _ hg (addFacts_le G _ hg ⟨_, List.mem_singleton.mpr rfl, fun c hc => by
+  have hg' : ∀ g ∈ cone G.length G more, HasTy fetch sys Ψ' n (g.2.den ρ) (g.1.den ρ) :=
+    fun g hgm => hg g (cone_sub _ _ _ g hgm)
+  addFacts_le _ _ hg' (addFacts_le _ _ hg' ⟨_, List.mem_singleton.mpr rfl, fun c hc => by
     obtain ⟨t, _, hc⟩ := List.mem_flatMap.mp hc
     exact atomCs_le ρ t c hc⟩)
 

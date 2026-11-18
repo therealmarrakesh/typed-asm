@@ -31,7 +31,7 @@ def wholeWhy (code : List (Asm L)) (l : L) (n : Nat) (ks : List (Nat × ShapeS))
     (bs : List (BitVec 64 × LayoutS)) (pg : Prog) (labels : List Label) (fuel : Nat) :
     Option String :=
   let base := Asm.base code
-  let segs := Asm.image base code l
+  let segs := Asm.imageFast base code l
   let blocks := denBlocks bs
   let entry := Asm.addr code base l
   firstNot [
@@ -168,9 +168,6 @@ macro_rules
     let saidOk := mkIdent `said_ok
     let safeExitsWritesIn := mkIdent `safe_exits_writes_in
     let startArgs := mkIdent `startArgs
-    let prepared := mkIdent `prepared
-    let entry := mkIdent `entry
-    let base := mkIdent `base
     let fetch := mkIdent `fetch
     let bs ← match bs? with
       | some bs => pure bs
@@ -190,9 +187,8 @@ macro_rules
     cmds := cmds.push (← `(/-- The state the program is started in with given arguments is the
       one the check is of, in the world it has. -/
       theorem $startEq (args : List (List Byte)) :
-          $startArgs args = startIn $code $l $n args ($startArgs args).world := by
-        unfold $startArgs $prepared startIn startState $entry $base
-        rfl))
+          $startArgs args = startIn $code $l $n args ($startArgs args).world :=
+        startArgs_eq $code $l $n args))
     if let (some q, some r, some sd) := (q?, r?, sd?) then
       cmds := cmds.push (← `(/-- The bytes the program says its data holds are the bytes its
         blocks say. -/

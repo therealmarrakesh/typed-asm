@@ -22,6 +22,7 @@ import PairProgram
 import LendProgram
 import PickProgram
 import LengthsProgram
+import RegsProgram
 import HelloProgram
 
 /-!
@@ -111,6 +112,7 @@ def cases : List Case := [
   { label := "lengths-one", program := Lengths.program, args := ["hello"] },
   { label := "lengths-several", program := Lengths.program,
     args := ["one", "two words", "", "héllo", "--flag=3"] },
+  { label := "regs", program := Regs.program },
   { label := "hello", program := Hello.program }]
 
 /-- A run as it is recorded: the exit status as Linux reports it, then what

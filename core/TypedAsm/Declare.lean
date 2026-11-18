@@ -15,6 +15,15 @@ namespace TypedAsm
 
 open Lean
 
+/-- **The state the kernel starts a program in**, given its arguments: its
+segments in memory as the kernel puts them there, the arguments on the
+stack with how many they are at `rsp`, `n` writable slots of stack below,
+and `rip` at the label it starts at. -/
+def Asm.startArgs {L : Type} [DecidableEq L] (code : List (Asm L)) (l : L) (n : Nat)
+    (args : List (List Byte)) : State :=
+  { State.withArgs (Asm.load State.init (Asm.base code) code l) n args with
+    rip := Asm.addr code (Asm.base code) l }
+
 /-- `asm_program code start l stack n`: for the program `code`, started at
 label `l` with `n` eight-byte slots of stack (none where `stack n` is left
 out), defines in the current namespace
@@ -66,8 +75,7 @@ macro_rules
     cmds := cmds.push (← `(/-- The state the program starts in, given these arguments: the
       program in memory, the arguments on the stack with how many they are at `rsp`, the
       stack it was declared with below, and `rip` at the entry. -/
-      def $startArgs (args : List (List Byte)) : State :=
-        { State.withArgs $prepared $n args with rip := $entry }))
+      def $startArgs (args : List (List Byte)) : State := Asm.startArgs $code $l $n args))
     cmds := cmds.push (← `(/-- The state it starts in given no arguments. -/
       def $start : State := $startArgs []))
     if let some name := name? then

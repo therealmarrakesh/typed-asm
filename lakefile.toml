@@ -275,7 +275,7 @@ srcDir = "examples/Lengths"
 [[lean_lib]]
 name = "Regs"
 srcDir = "examples/Regs"
-roots = ["RegsProgram"]
+roots = ["Regs", "RegsProgram"]
 
 [[lean_exe]]
 name = "regs"
