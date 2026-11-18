@@ -150,9 +150,10 @@ def TyS.closedAt (n : Nat) : TyS → Bool
   | .str c => c.closedAt n
   | .arr c τ _ => c.closedAt n && τ.closedAt n
   | .upTo t _ => t.closedAt n
-  | .code regs flags held known rest =>
+  | .code regs flags held known rest rows =>
     (regs.map (Val.closedAt (n + 1)) == allTrue) && flags.closedAt (n + 1) &&
-      heldClosedAt (n + 1) held && known.closedAt (n + 1) && rest.closedAt (n + 1)
+      heldClosedAt (n + 1) held && known.closedAt (n + 1) && rest.closedAt (n + 1) &&
+      rows.closedAt (n + 1)
   | _ => true
 
 def ShapeS.closedAt (n : Nat) : ShapeS → Bool
@@ -165,6 +166,10 @@ def ValsS.closedAt (n : Nat) : ValsS → Bool
 def FactsS.closedAt (n : Nat) : FactsS → Bool
   | .nil => true
   | .cons v τ rest => v.closedAt n && τ.closedAt n && rest.closedAt n
+
+def RowsS.closedAt (n : Nat) : RowsS → Bool
+  | .nil => true
+  | .cons a c _ _ τ rest => a.closedAt n && c.closedAt n && τ.closedAt n && rest.closedAt n
 
 end
 
@@ -189,14 +194,14 @@ theorem TyS.den_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n zs 
     simp only [TyS.den, Val.den_agree ρ n zs zs' hz c h.1, TyS.den_agree ρ n zs zs' hz τ h.2]
   | .upTo t _, h => by
     simp only [TyS.den, Val.den_agree ρ n zs zs' hz t (by simpa only [TyS.closedAt] using h)]
-  | .code regs flags held known rest, h => by
+  | .code regs flags held known rest rows, h => by
     simp only [TyS.closedAt, Bool.and_eq_true] at h
-    obtain ⟨⟨⟨⟨hr, hf⟩, hh⟩, hkn⟩, hrest⟩ := h
+    obtain ⟨⟨⟨⟨⟨hr, hf⟩, hh⟩, hkn⟩, hrest⟩, hrows⟩ := h
     show Ty.code _ = Ty.code _
     congr 1
     funext z
     have hz' := hz.cons z
-    refine ctx_ext ?_ ?_ ?_ ?_
+    refine ctx_ext ?_ ?_ ?_ ?_ ?_
     · funext r
       exact Val.den_agree ρ (n + 1) (z :: zs) (z :: zs') hz' _ (Regs.all_of_map regs hr r)
     · exact FlagsT.den_agree ρ (n + 1) (z :: zs) (z :: zs') hz' _ hf
@@ -207,6 +212,7 @@ theorem TyS.den_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n zs 
       rw [heldDen_agree ρ (n + 1) (z :: zs) (z :: zs') hz' held hh,
         RestS.den_agree ρ (n + 1) (z :: zs) (z :: zs') hz' rest hrest]
     · exact FactsS.den_agree ρ (n + 1) (z :: zs) (z :: zs') hz' known hkn
+    · exact RowsS.den_agree ρ (n + 1) (z :: zs) (z :: zs') hz' rows hrows
 
 theorem ShapeS.den_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n zs zs') :
     (S : ShapeS) → S.closedAt n = true → S.den { ρ with bound := zs } = S.den { ρ with bound := zs' }
@@ -230,6 +236,15 @@ theorem FactsS.den_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n 
     simp only [FactsS.closedAt, Bool.and_eq_true] at h
     simp only [FactsS.den, Val.den_agree ρ n zs zs' hz v h.1.1, TyS.den_agree ρ n zs zs' hz τ h.1.2,
       FactsS.den_agree ρ n zs zs' hz rest h.2]
+
+theorem RowsS.den_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n zs zs') :
+    (rs : RowsS) → rs.closedAt n = true →
+    rs.den { ρ with bound := zs } = rs.den { ρ with bound := zs' }
+  | .nil, _ => rfl
+  | .cons a c st b τ rest, h => by
+    simp only [RowsS.closedAt, Bool.and_eq_true] at h
+    simp only [RowsS.den, Val.den_agree ρ n zs zs' hz a h.1.1.1, Val.den_agree ρ n zs zs' hz c h.1.1.2,
+      TyS.den_agree ρ n zs zs' hz τ h.1.2, RowsS.den_agree ρ n zs zs' hz rest h.2]
 
 end
 

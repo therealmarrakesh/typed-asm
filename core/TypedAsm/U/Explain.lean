@@ -307,7 +307,7 @@ which registers, in the regions held, in what is known, or in what else is
 held. So a return that gives back a region at another address, or leaves a
 register it was to keep, is said to do that. -/
 def codeDiff (nm : Names) : TyS → TyS → List String
-  | .code r1 f1 h1 k1 t1, .code r2 f2 h2 k2 t2 =>
+  | .code r1 f1 h1 k1 t1 w1, .code r2 f2 h2 k2 t2 w2 =>
     (allRegs.filterMap fun r =>
       if r1.get r == r2.get r then none
       else some s!"{r.name64} is to hold {(r1.get r).say nm} there, and the code is typed for {(r2.get r).say nm}") ++
@@ -315,7 +315,9 @@ def codeDiff (nm : Names) : TyS → TyS → List String
     (if h1 == h2 then []
      else [s!"it is to hold {heldSay h1 nm}; the code is typed for {heldSay h2 nm}"]) ++
     (if k1 == k2 then [] else ["what is known there differs"]) ++
-    (if t1 == t2 then [] else ["what else is held there differs"])
+    (if t1 == t2 then [] else ["what else is held there differs"]) ++
+    (if w1 == w2 then []
+     else [s!"memory is to be: {"; ".intercalate (w1.toList.map fun g => rowSay g nm)}; the code is typed for: {"; ".intercalate (w2.toList.map fun g => rowSay g nm)}"])
   | _, _ => []
 
 /-- **Each thing a context wanted asks that the context reached does not
@@ -355,9 +357,7 @@ def regardWhy (nm : Names) (sm : List (Val × TyS) → Val → Val → Bool) (en
   (if Δ.rest == Γ.rest then [] else ["what else is held is not what is wanted"]) ++
   (if Δ.known.any (fun f => f.2.isCode && !factFrom ent Γ.known f) then lostRet path Γ else []) ++
   (Δ.rows.filterMap fun r =>
-    if sm Γ.known r.count (.lit 0) ||
-        (Γ.rows.any fun g => sm Γ.known g.addr r.addr && sm Γ.known g.count r.count &&
-          g.stride == r.stride && g.byte == r.byte && g.ty == r.ty) then none
+    if rowFrom (sm Γ.known) Γ.known Γ.rows r then none
     else
       some (s!"wanted of memory: {rowSay r nm}; " ++
         (match Γ.rows with
@@ -544,15 +544,15 @@ def Walk.faults (pg : Prog) (ent : Nat → TyS → TyS → Bool)
         [⟨from_, a, w.1, w.2⟩]
   | path, k, .arrive t Γ =>
     match Γ.known.find? fun f => f.1.same t && f.2.isCode with
-    | some (tv, .code regs flags held known rest) =>
+    | some (tv, .code regs flags held known rest rows) =>
       if tv.under k &&
-          (match closeCtx (sameBy pg.fns pg.laws) ent justify (codeCtx regs flags held known rest)
+          (match closeCtx (sameBy pg.fns pg.laws) ent justify (codeCtx regs flags held known rest rows)
               Γ k with
-           | some (Γ', _) => Γ'.known.contains (tv, .code regs flags held known rest)
+           | some (Γ', _) => Γ'.known.contains (tv, .code regs flags held known rest rows)
            | none => false) then []
       else
         let w := closeWhy nm (sameBy pg.fns pg.laws) ent justify whyJ path
-          (codeCtx regs flags held known rest) Γ k
+          (codeCtx regs flags held known rest rows) Γ k
         ⟨from_, (path.head?.map (·.addr)).getD 0,
           s!"goes to {t.say nm}, known to be code, in a context that code does not allow",
           w.1⟩ ::

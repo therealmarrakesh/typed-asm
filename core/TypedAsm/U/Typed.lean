@@ -64,8 +64,8 @@ def tyHolds (j : BitVec 64 → CtxS → Bool) (bs : List (BitVec 64 × LayoutS))
   | .any, _ => true
   | .range lo hi, v => decide (v - lo ≤ hi - lo)
   | .nullable τ, v => v == 0 || tyHolds j bs τ v
-  | .code regs flags held known rest, v =>
-    (TyS.code regs flags held known rest).plain && j v (codeCtx regs flags held known rest)
+  | .code regs flags held known rest rows, v =>
+    (TyS.code regs flags held known rest rows).plain && j v (codeCtx regs flags held known rest rows)
   | .arr (.lit c) τ st, v => bs.any fun b =>
       (List.range c.toNat).all fun i =>
         b.2.shape.vals.toList.contains ((v - b.1).toNat + st * i, τ)
@@ -160,11 +160,11 @@ theorem tyHolds_hasTy {j : BitVec 64 → CtxS → Bool} {bs : List (BitVec 64 ×
   | .arr (.tri _ _ _ _) _ _, _, h => nomatch h
   | .arr (.fop _ _ _ _) _ _, _, h => nomatch h
   | .upTo .., _, h => nomatch h
-  | .code regs flags held known rest, v, h => by
+  | .code regs flags held known rest rows, v, h => by
     simp only [tyHolds, Bool.and_eq_true] at h
     -- a type with no function of the author's in it is the same whatever the functions are
-    have e : (TyS.code regs flags held known rest).den {}
-        = (TyS.code regs flags held known rest).den ({ fn := fns } : Env) :=
+    have e : (TyS.code regs flags held known rest rows).den {}
+        = (TyS.code regs flags held known rest rows).den ({ fn := fns } : Env) :=
       TyS.den_bare { fn := fns } _ h.1
     rw [e, code_den, hasTy_code]
     intro x k hk Ψ' he hwf s hs hw

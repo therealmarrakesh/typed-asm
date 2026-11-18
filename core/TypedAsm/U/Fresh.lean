@@ -246,9 +246,9 @@ def TyS.under (k : Nat) : TyS → Bool
   | .str c => c.under k
   | .arr c τ _ => c.under k && τ.under k
   | .upTo t _ => t.under k
-  | .code regs flags held known rest =>
+  | .code regs flags held known rest rows =>
     (regs.map (·.under k) == allTrue) && flags.under k && heldUnder k held && known.under k &&
-      rest.under k
+      rest.under k && rows.under k
   | _ => true
 
 def ShapeS.under (k : Nat) : ShapeS → Bool
@@ -261,6 +261,10 @@ def ValsS.under (k : Nat) : ValsS → Bool
 def FactsS.under (k : Nat) : FactsS → Bool
   | .nil => true
   | .cons v τ rest => v.under k && τ.under k && rest.under k
+
+def RowsS.under (k : Nat) : RowsS → Bool
+  | .nil => true
+  | .cons a c _ _ τ rest => a.under k && c.under k && τ.under k && rest.under k
 
 end
 
@@ -287,14 +291,14 @@ theorem TyS.den_under {k : Nat} {ρ₁ ρ₂ : Env} (hs : Env.SameBelow k ρ₁ 
     simp only [TyS.den, Val.den_under hs c h.1, TyS.den_under hs τ h.2]
   | .upTo t _, h => by
     simp only [TyS.den, Val.den_under hs t (by simpa only [TyS.under] using h)]
-  | .code regs flags held known rest, h => by
+  | .code regs flags held known rest rows, h => by
     simp only [TyS.under, Bool.and_eq_true] at h
-    obtain ⟨⟨⟨⟨hr, hf⟩, hh⟩, hkn⟩, hrest⟩ := h
+    obtain ⟨⟨⟨⟨⟨hr, hf⟩, hh⟩, hkn⟩, hrest⟩, hrows⟩ := h
     show Ty.code _ = Ty.code _
     congr 1
     funext z
     have hs' := hs.push z
-    refine ctx_ext ?_ ?_ ?_ ?_
+    refine ctx_ext ?_ ?_ ?_ ?_ ?_
     · funext r
       exact Val.den_under hs' _ (Regs.all_get regs hr r)
     · exact FlagsT.den_under hs' _ hf
@@ -306,6 +310,7 @@ theorem TyS.den_under {k : Nat} {ρ₁ ρ₂ : Env} (hs : Env.SameBelow k ρ₁ 
           ++ restDen { ρ₂ with bound := z :: ρ₂.bound } rest
       rw [heldDen_under hs' held hh, restDen_under hs' rest hrest]
     · exact FactsS.den_under hs' known hkn
+    · exact RowsS.den_under hs' rows hrows
 
 theorem ShapeS.den_under {k : Nat} {ρ₁ ρ₂ : Env} (hs : Env.SameBelow k ρ₁ ρ₂) :
     (S : ShapeS) → S.under k = true → S.den ρ₁ = S.den ρ₂
@@ -326,6 +331,14 @@ theorem FactsS.den_under {k : Nat} {ρ₁ ρ₂ : Env} (hs : Env.SameBelow k ρ�
     simp only [FactsS.under, Bool.and_eq_true] at h
     simp only [FactsS.den, Val.den_under hs v h.1.1, TyS.den_under hs τ h.1.2,
       FactsS.den_under hs rest h.2]
+
+theorem RowsS.den_under {k : Nat} {ρ₁ ρ₂ : Env} (hs : Env.SameBelow k ρ₁ ρ₂) :
+    (rs : RowsS) → rs.under k = true → rs.den ρ₁ = rs.den ρ₂
+  | .nil, _ => rfl
+  | .cons a c st b τ rest, h => by
+    simp only [RowsS.under, Bool.and_eq_true] at h
+    simp only [RowsS.den, Val.den_under hs a h.1.1.1, Val.den_under hs c h.1.1.2,
+      TyS.den_under hs τ h.1.2, RowsS.den_under hs rest h.2]
 
 end
 

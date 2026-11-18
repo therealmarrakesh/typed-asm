@@ -154,10 +154,14 @@ What is not there:
   holds is (`rows`), and a store that puts one more of that kind at either
   end keeps it so: a number written out digit by digit is known to be
   digits, and with `writes … each e` the program is proved to write only
-  bytes `e` takes, whatever the number. What is said of a row is let go by a store elsewhere than the
-  region the row is in, by a system call that stores or maps memory, and
-  across a call; and it says of each value its own type, not how the values
-  stand to one another: that a row is sorted is not said.
+  bytes `e` takes, whatever the number. A function's type may say what
+  rows it leaves when it returns (`returnRows`), so its caller knows what
+  it put in memory it was lent; and a row wanted follows from rows one
+  after another that cover it, each of a kind that fits. What is said of a
+  row is let go by a store elsewhere than the region the row is in, and by
+  a system call that stores or maps memory; and it says of each value its
+  own type, not how the values stand to one another: that a row is sorted
+  is not said.
 - There are no signals in the model. An exit status is the value handed to
   `exit`; a parent process sees its low eight bits.
 - The examples are written as constructor terms; there is no notation for

@@ -233,10 +233,10 @@ def TyS.open (o : Opening) (n : Nat) : TyS → TyS
   | .range lo hi => .range lo hi
   | .arr c τ st => .arr (c.open o n) (τ.open o n) st
   | .upTo t strict => .upTo (t.open o n) strict
-  | .code regs flags held known rest =>
+  | .code regs flags held known rest rows =>
     .code (regs.map (Val.open o (n + 1))) (flags.open o (n + 1))
       (heldOpen o (n + 1) held ++ (rest.openHeld o (n + 1)).1) (known.open o (n + 1))
-      (rest.openHeld o (n + 1)).2
+      (rest.openHeld o (n + 1)).2 (rows.open o (n + 1))
 
 def ShapeS.open (o : Opening) (n : Nat) : ShapeS → ShapeS
   | .mk size vals => .mk size (vals.open o n)
@@ -248,6 +248,10 @@ def ValsS.open (o : Opening) (n : Nat) : ValsS → ValsS
 def FactsS.open (o : Opening) (n : Nat) : FactsS → FactsS
   | .nil => .nil
   | .cons v τ rest => .cons (v.open o n) (τ.open o n) (rest.open o n)
+
+def RowsS.open (o : Opening) (n : Nat) : RowsS → RowsS
+  | .nil => .nil
+  | .cons a c st b τ rest => .cons (a.open o n) (c.open o n) st b (τ.open o n) (rest.open o n)
 
 end
 
@@ -267,11 +271,11 @@ theorem TyS.den_open (ρ : Env) (o : Opening) (ho : o.Closed) (pre zs : List Fam
   | .arr c τ _ => by
     simp only [TyS.open, TyS.den, Val.den_open ρ o ho pre zs c, TyS.den_open ρ o ho pre zs τ]
   | .upTo t _ => by simp only [TyS.open, TyS.den, Val.den_open ρ o ho pre zs t]
-  | .code regs flags held known rest => by
+  | .code regs flags held known rest rows => by
     show Ty.code _ = Ty.code _
     congr 1
     funext z
-    refine ctx_ext ?_ ?_ ?_ ?_
+    refine ctx_ext ?_ ?_ ?_ ?_ ?_
     · funext r
       show ((regs.map (Val.open o (pre.length + 1))).get r).den { ρ with bound := (z :: pre) ++ zs }
         = (regs.get r).den { ρ with bound := (z :: pre) ++ famOf ρ o :: zs }
@@ -288,6 +292,7 @@ theorem TyS.den_open (ρ : Env) (o : Opening) (ho : o.Closed) (pre zs : List Fam
       rw [List.map_append, List.append_assoc, heldDen_open ρ o ho (z :: pre) zs held,
         restDen_open ρ o ho (z :: pre) zs rest]
     · exact FactsS.den_open ρ o ho (z :: pre) zs known
+    · exact RowsS.den_open ρ o ho (z :: pre) zs rows
 
 theorem ShapeS.den_open (ρ : Env) (o : Opening) (ho : o.Closed) (pre zs : List Fam) :
     (S : ShapeS) → (S.open o pre.length).den { ρ with bound := pre ++ zs }
@@ -310,6 +315,14 @@ theorem FactsS.den_open (ρ : Env) (o : Opening) (ho : o.Closed) (pre zs : List 
     simp only [FactsS.open, FactsS.den, Val.den_open ρ o ho pre zs v,
       TyS.den_open ρ o ho pre zs τ, FactsS.den_open ρ o ho pre zs rest]
 
+theorem RowsS.den_open (ρ : Env) (o : Opening) (ho : o.Closed) (pre zs : List Fam) :
+    (rs : RowsS) → (rs.open o pre.length).den { ρ with bound := pre ++ zs }
+      = rs.den { ρ with bound := pre ++ famOf ρ o :: zs }
+  | .nil => rfl
+  | .cons a c st b τ rest => by
+    simp only [RowsS.open, RowsS.den, Val.den_open ρ o ho pre zs a, Val.den_open ρ o ho pre zs c,
+      TyS.den_open ρ o ho pre zs τ, RowsS.den_open ρ o ho pre zs rest]
+
 end
 
 def FactsS.toList : FactsS → List (Val × TyS)
@@ -322,23 +335,39 @@ theorem FactsS.den_toList (ρ : Env) :
   | .cons v τ rest => by
     simp only [FactsS.den, FactsS.toList, List.map_cons, FactsS.den_toList ρ rest]
 
+def RowsS.toList : RowsS → List RowS
+  | .nil => []
+  | .cons a c st b τ rest => ⟨a, c, st, b, τ⟩ :: rest.toList
+
+theorem RowsS.den_toList (ρ : Env) : (rs : RowsS) → rs.den ρ = rs.toList.map (RowS.den ρ)
+  | .nil => rfl
+  | .cons a c st b τ rest => by
+    simp only [RowsS.den, RowsS.toList, List.map_cons, RowsS.den_toList ρ rest]
+    rfl
+
+/-- Rows, as one after another. -/
+def RowsS.ofList : List RowS → RowsS
+  | [] => .nil
+  | r :: rs => .cons r.addr r.count r.stride r.byte r.ty (RowsS.ofList rs)
+
 /-- The contexts a value is known to be code wanting, as a context whose
 terms may mention the family's values. -/
 def codeCtx (regs : Regs Val) (flags : FlagsT) (held : List (Val × HeldS)) (known : FactsS)
-    (rest : RestS) : CtxS :=
-  ⟨regs, flags, held, known.toList, rest, []⟩
+    (rest : RestS) (rows : RowsS) : CtxS :=
+  ⟨regs, flags, held, known.toList, rest, rows.toList⟩
 
 /-- What that knowledge stands for is code wanting what the context stands
 for, at each of the family's values. -/
 theorem code_den (ρ : Env) (regs : Regs Val) (flags : FlagsT) (held : List (Val × HeldS))
-    (known : FactsS) (rest : RestS) :
-    (TyS.code regs flags held known rest).den ρ
-      = .code fun z => (codeCtx regs flags held known rest).den { ρ with bound := z :: ρ.bound } := by
+    (known : FactsS) (rest : RestS) (rows : RowsS) :
+    (TyS.code regs flags held known rest rows).den ρ
+      = .code fun z => (codeCtx regs flags held known rest rows).den { ρ with bound := z :: ρ.bound } := by
   show Ty.code _ = Ty.code _
   congr 1
   funext z
-  refine ctx_ext rfl rfl rfl ?_
-  exact FactsS.den_toList _ known
+  refine ctx_ext rfl rfl rfl ?_ ?_
+  · exact FactsS.den_toList _ known
+  · exact RowsS.den_toList _ rows
 
 /-- A context with each value of the nearest family given a term. -/
 def CtxS.open (o : Opening) (Γ : CtxS) : CtxS where

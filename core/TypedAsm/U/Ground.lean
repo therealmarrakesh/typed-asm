@@ -119,8 +119,8 @@ def TyS.plain : TyS → Bool
   | .arr c τ _ => c.plain && τ.plain
   | .upTo t _ => t.plain
   | .atom _ => false
-  | .code regs flags held known _ =>
-    (regs.map (·.plain) == allTrue) && flags.plain && heldPlain held && known.plain
+  | .code regs flags held known _ rows =>
+    (regs.map (·.plain) == allTrue) && flags.plain && heldPlain held && known.plain && rows.plain
   | _ => true
 
 def ShapeS.plain : ShapeS → Bool
@@ -133,6 +133,10 @@ def ValsS.plain : ValsS → Bool
 def FactsS.plain : FactsS → Bool
   | .nil => true
   | .cons v τ rest => v.plain && τ.plain && rest.plain
+
+def RowsS.plain : RowsS → Bool
+  | .nil => true
+  | .cons a c _ _ τ rest => a.plain && c.plain && τ.plain && rest.plain
 
 end
 
@@ -156,13 +160,13 @@ theorem TyS.den_bare (ρ : Env) : (τ : TyS) → τ.plain = true → τ.den ρ.b
     simp only [TyS.den, Val.den_bare ρ c h.1, TyS.den_bare ρ τ h.2]
   | .upTo t _, h => by
     simp only [TyS.den, Val.den_bare ρ t (by simpa only [TyS.plain] using h)]
-  | .code regs flags held known rest, h => by
+  | .code regs flags held known rest rows, h => by
     simp only [TyS.plain, Bool.and_eq_true] at h
-    obtain ⟨⟨⟨hr, hf⟩, hh⟩, hkn⟩ := h
+    obtain ⟨⟨⟨⟨hr, hf⟩, hh⟩, hkn⟩, hrows⟩ := h
     show Ty.code _ = Ty.code _
     congr 1
     funext z
-    refine ctx_ext ?_ ?_ ?_ ?_
+    refine ctx_ext ?_ ?_ ?_ ?_ ?_
     · funext r
       exact Val.den_bare { ρ with bound := z :: ρ.bound } _ (Regs.all_of_map regs hr r)
     · exact FlagsT.den_bare { ρ with bound := z :: ρ.bound } _ hf
@@ -174,6 +178,7 @@ theorem TyS.den_bare (ρ : Env) : (τ : TyS) → τ.plain = true → τ.den ρ.b
           ++ restDen { ρ with bound := z :: ρ.bound } rest
       rw [heldDen_bare _ held hh, restDen_bare]
     · exact FactsS.den_bare { ρ with bound := z :: ρ.bound } known hkn
+    · exact RowsS.den_bare { ρ with bound := z :: ρ.bound } rows hrows
 
 theorem ShapeS.den_bare (ρ : Env) : (S : ShapeS) → S.plain = true → S.den ρ.bare = S.den ρ
   | .mk size vals, h => by
@@ -191,6 +196,13 @@ theorem FactsS.den_bare (ρ : Env) : (fs : FactsS) → fs.plain = true → fs.de
     simp only [FactsS.plain, Bool.and_eq_true] at h
     simp only [FactsS.den, Val.den_bare ρ v h.1.1, TyS.den_bare ρ τ h.1.2,
       FactsS.den_bare ρ rest h.2]
+
+theorem RowsS.den_bare (ρ : Env) : (rs : RowsS) → rs.plain = true → rs.den ρ.bare = rs.den ρ
+  | .nil, _ => rfl
+  | .cons a c st b τ rest, h => by
+    simp only [RowsS.plain, Bool.and_eq_true] at h
+    simp only [RowsS.den, Val.den_bare ρ a h.1.1.1, Val.den_bare ρ c h.1.1.2, TyS.den_bare ρ τ h.1.2,
+      RowsS.den_bare ρ rest h.2]
 
 end
 

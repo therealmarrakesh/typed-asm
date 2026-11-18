@@ -175,11 +175,11 @@ def TyS.atRet (c : Nat) : TyS → TyS
   | .range lo hi => .range lo hi
   | .arr v τ st => .arr (v.atRet c) (τ.atRet c) st
   | .upTo t strict => .upTo (t.atRet c) strict
-  | .code regs flags held known rest =>
+  | .code regs flags held known rest rows =>
     .code (regs.map (Val.atRet (c + 1))) (flags.atRet (c + 1))
       (held.map fun h => (h.1.atRet (c + 1),
         ⟨h.2.size.atRet (c + 1), h.2.slots.map fun p => (p.1.atRet (c + 1), p.2.atRet (c + 1))⟩))
-      (known.atRet (c + 1)) (rest.atRet (c + 1))
+      (known.atRet (c + 1)) (rest.atRet (c + 1)) (rows.atRet (c + 1))
 
 def ShapeS.atRet (c : Nat) : ShapeS → ShapeS
   | .mk size vals => .mk size (vals.atRet c)
@@ -191,6 +191,10 @@ def ValsS.atRet (c : Nat) : ValsS → ValsS
 def FactsS.atRet (c : Nat) : FactsS → FactsS
   | .nil => .nil
   | .cons v τ rest => .cons (v.atRet c) (τ.atRet c) (rest.atRet c)
+
+def RowsS.atRet (c : Nat) : RowsS → RowsS
+  | .nil => .nil
+  | .cons a n st b τ rest => .cons (a.atRet c) (n.atRet c) st b (τ.atRet c) (rest.atRet c)
 
 end
 
@@ -215,7 +219,7 @@ there are given back as they were. -/
 def returnsWith (results : List (Reg × Val) := []) (room : Val := 0)
     (takes : List (Val × Val) := []) (gives : List (Val × Val) := [])
     (leaves : List (Val × List (Val × Val)) := []) (pushed : List Pushed := [])
-    (returns : List (Val × TyS) := []) : TyS :=
+    (returns : List (Val × TyS) := []) (rows : List RowS := []) : TyS :=
   .code
     (regsWith
       (regsWith anyRegs (keptRegs.map fun r =>
@@ -229,6 +233,8 @@ def returnsWith (results : List (Reg × Val) := []) (room : Val := 0)
         ⟨t.2.lift, ((leaves.lookup t.1).getD []).map fun p => (p.1.lift, p.2.atRet 0)⟩)) ++
       gives.map fun t => (t.1.atRet 0, ⟨t.2.atRet 0, []⟩))
     (factsOf (returns.map fun f => (f.1.atRet 0, f.2.atRet 0))) (.bvar 1)
+    (RowsS.ofList (rows.map fun r => ⟨r.addr.atRet 0, r.count.atRet 0, r.stride, r.byte,
+      r.ty.atRet 0⟩))
 
 /-- **A label where a function is entered, or inside it**: the return
 address known to be code wanting what the function returns with; so many
@@ -252,19 +258,22 @@ than one (`orReturns`, each said with `returnsWith`): with nought and
 nothing more, say, or with the address of memory it hands its caller; the
 code it returns to is then typed for each. `uses` are regions it takes and
 does not give back as they were: what becomes of them each way of
-returning says. -/
+returning says. `returnRows` are rows of memory the function leaves when it
+returns, said as at the return: the digits it wrote into a buffer it was
+lent, say. -/
 def inFunction (regs : List (Reg × Val) := []) (known : List (Val × TyS) := [])
     (room : Val := 0) (results : List (Reg × Val) := []) (takes : List (Val × Val) := [])
     (gives : List (Val × Val) := []) (leaves : List (Val × List (Val × Val)) := [])
     (pushed : List Pushed := []) (holds : List (Val × List (Val × Val)) := [])
     (returns : List (Val × TyS) := []) (rows : List RowS := [])
-    (orReturns : List TyS := []) (uses : List (Val × Val) := []) : CtxS where
+    (orReturns : List TyS := []) (uses : List (Val × Val) := [])
+    (returnRows : List RowS := []) : CtxS where
   regs := regsWith anyRegs regs
   flags := .bvar 0
   held := (((Val.bvar 0 4).upBy (pushedBytes pushed)).lessBy room,
       ⟨room.plus 8, (room, .bvar 0 16) :: pushedSlots room 0 pushed⟩) ::
     (takes ++ uses).map fun t => (t.1, ⟨t.2, (holds.lookup t.1).getD []⟩)
-  known := (.bvar 0 16, returnsWith results room takes gives leaves pushed returns) ::
+  known := (.bvar 0 16, returnsWith results room takes gives leaves pushed returns returnRows) ::
     orReturns.map (fun τ => (.bvar 0 16, τ)) ++ known
   rest := .bvar 0
   rows := rows
@@ -319,7 +328,7 @@ def TyS.depth : TyS → Nat
   | .nullable τ => τ.depth
   | .orErr τ => τ.depth
   | .arr _ τ _ => τ.depth
-  | .code _ _ _ known _ => known.depth + 1
+  | .code _ _ _ known _ rows => max known.depth rows.depth + 1
   | _ => 0
 
 def ShapeS.depth : ShapeS → Nat
@@ -333,6 +342,10 @@ def FactsS.depth : FactsS → Nat
   | .nil => 0
   | .cons _ τ rest => max τ.depth rest.depth
 
+
+def RowsS.depth : RowsS → Nat
+  | .nil => 0
+  | .cons _ _ _ _ τ rest => max τ.depth rest.depth
 end
 
 /-- The deepest of some facts' types. -/
@@ -354,6 +367,7 @@ where it is the address of code that may be entered in any member of the
 context's family. A pointer to a function is a pointer to code wanting what
 the function's label wants. -/
 def codeOf (E : CtxS) : TyS := .code E.regs E.flags E.held (factsOf E.known) E.rest
+  (RowsS.ofList E.rows)
 
 /-- How many values of which `τ` is known a shape has in a row from byte
 `o`, eight bytes apart: looked for at most `fuel` far. -/

@@ -233,21 +233,21 @@ the family wanted there. -/
 def askedCode (Γ Δ : CtxS) : List (BitVec 64 × CtxS × (Val × TyS)) :=
   Δ.known.filterMap fun f =>
     match f.1.lit?, f.2 with
-    | some a, .code r fl h kn rs =>
-      if Γ.known.contains f then none else some (a, codeCtx r fl h kn rs, f)
+    | some a, .code r fl h kn rs rw =>
+      if Γ.known.contains f then none else some (a, codeCtx r fl h kn rs rw, f)
     | _, _ => none
 
 theorem askedCode_spec {Γ Δ : CtxS} {x : BitVec 64 × CtxS × (Val × TyS)}
     (hx : x ∈ askedCode Γ Δ) :
     x.2.2.1.lit? = some x.1 ∧
-      ∃ r fl h kn rs, x.2.2.2 = .code r fl h kn rs ∧ x.2.1 = codeCtx r fl h kn rs := by
+      ∃ r fl h kn rs rw, x.2.2.2 = .code r fl h kn rs rw ∧ x.2.1 = codeCtx r fl h kn rs rw := by
   obtain ⟨f, _, hf⟩ := List.mem_filterMap.mp hx
   split at hf
-  · next a r fl h kn rs hlit hty =>
+  · next a r fl h kn rs rw hlit hty =>
     split at hf
     · cases hf
     · cases hf
-      exact ⟨hlit, r, fl, h, kn, rs, hty, rfl⟩
+      exact ⟨hlit, r, fl, h, kn, rs, rw, hty, rfl⟩
   · cases hf
 
 /-! ## Regarding the context reached as a member of a family -/
@@ -362,7 +362,7 @@ theorem closeCtx_sound {n : Nat} {fns : Nat → BitVec 64 → BitVec 64 → BitV
           obtain ⟨g, hg, rfl⟩ := List.mem_map.mp hf
           obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hg
           obtain ⟨hx1, hx2⟩ := List.mem_filter.mp hx
-          obtain ⟨hlit, r, fl, hd, kn, rs, hty, hE⟩ := askedCode_spec hx1
+          obtain ⟨hlit, r, fl, hd, kn, rs, rw, hty, hE⟩ := askedCode_spec hx1
           show HasTy fetch sys Ψ' k' (x.2.2.2.den ρ') (x.2.2.1.den ρ')
           rw [Val.lit?_den hlit, hty, code_den, hasTy_code, ← hE]
           intro z j hjlt Ψ'' he' hwf' s hs hw
@@ -509,10 +509,10 @@ def arriveFits (cc : CtxS → CtxS → Nat → Option (CtxS × OpenL)) (t : Val)
     (f : Val × TyS) : Bool :=
   f.1.same t &&
     (match f.2 with
-     | .code regs flags held known rest =>
+     | .code regs flags held known rest rows =>
        f.1.under k &&
-         (match cc (codeCtx regs flags held known rest) Γ k with
-          | some (Γ', _) => Γ'.known.contains (f.1, .code regs flags held known rest)
+         (match cc (codeCtx regs flags held known rest rows) Γ k with
+          | some (Γ', _) => Γ'.known.contains (f.1, .code regs flags held known rest rows)
           | none => false)
      | _ => false)
 
@@ -573,13 +573,13 @@ theorem Walk.holds_of_closes {n : Nat} {labels : List Label}
     rw [Bool.and_eq_true] at hfit
     obtain ⟨hsame, h⟩ := hfit
     split at h
-    · next regs flags held known rest _ =>
+    · next regs flags held known rest rows _ =>
       simp only [Bool.and_eq_true] at h
       obtain ⟨htv, h⟩ := h
       have ht : t.den ρ = tv.den ρ := (Val.same_den ρ hsame).symm
       show Arrives fetch sys Ψ n (t.den ρ) (Γ.den ρ)
       rw [ht]
-      cases hc : cc (codeCtx regs flags held known rest) Γ k with
+      cases hc : cc (codeCtx regs flags held known rest rows) Γ k with
       | none => rw [hc] at h; cases h
       | some Γo =>
         obtain ⟨Γ', o⟩ := Γo
@@ -589,7 +589,7 @@ theorem Walk.holds_of_closes {n : Nat} {labels : List Label}
           (fun hi _ ho h => Arrives.nameSlot hi ho h) (fun hr hΔ => Arrives.regard hr hΔ)
           (fun fs hfs h => Arrives.learnRel fs hfs h) hc ρ hfn fun ρ' hag hreg => ?_
         rw [← Val.den_under hag tv htv]
-        have hf : (tv.den ρ', Ty.code fun z => (codeCtx regs flags held known rest).den
+        have hf : (tv.den ρ', Ty.code fun z => (codeCtx regs flags held known rest rows).den
             { ρ' with bound := z :: ρ'.bound }) ∈ (Γ'.den ρ').known := by
           rw [← code_den]
           exact List.mem_map.mpr ⟨_, h, rfl⟩
@@ -661,9 +661,9 @@ def TyS.bmax (d : Nat) : TyS → Nat
   | .str c => c.bmax d
   | .arr c τ _ => max (c.bmax d) (τ.bmax d)
   | .upTo t _ => t.bmax d
-  | .code regs flags held known _ =>
+  | .code regs flags held known _ rows =>
     max (max (allRegs.foldl (fun m r => max m ((regs.get r).bmax (d + 1))) 0) (flags.bmax (d + 1)))
-      (max (heldBmax (d + 1) held) (known.bmax (d + 1)))
+      (max (max (heldBmax (d + 1) held) (known.bmax (d + 1))) (rows.bmax (d + 1)))
   | _ => 0
 
 def ShapeS.bmax (d : Nat) : ShapeS → Nat
@@ -677,6 +677,10 @@ def FactsS.bmax (d : Nat) : FactsS → Nat
   | .nil => 0
   | .cons v τ rest => max (max (v.bmax d) (τ.bmax d)) (rest.bmax d)
 
+
+def RowsS.bmax (d : Nat) : RowsS → Nat
+  | .nil => 0
+  | .cons a c _ _ τ rest => max (max (max (a.bmax d) (c.bmax d)) (τ.bmax d)) (rest.bmax d)
 end
 
 /-- How many values a family ranges over, from what its contexts speak of. -/
@@ -727,11 +731,11 @@ Nothing is taken as known of any address in answering it, so the answer
 holds at every step count. -/
 def entF : Nat → Nat → TyS → TyS → Bool
   | 0, _, _, _ => false
-  | f + 1, K, .code r fl h kn rs, .code r' fl' h' kn' rs' =>
-    (codeCtx r fl h kn rs).under K && (codeCtx r' fl' h' kn' rs').under K &&
-      (closeCtx sameK (entF f) noJustify (codeCtx r fl h kn rs)
-        ((codeCtx r' fl' h' kn' rs').open (freshOpening K))
-        (K + (codeCtx r' fl' h' kn' rs').width)).isSome
+  | f + 1, K, .code r fl h kn rs rw, .code r' fl' h' kn' rs' rw' =>
+    (codeCtx r fl h kn rs rw).under K && (codeCtx r' fl' h' kn' rs' rw').under K &&
+      (closeCtx sameK (entF f) noJustify (codeCtx r fl h kn rs rw)
+        ((codeCtx r' fl' h' kn' rs' rw').open (freshOpening K))
+        (K + (codeCtx r' fl' h' kn' rs' rw').width)).isSome
   | _ + 1, _, _, _ => false
 
 theorem entF_sound : (f : Nat) → ∀ K, EntSound fetch sys (entF f K)
@@ -739,9 +743,9 @@ theorem entF_sound : (f : Nat) → ∀ K, EntSound fetch sys (entF f K)
   | f + 1 => by
     intro K ρ v τ υ h Ψ₁ n hP
     cases τ with
-    | code r fl hd kn rs =>
+    | code r fl hd kn rs rws =>
       cases υ with
-      | code r' fl' hd' kn' rs' =>
+      | code r' fl' hd' kn' rs' rws' =>
         simp only [entF, Bool.and_eq_true] at h
         obtain ⟨⟨hPu, hΔu⟩, hcl⟩ := h
         obtain ⟨⟨Γ', o⟩, hcc⟩ := Option.isSome_iff_exists.mp hcl

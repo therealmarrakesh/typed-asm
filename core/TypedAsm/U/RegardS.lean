@@ -428,7 +428,7 @@ def followsS (τ : TyS) : TyS → Bool
          | .str _ => true
          | _ => false))
   | .atom i => τ == .atom i
-  | .code r f h k rest => τ == .code r f h k rest
+  | .code r f h k rest rows => τ == .code r f h k rest rows
   | .arr c υ st => τ == .arr c υ st
   | .upTo t strict => τ == .upTo t strict
   | .range lo hi =>
@@ -476,7 +476,7 @@ theorem followsS_sub (ρ : Env) (v : BitVec 64) :
     simp only [followsS, beq_iff_eq] at h
     subst h
     exact .refl _ _
-  | .code r f hd k rest, τ, h => by
+  | .code r f hd k rest rows, τ, h => by
     simp only [followsS, beq_iff_eq] at h
     subst h
     exact .refl _ _
@@ -604,6 +604,92 @@ theorem knownS {ρ : Env} {Γ : CtxS} {Ψ' : MemTy} {m : Nat}
     ∀ g ∈ Γ.known, HasTy fetch sys Ψ' m (g.2.den ρ) (g.1.den ρ) := fun g hgm =>
   hg (g.1.den ρ, g.2.den ρ) (List.mem_map.mpr ⟨g, hgm, rfl⟩)
 
+/-- So many times a term, by adding. -/
+def Val.times : Nat → Val → Val
+  | 0, _ => .lit 0
+  | n + 1, v => .add (Val.times n v) v
+
+theorem Val.times_den (ρ : Env) (v : Val) : (n : Nat) →
+    (Val.times n v).den ρ = BitVec.ofNat 64 (n * (v.den ρ).toNat)
+  | 0 => by simp [Val.times, Val.den]
+  | n + 1 => by
+    show (Val.times n v).den ρ + v.den ρ = _
+    rw [Val.times_den ρ v n, Nat.succ_mul, BitVec.ofNat_add]
+    simp
+
+/-- **Whether rows are one after another from an address**, each of values
+so far apart and so wide, and each one of the rows said: the first starts
+there, the next where it ends, and so on. -/
+def runOk (sm : Val → Val → Bool) (rows : List RowS) (st : Nat) (byte : Bool) :
+    Val → List RowS → Bool
+  | _, [] => true
+  | cur, g :: gs =>
+    rows.contains g && g.byte == byte && g.stride == st && sm g.addr cur &&
+      runOk sm rows st byte (.add cur (Val.times st g.count)) gs
+
+/-- Each value so far from where a run of rows starts, within all they come
+to, is a value of one of them. -/
+theorem runOk_cover {ρ : Env} {sm : Val → Val → Bool}
+    (hsm : ∀ a b, sm a b = true → a.den ρ = b.den ρ) (rows : List RowS) (st : Nat) (byte : Bool) :
+    (ch : List RowS) → (cur : Val) → runOk sm rows st byte cur ch = true →
+      ∀ i, i < sumNat ρ (ch.map (·.count)) →
+      ∃ g ∈ ch, g ∈ rows ∧ g.byte = byte ∧ g.stride = st ∧
+        ∃ i', i' < (g.count.den ρ).toNat ∧
+        cur.den ρ + BitVec.ofNat 64 (st * i) = g.addr.den ρ + BitVec.ofNat 64 (st * i')
+  | [], _, _, i, hi => by simp [sumNat] at hi
+  | g :: gs, cur, h, i, hi => by
+    simp only [runOk, Bool.and_eq_true, beq_iff_eq, List.contains_iff_mem] at h
+    obtain ⟨⟨⟨⟨hmem, hb⟩, hst⟩, hsame⟩, hrest⟩ := h
+    have ha := hsm _ _ hsame
+    simp only [List.map_cons, sumNat] at hi
+    by_cases hlt : i < (g.count.den ρ).toNat
+    · exact ⟨g, List.mem_cons_self, hmem, hb, hst, i, hlt, by rw [ha]⟩
+    · obtain ⟨g', hch', hm', hb', hst', i', hi', he⟩ :=
+        runOk_cover hsm rows st byte gs (.add cur (Val.times st g.count)) hrest
+          (i - (g.count.den ρ).toNat) (by simp only [Val.nat] at hi; omega)
+      refine ⟨g', List.mem_cons_of_mem _ hch', hm', hb', hst', i', hi', ?_⟩
+      rw [← he]
+      show cur.den ρ + BitVec.ofNat 64 (st * i)
+        = cur.den ρ + (Val.times st g.count).den ρ
+          + BitVec.ofNat 64 (st * (i - (g.count.den ρ).toNat))
+      rw [Val.times_den, BitVec.add_assoc, ← BitVec.ofNat_add, ← Nat.mul_add,
+        Nat.add_sub_cancel' (Nat.le_of_not_lt hlt)]
+
+/-- The runs of rows there may be from an address: of none; and of each
+row seen to start there, with each run from where it ends. -/
+def runsFrom (sm : Val → Val → Bool) (rows : List RowS) (st : Nat) (byte : Bool) :
+    Nat → Val → List (List RowS)
+  | 0, _ => [[]]
+  | f + 1, cur =>
+    [] :: (rows.filter fun g => g.byte == byte && g.stride == st && sm g.addr cur).flatMap fun g =>
+      (runsFrom sm rows st byte f (.add cur (Val.times st g.count))).map (g :: ·)
+
+/-- Whether a count is the one count there is: the same value, however
+large. -/
+def countIn (sm : Val → Val → Bool) (c : Val) : List Val → Bool
+  | [d] => sm c d
+  | _ => false
+
+theorem countIn_le {ρ : Env} {sm : Val → Val → Bool}
+    (hsm : ∀ a b, sm a b = true → a.den ρ = b.den ρ) {c : Val} {ds : List Val}
+    (h : countIn sm c ds = true) : sumNat ρ [c] + 0 ≤ sumNat ρ ds + 0 := by
+  match ds, h with
+  | [d], h =>
+    simp only [sumNat, Val.nat]
+    rw [hsm _ _ h]
+    omega
+
+/-- **Whether a row wanted follows from the rows said**: it is of no
+values; or some run of the rows said, of values as far apart and as wide,
+one after another from where it starts, comes to as many values or more,
+each row of a kind that is the kind wanted. -/
+def rowFrom (sm : Val → Val → Bool) (K : List (Val × TyS)) (rows : List RowS) (r : RowS) : Bool :=
+  sm r.count (.lit 0) ||
+    (runsFrom sm rows r.stride r.byte rows.length r.addr).any fun ch =>
+      runOk sm rows r.stride r.byte r.addr ch &&
+        (countIn sm r.count (ch.map (·.count)) || sumLe K [r.count] 0 (ch.map (·.count)) 0) &&
+        ch.all fun g => followsS g.ty r.ty
+
 /-- **Whether the first context may be regarded as the second**, two terms
 being taken for the same value where `sm` says so, given what the first
 context knows. -/
@@ -614,9 +700,7 @@ def regardWith (sm : List (Val × TyS) → Val → Val → Bool) (ent : TyS → 
      | some P => apartS Γ.known P && coverS Γ.held P
      | none => false) &&
     Δ.known.all (factFrom ent Γ.known) && Δ.rest == Γ.rest &&
-    Δ.rows.all fun r => sm Γ.known r.count (.lit 0) ||
-      Γ.rows.any fun g => sm Γ.known g.addr r.addr && sm Γ.known g.count r.count &&
-        g.stride == r.stride && g.byte == r.byte && g.ty == r.ty
+    Δ.rows.all (rowFrom (sm Γ.known) Γ.known Γ.rows)
 
 theorem regardWith_sound {sm : List (Val × TyS) → Val → Val → Bool} {ent : TyS → TyS → Bool}
     (he : EntSound fetch sys ent) (ρ : Env) {Γ Δ : CtxS}
@@ -638,17 +722,29 @@ theorem regardWith_sound {sm : List (Val × TyS) → Val → Val → Bool} {ent 
     refine Regards.parts (Γ := Γ.den ρ) (Δ := Δ.den ρ) (E := Γ.held.map (regionDen ρ))
       (F := restDen ρ Γ.rest)
       (L := P.map (partDen ρ)) ?_ ?_ ?_ rfl ?_ hok (apartS_den ρ hg P hh.1)
-      (coverS_den ρ Γ.held P hh.2) (fun Ψ'' n' hg'' r hr' => by
+      (coverS_den ρ Γ.held P hh.2) (fun k' Ψ'' s' hw' r hr' i hi => by
         obtain ⟨x, hx, rfl⟩ := List.mem_map.mp (show r ∈ Δ.rows.map (RowS.den ρ) from hr')
-        have hsm' := hsm Ψ'' n' (knownS hg'')
-        rcases Bool.or_eq_true_iff.mp (hrows x hx) with h0 | hany
-        · exact .inr (hsm' _ _ h0)
-        · obtain ⟨g, hgm, hc⟩ := List.any_eq_true.mp hany
-          simp only [Bool.and_eq_true, beq_iff_eq] at hc
-          obtain ⟨⟨⟨⟨ha, hcn⟩, hst⟩, hb⟩, hty⟩ := hc
-          refine .inl (List.mem_map.mpr ⟨g, hgm, ?_⟩)
-          show RowOf.mk _ _ _ _ _ = RowOf.mk _ _ _ _ _
-          rw [hsm' _ _ ha, hsm' _ _ hcn, hst, hb, hty]) k Ψ' hext hwf s hw
+        have hg'' := knownS hw'.known
+        have hsm' := hsm Ψ'' k' hg''
+        rcases Bool.or_eq_true_iff.mp (hrows x hx) with h0 | hrun
+        · have e0 : x.count.den ρ = 0 := hsm' _ _ h0
+          exact absurd hi (by show ¬ i < (x.count.den ρ).toNat; rw [e0]; exact Nat.not_lt_zero i)
+        · obtain ⟨ch, -, hrun⟩ := List.any_eq_true.mp hrun
+          simp only [Bool.and_eq_true] at hrun
+          obtain ⟨⟨hok, hcnt⟩, htys⟩ := hrun
+          have hle : sumNat ρ [x.count] + 0 ≤ sumNat ρ (ch.map (·.count)) + 0 :=
+            (Bool.or_eq_true_iff.mp hcnt).elim (countIn_le hsm') (fun h => sumLe_den h hg'')
+          obtain ⟨g, hgr, hgm, hb, hst, i', hi', he⟩ :=
+            runOk_cover (ρ := ρ) hsm' Γ.rows x.stride x.byte ch x.addr hok i (by
+              simp only [sumNat, Val.nat] at hle
+              have : i < (x.count.den ρ).toNat := hi
+              omega)
+          have hty := hw'.rows (g.den ρ) (List.mem_map.mpr ⟨g, hgm, rfl⟩) i' hi'
+          show HasTy fetch sys Ψ'' k' (x.ty.den ρ)
+            (cellAt s' x.byte (x.addr.den ρ + BitVec.ofNat 64 (x.stride * i)))
+          rw [he, ← hb, ← hst]
+          exact HasTy.sub (followsS_sub ρ _ _ _ (List.all_eq_true.mp htys g hgr)) hty)
+        k Ψ' hext hwf s hw
     · funext r
       exact (hsm Ψ' k hg _ _ (hr r (mem_allRegs r))).symm
     · show Δ.flags.den ρ = Γ.flags.den ρ

@@ -14,6 +14,7 @@ import Tests.Typed.Written.Arena
 import Tests.Typed.Written.RetLost
 import Tests.Typed.Written.Bounds
 import Tests.Typed.Written.Related
+import Tests.Typed.Written.Filled
 
 /-!
 # Programs written as an author would, each needing something of the type checker
@@ -31,6 +32,7 @@ function that hands its caller a page, or nought; a function that carves a
 piece off memory it is lent and gives back the rest; and, refused, a function
 that stores over the address it returns to, the store named; and indices
 bounded by what each operator does to the ranges of its operands; and sums
-of low halves bounded only by a relation between their operands. Each is typed as
-it is compiled.
+of low halves bounded only by a relation between their operands; and a
+function that fills memory it is lent, its caller knowing what it left. Each
+is typed as it is compiled.
 -/

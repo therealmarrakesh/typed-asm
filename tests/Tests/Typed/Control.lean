@@ -178,7 +178,7 @@ the family the knowledge sits in, one out from its own. -/
 
 /-- Code wanting `rax` to hold the first value of the family one out, and
 any flags of its own. -/
-def innerCode : TyS := .code (Γw.regs.set .rax (.bvar 1 0)) (.bvar 0) [] .nil .none
+def innerCode : TyS := .code (Γw.regs.set .rax (.bvar 1 0)) (.bvar 0) [] .nil .none .nil
 
 -- it speaks of an enclosing family, so it is not knowledge that stands alone,
 -- and is knowledge that may sit inside one family
@@ -188,12 +188,12 @@ example : innerCode.closedAt 1 = true := by decide +kernel
 -- the enclosing family taken at a particular value: the inner code now wants
 -- `rax` to hold that value, and its own flags are still its own
 example : innerCode.open { b := fun _ => .var 7, f := .var 0 } 0
-    = .code (Γw.regs.set .rax (.var 7)) (.bvar 0) [] .nil .none := by decide +kernel
+    = .code (Γw.regs.set .rax (.var 7)) (.bvar 0) [] .nil .none .nil := by decide +kernel
 
 -- its own family's value is untouched when the enclosing one is taken
-example : (TyS.code (Γw.regs.set .rax (.bvar 0 0)) (.bvar 0) [] .nil .none).open
+example : (TyS.code (Γw.regs.set .rax (.bvar 0 0)) (.bvar 0) [] .nil .none .nil).open
       { b := fun _ => .var 7, f := .var 0 } 0
-    = .code (Γw.regs.set .rax (.bvar 0 0)) (.bvar 0) [] .nil .none := by decide +kernel
+    = .code (Γw.regs.set .rax (.bvar 0 0)) (.bvar 0) [] .nil .none .nil := by decide +kernel
 
 /-! ## Going to a value known to be code -/
 
@@ -208,7 +208,7 @@ The code's family is one further in: its own values are the nearest, and
 the label's are one out. -/
 def mayJump (regs : Regs Val) (held : List (Val × HeldS)) : Bool :=
   checkProgram (prog [(0, .jmp (.ind (.reg .rax)), 2)])
-    [lab 0 { Pw with known := [(.bvar 0 0, .code regs (.bvar 0) held .nil .none)] }] 10 0
+    [lab 0 { Pw with known := [(.bvar 0 0, .code regs (.bvar 0) held .nil .none .nil)] }] 10 0
 
 -- code wanting any registers and the stack: the jump is typed
 example : mayJump anyRegs [(.bvar 1 16, ⟨64, []⟩)] = true := by decide +kernel
@@ -230,7 +230,7 @@ def mayReturn (rsp' : Val) : Bool :=
     [lab 0 { Pw with
               held := [(.bvar 0 16, ⟨64, [(32, .bvar 0 17)]⟩)]
               known := [(.bvar 0 17, .code (anyRegs.set .rsp rsp') (.bvar 0)
-                          [(.bvar 1 16, ⟨64, []⟩)] .nil .none)] }] 10 0
+                          [(.bvar 1 16, ⟨64, []⟩)] .nil .none .nil)] }] 10 0
 
 -- the return address wants the stack pointer just past it: typed
 example : mayReturn (.add (.bvar 1 16) (.lit 40)) = true := by decide +kernel
@@ -240,7 +240,7 @@ example : mayReturn (.add (.bvar 1 16) (.lit 32)) = false := by decide +kernel
 /-! ## Code wanting one family, known to want another -/
 
 /-- Code wanting these registers, the stack held, nothing else. -/
-def codeT (regs : Regs Val) : TyS := .code regs (.bvar 0) [(.bvar 1 16, ⟨64, []⟩)] .nil .none
+def codeT (regs : Regs Val) : TyS := .code regs (.bvar 0) [(.bvar 1 16, ⟨64, []⟩)] .nil .none .nil
 
 /-- `rax` is known to be so. -/
 def raxIs (τ : TyS) : CtxS := { Pw with known := [(.bvar 0 0, τ)] }
@@ -277,7 +277,7 @@ def fExit (rax : Val) (rest : RestS) : TyS :=
   .code ⟨rax, .bvar 1 1, .bvar 1 2, .bvar 1 3, .add (.bvar 1 4) (.lit 8), .bvar 1 5, .bvar 1 6,
       .bvar 1 7, .bvar 1 8, .bvar 1 9, .bvar 1 10, .bvar 1 11, .bvar 1 12, .bvar 1 13, .bvar 1 14,
       .bvar 1 15⟩
-    (.bvar 0) [(.bvar 1 4, ⟨8, []⟩)] .nil rest
+    (.bvar 0) [(.bvar 1 4, ⟨8, []⟩)] .nil rest .nil
 
 /-- The entry family of `f`, its return address known to be code wanting
 the given exit. -/

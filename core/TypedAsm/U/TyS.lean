@@ -61,7 +61,7 @@ inductive TyS
   /-- It is code, safe to enter in the context these terms stand for,
   whatever the values the family ranges over are. -/
   | code (regs : Regs Val) (flags : FlagsT) (held : List (Val × HeldS)) (known : FactsS)
-      (rest : RestS)
+      (rest : RestS) (rows : RowsS)
   /-- It lies in a range. -/
   | range (lo hi : BitVec 64)
   /-- It is the address of so many values in a row, of each of which `τ` is
@@ -84,9 +84,16 @@ inductive FactsS
   | nil
   | cons (v : Val) (τ : TyS) (rest : FactsS)
 
+/-- Rows of values in memory, one after another: where each starts, how
+many it has, how far apart they are, whether each is a byte or eight, and
+what is known of each. -/
+inductive RowsS
+  | nil
+  | cons (addr count : Val) (stride : Nat) (byte : Bool) (ty : TyS) (rest : RowsS)
+
 end
 
-deriving instance DecidableEq for TyS, ShapeS, ValsS, FactsS
+deriving instance DecidableEq for TyS, ShapeS, ValsS, FactsS, RowsS
 
 mutual
 
@@ -101,13 +108,14 @@ def TyS.den (ρ : Env) : TyS → Ty
   | .range lo hi => .range lo hi
   | .arr count τ st => .arr (count.den ρ) (τ.den ρ) st
   | .upTo t strict => .upTo (t.den ρ) strict
-  | .code regs flags held known rest => .code fun z =>
+  | .code regs flags held known rest rows => .code fun z =>
     { val := fun r => (regs.get r).den { ρ with bound := z :: ρ.bound }
       flags := flags.den { ρ with bound := z :: ρ.bound }
       held := (held.map fun b => (b.1.den { ρ with bound := z :: ρ.bound },
           b.2.den { ρ with bound := z :: ρ.bound }))
         ++ restDen { ρ with bound := z :: ρ.bound } rest
-      known := known.den { ρ with bound := z :: ρ.bound } }
+      known := known.den { ρ with bound := z :: ρ.bound }
+      rows := rows.den { ρ with bound := z :: ρ.bound } }
 
 def ShapeS.den (ρ : Env) : ShapeS → Shape
   | .mk size vals => ⟨size, vals.den ρ⟩
@@ -119,6 +127,10 @@ def ValsS.den (ρ : Env) : ValsS → List (Nat × Ty)
 def FactsS.den (ρ : Env) : FactsS → List (BitVec 64 × Ty)
   | .nil => []
   | .cons v τ rest => (v.den ρ, τ.den ρ) :: rest.den ρ
+
+def RowsS.den (ρ : Env) : RowsS → List (RowOf Ty)
+  | .nil => []
+  | .cons a c st b τ rest => ⟨a.den ρ, c.den ρ, st, b, τ.den ρ⟩ :: rest.den ρ
 
 end
 
