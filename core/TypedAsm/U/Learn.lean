@@ -204,6 +204,84 @@ theorem CmpT.orderFacts_hasTy {ρ : Env} {p : CmpT} {b : Bool} (hp : p.den ρ = 
           | exact BitVec.le_def.mpr (Nat.le_of_not_lt hp)
     | _ => cases hf
 
+/-- What a relation says of a value against itself, where that is the same
+whatever the value. -/
+def Rel.self : Rel → Option Bool
+  | .eq => some true
+  | .ult => some false
+  | .slt => some false
+  | .never => some false
+  | _ => none
+
+theorem Rel.self_eval {n : Nat} {r : Rel} {c : Bool} (h : r.self = some c) (x : BitVec n) :
+    r.eval x x = c := by
+  cases r <;> cases h
+  · exact beq_self_eq_true x
+  · simp [Rel.eval, BitVec.ult]
+  · simp [Rel.eval, BitVec.slt]
+  · rfl
+
+/-- Whether a comparison comes out one way whatever its values are, and
+which: the two are the same value, and the relation says one thing of a
+value against itself; or it asks whether they are equal, and they differ by
+a number written out that is not nought. -/
+def CmpT.fixed (p : CmpT) : Option Bool :=
+  if p.a.same p.b then p.form.rel.self.map (· != p.form.neg)
+  else
+    match p.w, p.form.rel, (p.a.less p.b).lin with
+    | .w64, .eq, ⟨[], k⟩ => if k = 0 then none else some p.form.neg
+    | _, _, _ => none
+
+theorem CmpT.fixed_den {ρ : Env} {p : CmpT} {c : Bool} (h : p.fixed = some c) : p.den ρ = c := by
+  obtain ⟨⟨neg, rel, swap⟩, w, a, b⟩ := p
+  unfold CmpT.fixed at h
+  simp only at h
+  split at h
+  · next hs =>
+    obtain ⟨r, hr, rfl⟩ := Option.map_eq_some_iff.mp h
+    have e : a.denW ρ w = b.denW ρ w := by
+      show (a.den ρ).setWidth _ = (b.den ρ).setWidth _
+      rw [Val.same_den ρ hs]
+    show Form.eval ⟨neg, rel, swap⟩ (a.denW ρ w) (b.denW ρ w) = _
+    rw [e]
+    simp only [Form.eval, ite_self, Rel.self_eval hr]
+    cases neg <;> cases r <;> rfl
+  · split at h
+    · next k hl =>
+      split at h
+      · cases h
+      · next hk =>
+        cases h
+        have hd : a.den ρ - b.den ρ = k := by
+          rw [← Val.less_den, ← Val.lin_den ρ (a.less b), hl]
+          simp [Lin.den, multDen]
+        have hne : a.den ρ ≠ b.den ρ := fun e => hk (by rw [← hd, e, BitVec.sub_self]; rfl)
+        show Form.eval ⟨c, .eq, swap⟩ ((a.den ρ).setWidth 64) ((b.den ρ).setWidth 64) = c
+        rw [BitVec.setWidth_eq, BitVec.setWidth_eq]
+        simp only [Form.eval, Rel.eval]
+        have h1 : (a.den ρ == b.den ρ) = false := beq_eq_false_iff_ne.mpr hne
+        have h2 : (b.den ρ == a.den ρ) = false := beq_eq_false_iff_ne.mpr (Ne.symm hne)
+        cases c <;> cases swap <;> simp [h1, h2]
+    · cases h
+
+/-- What a comparison teaches where it comes out as it cannot: something
+that is so of no value. -/
+def CmpT.fixedFacts (p : CmpT) (b : Bool) : List (Val × TyS) :=
+  match p.fixed with
+  | some c => if b = c then [] else [(.lit 0, .range 1 1)]
+  | none => []
+
+theorem CmpT.fixedFacts_hasTy {ρ : Env} {p : CmpT} {b : Bool} (hp : p.den ρ = b)
+    {f : Val × TyS} (hf : f ∈ p.fixedFacts b) (Ψ' : MemTy) (n : Nat) :
+    HasTy fetch sys Ψ' n (f.2.den ρ) (f.1.den ρ) := by
+  unfold CmpT.fixedFacts at hf
+  split at hf
+  · next c hc =>
+    split at hf
+    · cases hf
+    · next hne => exact absurd ((CmpT.fixed_den hc).symm.trans hp).symm hne
+  · cases hf
+
 /-- **A comparison at 32 bits, as the comparison at 64**, where both values
 are known to fit: it says the same of them. -/
 def CmpT.widen (Γ : CtxS) (p : CmpT) : CmpT :=
@@ -232,9 +310,11 @@ theorem CmpT.widen_den {ρ : Env} {Γ : CtxS} (p : CmpT) {Ψ' : MemTy} {n : Nat}
 
 /-- **A context, knowing what a comparison teaches**: the range each value
 compared is left in, which of the two is the less where that is what was
-asked, and everything known made as sharp as that allows. -/
+asked, that it cannot be where it comes out the other way than it must, and
+everything known made as sharp as that allows. -/
 def CtxS.learn (p : CmpT) (b : Bool) (Γ : CtxS) : CtxS :=
-  (Γ.addKnown ((p.widen Γ).rangeFacts b ++ (p.widen Γ).orderFacts b)).sharpen
+  (Γ.addKnown ((p.widen Γ).rangeFacts b ++ (p.widen Γ).orderFacts b ++
+    (p.widen Γ).fixedFacts b)).sharpen
 
 /-- **Where the comparison is as said, the context may be regarded as the
 one that has learnt it.** -/
@@ -247,8 +327,10 @@ theorem CtxS.learn_regards {ρ : Env} {p : CmpT} {b : Bool} (Γ : CtxS) (hp : p.
   obtain ⟨g, hg', rfl⟩ := List.mem_map.mp hf
   rcases List.mem_append.mp hg' with hr | hs
   · rcases List.mem_append.mp hr with hr | hr
-    · exact CmpT.rangeFacts_hasTy ((CmpT.widen_den p hg).trans hp) hr Ψ' n
-    · exact CmpT.orderFacts_hasTy ((CmpT.widen_den p hg).trans hp) hr Ψ' n
+    · rcases List.mem_append.mp hr with hr | hr
+      · exact CmpT.rangeFacts_hasTy ((CmpT.widen_den p hg).trans hp) hr Ψ' n
+      · exact CmpT.orderFacts_hasTy ((CmpT.widen_den p hg).trans hp) hr Ψ' n
+    · exact CmpT.fixedFacts_hasTy ((CmpT.widen_den p hg).trans hp) hr Ψ' n
   · exact hg _ (List.mem_map.mpr ⟨g, hs, rfl⟩)
 
 /-- **The context on one side of a choice made on a condition**: knowing

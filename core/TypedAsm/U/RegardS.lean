@@ -559,11 +559,13 @@ theorem noEnt_sound : EntSound fetch sys noEnt := fun _ _ _ _ h => nomatch h
 
 /-- Whether a thing known is so of itself, or follows from one of a list, of
 the same value: read off the two, or by `ent`, which is asked what reading
-off does not show. -/
+off does not show; or it is that the value lies in a range, or is at most
+or below another, and the arithmetic of what is known shows it. -/
 def factFrom (ent : TyS → TyS → Bool) (G : List (Val × TyS)) (f : Val × TyS) : Bool :=
   outright f.1 f.2 || (G.any fun g => g.1.same f.1 && (followsS g.2 f.2 || ent g.2 f.2)) ||
     (match f.2 with
      | .range lo hi => rangeHolds G f.1 lo hi
+     | .upTo t strict => upToHolds G f.1 t strict
      | _ => false) || arrFrom G f
 
 /-- **What is so of itself, or follows from something known of the same
@@ -588,6 +590,9 @@ theorem factFrom_hasTy {ent : TyS → TyS → Bool} (he : EntSound fetch sys ent
     · next lo hi hτ =>
       rw [hτ]
       exact hasTy_range.mpr (rangeHolds_has hr hg')
+    · next t strict hτ =>
+      rw [hτ]
+      exact hasTy_upTo.mpr (upToHolds_has hr hg')
     · cases hr
   · exact arrFrom_hasTy harr hg'
 

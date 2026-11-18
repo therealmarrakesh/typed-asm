@@ -68,21 +68,26 @@ theorem linux_describes : Describes linux linuxDesc := by
     split at hk
     · next h =>
       cases hk
-      exact ⟨Linux.read s, by simp [linux, h], by simpa [roomOf] using Linux.read_fills s⟩
+      exact ⟨Linux.read s, by simp [linux, h], by simpa [roomOf] using Linux.read_fills s,
+        by simpa [roomOf] using Linux.read_answered s⟩
     · next h0 =>
       split at hk
-      · next h => cases hk; exact ⟨Linux.fstat s, by simp [linux, h], Linux.fstat_fills s⟩
+      · next h =>
+        cases hk
+        exact ⟨Linux.fstat s, by simp [linux, h], Linux.fstat_fills s, Linux.fstat_answered s⟩
       · next h5 =>
         split at hk
         · next h =>
           cases hk
-          exact ⟨Linux.clockGettime s, by simp [linux, h], Linux.clockGettime_fills s⟩
+          exact ⟨Linux.clockGettime s, by simp [linux, h], Linux.clockGettime_fills s,
+            Linux.clockGettime_answered s⟩
         · next h228 =>
           split at hk
           · next h =>
             cases hk
             exact ⟨Linux.getrandom s, by simp [linux, h],
-              by simpa [roomOf] using Linux.getrandom_fills s⟩
+              by simpa [roomOf] using Linux.getrandom_fills s,
+              by simpa [roomOf] using Linux.getrandom_answered s⟩
           · next h318 =>
             split at hk
             · next h9 =>

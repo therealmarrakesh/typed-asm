@@ -109,7 +109,8 @@ def Describes (sys : Syscall) (D : SysDesc) : Prop :=
   ∀ (s : State) (k : SysKind), D.kind (s.getReg .rax) = some k → D.pre s →
     match k with
     | .world => ∃ t, sys s = .next t ∧ Linux.OnlyWorld s t
-    | .fills b room => ∃ t, sys s = .next t ∧ Linux.Fills s (s.getReg b) (roomOf s room) t
+    | .fills b room => ∃ t, sys s = .next t ∧ Linux.Fills s (s.getReg b) (roomOf s room) t ∧
+      Linux.Answered (roomOf s room) (t.getReg .rax)
     | .ends => ∃ c, sys s = .exit c
     | .map => s.getReg .rdi = 0 → ∃ t, sys s = .next t ∧ Maps s (pages (s.getReg .rsi)) t
     | .unmap => ∃ t, sys s = .next t ∧ Unmaps s (s.getReg .rdi) (pages (s.getReg .rsi)) t
@@ -145,19 +146,23 @@ theorem Steps.fills {D : SysDesc} (hD : Describes sys D) {Γ Γh : Ctx} {next : 
       WellTyped fetch sys Ψ' n Γ s → D.pre s)
     (hh : Havoc fetch sys Ψ Γ (Γ.val b) (roomVal Γ.val room) Γh) :
     Steps fetch sys Ψ .syscall next Γ fun t Γ' =>
-      t = next ∧ ∃ v r, Γ' = Γ.afterSys v r next ∨ Γ' = Γh.afterSys v r next := by
+      t = next ∧ ∃ v r, (Γ' = Γ.afterSys v r next ∨ Γ' = Γh.afterSys v r next) ∧
+        Linux.Answered (roomVal Γ.val room) v := by
   intro n Ψ' he hwf s hrip hw
-  obtain ⟨t, hst, hfills⟩ := hD s (.fills b room) (by rw [hw.val]; exact hk)
+  obtain ⟨t, hst, hfills, hans⟩ := hD s (.fills b room) (by rw [hw.val]; exact hk)
     (hpre n Ψ' he hwf s hrip hw)
   have hroom : roomOf s room = roomVal Γ.val room := by
     cases room with
     | inl r => show (s.getReg r).toNat = (Γ.val r).toNat; rw [hw.val]
     | inr k => rfl
+  rw [hroom] at hans
   rcases hfills with ⟨v, w, rfl⟩ | ⟨data, v, w, hlen, hcw, rfl⟩
-  · refine ⟨_, hst, Γ.afterSys v (w.saved 0) next, ⟨hrip, v, _, .inl rfl⟩, ?_⟩
+  · rw [Linux.ret_rax] at hans
+    refine ⟨_, hst, Γ.afterSys v (w.saved 0) next, ⟨hrip, v, _, .inl rfl, hans⟩, ?_⟩
     rw [← hrip]
     exact hw.ret v w
-  · refine ⟨_, hst, Γh.afterSys v (w.saved 0) next, ⟨hrip, v, _, .inr rfl⟩, ?_⟩
+  · rw [Linux.give_rax] at hans
+    refine ⟨_, hst, Γh.afterSys v (w.saved 0) next, ⟨hrip, v, _, .inr rfl, hans⟩, ?_⟩
     rw [hroom] at hlen
     have hb : s.getReg b = Γ.val b := hw.val b
     rw [hb] at hcw

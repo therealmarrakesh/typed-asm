@@ -324,53 +324,6 @@ theorem holdsAllE_ext (segs parts : List (Nat × Perm × List Byte)) :
   rw [holdsInE_ext, isEmpty_eq_length]
   rfl
 
-/-- Whether giving the `len` bytes at `base` a permission leaves a run of
-bytes as it was: it is not code, or its pages are others. -/
-def offPages (base len : Nat) (g : Nat × Perm × List Byte) : Bool :=
-  g.2.1 != .rx || g.2.2.isEmpty || decide (len = 0) ||
-    (decide (base + len ≤ 2 ^ 64) && decide (g.1 + g.2.2.length ≤ 2 ^ 64) &&
-      (decide ((g.1 + g.2.2.length - 1) / 4096 < base / 4096) ||
-        decide ((base + len - 1) / 4096 < g.1 / 4096)))
-
-/-- A run of bytes is still in memory after some other bytes are given a
-permission, if they share no page with it or it is not code. -/
-theorem holds_setPerm {s : State} {g : Nat × Perm × List Byte} {base len : BitVec 64} {p : Perm}
-    (h : offPages base.toNat len.toNat g = true) (hg : s.Holds g) :
-    (s.setPerm base len p).Holds g := by
-  simp only [offPages, Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq, bne_iff_ne, ne_eq,
-    List.isEmpty_iff] at h
-  intro k hk
-  obtain ⟨hm, hp⟩ := hg k hk
-  refine ⟨hm, fun hrx => ?_⟩
-  rcases h with ((h | h) | h) | ⟨⟨hb, hgt⟩, hpages⟩
-  · exact absurd hrx h
-  · rw [h] at hk; cases hk
-  · rw [State.perm_setPerm]
-    simp only [State.pagesOf, h, ↓reduceIte, Nat.add_zero]
-    rw [ite_eq_right (by omega)]
-    exact hp hrx
-  · have hx : (BitVec.ofNat 64 g.1 + BitVec.ofNat 64 k).toNat = g.1 + k := by
-      rw [BitVec.toNat_add, BitVec.toNat_ofNat, BitVec.toNat_ofNat]
-      omega
-    rw [State.perm_setPerm_out s p (by
-      rw [hx]
-      rcases hpages with h | h
-      · left; omega
-      · right; omega)]
-    exact hp hrx
-
-/-- `offPages` for a run of bytes known by where it is and how long. -/
-def offPagesE (base len : Nat) (g : Nat × Perm × Nat) : Bool :=
-  g.2.1 != .rx || decide (g.2.2 = 0) || decide (len = 0) ||
-    (decide (base + len ≤ 2 ^ 64) && decide (g.1 + g.2.2 ≤ 2 ^ 64) &&
-      (decide ((g.1 + g.2.2 - 1) / 4096 < base / 4096) ||
-        decide ((base + len - 1) / 4096 < g.1 / 4096)))
-
-theorem offPagesE_ext (base len : Nat) (g : Nat × Perm × List Byte) :
-    offPagesE base len (ext g) = offPages base len g := by
-  unfold offPagesE offPages ext
-  rw [isEmpty_eq_length]
-
 end Loaded
 
 namespace Asm
@@ -688,22 +641,6 @@ theorem load_holds (s : State) (base : BitVec 64) (prog : List (Asm L)) (start :
   rw [← image_ext base prog start, ← parts_ext, Loaded.holdsAllE_ext] at h
   exact Loaded.holds_of_holdsAll s
     (Loaded.holdsAll_of_len (image_has base prog start (headOk_of_ext base prog start hh)) h)
-
-/-- The same, in the state a program declared with `asm_program` starts in:
-the program loaded, a stack given, and the stack pointer set. -/
-theorem prepared_holds (s : State) (base : BitVec 64) (prog : List (Asm L)) (start : L)
-    (sb len v : BitVec 64)
-    (h : Loaded.holdsAllE (imageExt base prog) (partsExt base prog) = true)
-    (hh : headOkE base prog = true)
-    (hs : (partsExt base prog).all (Loaded.offPagesE sb.toNat len.toNat) = true) :
-    ∀ g ∈ parts base prog,
-      (((load s base prog start).setPerm sb len .rw).setReg .rsp v).Holds g := by
-  intro g hg
-  have hoff : Loaded.offPages sb.toNat len.toNat g = true := by
-    rw [← parts_ext, List.all_map] at hs
-    have := List.all_eq_true.mp hs g hg
-    rw [← Loaded.offPagesE_ext]; exact this
-  exact (Loaded.holds_setPerm hoff (load_holds s base prog start h hh g hg)).congr rfl rfl
 
 end Asm
 

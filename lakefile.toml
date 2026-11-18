@@ -1,6 +1,6 @@
 name = "typed-assembly"
 version = "0.1.0"
-defaultTargets = ["TypedAsm", "Sum", "Swap", "Frame", "Ops", "Index", "Echo", "Table", "Dispatch", "List", "Fact", "Buffer", "Keep", "Alloc", "Cat", "Stat", "Args", "Own", "Double", "Fresh", "Pair", "Lend", "Random", "Pick", "Lengths", "Hello", "sum", "swap", "frame", "ops", "index", "echo", "table", "dispatch", "list", "fact", "buffer", "keep", "alloc", "cat", "stat", "args", "own", "double", "fresh", "pair", "lend", "random", "pick", "lengths", "hello"]
+defaultTargets = ["TypedAsm", "Sum", "Swap", "Frame", "Ops", "Index", "Echo", "Table", "Dispatch", "List", "Fact", "Buffer", "Keep", "Alloc", "Cat", "Stat", "Args", "Own", "Double", "Fresh", "Pair", "Lend", "Random", "Pick", "Lengths", "Regs", "Hello", "sum", "swap", "frame", "ops", "index", "echo", "table", "dispatch", "list", "fact", "buffer", "keep", "alloc", "cat", "stat", "args", "own", "double", "fresh", "pair", "lend", "random", "pick", "lengths", "regs", "hello"]
 testDriver = "tests"
 
 # The core library: machine model, instruction set, semantics, type system.
@@ -271,6 +271,16 @@ roots = ["Lengths", "LengthsProgram"]
 name = "lengths"
 root = "LengthsMain"
 srcDir = "examples/Lengths"
+
+[[lean_lib]]
+name = "Regs"
+srcDir = "examples/Regs"
+roots = ["RegsProgram"]
+
+[[lean_exe]]
+name = "regs"
+root = "RegsMain"
+srcDir = "examples/Regs"
 
 # Tests: `lake test` checks the model against results recorded from the GNU
 # assembler and from a real processor: single instructions, and the example

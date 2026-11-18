@@ -265,4 +265,37 @@ theorem rangeHolds_has {ρ : Env} {Ψ' : MemTy} {n : Nat} {G : List (Val × TyS)
         exact .inr (by omega)
   · cases hc
 
+/-- **Whether one term is at most another, or below it, by what is
+known**, each way things may be: both seen not to wrap, and the whole
+number of the one no more than, or less than, that of the other. -/
+def upToHolds (G : List (Val × TyS)) (v t : Val) (strict : Bool) : Bool :=
+  (know G (v.lin.ms.map (·.2) ++ t.lin.ms.map (·.2))).all fun cs =>
+    match noWrap (cs.length + 1) cs v, noWrap (cs.length + 1) cs t with
+    | some P, some Q =>
+      entails (cs.length + 1) cs ((Lin.addMul (-1) Q P).less (if strict then -1 else 0))
+    | _, _ => false
+
+theorem upToHolds_has {ρ : Env} {Ψ' : MemTy} {n : Nat} {G : List (Val × TyS)} {v t : Val}
+    {strict : Bool} (h : upToHolds G v t strict = true)
+    (hg : ∀ g ∈ G, HasTy fetch sys Ψ' n (g.2.den ρ) (g.1.den ρ)) :
+    if strict then v.den ρ < t.den ρ else v.den ρ ≤ t.den ρ := by
+  obtain ⟨cs, hcs, hall⟩ := know_le (ρ := ρ) G (v.lin.ms.map (·.2) ++ t.lin.ms.map (·.2)) hg
+  have hc := List.all_eq_true.mp h cs hcs
+  split at hc
+  · next P Q hP hQ =>
+    have eP := noWrap_eq hP hall
+    have eQ := noWrap_eq hQ hall
+    have eP' : natOf ρ v = ((v.den ρ).toNat : Int) := rfl
+    have eQ' : natOf ρ t = ((t.den ρ).toNat : Int) := rfl
+    have a := entails_le hc hall
+    rw [Lin.less_den, Lin.addMul_den] at a
+    cases strict
+    · simp only [Bool.false_eq_true, ↓reduceIte] at a ⊢
+      rw [BitVec.le_def]
+      omega
+    · simp only [↓reduceIte] at a ⊢
+      rw [BitVec.lt_def]
+      omega
+  · cases hc
+
 end TypedAsm.U

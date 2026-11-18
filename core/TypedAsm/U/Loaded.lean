@@ -57,23 +57,6 @@ theorem perm_pageByte {segs : List (Nat × Perm × List Byte)} (hok : segsOk seg
     omega
   · exact perm_segPages hap hg (hlow g hg).1 (hfull g hg).1 (hlow g hg).2 _ hk
 
-/-- **The pages given to a stack may be written.** -/
-theorem canWrite_stack {s t : State} {sb len : BitVec 64}
-    (hperm : t.perm = (s.setPerm sb len .rw).perm) {base : BitVec 64} {size : Nat}
-    (hb : base.toNat = 4096 * (State.pagesOf sb.toNat len.toNat).1)
-    (hs : size = 4096 * (State.pagesOf sb.toNat len.toNat).2)
-    (htop : base.toNat + size ≤ addrTop) : t.canWrite base size = true := by
-  have hT : addrTop = 0x7ffffffff000 := rfl
-  refine State.canWrite_iff.mpr fun k hk => ?_
-  have hx : (base + BitVec.ofNat 64 k).toNat = base.toNat + k := by
-    rw [BitVec.toNat_add, BitVec.toNat_ofNat, Nat.mod_eq_of_lt (a := k) (by omega),
-      Nat.mod_eq_of_lt (by omega)]
-  rw [hperm, State.perm_setPerm, hx]
-  generalize State.pagesOf sb.toNat len.toNat = pc at hb hs
-  split
-  · rfl
-  · next hc => exact absurd ⟨by omega, by omega, by omega⟩ hc
-
 /-- Whether each of some blocks a program says the bytes of is, in a list
 of blocks, one that says those bytes. -/
 def saidCheck (blocks : List (BitVec 64 × Layout)) (said : List (BitVec 64 × List (BitVec 8))) :

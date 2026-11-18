@@ -1047,6 +1047,55 @@ theorem getrandom_fills (s : State) :
     Fills s (s.getReg .rdi) (s.getReg .rsi).toNat (getrandom s) :=
   (getrandom_allowed s).fills
 
+/-! ## What a call that stores bytes answers
+
+Each of them answers an error number, or a number no more than the bytes it
+was given room for: how many it stored, or nought. -/
+
+/-- A call's answer, with room for so many bytes: an error number, or no
+more than that. -/
+def Answered (room : Nat) (v : BitVec 64) : Prop := SysErr v ∨ v.toNat ≤ room
+
+theorem give_rax (s : State) (buf : BitVec 64) (data : List (BitVec 8)) (v : BitVec 64)
+    (w : World) : (give s buf data v w).getReg .rax = v :=
+  ret_rax _ _
+
+theorem Answered.of_stored {buf : BitVec 64} {count : Nat} {t : State} (hc : count < 2 ^ 64)
+    (h : Stored s buf count t) : Answered count (t.getReg .rax) := by
+  rcases h with ⟨he, -⟩ | ⟨data, hlen, hrax, -, -⟩
+  · exact .inl he
+  · refine .inr ?_
+    rw [hrax, BitVec.toNat_ofNat, Nat.mod_eq_of_lt (by omega)]
+    exact hlen
+
+theorem read_answered (s : State) : Answered (s.getReg .rdx).toNat ((read s).getReg .rax) :=
+  .of_stored (s.getReg .rdx).isLt (read_stored s)
+
+theorem getrandom_answered (s : State) :
+    Answered (s.getReg .rsi).toNat ((getrandom s).getReg .rax) := by
+  rcases (getrandom_allowed s).effect with ⟨-, h | h | h⟩ | ⟨data, hlen, hrax, -, -⟩
+  · rw [h]; exact .inl (by decide)
+  · rw [h]; exact .inl (by decide)
+  · rw [h]; exact .inl (by decide)
+  · refine .inr ?_
+    have := (s.getReg .rsi).isLt
+    rw [hrax, BitVec.toNat_ofNat, Nat.mod_eq_of_lt (by omega)]
+    exact hlen
+
+theorem fstat_answered (s : State) : Answered 144 ((fstat s).getReg .rax) := by
+  simp only [fstat]
+  repeat' (first
+    | (rw [ret_rax]; first | exact .inl (by decide) | exact .inr (by decide))
+    | (rw [give_rax]; first | exact .inl (by decide) | exact .inr (by decide))
+    | split)
+
+theorem clockGettime_answered (s : State) : Answered 16 ((clockGettime s).getReg .rax) := by
+  simp only [clockGettime]
+  repeat' (first
+    | (rw [ret_rax]; first | exact .inl (by decide) | exact .inr (by decide))
+    | (rw [give_rax]; first | exact .inl (by decide) | exact .inr (by decide))
+    | split)
+
 /-- **What a program may conclude from the result of a `getrandom`**, in the
 same words as for a `read`. -/
 theorem getrandom_stored (s : State) :
