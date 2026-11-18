@@ -108,6 +108,72 @@ def sub32 (u v : Val) : Val := .fop (.alu .sub .w32) (.var 0) u v
 #guard rangeHolds [(wx, .range 0 100)] (.un (.shl 3) wx) 0 800
 #guard !(rangeHolds [(wx, .range 0 100)] (.un (.shl 3) wx) 0 799)
 
+/-! ## Each operator that is a sum but for wrapping
+
+Each such operator is one line of what a term is the low part of; here is
+each, where it holds and, a step further, where it does not. -/
+
+def wd : Val := .var 2
+def neg32 (v : Val) : Val := .un (.neg .w32) v
+def not32 (v : Val) : Val := .un (.not .w32) v
+def shl32 (v : Val) (n : BitVec 64) : Val := .bin (.shift .shl .w32) v (.lit n)
+def mulBy (w : Width) (v : Val) (k : BitVec 64) : Val := .bin (.imul w) v (.lit k)
+
+-- the negative at 32 bits of a value from one to ten: the ten below two to the
+-- thirty-second, and no fewer
+#guard rangeHolds [(wx, .range 1 10)] (neg32 wx) 4294967286 4294967295
+#guard !(rangeHolds [(wx, .range 1 10)] (neg32 wx) 4294967286 4294967294)
+-- of a value that may be nought it may be nought too: those ten, or nought
+#guard !(rangeHolds [(wx, .range 0 10)] (neg32 wx) 4294967286 4294967295)
+#guard rangeHolds [(wx, .range 0 10)] (neg32 wx) 4294967286 0
+-- every bit turned, of a value at most fifteen: the sixteen below two to the
+-- thirty-second, and no fewer
+#guard rangeHolds [(wx, .range 0 15)] (not32 wx) 4294967280 4294967295
+#guard !(rangeHolds [(wx, .range 0 15)] (not32 wx) 4294967281 4294967295)
+-- shifted left four bits at 32: sixteen times it
+#guard rangeHolds [(wx, .range 0 100)] (shl32 wx 4) 0 1600
+#guard !(rangeHolds [(wx, .range 0 100)] (shl32 wx 4) 0 1599)
+#guard rangeHolds [(wx, .range 3 3)] (shl32 wx 4) 48 48
+-- ten times a value at most twenty-five, and a digit more: at most 259
+#guard rangeHolds [(wx, .range 0 25), (wd, .range 0 9)] (.add (mulBy .w64 wx 10) wd) 0 259
+#guard !(rangeHolds [(wx, .range 0 25), (wd, .range 0 9)] (.add (mulBy .w64 wx 10) wd) 0 258)
+-- the number written first
+#guard rangeHolds [(wx, .range 0 25)] (.bin (.imul .w64) (.lit 10) wx) 0 250
+-- times one less than nought at 32 bits: the negative
+#guard rangeHolds [(wx, .range 1 5)] (mulBy .w32 wx (-1)) 4294967291 4294967295
+#guard !(rangeHolds [(wx, .range 1 5)] (mulBy .w32 wx (-1)) 4294967292 4294967295)
+-- the low half widened with its sign, of a value that small, is the value
+#guard rangeHolds [(wx, .range 0 100)] (.un .sxd wx) 0 100
+-- and what is known of the widening says where a value below two to the
+-- thirty-second lies: at most nine; or, of one from five below nought to five,
+-- the five below two to the thirty-second round to five
+#guard rangeHolds [(.un .sxd wx, .range 0 9), (wx, .range 0 4294967295)] wx 0 9
+#guard !(rangeHolds [(.un .sxd wx, .range 0 9), (wx, .range 0 4294967295)] wx 1 9)
+#guard rangeHolds [(.un .sxd wx, .range (-5) 5), (wx, .range 0 4294967295)] wx 4294967291 5
+-- a byte widened with its sign: itself to 127; from 128, below nought
+#guard rangeHolds [(wx, .range 0 127)] (.un (.sx .w64 .w8) wx) 0 127
+#guard !(rangeHolds [(wx, .range 0 128)] (.un (.sx .w64 .w8) wx) 0 128)
+#guard rangeHolds [(wx, .range 128 255)] (.un (.sx .w64 .w8) wx) (-128) (-1)
+-- a sum with the flags at 64 bits is tied as one at 32 is
+#guard rangeHolds [(wx, .range 0 10), (wd, .range 0 9)]
+  (.fop (.alu .add .w64) (.var 0) wx wd) 0 19
+#guard !(rangeHolds [(wx, .range 0 10), (wd, .range 0 9)]
+  (.fop (.alu .add .w64) (.var 0) wx wd) 0 18)
+-- a mask written first
+#guard upToHolds [] (.fop (.alu .and .w32) (.var 0) (.lit 0xff) wx) wx false
+
+-- a value with its low four bits cleared, as a stack pointer is brought to a
+-- multiple of sixteen: at most the value, and less by at most fifteen, no fewer
+def cleared (w : Width) (v : Val) (m : BitVec 64) : Val := .fop (.alu .and w) (.var 0) v (.lit m)
+#guard sumLe [] [cleared .w64 wx (-16)] 0 [wx] 0
+#guard sumLe [] [wx] 0 [cleared .w64 wx (-16)] 15
+#guard !(sumLe [] [wx] 0 [cleared .w64 wx (-16)] 14)
+#guard rangeHolds [(wx, .range 16 31)] (cleared .w64 wx (-16)) 16 16
+-- at 32 bits, of a value at most a hundred with its low three cleared: at most
+-- ninety-six, seen by going into how many eights it holds
+#guard rangeHolds [(wx, .range 0 100)] (cleared .w32 wx 0xFFFFFFF8) 0 96
+#guard !(rangeHolds [(wx, .range 0 100)] (cleared .w32 wx 0xFFFFFFF8) 0 95)
+
 /-! ## Between what numbers, by everything known -/
 
 /-- The stack, `rdx` at most so much, and `rcx` below `rdx`. -/

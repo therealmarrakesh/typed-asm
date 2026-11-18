@@ -129,105 +129,483 @@ theorem maskBits_spec {w : Width} {m : BitVec 64} {k : Nat} (h : maskBits w m = 
   · next hc => cases h; exact ⟨by omega, hc.2⟩
   · cases h
 
-/-- What a term is the low part of, as a whole number, and how much the
-part holds: a sum or difference of low halves is the low half of the sum or
-difference itself, each number with its sign; a value cut to a width, or
-widened with noughts from a narrow one, or masked to its low bits, the low
-part of the value; and a sum of whole values, a value shifted left or
-turned about nought, the low sixty-four bits of what it comes apart
-into. -/
-def halfOf : Val → Option (Lin Int × Int)
-  | .fop (.alu .add .w32) _ x y => some (Lin.addMul 1 (x.int true) (y.int true), 4294967296)
-  | .fop (.alu .sub .w32) _ x y => some (Lin.addMul (-1) (y.int true) (x.int true), 4294967296)
-  | .un (.trunc w) x => some (x.int true, 2 ^ w.bits)
-  | .un (.zx _ sw) x => some (x.int true, 2 ^ sw.bits)
-  | .un .low8 x => some (x.int true, 256)
-  | .un .low16 x => some (x.int true, 65536)
-  | .fop (.alu .and w) _ x (.lit m) => (maskBits w m).map fun k => (x.int true, 2 ^ k)
-  | .bin .add a b => some ((Val.bin .add a b).int true, 18446744073709551616)
-  | .un (.shl k) a => some ((Val.un (.shl k) a).int true, 18446744073709551616)
-  | .un (.neg .w64) a => some ((Val.un (.neg .w64) a).int true, 18446744073709551616)
-  | _ => none
+theorem low_signExtend {n : Nat} (x : BitVec n) : (x.signExtend (n + n)).setWidth n = x := by
+  apply BitVec.eq_of_toNat_eq
+  rw [BitVec.toNat_setWidth, BitVec.toNat_signExtend, BitVec.toNat_setWidth,
+    Nat.mod_eq_of_lt (Nat.lt_of_lt_of_le x.isLt (Nat.pow_le_pow_right (by omega) (by omega)))]
+  have hx := x.isLt
+  have hp : 2 ^ (n + n) = 2 ^ n * 2 ^ n := Nat.pow_add 2 n n
+  split
+  · rw [hp, show x.toNat + (2 ^ n * 2 ^ n - 2 ^ n) = x.toNat + 2 ^ n * (2 ^ n - 1) by
+      rw [Nat.mul_sub, Nat.mul_one], Nat.add_mul_mod_self_left, Nat.mod_eq_of_lt hx]
+  · rw [Nat.add_zero, Nat.mod_eq_of_lt hx]
 
-theorem halfOf_mod (ρ : Env) {t : Val} {E : Lin Int} {M : Int} (h : halfOf t = some (E, M)) :
-    0 < M ∧ natOf ρ t = E.den (natOf ρ) % M := by
-  have low : ∀ (x : Val) (k : Nat), k ≤ 64 → (t.den ρ).toNat = (x.den ρ).toNat % 2 ^ k →
-      E = x.int true → M = 2 ^ k → 0 < M ∧ natOf ρ t = E.den (natOf ρ) % M := by
-    intro x k hk ht hE hM
-    subst hE hM
-    refine ⟨by exact_mod_cast Nat.two_pow_pos k, ?_⟩
-    show ((t.den ρ).toNat : Int) = _
-    rw [ht]
-    exact_mod_cast low_int ρ x hk
-  unfold halfOf at h
-  split at h
-  · next fl x y =>
+/-- The low half of a product of two numbers with sign is the product of
+their low halves. -/
+theorem imul_res {n : Nat} (x y : BitVec n) : (imulTrunc x y).1 = x * y := by
+  show (x.signExtend (n + n) * y.signExtend (n + n)).setWidth n = x * y
+  rw [BitVec.setWidth_mul _ _ (by omega), low_signExtend, low_signExtend]
+
+/-- The negative of a value at 32 bits is the low half of the negative of
+what the value comes apart into. -/
+theorem neg32_low (v : BitVec 64) (X : Int) (ex : BitVec.ofInt 64 X = v) :
+    ((Un.eval (.neg .w32) v).toNat : Int) = -1 * X % 4294967296 := by
+  show ((BitVec.setWidth 64 (subBorrow (0 : BitVec 32) (BitVec.setWidth 32 v) false).1).toNat : Int) = _
+  rw [sub_res32, ← ex]
+  simp only [BitVec.toNat_setWidth, BitVec.toNat_sub, BitVec.toNat_ofInt]
+  have h0 : BitVec.toNat (0 : BitVec 32) = 0 := rfl
+  omega
+
+/-- A value with its bits turned, at a width, is the low part of one less
+than the negative of what the value comes apart into. -/
+theorem not_low (w : Width) (v : BitVec 64) (X : Int) (ex : BitVec.ofInt 64 X = v) :
+    ((Un.eval (.not w) v).toNat : Int) = (-1 * X + -1) % 2 ^ w.bits := by
+  show ((wide (~~~(BitVec.setWidth w.bits v))).toNat : Int) = _
+  rw [toNat_wide, BitVec.toNat_not, ← ex]
+  cases w <;> simp only [Width.bits, BitVec.toNat_setWidth, BitVec.toNat_ofInt] <;> omega
+
+/-- So many times a value, less what a width holds as often as it goes, is
+so many times what the value comes apart into, less the same. -/
+theorem scaled_low (v : BitVec 64) (A : Int) (ex : BitVec.ofInt 64 A = v) (w : Width) (K : Int) :
+    (v.toNat : Int) % 2 ^ w.bits * K % 2 ^ w.bits = K * A % 2 ^ w.bits := by
+  have ha : (v.toNat : Int) = A % 18446744073709551616 := by
+    rw [← ex, BitVec.toNat_ofInt]; omega
+  have hd : (2 : Int) ^ w.bits ∣ 18446744073709551616 := by cases w <;> decide
+  have h1 : (v.toNat : Int) % 2 ^ w.bits = A % 2 ^ w.bits := by
+    rw [ha, Int.emod_emod_of_dvd _ hd]
+  rw [h1, Int.mul_comm K A, Int.mul_emod A K, Int.mul_emod (A % 2 ^ w.bits) K, Int.emod_emod]
+
+/-- A value shifted left so many bits at a width is the low part of so
+many times what it comes apart into. -/
+theorem shl_low (w : Width) (v n : BitVec 64) (A : Int) (ex : BitVec.ofInt 64 A = v) :
+    ((Bin.eval (.shift .shl w) v n).toNat : Int) = 2 ^ (n.toNat % w.bits) * A % 2 ^ w.bits := by
+  rw [← scaled_low v A ex]
+  show ((wide (ShiftOp.eval .shl Flags.unknown (v.setWidth w.bits) (n.toNat % w.bits)).1).toNat : Int)
+    = _
+  rw [shl_toNat]
+  push_cast
+  rfl
+
+/-- The low part of a product with sign at a width, by a number, is the
+low part of the number, read with its sign at the width, times what the
+value comes apart into. -/
+theorem imul_low (w : Width) (v k : BitVec 64) (A : Int) (ex : BitVec.ofInt 64 A = v) :
+    ((Bin.eval (.imul w) v k).toNat : Int) = (k.setWidth w.bits).toInt * A % 2 ^ w.bits := by
+  rw [← scaled_low v A ex]
+  show ((wide (imulTrunc (v.setWidth w.bits) (k.setWidth w.bits)).1).toNat : Int) = _
+  rw [toNat_wide, imul_res, BitVec.toNat_mul, toNat_cut]
+  have hb := @Int.bmod_emod ((k.setWidth w.bits).toNat : Int) (2 ^ w.bits)
+  rw [← BitVec.toInt_eq_toNat_bmod] at hb
+  push_cast at hb ⊢
+  rw [Int.mul_emod _ (BitVec.toInt _), hb, ← Int.mul_emod]
+
+theorem imul_comm (w : Width) (a b : BitVec 64) : Bin.eval (.imul w) a b = Bin.eval (.imul w) b a := by
+  show wide (imulTrunc _ _).1 = wide (imulTrunc _ _).1
+  rw [imul_res, imul_res, BitVec.mul_comm]
+
+/-- The low half widened with its sign is the value moved up by half of
+what the half holds and cut, less that half: but for wrapping. -/
+theorem sxd_low (v : BitVec 64) :
+    ((Un.eval .sxd v).toNat : Int)
+      = (((Un.eval (.trunc .w32) (v + 2147483648#64)).toNat : Int) - 2147483648)
+        % 18446744073709551616 := by
+  rw [Un.eval, Un.eval, toNat_wide .w32, BitVec.toNat_signExtend, BitVec.msb_eq_decide]
+  rw [BitVec.toNat_setWidth, BitVec.toNat_setWidth, BitVec.toNat_setWidth, BitVec.toNat_add,
+    BitVec.toNat_ofNat, show Width.w32.bits = 32 from rfl]
+  have := v.isLt
+  split <;> rename_i h <;> rw [decide_eq_true_eq] at h <;> omega
+
+/-- The value a narrow one widened with its sign is made from: moved up by
+half of what the narrow width holds, and cut to it; and that half. -/
+def sxBias : NarrowW → Un × BitVec 64
+  | .w8 => (.low8, 128)
+  | .w16 => (.low16, 32768)
+
+theorem sx_low (w : Width) (sw : NarrowW) (v : BitVec 64) :
+    ((Un.eval (.sx w sw) v).toNat : Int)
+      = ((((sxBias sw).1.eval (v + (sxBias sw).2)).toNat : Int) - ((sxBias sw).2.toNat : Int))
+        % 2 ^ w.bits := by
+  have := v.isLt
+  have h8 : BitVec.toNat (128 : BitVec 64) = 128 := rfl
+  have h16 : BitVec.toNat (32768 : BitVec 64) = 32768 := rfl
+  cases w <;> cases sw <;>
+    (rw [Un.eval, toNat_wide, BitVec.toNat_signExtend, BitVec.msb_eq_decide]
+     simp only [sxBias, Un.eval]
+     rw [BitVec.toNat_setWidth, BitVec.toNat_setWidth, BitVec.toNat_setWidth, BitVec.toNat_setWidth,
+       BitVec.toNat_add]
+     simp only [Width.bits, NarrowW.bits]
+     split <;> rename_i h <;> rw [decide_eq_true_eq] at h <;> omega)
+
+/-- What one of a term and a number come to. -/
+theorem Lin.den_one (f : Val → Int) (t : Val) (k : Int) :
+    Lin.den f ⟨[(1, t)], k⟩ = 1 * f t + 0 + k := rfl
+
+/-- **A value cut to its low `k` bits is the low part of what the value
+comes apart into.** -/
+theorem cut_low (ρ : Env) (t x : Val) {k : Nat} (hk : k ≤ 64)
+    (ht : (t.den ρ).toNat = (x.den ρ).toNat % 2 ^ k) :
+    0 < (2 : Int) ^ k ∧ natOf ρ t = (x.int true).den (natOf ρ) % 2 ^ k := by
+  refine ⟨by exact_mod_cast Nat.two_pow_pos k, ?_⟩
+  show ((t.den ρ).toNat : Int) = _
+  rw [ht]
+  exact_mod_cast low_int ρ x hk
+
+/-! ## What a term is the low part of
+
+Of each operator that is a sum but for wrapping: the sum, as whole numbers,
+and how much the part holds. One more such operator is one more line. -/
+
+/-- Of an operator on one value: a value cut to a width, widened with
+noughts from a narrow one, or its low byte or two, is the low part of the
+value; its negative, or its bits turned, of the negative, or one less; a
+value shifted left, of what that comes apart into; a value widened with its
+sign, of the value moved up by half and cut, less that half. -/
+def halfUn (o : Un) (x : Val) : Option (Lin Int × Int) :=
+  match o with
+  | .trunc w => some (x.int true, 2 ^ w.bits)
+  | .zx _ sw => some (x.int true, 2 ^ sw.bits)
+  | .low8 => some (x.int true, 256)
+  | .low16 => some (x.int true, 65536)
+  | .neg .w32 => some ((x.int true).scale (-1), 4294967296)
+  | .neg .w64 => some ((Val.un (.neg .w64) x).int true, 18446744073709551616)
+  | .not w => some (Lin.addMul (-1) (x.int true) ⟨[], -1⟩, 2 ^ w.bits)
+  | .shl k => some ((Val.un (.shl k) x).int true, 18446744073709551616)
+  | .sxd =>
+    some (⟨[(1, .un (.trunc .w32) (.bin .add x (.lit 2147483648)))], -2147483648⟩,
+      18446744073709551616)
+  | .sx w sw =>
+    some (⟨[(1, .un (sxBias sw).1 (.bin .add x (.lit (sxBias sw).2)))],
+      -((sxBias sw).2.toNat : Int)⟩, 2 ^ w.bits)
+  | .popcnt _ | .bswap _ | .signFill _ => none
+
+theorem halfUn_mod (ρ : Env) {o : Un} {x : Val} {E : Lin Int} {M : Int}
+    (h : halfUn o x = some (E, M)) : 0 < M ∧ natOf ρ (.un o x) = E.den (natOf ρ) % M := by
+  cases o with
+  | trunc w =>
     cases h
-    refine ⟨by omega, ?_⟩
-    have ex := Val.int_den ρ true x
-    have ey := Val.int_den ρ true y
-    rw [Lin.addMul_den]
-    generalize (x.int true).den (natOf ρ) = X at *
-    generalize (y.int true).den (natOf ρ) = Y at *
-    show ((BitVec.setWidth 64 (addCarry (BitVec.setWidth 32 (x.den ρ))
-      (BitVec.setWidth 32 (y.den ρ)) false).1).toNat : Int) = _
-    rw [add_res32, ← ex, ← ey]
-    simp only [BitVec.toNat_setWidth, BitVec.toNat_add, BitVec.toNat_ofInt]
-    omega
-  · next fl x y =>
-    cases h
-    refine ⟨by omega, ?_⟩
-    have ex := Val.int_den ρ true x
-    have ey := Val.int_den ρ true y
-    rw [Lin.addMul_den]
-    generalize (x.int true).den (natOf ρ) = X at *
-    generalize (y.int true).den (natOf ρ) = Y at *
-    show ((BitVec.setWidth 64 (subBorrow (BitVec.setWidth 32 (x.den ρ))
-      (BitVec.setWidth 32 (y.den ρ)) false).1).toNat : Int) = _
-    rw [sub_res32, ← ex, ← ey]
-    simp only [BitVec.toNat_setWidth, BitVec.toNat_sub, BitVec.toNat_ofInt]
-    omega
-  · next w x =>
-    cases h
-    refine low x w.bits (by cases w <;> decide) ?_ rfl rfl
+    refine cut_low ρ _ x (by cases w <;> decide) ?_
     show (wide (BitVec.setWidth w.bits (x.den ρ))).toNat = _
     rw [toNat_wide, BitVec.toNat_setWidth]
-  · next w sw x =>
+  | zx w sw =>
     cases h
-    refine low x sw.bits (by cases sw <;> decide) ?_ rfl rfl
+    refine cut_low ρ _ x (by cases sw <;> decide) ?_
     show (wide (w := w) ((BitVec.setWidth sw.bits (x.den ρ)).setWidth w.bits)).toNat = _
     rw [toNat_wide, BitVec.toNat_setWidth, BitVec.toNat_setWidth]
     exact Nat.mod_eq_of_lt (Nat.lt_of_lt_of_le (Nat.mod_lt _ (Nat.two_pow_pos _))
       (Nat.pow_le_pow_right (by omega) (by cases w <;> cases sw <;> decide)))
-  · next x =>
+  | low8 =>
     cases h
-    refine low x 8 (by decide) ?_ rfl rfl
+    refine cut_low ρ _ x (k := 8) (by decide) ?_
     show ((BitVec.setWidth 8 (x.den ρ)).setWidth 64).toNat = _
     rw [BitVec.toNat_setWidth, BitVec.toNat_setWidth,
       Nat.mod_eq_of_lt (Nat.lt_of_lt_of_le (Nat.mod_lt _ (Nat.two_pow_pos 8)) (by decide))]
-  · next x =>
+  | low16 =>
     cases h
-    refine low x 16 (by decide) ?_ rfl rfl
+    refine cut_low ρ _ x (k := 16) (by decide) ?_
     show ((BitVec.setWidth 16 (x.den ρ)).setWidth 64).toNat = _
     rw [BitVec.toNat_setWidth, BitVec.toNat_setWidth,
       Nat.mod_eq_of_lt (Nat.lt_of_lt_of_le (Nat.mod_lt _ (Nat.two_pow_pos 16)) (by decide))]
-  · next w fl x m =>
-    obtain ⟨k, hk, hE⟩ := Option.map_eq_some_iff.mp h
-    cases hE
-    obtain ⟨hm, hkw⟩ := maskBits_spec hk
-    refine low x k (Nat.le_trans hkw (by cases w <;> decide)) ?_ rfl rfl
-    show (wide (BitVec.setWidth w.bits (x.den ρ) &&& BitVec.setWidth w.bits m)).toNat = _
-    have hmw : m.toNat < 2 ^ w.bits := by
-      have := Nat.pow_le_pow_right (n := 2) (by omega) hkw
-      have := Nat.two_pow_pos k
-      omega
-    rw [toNat_wide, BitVec.toNat_and, BitVec.toNat_setWidth, BitVec.toNat_setWidth,
-      Nat.mod_eq_of_lt hmw, hm, Nat.and_two_pow_sub_one_eq_mod,
-      Nat.mod_mod_of_dvd _ (Nat.pow_dvd_pow 2 hkw)]
-  · cases h; exact ⟨by omega, int_mod ρ true _⟩
-  · cases h; exact ⟨by omega, int_mod ρ true _⟩
-  · cases h; exact ⟨by omega, int_mod ρ true _⟩
+  | neg w =>
+    cases w with
+    | w32 =>
+      cases h
+      refine ⟨by omega, ?_⟩
+      rw [Lin.scale_den]
+      exact neg32_low _ _ (Val.int_den ρ true x)
+    | w64 => cases h; exact ⟨by omega, int_mod ρ true _⟩
+  | not w =>
+    cases h
+    refine ⟨by exact_mod_cast Nat.two_pow_pos w.bits, ?_⟩
+    rw [show (Lin.addMul (-1) (x.int true) ⟨[], -1⟩).den (natOf ρ)
+        = -1 * (x.int true).den (natOf ρ) + -1 by rw [Lin.addMul_den]; simp [Lin.den, multDen]]
+    exact not_low w _ _ (Val.int_den ρ true x)
+  | shl k => cases h; exact ⟨by omega, int_mod ρ true _⟩
+  | sxd =>
+    cases h
+    refine ⟨by omega, ?_⟩
+    have e := sxd_low (x.den ρ)
+    have hU : natOf ρ (.un (.trunc .w32) (.bin .add x (.lit 2147483648)))
+        = ((Un.eval (.trunc .w32) (x.den ρ + 2147483648#64)).toNat : Int) := rfl
+    rw [Lin.den_one, hU]
+    show ((Un.eval .sxd (x.den ρ)).toNat : Int) = _
+    omega
+  | sx w sw =>
+    cases h
+    refine ⟨by exact_mod_cast Nat.two_pow_pos w.bits, ?_⟩
+    have e := sx_low w sw (x.den ρ)
+    have hU : natOf ρ (.un (sxBias sw).1 (.bin .add x (.lit (sxBias sw).2)))
+        = (((sxBias sw).1.eval (x.den ρ + (sxBias sw).2)).toNat : Int) := rfl
+    rw [Lin.den_one, hU]
+    show ((Un.eval (.sx w sw) (x.den ρ)).toNat : Int) = _
+    rw [e]
+    congr 1
+    omega
+  | popcnt _ => cases h
+  | bswap _ => cases h
+  | signFill _ => cases h
+
+/-- Of an operator on two values that leaves the flags alone: a sum of
+whole values is the low sixty-four bits of what it comes apart into; a
+value shifted left at a width by a number written out, or multiplied with
+its sign by one, the low part of so many times the value. -/
+def halfBin (o : Bin) (a b : Val) : Option (Lin Int × Int) :=
+  match o with
+  | .add => some ((Val.bin .add a b).int true, 18446744073709551616)
+  | .shift .shl w =>
+    b.lit?.map fun n => ((a.int true).scale (2 ^ (n.toNat % w.bits)), 2 ^ w.bits)
+  | .shift _ _ => none
+  | .imul w =>
+    match b.lit? with
+    | some k => some ((a.int true).scale (k.setWidth w.bits).toInt, 2 ^ w.bits)
+    | none => a.lit?.map fun k => ((b.int true).scale (k.setWidth w.bits).toInt, 2 ^ w.bits)
+
+theorem halfBin_mod (ρ : Env) {o : Bin} {a b : Val} {E : Lin Int} {M : Int}
+    (h : halfBin o a b = some (E, M)) : 0 < M ∧ natOf ρ (.bin o a b) = E.den (natOf ρ) % M := by
+  cases o with
+  | add => cases h; exact ⟨by omega, int_mod ρ true _⟩
+  | shift op w =>
+    cases op with
+    | shl =>
+      obtain ⟨n, hn, hE⟩ := Option.map_eq_some_iff.mp h
+      cases hE
+      refine ⟨by exact_mod_cast Nat.two_pow_pos w.bits, ?_⟩
+      rw [Lin.scale_den]
+      show ((Bin.eval (.shift .shl w) (a.den ρ) (b.den ρ)).toNat : Int) = _
+      rw [Val.lit?_den hn]
+      exact shl_low w _ n _ (Val.int_den ρ true a)
+    | shr => cases h
+    | sar => cases h
+    | rol => cases h
+    | ror => cases h
+  | imul w =>
+    simp only [halfBin] at h
+    split at h
+    · next k hk =>
+      cases h
+      refine ⟨by exact_mod_cast Nat.two_pow_pos w.bits, ?_⟩
+      rw [Lin.scale_den]
+      show ((Bin.eval (.imul w) (a.den ρ) (b.den ρ)).toNat : Int) = _
+      rw [Val.lit?_den hk]
+      exact imul_low w _ k _ (Val.int_den ρ true a)
+    · obtain ⟨k, hk, hE⟩ := Option.map_eq_some_iff.mp h
+      cases hE
+      refine ⟨by exact_mod_cast Nat.two_pow_pos w.bits, ?_⟩
+      rw [Lin.scale_den]
+      show ((Bin.eval (.imul w) (a.den ρ) (b.den ρ)).toNat : Int) = _
+      rw [Val.lit?_den hk, imul_comm]
+      exact imul_low w _ k _ (Val.int_den ρ true b)
+
+/-- A number below two to the `n`, with all but its low `k` bits kept, is
+the number less what its low `k` bits come to. -/
+theorem and_high {y n k : Nat} (hy : y < 2 ^ n) (hk : k ≤ n) :
+    y &&& (2 ^ n - 2 ^ k) = y - y % 2 ^ k := by
+  have e1 : 2 ^ n - 2 ^ k = (2 ^ (n - k) - 1) <<< k := by
+    rw [Nat.shiftLeft_eq, Nat.sub_mul, Nat.one_mul, ← Nat.pow_add, Nat.sub_add_cancel hk]
+  have e2 : y - y % 2 ^ k = (y >>> k) <<< k := by
+    rw [Nat.shiftLeft_eq, Nat.shiftRight_eq_div_pow]
+    have := Nat.div_add_mod y (2 ^ k)
+    rw [Nat.mul_comm] at this
+    omega
+  rw [e1, e2]
+  apply Nat.eq_of_testBit_eq
+  intro i
+  rw [Nat.testBit_and, Nat.testBit_shiftLeft, Nat.testBit_shiftLeft, Nat.testBit_shiftRight,
+    Nat.testBit_two_pow_sub_one]
+  by_cases hki : k ≤ i
+  · rw [show k + (i - k) = i by omega]
+    by_cases hin : i < n
+    · simp [hki, show i - k < n - k by omega]
+    · have : y.testBit i = false :=
+        Nat.testBit_lt_two_pow (Nat.lt_of_lt_of_le hy (Nat.pow_le_pow_right (by omega) (by omega)))
+      simp [this]
+  · simp [hki]
+
+/-- A mask of all but the low `k` bits of a width: what `k` is, where a
+number written out is one. -/
+def clearBits (w : Width) (m : BitVec 64) : Option Nat :=
+  if m.toNat % 2 ^ w.bits + 2 ^ Nat.log2 (2 ^ w.bits - m.toNat % 2 ^ w.bits) = 2 ^ w.bits ∧
+      Nat.log2 (2 ^ w.bits - m.toNat % 2 ^ w.bits) ≤ w.bits then
+    some (Nat.log2 (2 ^ w.bits - m.toNat % 2 ^ w.bits))
+  else none
+
+theorem clearBits_spec {w : Width} {m : BitVec 64} {k : Nat} (h : clearBits w m = some k) :
+    m.toNat % 2 ^ w.bits + 2 ^ k = 2 ^ w.bits ∧ k ≤ w.bits := by
+  unfold clearBits at h
+  split at h
+  · next hc => cases h; exact hc
   · cases h
+
+/-- A value as a width holds it: itself at sixty-four bits, cut at
+thirty-two. -/
+def cutTo (w : Width) (x : Val) : Val :=
+  match w with
+  | .w64 => x
+  | .w32 => .un (.trunc .w32) x
+
+theorem cutTo_nat (ρ : Env) (w : Width) (x : Val) :
+    ((cutTo w x).den ρ).toNat = (x.den ρ).toNat % 2 ^ w.bits := by
+  cases w with
+  | w64 => exact (Nat.mod_eq_of_lt (x.den ρ).isLt).symm
+  | w32 =>
+    show (wide (w := .w32) ((x.den ρ).setWidth 32)).toNat = _
+    rw [toNat_wide, BitVec.toNat_setWidth]
+
+/-- A value masked by a number written out, at a width: where the mask is
+of its low bits, the low part of the value; where it is of all but its low
+bits, the value as the width holds it less its low bits, which is a term
+of the first kind. -/
+def halfAnd (w : Width) (x : Val) (m : BitVec 64) : Option (Lin Int × Int) :=
+  match maskBits w m with
+  | some k => some (x.int true, 2 ^ k)
+  | none =>
+    (clearBits w m).map fun k =>
+      (⟨[(1, cutTo w x), (-1, .fop (.alu .and w) (.lit Flags.unknown) x
+          (.lit (BitVec.ofNat 64 (2 ^ k - 1))))], 0⟩, 18446744073709551616)
+
+/-- Of an operator on two values with the flags: a sum or difference at a
+width is the low part of the sum or difference itself, each number with its
+sign; a value masked by a number written out, on either side, as said. -/
+def halfFop (o : FOp) (x y : Val) : Option (Lin Int × Int) :=
+  match o with
+  | .alu .add w => some (Lin.addMul 1 (x.int true) (y.int true), 2 ^ w.bits)
+  | .alu .sub w => some (Lin.addMul (-1) (y.int true) (x.int true), 2 ^ w.bits)
+  | .alu .and w =>
+    match y.lit? with
+    | some m => halfAnd w x m
+    | none => x.lit?.bind fun m => halfAnd w y m
+  | _ => none
+
+/-- A value masked to its low `k` bits at a width is the low part of the
+value. -/
+theorem mask_low (ρ : Env) (t x : Val) {w : Width} {m : BitVec 64} {k : Nat}
+    (hk : maskBits w m = some k)
+    (ht : (t.den ρ).toNat = (wide (BitVec.setWidth w.bits (x.den ρ) &&& BitVec.setWidth w.bits m)).toNat) :
+    0 < (2 : Int) ^ k ∧ natOf ρ t = (x.int true).den (natOf ρ) % 2 ^ k := by
+  obtain ⟨hm, hkw⟩ := maskBits_spec hk
+  refine cut_low ρ t x (Nat.le_trans hkw (by cases w <;> decide)) ?_
+  have hmw : m.toNat < 2 ^ w.bits := by
+    have := Nat.pow_le_pow_right (n := 2) (by omega) hkw
+    have := Nat.two_pow_pos k
+    omega
+  rw [ht, toNat_wide, BitVec.toNat_and, BitVec.toNat_setWidth, BitVec.toNat_setWidth,
+    Nat.mod_eq_of_lt hmw, hm, Nat.and_two_pow_sub_one_eq_mod,
+    Nat.mod_mod_of_dvd _ (Nat.pow_dvd_pow 2 hkw)]
+
+theorem Lin.den_two (f : Val → Int) (a b : Val) :
+    Lin.den f ⟨[(1, a), (-1, b)], 0⟩ = 1 * f a + (-1 * f b + 0) + 0 := rfl
+
+theorem halfAnd_mod (ρ : Env) (t x : Val) {w : Width} {m : BitVec 64} {E : Lin Int} {M : Int}
+    (h : halfAnd w x m = some (E, M))
+    (ht : (t.den ρ).toNat
+      = (wide (BitVec.setWidth w.bits (x.den ρ) &&& BitVec.setWidth w.bits m)).toNat) :
+    0 < M ∧ natOf ρ t = E.den (natOf ρ) % M := by
+  unfold halfAnd at h
+  split at h
+  · next k hk => cases h; exact mask_low ρ t x hk ht
+  · obtain ⟨k, hk, hE⟩ := Option.map_eq_some_iff.mp h
+    cases hE
+    obtain ⟨hm, hkw⟩ := clearBits_spec hk
+    refine ⟨by omega, ?_⟩
+    have hw : (2 : Nat) ^ w.bits ≤ 2 ^ 64 := Nat.pow_le_pow_right (by omega) (by cases w <;> decide)
+    have hkp : (2 : Nat) ^ k ≤ 2 ^ w.bits := Nat.pow_le_pow_right (by omega) hkw
+    have hk1 := Nat.two_pow_pos k
+    have hy : (x.den ρ).toNat % 2 ^ w.bits < 2 ^ w.bits := Nat.mod_lt _ (Nat.two_pow_pos _)
+    -- the term itself: the value as the width holds it, less its low bits
+    have e1 : (t.den ρ).toNat
+        = (x.den ρ).toNat % 2 ^ w.bits - (x.den ρ).toNat % 2 ^ w.bits % 2 ^ k := by
+      rw [ht, toNat_wide, BitVec.toNat_and, BitVec.toNat_setWidth, BitVec.toNat_setWidth,
+        show m.toNat % 2 ^ w.bits = 2 ^ w.bits - 2 ^ k by omega, and_high hy hkw]
+    -- its low bits, as the term that masks them
+    have e2 : ((Val.fop (.alu .and w) (.lit Flags.unknown) x
+        (.lit (BitVec.ofNat 64 (2 ^ k - 1)))).den ρ).toNat
+        = (x.den ρ).toNat % 2 ^ w.bits % 2 ^ k := by
+      show (wide (BitVec.setWidth w.bits (x.den ρ)
+        &&& BitVec.setWidth w.bits (BitVec.ofNat 64 (2 ^ k - 1)))).toNat = _
+      rw [toNat_wide, BitVec.toNat_and, BitVec.toNat_setWidth, BitVec.toNat_setWidth,
+        BitVec.toNat_ofNat, Nat.mod_eq_of_lt (show 2 ^ k - 1 < 2 ^ 64 by omega),
+        Nat.mod_eq_of_lt (show 2 ^ k - 1 < 2 ^ w.bits by omega), Nat.and_two_pow_sub_one_eq_mod]
+    have e3 := cutTo_nat ρ w x
+    rw [Lin.den_two]
+    show ((t.den ρ).toNat : Int)
+      = (1 * (((cutTo w x).den ρ).toNat : Int) + (-1 * ((Val.den ρ _).toNat : Int) + 0) + 0) % _
+    rw [e1, e2, e3]
+    have := Nat.mod_le ((x.den ρ).toNat % 2 ^ w.bits) (2 ^ k)
+    omega
+
+theorem halfFop_mod (ρ : Env) {o : FOp} {fl : FlagsT} {x y : Val} {E : Lin Int} {M : Int}
+    (h : halfFop o x y = some (E, M)) :
+    0 < M ∧ natOf ρ (.fop o fl x y) = E.den (natOf ρ) % M := by
+  cases o with
+  | alu op w =>
+    cases op with
+    | add =>
+      cases h
+      refine ⟨by exact_mod_cast Nat.two_pow_pos w.bits, ?_⟩
+      have ex := Val.int_den ρ true x
+      have ey := Val.int_den ρ true y
+      rw [Lin.addMul_den]
+      generalize (x.int true).den (natOf ρ) = X at *
+      generalize (y.int true).den (natOf ρ) = Y at *
+      show ((wide (addCarry (BitVec.setWidth w.bits (x.den ρ))
+        (BitVec.setWidth w.bits (y.den ρ)) false).1).toNat : Int) = _
+      rw [toNat_wide, add_res_w, ← ex, ← ey]
+      cases w <;>
+        simp only [Width.bits, BitVec.toNat_setWidth, BitVec.toNat_add, BitVec.toNat_ofInt] <;>
+        omega
+    | sub =>
+      cases h
+      refine ⟨by exact_mod_cast Nat.two_pow_pos w.bits, ?_⟩
+      have ex := Val.int_den ρ true x
+      have ey := Val.int_den ρ true y
+      rw [Lin.addMul_den]
+      generalize (x.int true).den (natOf ρ) = X at *
+      generalize (y.int true).den (natOf ρ) = Y at *
+      show ((wide (subBorrow (BitVec.setWidth w.bits (x.den ρ))
+        (BitVec.setWidth w.bits (y.den ρ)) false).1).toNat : Int) = _
+      rw [toNat_wide, sub_res, ← ex, ← ey]
+      cases w <;>
+        simp only [Width.bits, BitVec.toNat_setWidth, BitVec.toNat_sub, BitVec.toNat_ofInt] <;>
+        omega
+    | and =>
+      simp only [halfFop] at h
+      split at h
+      · next m hm =>
+        refine halfAnd_mod ρ _ x h ?_
+        show (wide (BitVec.setWidth w.bits (x.den ρ) &&& BitVec.setWidth w.bits (y.den ρ))).toNat = _
+        rw [Val.lit?_den hm]
+      · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
+        refine halfAnd_mod ρ _ y h ?_
+        show (wide (BitVec.setWidth w.bits (x.den ρ) &&& BitVec.setWidth w.bits (y.den ρ))).toNat = _
+        rw [Val.lit?_den hm, BitVec.and_comm]
+    | adc => cases h
+    | sbb => cases h
+    | cmp => cases h
+    | or => cases h
+    | xor => cases h
+  | cmov _ _ => cases h
+  | setcc _ => cases h
+  | condByte _ => cases h
+
+/-- **What a term is the low part of**, as a whole number, and how much
+the part holds; by the operator that made it. -/
+def halfOf : Val → Option (Lin Int × Int)
+  | .un o x => halfUn o x
+  | .bin o a b => halfBin o a b
+  | .fop o _ x y => halfFop o x y
+  | _ => none
+
+theorem halfOf_mod (ρ : Env) {t : Val} {E : Lin Int} {M : Int} (h : halfOf t = some (E, M)) :
+    0 < M ∧ natOf ρ t = E.den (natOf ρ) % M := by
+  cases t with
+  | un o x => exact halfUn_mod ρ h
+  | bin o a b => exact halfBin_mod ρ h
+  | fop o fl x y => exact halfFop_mod ρ h
+  | lit _ => cases h
+  | var _ => cases h
+  | bvar _ _ => cases h
+  | slot _ => cases h
+  | tri _ _ _ _ => cases h
+  | app _ _ _ => cases h
 
 /-! ## The least and the most a sum of multiples can be
 
@@ -656,10 +1034,13 @@ def inside : Nat → Val → List Val
       | none => []
 
 /-- A term with every term it is made of through low parts; of a number
-written out, none. -/
+written out, none. What a term is the low part of is of terms no deeper
+than its own operands; but for a value widened with its sign, which is of
+one a step deeper, itself of the value's: so twice as far in as the term is
+deep, and one more, reaches them all. -/
 def termsIn : Val → List Val
   | .lit _ => []
-  | v => inside v.height v
+  | v => inside (2 * v.height + 1) v
 
 /-- The things known, and with them what a range known of a term says of
 its whole number: that it lies in the range; one way or the other, where
