@@ -101,7 +101,8 @@ theorem Regards.parts {Γ Δ : Ctx} {E F : List Region} {L : List Part}
     (hΓ : Γ.held = E ++ F) (hΔ : Δ.held = L.map (partRegion E) ++ F)
     (hok : ∀ x ∈ L, PartOk E x) (hap : L.Pairwise PartsApart)
     (hcov : ∀ i b, E[i]? = some b → ∀ o, o < b.2.size →
-      ∃ x ∈ L, x.1 = i ∧ x.2.1 ≤ o ∧ o < x.2.1 + x.2.2.size) :
+      ∃ x ∈ L, x.1 = i ∧ x.2.1 ≤ o ∧ o < x.2.1 + x.2.2.size)
+    (hrows : ∀ r ∈ Δ.rows, r ∈ Γ.rows := by exact fun _ h => h) :
     Regards fetch sys Ψ Γ Δ := by
   intro k Ψ' he hwf s hw
   have hE : ∀ b ∈ E, b ∈ Γ.held := fun b hb => by rw [hΓ]; exact List.mem_append_left _ hb
@@ -132,6 +133,7 @@ theorem Regards.parts {Γ Δ : Ctx} {E F : List Region} {L : List Part}
       heap := hw.heap
       text := hw.text
       said := hw.said
+      rows := fun r hr => hw.rows r (hrows r hr)
       complete := fun a ha => by
         rcases hw.complete a ha with ⟨b, hb, hin⟩ | hr
         · rw [hΓ] at hb
@@ -235,6 +237,7 @@ theorem WellTyped.nameSlot {n : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch
       heap := h.heap
       text := h.text
       said := h.said
+      rows := h.rows
       complete := fun x hx => by
         rcases h.complete x hx with ⟨c, hc, hin⟩ | hr
         · obtain ⟨m, hm, rfl⟩ := List.mem_iff_getElem.mp hc

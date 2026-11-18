@@ -114,6 +114,7 @@ theorem WellTyped.toBlock {n : Nat} {Γ : Ctx} {s : State} {a : BitVec 64} {L : 
       rcases MemTy.add_cases hl with ⟨rfl, rfl⟩ | ⟨-, hl'⟩
       · rw [hsaid] at hb; cases hb
       · exact h.said x l b hl' hb
+    rows := fun r hr i hi => (h.rows r hr i hi).ext he
     complete := fun x hx => by
       rcases h.complete x hx with ⟨c, hc, hlt⟩ | ⟨base, l, hl, hlt⟩
       · obtain ⟨i, hi, rfl⟩ := List.mem_iff_getElem.mp hc

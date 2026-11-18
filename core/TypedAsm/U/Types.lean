@@ -27,6 +27,20 @@ namespace TypedAsm.U
 /-- A sequence of values: what a family of contexts is indexed by. -/
 abbrev Seq := Nat → BitVec 64
 
+/-- A row of values in memory the code holds: `count` of them from an
+address, each `stride` bytes on from the last, each one byte or eight, and
+of each the same thing known. -/
+structure RowOf (τ : Type) where
+  addr : BitVec 64
+  count : BitVec 64
+  stride : Nat
+  byte : Bool
+  ty : τ
+
+/-- The value a row has at an address: the byte there, or the eight. -/
+def cellAt (s : State) (byte : Bool) (a : BitVec 64) : BitVec 64 :=
+  if byte then (s.load8 a).setWidth 64 else s.load64 a
+
 /-- A description of the machine at one program point, with `τ` what may be
 known of a value. -/
 structure CtxOf (τ : Type) where
@@ -40,6 +54,10 @@ structure CtxOf (τ : Type) where
   held : List (BitVec 64 × ShapeOf (BitVec 64)) := []
   /-- What is known of values: each entry says something of one. -/
   known : List (BitVec 64 × τ) := []
+  /-- What is known of the values memory holds in rows: of each value of a
+  row, what the row says. It is so of memory as it is; what is stored over
+  a row's values may end it. -/
+  rows : List (RowOf τ) := []
 
 /-- What a family of contexts ranges over: values; the flags; and regions
 held, whatever they are. Code that wants a family is safe to enter at each
@@ -209,6 +227,9 @@ structure Matches (H : Ty → BitVec 64 → Prop) (Ψ : MemTy) (Γ : Ctx) (s : S
     ∀ k (hk : k < bs.length), s.mem (a + BitVec.ofNat 64 k) = bs[k]
   /-- The held regions are there and hold what the context says. -/
   held : HeldOk Ψ Γ s
+  /-- Each value of each row is as the row says. -/
+  rows : ∀ r ∈ Γ.rows, ∀ i, i < r.count.toNat →
+    H r.ty (cellAt s r.byte (r.addr + BitVec.ofNat 64 (r.stride * i)))
   /-- Every byte of memory the machine can touch lies in a region the
   context holds or in a block of the memory typing. With the rest, the held
   regions and the blocks are the accessible memory, each byte once: the

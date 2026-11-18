@@ -20,7 +20,7 @@ are now the program's. -/
 theorem WellTyped.mapZero {a : BitVec 64} {size : Nat}
     (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF) (hal : a.toNat % 4096 = 0)
     (hsz4 : size % 4096 = 0) (hfit : a.toNat + size ≤ addrTop) (hlt : size < 2 ^ 64)
-    (hU : ∀ x : BitVec 64, (x - a).toNat < size → s.perm x = .none) :
+    (hU : ∀ x : BitVec 64, (x - a).toNat < size → s.perm x = .none) (hrows : Γ.rows = []) :
     WellTyped fetch sys Ψ n { Γ with held := (a, ⟨size, []⟩) :: Γ.held } (s.mapZero a size) := by
   have hnew : (s.mapZero a size).canWrite a size = true := by
     rw [State.canWrite_iff]
@@ -83,6 +83,10 @@ theorem WellTyped.mapZero {a : BitVec 64} {size : Nat}
         rw [hn] at hr
         exact absurd hr (by decide)
       · exact h.said x l b hl hb k hk
+    rows := fun r hr => by
+      have hr' : r ∈ Γ.rows := hr
+      rw [hrows] at hr'
+      cases hr'
     complete := fun x hx => by
       rw [State.perm_mapZero s hal hsz4 hfit] at hx
       split at hx
@@ -112,9 +116,9 @@ theorem WellTyped.mapZero {a : BitVec 64} {size : Nat}
 theorem WellTyped.mapZero_held {a : BitVec 64} {size : Nat}
     (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF) (hal : a.toNat % 4096 = 0)
     (hsz4 : size % 4096 = 0) (hfit64 : a.toNat + size ≤ addrTop)
-    (hlt : size < 2 ^ 64) (hun : s.unmapped a size = true) :
+    (hlt : size < 2 ^ 64) (hun : s.unmapped a size = true) (hrows : Γ.rows = []) :
     WellTyped fetch sys Ψ n { Γ with held := (a, ⟨size, []⟩) :: Γ.held } (s.mapZero a size) :=
-  h.mapZero hΨ hal hsz4 hfit64 hlt fun _ hx => Linux.perm_of_unmapped hal hfit64 hun hx
+  h.mapZero hΨ hal hsz4 hfit64 hlt (fun _ hx => Linux.perm_of_unmapped hal hfit64 hun hx) hrows
 
 /-- **A call that hands back fresh memory** returns with an error number in
 `rax`, or with the address of whole pages that the context then holds, as
@@ -123,7 +127,7 @@ space a program's memory is in. -/
 theorem Steps.map {D : SysDesc} (hD : Describes sys D) {Γ : Ctx} {next : BitVec 64}
     (hk : D.kind (Γ.val .rax) = some .map) (hdi : Γ.val .rdi = 0)
     (hpre : ∀ n, ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, s.rip = next →
-      WellTyped fetch sys Ψ' n Γ s → D.pre s) :
+      WellTyped fetch sys Ψ' n Γ s → D.pre s) (hrows : Γ.rows = []) :
     Steps fetch sys Ψ .syscall next Γ fun t Γ' => t = next ∧ ∃ v r,
       (SysErr v ∧ Γ' = Γ.afterSys v r next) ∨
       (v.toNat % 4096 = 0 ∧ v.toNat + pages (Γ.val .rsi) ≤ addrTop ∧
@@ -140,7 +144,7 @@ theorem Steps.map {D : SysDesc} (hD : Describes sys D) {Γ : Ctx} {next : BitVec
   · refine ⟨_, hst, _, ⟨hrip, a, w.saved 0, .inr ⟨hal, hfit, rfl⟩⟩, ?_⟩
     have hT : addrTop = 0x7ffffffff000 := rfl
     have h4 : pages (Γ.val .rsi) % 4096 = 0 := Nat.mul_mod_left _ _
-    have hH := hw.mapZero_held hwf hal h4 hfit (by omega) hun
+    have hH := hw.mapZero_held hwf hal h4 hfit (by omega) hun hrows
     rw [← hrip]
     exact hH.ret a w
 

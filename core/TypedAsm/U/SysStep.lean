@@ -202,7 +202,7 @@ theorem fillsHeld_sound {D : SysDesc} (hD : Describes sys D) {ρ : Env} {plain :
         (by show o.nat ρ + _ ≤ S.size.nat ρ; omega) rfl
         (fun p hp => by
           have := HeldS.clearT_mem hg hp
-          exact ⟨this.1, by omega⟩)
+          exact ⟨this.1, by omega⟩) rfl
       have ha' : (Γ.den ρ).val b = base.den ρ + BitVec.ofNat 64 (o.nat ρ) := by
         show (Γ.regs.get b).den ρ = _
         rw [ho, Val.nat, BitVec.ofNat_toNat, BitVec.setWidth_eq]
@@ -395,7 +395,7 @@ theorem sysFills_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
                     intro q hq
                     have := hall q hq
                     simp only [ShapeOf.clearOf, Bool.or_eq_true, decide_eq_true_eq] at this ⊢
-                    omega)
+                    omega) rfl
                 exact H.2.2 k' Ψ' he hwf s hw data (by omega) hcw
               refine Steps.mono (Steps.fills hD (by rw [hkind, hrax]; exact hk)
                 (fun n Ψ' he hwf s _ hw => hpre n Ψ' he hwf s hw) hH) ?_
@@ -464,7 +464,7 @@ theorem sysMap_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linu
         have hrdi : (Γ.den ρ).val .rdi = 0 := by rw [← hd0]; exact Val.lit?_den hdi
         have hrsi : (Γ.den ρ).val .rsi = len := Val.lit?_den hlen
         refine Steps.mono (Steps.map hD (by rw [hkind, hrax]; exact hk) hrdi
-          (fun n Ψ' he hwf s _ hw => hpre n Ψ' he hwf s hw)) ?_
+          (fun n Ψ' he hwf s _ hw => hpre n Ψ' he hwf s hw) rfl) ?_
         rintro t Δ ⟨rfl, x, y, hcase⟩
         have hΓ : Γ.den (ρ.setSys k x y) = Γ.den ρ := CtxS.den_setSys ρ k x y Γ hu
         refine ⟨x, y, rfl, ?_⟩

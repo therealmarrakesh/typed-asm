@@ -45,6 +45,8 @@ theorem WellTyped.dropHeld {s' : State} {k : Nat} {a : BitVec 64} {S : Held}
     heap := fun b l hl p hp => by rw [State.load64_congr hmem]; exact h.heap b l hl p hp
     text := fun b l hl ht => by rw [hmem]; exact h.text b l hl ht
     said := fun b l bs hl hs k hk => by rw [hmem]; exact h.said b l bs hl hs k hk
+    rows := fun r hr i hi => by
+      rw [cellAt_congr (fun x => congrFun hmem x)]; exact h.rows r hr i hi
     complete := fun x hx => by
       have hout : ¬ (x - a).toNat < S.size := fun hin => hx (hgone x hin)
       rw [hkept x hout] at hx

@@ -73,7 +73,9 @@ theorem writeShared {a : BitVec 64} {l : Layout} {lo cnt : Nat} {s' : State}
     (hframe : ∀ y, Disjoint (a + BitVec.ofNat 64 lo) cnt y 8 → s'.load64 y = s.load64 y)
     (hmem : ∀ x, BitVec.ofNat 64 cnt ≤ x - (a + BitVec.ofNat 64 lo) → s'.mem x = s.mem x)
     (hvals : ∀ p ∈ l.shape.vals, (p.1 + 8 ≤ lo ∨ lo + cnt ≤ p.1) ∨
-      HasTy fetch sys Ψ n p.2 (s'.load64 (a + BitVec.ofNat 64 p.1))) :
+      HasTy fetch sys Ψ n p.2 (s'.load64 (a + BitVec.ofNat 64 p.1)))
+    (hrows : ∀ r ∈ Γ.rows, ∀ i, i < r.count.toNat →
+      HasTy fetch sys Ψ n r.ty (cellAt s' r.byte (r.addr + BitVec.ofNat 64 (r.stride * i)))) :
     WellTyped fetch sys Ψ n Γ s' := by
   have hsz := hΨ.size_lt a l hl
   have hg : ∀ r, s'.getReg r = s.getReg r := fun r => by simp only [State.getReg, hregs]
@@ -118,6 +120,7 @@ theorem writeShared {a : BitVec 64} {l : Layout} {lo cnt : Nat} {s' : State}
     said := fun b l' bs hl' hs k hk => by
       rw [hM _ (fun hc => hΨ.said_outside_bytes hl (hΨ.said_none hl hwr) hle hc hl' hs hk)]
       exact h.said b l' bs hl' hs k hk
+    rows := hrows
     complete := fun x hx => h.complete x (by rw [← hperm]; exact hx)
     held :=
       { perm := fun c hc => by rw [State.canWrite_congr hperm]; exact h.held.perm c hc
@@ -146,6 +149,7 @@ theorem addKnown (h : WellTyped fetch sys Ψ n Γ s) (fs : List Fact)
     heap := h.heap
     text := h.text
     said := h.said
+    rows := h.rows
     complete := h.complete
     held :=
       { perm := h.held.perm
@@ -240,7 +244,8 @@ theorem Writes.shared {Γ : Ctx} {p a : BitVec 64} {τ : Ty} {Sh : Shape} {off o
     (ha : a + BitVec.ofNat 64 off = p + BitVec.ofNat 64 o) (hin : o + n ≤ Sh.size) (hn : n ≤ 8)
     (hv : ∀ q ∈ Sh.vals, (q.1 + 8 ≤ o ∨ o + n ≤ q.1) ∨ q.2 = .any ∨
       (n = 8 ∧ q.1 = o ∧ ∀ (Ψ' : MemTy) (k : Nat),
-        (∀ g ∈ Γ.known, HasTy fetch sys Ψ' k g.2 g.1) → HasTy fetch sys Ψ' k q.2 v)) :
+        (∀ g ∈ Γ.known, HasTy fetch sys Ψ' k g.2 g.1) → HasTy fetch sys Ψ' k q.2 v))
+    (hrows : Γ.rows = []) :
     Writes fetch sys Ψ Γ a n v Γ := by
   refine ⟨rfl, rfl, fun j Ψ' he hwf s hw => ?_⟩
   obtain ⟨base, l, hl, hsh, hlw, hp⟩ :=
@@ -254,6 +259,7 @@ theorem Writes.shared {Γ : Ctx} {p a : BitVec 64} {τ : Ty} {Sh : Shape} {off o
     (storeN_flags _ _ _ _) (storeN_perm _ _ _ _)
     (fun y hy => storeN_load64_out _ _ _ _ _ hn hy)
     (fun x hx => storeN_mem_out _ _ _ _ _ hn hx) (fun q hq => ?_)
+    (by rw [hrows]; exact fun r hr => nomatch hr)
   rcases hv q hq with hout | hany | ⟨h8, hqo, hcons⟩
   · exact .inl hout
   · exact .inr (by rw [hany]; exact HasTy.any _)

@@ -395,7 +395,7 @@ theorem wholeOk_facts {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat ×
     simp only at hxa hxp
     subst hxa hxp
     exact hx
-  refine hst.matches hnd (fun f hf => ?_) (fun y hy q hq => ?_)
+  refine hst.matches hnd (fun f hf => ?_) (fun y hy q hq => ?_) rfl
   · have e : f = (BitVec.ofNat 64 (stackLow n) + BitVec.ofNat 64 (stackRoom n) + 8,
         Ty.arr (argCount args) (Ty.str 0) 8) := List.mem_singleton.mp hf
     have hr : BitVec.ofNat 64 (stackLow n) + BitVec.ofNat 64 (stackRoom n) = argBase := by

@@ -62,10 +62,10 @@ def argAt (regs : Regs Val) (srcs : List Reg) (j : Nat) : Val :=
   | none => .lit 0
 
 theorem ctx_ext {Γ Δ : Ctx} (hv : Γ.val = Δ.val) (hf : Γ.flags = Δ.flags) (hh : Γ.held = Δ.held)
-    (hk : Γ.known = Δ.known) : Γ = Δ := by
+    (hk : Γ.known = Δ.known) (hr : Γ.rows = Δ.rows := by rfl) : Γ = Δ := by
   cases Γ; cases Δ
-  simp only at hv hf hh hk
-  subst hv hf hh hk
+  simp only at hv hf hh hk hr
+  subst hv hf hh hk hr
   rfl
 
 theorem Steps.mono {fetch : Fetch} {sys : Syscall} {Ψ : MemTy} {i : Instr} {next : BitVec 64}

@@ -90,7 +90,8 @@ theorem Starts.matches {blocks : List (BitVec 64 × Layout)} {kinds : Nat → Op
     {s : State} {H : Ty → BitVec 64 → Prop} (h : Starts blocks kinds Γ s)
     (hnd : blocks.Pairwise fun x y => x.1 ≠ y.1)
     (hknown : ∀ f ∈ Γ.known, H f.2 f.1)
-    (hheap : ∀ x ∈ blocks, ∀ p ∈ x.2.shape.vals, H p.2 (s.load64 (x.1 + BitVec.ofNat 64 p.1))) :
+    (hheap : ∀ x ∈ blocks, ∀ p ∈ x.2.shape.vals, H p.2 (s.load64 (x.1 + BitVec.ofNat 64 p.1)))
+    (hrows : Γ.rows = []) :
     Matches H (MemTy.ofList blocks kinds) Γ s where
   val := h.val
   known := hknown
@@ -100,6 +101,7 @@ theorem Starts.matches {blocks : List (BitVec 64 × Layout)} {kinds : Nat → Op
   text := fun a l hl => h.text (a, l) (MemTy.mem_of_ofList hl)
   said := fun a l bs hl => h.said (a, l) (MemTy.mem_of_ofList hl) bs
   held := h.held
+  rows := fun r hr => by rw [hrows] at hr; cases hr
   complete := fun a ha =>
     (h.complete a ha).imp id fun ⟨x, hx, hlt⟩ =>
       ⟨x.1, x.2, MemTy.ofList_of_mem blocks hnd x hx, hlt⟩
@@ -126,6 +128,6 @@ theorem Starts.safe {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linux
       HasTy fetch sys (MemTy.ofList blocks kinds) n p.2 (s.load64 (x.1 + BitVec.ofNat 64 p.1))) :
     Safe fetch sys s :=
   safe_of_checked hD hkind hpre hcode hk hst hwf hlaws h hl hrip ρ fam hfn fun n _ =>
-    hs.matches hnd (hknown n) (hheap n)
+    hs.matches hnd (hknown n) (hheap n) rfl
 
 end TypedAsm.U

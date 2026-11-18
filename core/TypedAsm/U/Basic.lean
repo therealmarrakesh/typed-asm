@@ -171,6 +171,12 @@ theorem HasTy.sub {τ υ : Ty} {v : BitVec 64} (h : Sub v τ υ) (hv : HasTy fet
     exact fun x => hv (f x)
   | rangeIn lo hi lo' hi' h => exact hasTy_range.mpr (h (hasTy_range.mp hv))
 
+/-- A row's value at an address is the same in a state whose memory is the
+same. -/
+theorem cellAt_congr {s s' : State} (h : ∀ a, s'.mem a = s.mem a) (b : Bool) (a : BitVec 64) :
+    cellAt s' b a = cellAt s b a := by
+  simp only [cellAt, State.load64, State.load32, State.load16, State.load8, h]
+
 /-- Matching a context carries over to any weaker notion of what is known. -/
 theorem Matches.imp {H H' : Ty → BitVec 64 → Prop} {Γ : Ctx} {s : State}
     (h : Matches H Ψ Γ s) (himp : ∀ τ v, H τ v → H' τ v) : Matches H' Ψ Γ s :=
@@ -182,6 +188,7 @@ theorem Matches.imp {H H' : Ty → BitVec 64 → Prop} {Γ : Ctx} {s : State}
     text := h.text
     said := h.said
     held := h.held
+    rows := fun r hr i hi => himp _ _ (h.rows r hr i hi)
     complete := h.complete }
 
 /-- A state well typed at a step count is well typed at every smaller one. -/

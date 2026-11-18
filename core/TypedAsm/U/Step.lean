@@ -408,7 +408,7 @@ theorem writeHeldP_sound {ρ : Env} {plain : Bool} {Γ : CtxS} {a v : Val} {n : 
       have hW := Writes.heldTo (fetch := fetch) (sys := sys) (Ψ := Ψ)
         (S' := (S.put Γ.known o n v).den ρ) (v.den ρ) (CtxS.held_den ρ Γ hl) hin hn
         (by show ((S.put Γ.known o n v).size.den ρ).toNat = _; rw [HeldS.put_size]; rfl)
-        (fun p hp => HeldS.put_mem hg hp)
+        (fun p hp => HeldS.put_mem hg hp) rfl
       have e : CtxS.den ρ { Γ with held := Γ.held.set j (b, S.put Γ.known o n v) }
           = { Γ.den ρ with
               held := (Γ.den ρ).held.set j (b.den ρ, (S.put Γ.known o n v).den ρ) } := by
@@ -645,7 +645,7 @@ theorem writeCell_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk
           show Writes fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n (v.den ρ) (Γ.den ρ)
           exact Writes.shared (v.den ρ) hf (TyS.pointee_den hk ρ hpt) haddr (by rw [ShapeS.den_size]; exact hin) hn
             (fun q hq => ((by rw [ShapeS.den_vals] at hq; exact valsOkS_sound ρ Sh.vals hvals q hq :
-              (q.1 + 8 ≤ o ∨ o + n ≤ q.1) ∨ _)).elim .inl (fun h => .inr (.inr h)))
+              (q.1 + 8 ≤ o ∨ o + n ≤ q.1) ∨ _)).elim .inl (fun h => .inr (.inr h))) rfl
         · cases h
       · cases h
 
@@ -819,7 +819,7 @@ theorem writeRanged_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : Kinds
             (TyS.pointee_den hk ρ hpt) (a := (eaS Γ.regs next m).den ρ) (o := o' + off) (n := n)
             (by rw [ha, BitVec.ofNat_add, BitVec.add_assoc])
             (by rw [ShapeS.den_size]; omega) hn
-            (fun q hq => (hall q hq).elim (fun h => .inl (by omega)) (fun h => .inr (.inl h)))
+            (fun q hq => (hall q hq).elim (fun h => .inl (by omega)) (fun h => .inr (.inl h))) rfl
           rw [← eaS_den]
           exact W.2.2 k' Ψ' he hwf s hw
         · cases h

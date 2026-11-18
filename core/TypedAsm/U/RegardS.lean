@@ -632,9 +632,10 @@ theorem regardWith_sound {sm : List (Val × TyS) → Val → Val → Bool} {ent 
     intro k Ψ' hext hwf s hw
     have hg : ∀ g ∈ Γ.known, HasTy fetch sys Ψ' k (g.2.den ρ) (g.1.den ρ) := knownS hw.known
     obtain ⟨hmap, hok⟩ := partsS_den ρ hg (hsm Ψ' k hg) Γ.held Δ.held P hP
-    refine Regards.parts (E := Γ.held.map (regionDen ρ)) (F := restDen ρ Γ.rest)
+    refine Regards.parts (Γ := Γ.den ρ) (Δ := Δ.den ρ) (E := Γ.held.map (regionDen ρ))
+      (F := restDen ρ Γ.rest)
       (L := P.map (partDen ρ)) ?_ ?_ ?_ rfl ?_ hok (apartS_den ρ hg P hh.1)
-      (coverS_den ρ Γ.held P hh.2) k Ψ' hext hwf s hw
+      (coverS_den ρ Γ.held P hh.2) (fun _ h => nomatch h) k Ψ' hext hwf s hw
     · funext r
       exact (hsm Ψ' k hg _ _ (hr r (mem_allRegs r))).symm
     · show Δ.flags.den ρ = Γ.flags.den ρ
