@@ -257,6 +257,77 @@ readable and executable, which is there even if it is empty. -/
 def segments (base : BitVec 64) (prog : List (Asm L)) : List (Nat × Perm × List Byte) :=
   segmentsFrom (addr prog base) base.toNat (base.toNat, .rx, []) prog
 
+/-! ## Labels found once
+
+`addr` goes through the program for each label asked for. That is the
+definition. To lay a program out, every label's address is found in one
+pass, and each reference looked up among the labels: the same answer, come
+by without going through the program's lines again for each reference.
+Compiled code uses these; what is proved is of the definitions above. -/
+
+/-- Each label of the lines from address `a`, with its address, in order. -/
+def labelsFrom : Nat → List (Asm L) → List (L × Nat)
+  | _, [] => []
+  | a, x :: rest =>
+    match x with
+    | .label l => (l, a) :: labelsFrom a rest
+    | x => labelsFrom (next a x) rest
+
+theorem lookup_labelsFrom (l : L) : (a : Nat) → (prog : List (Asm L)) →
+    (labelsFrom a prog).lookup l = find l a prog
+  | _, [] => rfl
+  | a, x :: rest => by
+    cases x with
+    | label l' =>
+      show ((l', a) :: labelsFrom a rest).lookup l = if l' = l then some a else find l a rest
+      by_cases h : l' = l
+      · subst h
+        simp [List.lookup]
+      · have h' : (l == l') = false := by simpa using fun e => h e.symm
+        simp only [List.lookup, h', h, ↓reduceIte]
+        exact lookup_labelsFrom l a rest
+    | _ => exact lookup_labelsFrom l _ rest
+
+/-- The address of each label, from the labels found once. -/
+def addrIn (ls : List (L × Nat)) (l : L) : BitVec 64 := BitVec.ofNat 64 ((ls.lookup l).getD 0)
+
+theorem addrIn_eq (prog : List (Asm L)) (base : BitVec 64) :
+    addrIn (labelsFrom base.toNat prog) = addr prog base := by
+  funext l
+  simp only [addrIn, addr, lookup_labelsFrom]
+
+/-- `table`, with the labels found once. -/
+def tableC (base : BitVec 64) (prog : List (Asm L)) : List (Nat × Instr × BitVec 64) :=
+  tableFrom (addrIn (labelsFrom base.toNat prog)) base.toNat .rx prog
+
+@[csimp] theorem table_eq_tableC : @table = @tableC := by
+  funext L _ base prog
+  simp only [table, tableC, addrIn_eq]
+
+/-- `parts`, with the labels found once. -/
+def partsC (base : BitVec 64) (prog : List (Asm L)) : List (Nat × Perm × List Byte) :=
+  partsFrom (addrIn (labelsFrom base.toNat prog)) base.toNat .rx prog
+
+@[csimp] theorem parts_eq_partsC : @parts = @partsC := by
+  funext L _ base prog
+  simp only [parts, partsC, addrIn_eq]
+
+/-- `offsetsFit`, with the labels found once. -/
+def offsetsFitC (base : BitVec 64) (prog : List (Asm L)) : Bool :=
+  offsetsFitFrom (addrIn (labelsFrom base.toNat prog)) base.toNat prog
+
+@[csimp] theorem offsetsFit_eq_offsetsFitC : @offsetsFit = @offsetsFitC := by
+  funext L _ base prog
+  simp only [offsetsFit, offsetsFitC, addrIn_eq]
+
+/-- `segments`, with the labels found once. -/
+def segmentsC (base : BitVec 64) (prog : List (Asm L)) : List (Nat × Perm × List Byte) :=
+  segmentsFrom (addrIn (labelsFrom base.toNat prog)) base.toNat (base.toNat, .rx, []) prog
+
+@[csimp] theorem segments_eq_segmentsC : @segments = @segmentsC := by
+  funext L _ base prog
+  simp only [segments, segmentsC, addrIn_eq]
+
 end Asm
 
 end TypedAsm

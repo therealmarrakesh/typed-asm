@@ -407,6 +407,19 @@ theorem imageFast_eq (base : BitVec 64) (prog : List (Asm L)) (start : L) :
   rw [segmentsRev_eq]
   rfl
 
+/-- `imageFast`, with the labels found once. -/
+def imageFastC (base : BitVec 64) (prog : List (Asm L)) (start : L) :
+    List (Nat × Perm × List Byte) :=
+  match segmentsRev (addrIn (labelsFrom base.toNat prog)) base.toNat (base.toNat, .rx, []) prog with
+  | [] => []
+  | (a, p, first) :: rest =>
+    let head := Elf.headers (addrIn (labelsFrom base.toNat prog) start).toNat first.length rest
+    (a - head.length, p, head ++ first) :: rest
+
+@[csimp] theorem imageFast_eq_imageFastC : @imageFast = @imageFastC := by
+  funext L _ base prog start
+  simp only [imageFast, imageFastC, addrIn_eq]
+
 /-- A state with the program in memory as the kernel puts the executable
 file there: each segment's bytes where the program puts them, and every
 page a segment touches with the segment's permission. -/
