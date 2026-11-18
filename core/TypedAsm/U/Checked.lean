@@ -101,13 +101,24 @@ def wholeWhyText (code : List (Asm L)) (l : L) (n : Nat) (ks : List (Nat × Shap
   | some why => "the program is refused:\n" ++ why
   | none => ""
 
-/-- `asm_decide why`: the goal by `decide +kernel`; and where that fails
-and the text `why` has something to say, that said in place of it. -/
-syntax "asm_decide " term:max : tactic
+/-- `asm_decide ok why`: the goal, that the check `ok` is true, by `decide
++kernel`. The check is run first as compiled code, which takes a small
+part of the time: where it fails, the text `why` is the error, and Lean's
+kernel is not asked. Nothing rests on the compiled run: where it passes,
+the proof is the kernel's own run of the check. -/
+syntax "asm_decide " term:max term:max : tactic
 
 open Lean Elab Tactic in
 elab_rules : tactic
-  | `(tactic| asm_decide $why) => do
+  | `(tactic| asm_decide $ok $why) => do
+    let passes ← try
+        unsafe Term.evalTerm Bool (mkConst ``Bool) ok
+      catch _ => pure true
+    unless passes do
+      let msg ← try
+          unsafe Term.evalTerm String (mkConst ``String) why
+        catch _ => pure ""
+      throwError (if msg.isEmpty then "the check fails" else msg)
     try
       evalTactic (← `(tactic| decide +kernel))
     catch e =>
@@ -183,7 +194,8 @@ macro_rules
     cmds := cmds.push (← `(/-- **The check**: the labels' code is typed, and whatever the
       arguments, the state the program is loaded into starts as its entry asks. -/
       theorem $checked : wholeOkWith $code $l $n $ks $bs $pg $ls $k = true := by
-        asm_decide (wholeWhyText $code $l $n $ks $bs $pg $ls $k)))
+        asm_decide (wholeOkWith $code $l $n $ks $bs $pg $ls $k)
+          (wholeWhyText $code $l $n $ks $bs $pg $ls $k)))
     cmds := cmds.push (← `(/-- The state the program is started in with given arguments is the
       one the check is of, in the world it has. -/
       theorem $startEq (args : List (List Byte)) :
