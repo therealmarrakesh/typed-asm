@@ -135,6 +135,12 @@ satisfy `q`, it states instead of `safe_in` the theorem `safe_exits_in`,
 that the program is safe and ends only with a status `q` holds of; and
 with `safe`, the theorem `exits`.
 
+With `writes r said sd` after that, where `pg` asks besides that each
+`write` offer a descriptor and bytes `r` holds of, knowing the bytes `sd`
+says the program's data holds (`pre := preOut sd q r`), it states
+`said_ok`, that the data holds those bytes; `safe_exits_writes_in`; and
+with `safe` and `exits`, the theorem `writes`.
+
 `blocks bs` after the labels gives the blocks the program says its segments
 are; where it is left out, each segment is one block of plain bytes.
 `kinds ks` gives the program's kinds of block, which `pg` is to have too.
@@ -147,17 +153,20 @@ Where the check fails, the error says why, in the program's terms
 each instruction or label that is refused and what is not so there. -/
 syntax "asm_checked " ident &" start " term:max &" stack " term:max &" program " term:max
   &" labels " term:max (&" blocks " term:max)? (&" kinds " term:max)?
-  (&" exits " term:max)? (&" laws " term:max)? : command
+  (&" exits " term:max)? (&" writes " term:max &" said " term:max)? (&" laws " term:max)? : command
 
 macro_rules
   | `(asm_checked $code start $l stack $n program $pg labels $ls $[blocks $bs?]? $[kinds $ks?]?
-      $[exits $q?]? $[laws $lw?]?) => do
+      $[exits $q?]? $[writes $r? said $sd?]? $[laws $lw?]?) => do
     let checked := mkIdent `checked
     let startEq := mkIdent `start_eq
     let safeIn := mkIdent `safe_in
     let safeExitsIn := mkIdent `safe_exits_in
     let safe := mkIdent `safe
     let exits := mkIdent `exits
+    let writes := mkIdent `writes
+    let saidOk := mkIdent `said_ok
+    let safeExitsWritesIn := mkIdent `safe_exits_writes_in
     let startArgs := mkIdent `startArgs
     let prepared := mkIdent `prepared
     let entry := mkIdent `entry
@@ -184,6 +193,36 @@ macro_rules
           $startArgs args = startIn $code $l $n args ($startArgs args).world := by
         unfold $startArgs $prepared startIn startState $entry $base
         rfl))
+    if let (some q, some r, some sd) := (q?, r?, sd?) then
+      cmds := cmds.push (← `(/-- The bytes the program says its data holds are the bytes its
+        blocks say. -/
+        theorem $saidOk : saidCheck (denBlocks $bs) $sd = true := by decide +kernel))
+      cmds := cmds.push (← `(/-- **The program is safe, on the machine that decodes its
+        instructions from memory; it ends only with a status that is as said; and wherever it
+        reaches a `write`, the descriptor and the bytes offered are as said: whatever its
+        arguments and whatever the world outside it holds.** -/
+        theorem $safeExitsWritesIn (args : List (List Byte)) (w : World) :
+            SafeMem linux (startIn $code $l $n args w) ∧
+              ExitsOnly $fetch (fun c => $q c = true) (startIn $code $l $n args w) ∧
+              WritesOnly $fetch (fun fd bytes => $r fd bytes = true)
+                (startIn $code $l $n args w) :=
+          whole_outputs $checked (Q := fun c => $q c = true) (q := $q) (fun _ h => h)
+            (R := fun fd bytes => $r fd bytes = true) (r := $r) (fun _ _ h => h) $saidOk rfl rfl
+            $lw args w))
+      cmds := cmds.push (← `(/-- So the program as it is run, with any arguments, is safe. -/
+        theorem $safe (args : List (List Byte)) : SafeMem linux ($startArgs args) :=
+          $startEq args ▸ ($safeExitsWritesIn args ($startArgs args).world).1))
+      cmds := cmds.push (← `(/-- It ends only with a status that is as said. -/
+        theorem $exits (args : List (List Byte)) :
+            ExitsOnly $fetch (fun c => $q c = true) ($startArgs args) :=
+          $startEq args ▸ ($safeExitsWritesIn args ($startArgs args).world).2.1))
+      cmds := cmds.push (← `(/-- And at a `write` offers only what is as said. -/
+        theorem $writes (args : List (List Byte)) :
+            WritesOnly $fetch (fun fd bytes => $r fd bytes = true) ($startArgs args) :=
+          $startEq args ▸ ($safeExitsWritesIn args ($startArgs args).world).2.2))
+      return mkNullNode cmds
+    if r?.isSome then
+      Macro.throwError "`writes` is said with `exits`: what the program ends with, then what it writes"
     match q? with
     | none =>
       cmds := cmds.push (← `(/-- **The program is safe, on the machine that decodes its

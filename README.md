@@ -81,7 +81,9 @@ and two commands:
 - `asm_checked code start .l stack n program pg labels ls` runs the check
   and states what it shows: the program is safe, whatever its arguments and
   whatever the outside world holds. With `exits q` after it, also that the
-  program ends only with a status `q` holds of.
+  program ends only with a status `q` holds of; and with `writes r` after
+  that, that it offers the kernel at every `write` only a descriptor and
+  bytes `r` holds of.
 
 A label is said one way, in the program's own code (`inProgram`) or in a
 function (`inFunction`): what the registers hold, what is known, and what

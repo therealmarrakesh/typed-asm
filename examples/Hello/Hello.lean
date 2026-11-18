@@ -1,5 +1,5 @@
 import HelloProgram
-import TypedAsm.U.Say
+import TypedAsm.U.Checked
 import TypedAsm.Runs
 
 /-!
@@ -38,54 +38,20 @@ def pg : Prog :=
 stack. -/
 def labels : List U.Label := [⟨entry, inProgram 0⟩]
 
-/-- **The check.** -/
-theorem checked : wholeOk code .start 0 pg labels (needFuel pg labels []) = true := by decide +kernel
+asm_checked code start .start stack 0 program pg labels labels
+  exits (· == 0) writes (fun fd b => fd == 1 && b == message) said said
 
-theorem saidOk : saidCheck (denBlocks (blocksOf code .start)) said = true := by decide +kernel
-
-/-! ## What it shows -/
-
-/-- The state `HelloProgram` starts the program in with given arguments is
-the one the check is of, in the world it has. -/
-theorem start_eq (args : List (List Byte)) :
-    startArgs args = startIn code .start 0 args (startArgs args).world := by
-  unfold startArgs prepared startIn startState entry base
-  rfl
-
-/-- **Hello is safe on the machine that decodes its instructions from
-memory; it ends only with status nought; and wherever it reaches a `write`,
-the descriptor is 1 and the bytes offered are the message.** Whatever its
-arguments and whatever the world outside it holds. -/
-theorem safe_exits_writes (args : List (List Byte)) (w : World) :
-    SafeMem linux (startIn code .start 0 args w) ∧
-      ExitsOnly fetch (· = 0) (startIn code .start 0 args w) ∧
-      WritesOnly fetch (fun fd bytes => fd = 1 ∧ bytes = message) (startIn code .start 0 args w) :=
-  whole_outputs checked (Q := fun c => c = 0) (q := fun c => c == 0) (fun c h => by simpa using h)
-    (R := fun fd bs => fd = 1 ∧ bs = message) (r := fun fd b => fd == 1 && b == message)
-    (fun fd bs h => by simpa using h) saidOk rfl rfl (LawsHold.nil _) args w
+/-! ## What it shows besides -/
 
 /-- Everything the program ever adds to the output is the message, or the
 first so many bytes of it where the kernel took fewer than it was offered. -/
 theorem output_is_message (args : List (List Byte)) (w : World) {s' : State}
     (hs : Steps fetch linux (startIn code .start 0 args w) s') :
     ∃ new, s'.world.writes = new ++ w.writes ∧ ∀ x ∈ new, ∃ n, x = message.take n := by
-  obtain ⟨new, e, hall⟩ := (safe_exits_writes args w).2.2.output s' hs
+  obtain ⟨new, e, hall⟩ := (safe_exits_writes_in args w).2.2.output s' hs
   refine ⟨new, e, fun x hx => ?_⟩
-  obtain ⟨_, _, n, ⟨_, rfl⟩, rfl⟩ := hall x hx
-  exact ⟨n, rfl⟩
-
-/-- **So the program as `lake exe hello` runs it is safe**, on the machine
-that decodes its instructions from memory, whatever its arguments. -/
-theorem safe (args : List (List Byte)) : SafeMem linux (startArgs args) :=
-  start_eq args ▸ (safe_exits_writes args (startArgs args).world).1
-
-/-- It ends only with status nought. -/
-theorem exits (args : List (List Byte)) : ExitsOnly fetch (· = 0) (startArgs args) :=
-  start_eq args ▸ (safe_exits_writes args (startArgs args).world).2.1
-
-/-- And at a `write` offers its message, on descriptor 1. -/
-theorem writes (args : List (List Byte)) :
-    WritesOnly fetch (fun fd bytes => fd = 1 ∧ bytes = message) (startArgs args) :=
-  start_eq args ▸ (safe_exits_writes args (startArgs args).world).2.2
+  obtain ⟨_, bytes, n, hr, rfl⟩ := hall x hx
+  have hb : bytes = message := eq_of_beq (Bool.and_eq_true _ _ ▸ hr).2
+  exact ⟨n, hb ▸ rfl⟩
 
 end Hello
