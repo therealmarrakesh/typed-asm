@@ -326,7 +326,7 @@ theorem FactsS.den_toList (ρ : Env) :
 terms may mention the family's values. -/
 def codeCtx (regs : Regs Val) (flags : FlagsT) (held : List (Val × HeldS)) (known : FactsS)
     (rest : RestS) : CtxS :=
-  ⟨regs, flags, held, known.toList, rest⟩
+  ⟨regs, flags, held, known.toList, rest, []⟩
 
 /-- What that knowledge stands for is code wanting what the context stands
 for, at each of the family's values. -/
@@ -347,12 +347,13 @@ def CtxS.open (o : Opening) (Γ : CtxS) : CtxS where
   held := heldOpen o 0 Γ.held ++ (Γ.rest.openHeld o 0).1
   known := Γ.known.map fun f => (f.1.open o 0, f.2.open o 0)
   rest := (Γ.rest.openHeld o 0).2
+  rows := Γ.rows.map fun r => ⟨r.addr.open o 0, r.count.open o 0, r.stride, r.byte, r.ty.open o 0⟩
 
 /-- **It stands for the member of the family at the values the terms stand
 for.** -/
 theorem CtxS.den_open (ρ : Env) (o : Opening) (ho : o.Closed) (Γ : CtxS) :
     (Γ.open o).den ρ = Γ.den { ρ with bound := famOf ρ o :: ρ.bound } := by
-  refine ctx_ext ?_ ?_ ?_ ?_
+  refine ctx_ext ?_ ?_ ?_ ?_ ?_
   · funext r
     show ((Γ.regs.map (Val.open o 0)).get r).den ρ = _
     rw [Regs.get_map]
@@ -373,6 +374,18 @@ theorem CtxS.den_open (ρ : Env) (o : Opening) (ho : o.Closed) (Γ : CtxS) :
             f.2.den { ρ with bound := famOf ρ o :: ρ.bound })
       rw [show (f.1.open o 0).den ρ = _ from Val.den_open ρ o ho [] ρ.bound f.1,
         show (f.2.open o 0).den ρ = _ from TyS.den_open ρ o ho [] ρ.bound f.2]
+      rfl
+  · show (Γ.rows.map _).map _ = Γ.rows.map _
+    rw [List.map_map]
+    exact List.map_congr_left fun r _ => by
+      show RowOf.mk ((r.addr.open o 0).den ρ) ((r.count.open o 0).den ρ) r.stride r.byte
+          ((r.ty.open o 0).den ρ)
+        = RowOf.mk (r.addr.den { ρ with bound := famOf ρ o :: ρ.bound })
+            (r.count.den { ρ with bound := famOf ρ o :: ρ.bound }) r.stride r.byte
+            (r.ty.den { ρ with bound := famOf ρ o :: ρ.bound })
+      rw [show (r.addr.open o 0).den ρ = _ from Val.den_open ρ o ho [] ρ.bound r.addr,
+        show (r.count.open o 0).den ρ = _ from Val.den_open ρ o ho [] ρ.bound r.count,
+        show (r.ty.open o 0).den ρ = _ from TyS.den_open ρ o ho [] ρ.bound r.ty]
       rfl
 
 end TypedAsm.U

@@ -91,6 +91,7 @@ theorem CtxS.nameSlot_ok (Q : Ctx → Prop)
           (congrArg CtxOf.val hΓ : (Γ.den (ρ.setVal k x)).val = (Γ.den ρ).val)
           (congrArg CtxOf.flags hΓ : (Γ.den (ρ.setVal k x)).flags = (Γ.den ρ).flags) ?_
           (congrArg CtxOf.known hΓ : (Γ.den (ρ.setVal k x)).known = (Γ.den ρ).known)
+          (congrArg CtxOf.rows hΓ : (Γ.den (ρ.setVal k x)).rows = (Γ.den ρ).rows)
         have hj : i < (Γ.held.map fun b =>
             (b.1.den (ρ.setVal k x), b.2.den (ρ.setVal k x))).length := by
           rw [List.length_map]; exact (List.getElem?_eq_some_iff.mp hi).1
@@ -672,7 +673,9 @@ end
 /-- How many values a family ranges over, from what its contexts speak of. -/
 def CtxS.bmax (Γ : CtxS) : Nat :=
   max (max (allRegs.foldl (fun m r => max m ((Γ.regs.get r).bmax 0)) 0) (Γ.flags.bmax 0))
-    (max (heldBmax 0 Γ.held) (Γ.known.foldl (fun m f => max m (max (f.1.bmax 0) (f.2.bmax 0))) 0))
+    (max (max (heldBmax 0 Γ.held)
+        (Γ.known.foldl (fun m f => max m (max (f.1.bmax 0) (f.2.bmax 0))) 0))
+      (Γ.rows.foldl (fun m r => max m (max (max (r.addr.bmax 0) (r.count.bmax 0)) (r.ty.bmax 0))) 0))
 
 /-- How many names a member of the family takes when given names of its
 own: one for each value, and one at least, since its flags and whatever

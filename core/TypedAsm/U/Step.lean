@@ -298,7 +298,7 @@ theorem nameRead_sound {ρ : Env} {Γ : CtxS} {k : Nat} {next : BitVec 64} {m : 
           have hb : b.den (ρ.setVal k x) = b.den ρ := congrArg Prod.fst hreg
           have hS : S.den (ρ.setVal k x) = S.den ρ := congrArg Prod.snd hreg
           refine ctx_ext (congrArg CtxOf.val hΓ).symm (congrArg CtxOf.flags hΓ).symm ?_
-            (congrArg CtxOf.known hΓ).symm
+            (congrArg CtxOf.known hΓ).symm (congrArg CtxOf.rows hΓ).symm
           show (Γ.den ρ).held.set j _
             = (Γ.held.set j (b, ⟨S.size, (o, .var k) :: S.slots⟩)).map
                 (fun b => (b.1.den (ρ.setVal k x), b.2.den (ρ.setVal k x)))
@@ -371,7 +371,7 @@ theorem readHeldP_sound {ρ : Env} {plain : Bool} {Γ : CtxS} {k : Nat} {a : Val
         -- the slot's term mentions no name from `k` on
         have hcu : v.under k = true := by
           simp only [CtxS.under, heldUnder, Bool.and_eq_true, List.all_eq_true] at hu
-          exact ((hu.1.1.2 (b, S) (List.mem_of_getElem? hl)).2 (o', v) hm).2
+          exact ((hu.1.1.1.2 (b, S) (List.mem_of_getElem? hl)).2 (o', v) hm).2
         exact key v (by rw [Val.den_setVal ρ k x _ hcu]; exact hx.symm) h
       · exact key (.var k) (Env.setVal_get_self ρ k x) h
     · exact key (narrow n (.var k))
@@ -390,7 +390,8 @@ def writeHeldP (plain : Bool) (Γ : CtxS) (a : Val) (n : Nat) (v : Val) :
   | none => none
 
 theorem writeHeldP_sound {ρ : Env} {plain : Bool} {Γ : CtxS} {a v : Val} {n : Nat}
-    {held' : List (Val × HeldS)} (h : writeHeldP plain Γ a n v = some held') :
+    {held' : List (Val × HeldS)} (h : writeHeldP plain Γ a n v = some held')
+    (hrows : Γ.rows = []) :
     Writes fetch sys Ψ (Γ.den ρ) (a.den ρ) n (v.den ρ) (CtxS.den ρ { Γ with held := held' }) := by
   unfold writeHeldP at h
   split at h
@@ -408,7 +409,7 @@ theorem writeHeldP_sound {ρ : Env} {plain : Bool} {Γ : CtxS} {a v : Val} {n : 
       have hW := Writes.heldTo (fetch := fetch) (sys := sys) (Ψ := Ψ)
         (S' := (S.put Γ.known o n v).den ρ) (v.den ρ) (CtxS.held_den ρ Γ hl) hin hn
         (by show ((S.put Γ.known o n v).size.den ρ).toNat = _; rw [HeldS.put_size]; rfl)
-        (fun p hp => HeldS.put_mem hg hp) rfl
+        (fun p hp => HeldS.put_mem hg hp) (by show Γ.rows.map _ = []; rw [hrows]; rfl)
       have e : CtxS.den ρ { Γ with held := Γ.held.set j (b, S.put Γ.known o n v) }
           = { Γ.den ρ with
               held := (Γ.den ρ).held.set j (b.den ρ, (S.put Γ.known o n v).den ρ) } := by
@@ -487,13 +488,13 @@ theorem readCell_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
           Env.setVal_get_self ρ k x]; exact hcut⟩
         have hΓ := CtxS.den_setVal ρ k x Γ hu
         refine ctx_ext (congrArg CtxOf.val hΓ).symm (congrArg CtxOf.flags hΓ).symm
-          (congrArg CtxOf.held hΓ).symm ?_
+          (congrArg CtxOf.held hΓ).symm ?_ (congrArg CtxOf.rows hΓ).symm
         show readFacts (Sh.den ρ) o n x ++ (Γ.den ρ).known
           = (readFactsS Sh o n (.var k) ++ Γ.known).map _
         have hSh : Sh.den (ρ.setVal k x) = Sh.den ρ := by
           have hu' := hu
           simp only [CtxS.under, Bool.and_eq_true, List.all_eq_true] at hu'
-          exact TyS.pointee_setVal hk ρ k x (hu'.1.2 _ hmem).2 hpt
+          exact TyS.pointee_setVal hk ρ k x (hu'.1.1.2 _ hmem).2 hpt
         rw [List.map_append, readFactsS_den, hSh]
         congr 1
         · show _ = readFacts (Sh.den ρ) o n ((Val.var k).den (ρ.setVal k x))
@@ -521,11 +522,11 @@ theorem readCell_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
             refine ⟨?_, hcell⟩
             have hΓ := CtxS.den_setVal ρ k x Γ hu
             refine ctx_ext (congrArg CtxOf.val hΓ).symm (congrArg CtxOf.flags hΓ).symm
-              (congrArg CtxOf.held hΓ).symm ?_
+              (congrArg CtxOf.held hΓ).symm ?_ (congrArg CtxOf.rows hΓ).symm
             have hq : q.under k = true := by
               have hu' := hu
               simp only [CtxS.under, Bool.and_eq_true, List.all_eq_true] at hu'
-              exact (hu'.1.2 _ hmem).1
+              exact (hu'.1.1.2 _ hmem).1
             show (q.den ρ, Ty.str x) :: (Γ.den ρ).known
               = (q.den (ρ.setVal k x), Ty.str ((narrow 1 (.var k)).den (ρ.setVal k x)))
                 :: (Γ.den (ρ.setVal k x)).known
@@ -551,11 +552,11 @@ theorem readCell_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
               rw [hΓr]
               have hΓ := CtxS.den_setVal ρ k (loadN s 8 (eaOf (Γ.den ρ).val next m)) Γ hu
               refine ctx_ext (congrArg CtxOf.val hΓ).symm (congrArg CtxOf.flags hΓ).symm
-                (congrArg CtxOf.held hΓ).symm ?_
+                (congrArg CtxOf.held hΓ).symm ?_ (congrArg CtxOf.rows hΓ).symm
               have hτu : τ.under k = true := by
                 have hu' := hu
                 simp only [CtxS.under, Bool.and_eq_true, List.all_eq_true] at hu'
-                have := (hu'.1.2 _ hmem).2
+                have := (hu'.1.1.2 _ hmem).2
                 simp only [TyS.under, Bool.and_eq_true] at this
                 exact this.2
               show (loadN s 8 (eaOf (Γ.den ρ).val next m), τ.den ρ) :: (Γ.den ρ).known
@@ -614,20 +615,22 @@ def writeCell (kinds : Nat → Option ShapeS) (Γ : CtxS) (next : BitVec 64) (v 
 
 theorem writeCell_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk Ψ kinds) {Γ : CtxS}
     {next : BitVec 64} {v : Val} {held' : List (Val × HeldS)} :
-    (wr : Option (Mem × Nat)) → writeCell kinds Γ next v wr = some held' →
+    (wr : Option (Mem × Nat)) → (wr.isSome = true → Γ.rows = []) →
+    writeCell kinds Γ next v wr = some held' →
     match wr with
     | some (m, n) => Writes fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n (v.den ρ)
         (CtxS.den ρ { Γ with held := held' })
     | none => held' = Γ.held
-  | none, h => by cases h; rfl
-  | some (m, n), h => by
+  | none, _, h => by cases h; rfl
+  | some (m, n), hrows', h => by
+    have hrows : Γ.rows = [] := hrows' rfl
     simp only [writeCell] at h
     split at h
     · next r hr =>
       cases h
       show Writes fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n (v.den ρ) _
       rw [← eaS_den]
-      exact writeHeldP_sound hr
+      exact writeHeldP_sound hr hrows
     · split at h
       · next p Sh w off o hfind =>
         split at h
@@ -645,7 +648,7 @@ theorem writeCell_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk
           show Writes fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n (v.den ρ) (Γ.den ρ)
           exact Writes.shared (v.den ρ) hf (TyS.pointee_den hk ρ hpt) haddr (by rw [ShapeS.den_size]; exact hin) hn
             (fun q hq => ((by rw [ShapeS.den_vals] at hq; exact valsOkS_sound ρ Sh.vals hvals q hq :
-              (q.1 + 8 ≤ o ∨ o + n ≤ q.1) ∨ _)).elim .inl (fun h => .inr (.inr h))) rfl
+              (q.1 + 8 ≤ o ∨ o + n ≤ q.1) ∨ _)).elim .inl (fun h => .inr (.inr h))) (by show Γ.rows.map _ = []; rw [hrows]; rfl)
         · cases h
       · cases h
 
@@ -787,7 +790,7 @@ def writeRanged (kinds : Nat → Option ShapeS) (Γ : CtxS) (next : BitVec 64) (
 
 theorem writeRanged_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk Ψ kinds) {Γ : CtxS}
     {next : BitVec 64} (v : Val) {held' : List (Val × HeldS)} {m : Mem} {n : Nat}
-    (h : writeRanged kinds Γ next v (some (m, n)) = some held') :
+    (h : writeRanged kinds Γ next v (some (m, n)) = some held') (hrows : Γ.rows = []) :
     Writes fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n (v.den ρ)
       (CtxS.den ρ { Γ with held := held' }) := by
   simp only [writeRanged] at h
@@ -795,7 +798,7 @@ theorem writeRanged_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : Kinds
   · next r hr =>
     cases h
     rw [← eaS_den]
-    exact writeHeldP_sound hr
+    exact writeHeldP_sound hr hrows
   · split at h
     · next hn =>
       split at h
@@ -819,7 +822,7 @@ theorem writeRanged_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : Kinds
             (TyS.pointee_den hk ρ hpt) (a := (eaS Γ.regs next m).den ρ) (o := o' + off) (n := n)
             (by rw [ha, BitVec.ofNat_add, BitVec.add_assoc])
             (by rw [ShapeS.den_size]; omega) hn
-            (fun q hq => (hall q hq).elim (fun h => .inl (by omega)) (fun h => .inr (.inl h))) rfl
+            (fun q hq => (hall q hq).elim (fun h => .inl (by omega)) (fun h => .inr (.inl h))) (by show Γ.rows.map _ = []; rw [hrows]; rfl)
           rw [← eaS_den]
           exact W.2.2 k' Ψ' he hwf s hw
         · cases h
@@ -860,18 +863,19 @@ def writeAny (kinds : Nat → Option ShapeS) (Γ : CtxS) (next : BitVec 64) (v :
 
 theorem writeAny_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk Ψ kinds) {Γ : CtxS}
     {next : BitVec 64} {v : Val} {held' : List (Val × HeldS)} :
-    (wr : Option (Mem × Nat)) → writeAny kinds Γ next v wr = some held' →
+    (wr : Option (Mem × Nat)) → (wr.isSome = true → Γ.rows = []) →
+    writeAny kinds Γ next v wr = some held' →
     match wr with
     | some (m, n) => Writes fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n (v.den ρ)
         (CtxS.den ρ { Γ with held := held' })
     | none => held' = Γ.held := by
-  intro wr h
+  intro wr hrows h
   unfold writeAny at h
   split at h
-  · next r hr => cases h; exact writeCell_sound hk wr hr
+  · next r hr => cases h; exact writeCell_sound hk wr hrows hr
   · cases wr with
     | none => cases h
-    | some mn => exact writeRanged_sound hk v h
+    | some mn => exact writeRanged_sound hk v h (hrows rfl)
 
 /-- The term for the address an instruction uses as a number. -/
 def eaTerm (Γ : CtxS) (next : BitVec 64) : Option Mem → Val
@@ -1001,6 +1005,7 @@ def stepHeld (kinds : Nat → Option ShapeS) (Γ : CtxS) (k : Nat) (next : BitVe
     Option (CtxS × Val) :=
   match i.sem with
   | some s =>
+    if s.wr.isSome && !Γ.rows.isEmpty then none else
     match readFull kinds Γ k next s.rd with
     | some (cell, extra, heldR) =>
       let Γ₁ : CtxS := { Γ with known := extra ++ Γ.known, held := heldR }
@@ -1034,6 +1039,13 @@ theorem stepHeld_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
     have hso := sem_slotOnly hsem
     simp only [Sem.slotOnly, Bool.and_eq_true] at hso
     obtain ⟨⟨⟨⟨⟨⟨hga, hgb⟩, hgc⟩, houts⟩, hflags⟩, hstore⟩, hgoes⟩ := hso
+    split at h
+    · cases h
+    next hnr =>
+    have hrows : s.wr.isSome = true → Γ.rows = [] := fun hw => by
+      cases hre : Γ.rows with
+      | nil => rfl
+      | cons r rs => exact absurd (by rw [hw, hre]; rfl) hnr
     split at h
     · next cell extra heldR hrc =>
       have hgd : s.guard.okS { Γ with known := extra ++ Γ.known, held := heldR } Γ.flags
@@ -1075,7 +1087,7 @@ theorem stepHeld_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
           have hval : (CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known, held := heldR }).val
               = (Γ.den ρ).val := (congrArg CtxOf.val hΓ : (Γ.den (ρ.setVal k x)).val = _)
           have hW := writeAny_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) (ρ := ρ.setVal k x) hk
-            (Γ := { Γ with known := extra ++ Γ.known, held := heldR }) s.wr hwc
+            (Γ := { Γ with known := extra ++ Γ.known, held := heldR }) s.wr hrows hwc
           show match s.wr with
             | some (m, n) => _
             | none => _

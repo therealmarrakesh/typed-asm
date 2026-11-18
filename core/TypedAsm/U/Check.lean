@@ -16,6 +16,21 @@ namespace TypedAsm.U
 
 open TypedAsm
 
+/-- A row of values in memory the code holds, as terms: where it starts and
+how many values it has; how far apart they are, whether each is a byte or
+eight, and what is known of each. -/
+structure RowS where
+  addr : Val
+  count : Val
+  stride : Nat
+  byte : Bool
+  ty : TyS
+  deriving DecidableEq
+
+/-- The row it stands for. -/
+def RowS.den (ρ : Env) (r : RowS) : RowOf Ty :=
+  ⟨r.addr.den ρ, r.count.den ρ, r.stride, r.byte, r.ty.den ρ⟩
+
 /-- A context, as terms. -/
 structure CtxS where
   regs : Regs Val
@@ -25,6 +40,8 @@ structure CtxS where
   known : List (Val × TyS) := []
   /-- Whatever else is held, where there may be more. -/
   rest : RestS := .none
+  /-- What each of a row of values in memory is. -/
+  rows : List RowS := []
 
 
 /-- The context a context written as terms stands for. -/
@@ -33,6 +50,7 @@ def CtxS.den (ρ : Env) (Γ : CtxS) : Ctx where
   flags := Γ.flags.den ρ
   held := (Γ.held.map fun b => (b.1.den ρ, b.2.den ρ)) ++ restDen ρ Γ.rest
   known := Γ.known.map fun f => (f.1.den ρ, f.2.den ρ)
+  rows := Γ.rows.map (RowS.den ρ)
 
 /-- A context knowing more. -/
 def CtxS.addKnown (Γ : CtxS) (fs : List (Val × TyS)) : CtxS := { Γ with known := fs ++ Γ.known }

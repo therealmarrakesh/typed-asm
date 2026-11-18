@@ -125,9 +125,10 @@ theorem Starts.safe {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linux
     (hknown : ∀ n, ∀ f ∈ (l.pat.den { ρ with bound := fam :: ρ.bound }).known,
       HasTy fetch sys (MemTy.ofList blocks kinds) n f.2 f.1)
     (hheap : ∀ n, ∀ x ∈ blocks, ∀ p ∈ x.2.shape.vals,
-      HasTy fetch sys (MemTy.ofList blocks kinds) n p.2 (s.load64 (x.1 + BitVec.ofNat 64 p.1))) :
+      HasTy fetch sys (MemTy.ofList blocks kinds) n p.2 (s.load64 (x.1 + BitVec.ofNat 64 p.1)))
+    (hrows : l.pat.rows = []) :
     Safe fetch sys s :=
   safe_of_checked hD hkind hpre hcode hk hst hwf hlaws h hl hrip ρ fam hfn fun n _ =>
-    hs.matches hnd (hknown n) (hheap n) rfl
+    hs.matches hnd (hknown n) (hheap n) (by show l.pat.rows.map _ = []; rw [hrows]; rfl)
 
 end TypedAsm.U

@@ -613,7 +613,8 @@ def regardWith (sm : List (Val × TyS) → Val → Val → Bool) (ent : TyS → 
     (match partsS sm Γ.known Γ.held Δ.held with
      | some P => apartS Γ.known P && coverS Γ.held P
      | none => false) &&
-    Δ.known.all (factFrom ent Γ.known) && Δ.rest == Γ.rest
+    Δ.known.all (factFrom ent Γ.known) && Δ.rest == Γ.rest &&
+    Δ.rows.all fun r => Γ.rows.contains r
 
 theorem regardWith_sound {sm : List (Val × TyS) → Val → Val → Bool} {ent : TyS → TyS → Bool}
     (he : EntSound fetch sys ent) (ρ : Env) {Γ Δ : CtxS}
@@ -623,7 +624,7 @@ theorem regardWith_sound {sm : List (Val × TyS) → Val → Val → Bool} {ent 
     (h : regardWith sm ent Γ Δ = true) :
     Regards fetch sys Ψ (Γ.den ρ) (Δ.den ρ) := by
   simp only [regardWith, Bool.and_eq_true, List.all_eq_true, beq_iff_eq] at h
-  obtain ⟨⟨⟨⟨hr, hf⟩, hh⟩, hk⟩, hrest⟩ := h
+  obtain ⟨⟨⟨⟨⟨hr, hf⟩, hh⟩, hk⟩, hrest⟩, hrows⟩ := h
   cases hP : partsS sm Γ.known Γ.held Δ.held with
   | none => rw [hP] at hh; cases hh
   | some P =>
@@ -635,7 +636,9 @@ theorem regardWith_sound {sm : List (Val × TyS) → Val → Val → Bool} {ent 
     refine Regards.parts (Γ := Γ.den ρ) (Δ := Δ.den ρ) (E := Γ.held.map (regionDen ρ))
       (F := restDen ρ Γ.rest)
       (L := P.map (partDen ρ)) ?_ ?_ ?_ rfl ?_ hok (apartS_den ρ hg P hh.1)
-      (coverS_den ρ Γ.held P hh.2) (fun _ h => nomatch h) k Ψ' hext hwf s hw
+      (coverS_den ρ Γ.held P hh.2) (fun r hr' => by
+        obtain ⟨x, hx, rfl⟩ := List.mem_map.mp (show r ∈ Δ.rows.map (RowS.den ρ) from hr')
+        exact List.mem_map.mpr ⟨x, List.contains_iff_mem.mp (hrows x hx), rfl⟩) k Ψ' hext hwf s hw
     · funext r
       exact (hsm Ψ' k hg _ _ (hr r (mem_allRegs r))).symm
     · show Δ.flags.den ρ = Γ.flags.den ρ

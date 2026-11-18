@@ -135,6 +135,26 @@ theorem writeShared {a : BitVec 64} {l : Layout} {lo cnt : Nat} {s' : State}
         heap := h.held.heap
         apart := h.held.apart } }
 
+/-- What is said of rows may be let go. -/
+theorem dropRows (h : WellTyped fetch sys Ψ n Γ s) :
+    WellTyped fetch sys Ψ n { Γ with rows := [] } s :=
+  { val := h.val
+    known := h.known
+    flags := h.flags
+    heapPerm := h.heapPerm
+    heap := h.heap
+    text := h.text
+    said := h.said
+    rows := fun _ hr => nomatch hr
+    complete := h.complete
+    held :=
+      { perm := h.held.perm
+        size_lt := h.held.size_lt
+        fits := h.held.fits
+        vals := h.held.vals
+        heap := h.held.heap
+        apart := h.held.apart } }
+
 /-- Facts that are so may be added to what a context knows. -/
 theorem addKnown (h : WellTyped fetch sys Ψ n Γ s) (fs : List Fact)
     (hfs : ∀ f ∈ fs, HasTy fetch sys Ψ n f.2 f.1) :

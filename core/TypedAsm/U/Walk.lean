@@ -532,6 +532,41 @@ theorem pubAt_sound {ρ : Env} {pg : Prog} (hk : KindsOk Ψ pg.kinds) {k : Nat} 
     · cases h; exact ⟨hup, hpub⟩
   · cases h
 
+/-- **A context with what it says of rows let go, where the instruction
+about to run would not keep it**: one that stores in memory, or a system
+call that stores in memory or hands back fresh memory. Else the context. -/
+def rowsFor (ix : Index) (hint : Nat) (a : BitVec 64) (Γ : CtxS) : CtxS :=
+  if Γ.rows.isEmpty then Γ else
+  match seek ix hint a with
+  | some ((_, i, _), _) =>
+    if (if i = .syscall then
+          (match Γ.regs.rax.lit? with
+           | some nr =>
+             (match linuxKind nr with
+              | some (.fills _ _) => true
+              | some .map => true
+              | _ => false)
+           | none => false)
+        else
+          (match i.sem with
+           | some s => s.wr.isSome
+           | none => false)) then { Γ with rows := [] }
+    else Γ
+  | none => Γ
+
+theorem rowsFor_sound (ρ : Env) (ix : Index) (hint : Nat) (a : BitVec 64) (Γ : CtxS) {k : Nat}
+    (hu : Γ.under k = true) :
+    (rowsFor ix hint a Γ).under k = true ∧
+      Regards fetch sys Ψ (Γ.den ρ) ((rowsFor ix hint a Γ).den ρ) := by
+  have drop : (({ Γ with rows := [] } : CtxS)).under k = true ∧
+      Regards fetch sys Ψ (Γ.den ρ) (CtxS.den ρ { Γ with rows := [] }) := by
+    refine ⟨?_, fun k' Ψ' he hwf s hw => hw.dropRows⟩
+    simp only [CtxS.under, Bool.and_eq_true, List.all_eq_true] at hu ⊢
+    exact ⟨hu.1, fun _ hr => nomatch hr⟩
+  unfold rowsFor
+  repeat' split
+  all_goals first | exact drop | exact ⟨hu, Regards.refl _⟩
+
 /-- **The checker walked from an address**, for at most so many
 instructions, `k` being a name no term yet mentions. It stops where `stops`
 says, unless that is where it starts: at the labels of a program, which are
@@ -546,7 +581,7 @@ def walkFrom (pg : Prog) (ix : Index) (stops : BitVec 64 → Bool) :
     match pubAtI pg k
       (match seek ix rest a with
        | some ((_, i, _), _) => decide (i = .syscall)
-       | none => false) a Γ₀ with
+       | none => false) a (rowsFor ix rest a Γ₀) with
     | none => .stop a Γ₀
     | some Γ =>
     if Γ.impossible then .vacuous else
@@ -666,10 +701,11 @@ theorem walkFrom_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
     split at hW
     · subst hW; exact ⟨h, fun hm => nomatch hm⟩
     rename_i Γ hpub
-    obtain ⟨hu, hP⟩ := pubAtI_sound (fetch := fetch) (sys := sys) (ρ := ρ) hk hpub hu₀
+    obtain ⟨hur, hrg⟩ := rowsFor_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) ρ ix rest a Γ₀ hu₀
+    obtain ⟨hu, hP⟩ := pubAtI_sound (fetch := fetch) (sys := sys) (ρ := ρ) hk hpub hur
     suffices hs : Ok fetch sys Ψ n a (Γ.den ρ) ∧
         (W.moved = true → Ok fetch sys Ψ (n + 1) a (Γ.den ρ)) from
-      ⟨Ok.publish hP hs.1, fun hm => Ok.publish hP (hs.2 hm)⟩
+      ⟨Ok.regard hrg (Ok.publish hP hs.1), fun hm => Ok.regard hrg (Ok.publish hP (hs.2 hm))⟩
     split at hW
     · next himp =>
       subst hW
