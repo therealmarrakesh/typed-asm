@@ -167,7 +167,12 @@ def TyS.say (nm : Names := []) : TyS → String
 
 /-- A region held, to be read. -/
 def regionSay (g : Val × HeldS) (nm : Names := []) : String :=
-  s!"{g.2.size.say nm} bytes at {g.1.say nm}" ++
+  (match g.2.size.lit? with
+   | some v =>
+     if v.msb then
+       s!"less than nothing at {g.1.say nm}: {(-v).toNat} bytes more are taken of it than there are"
+     else s!"{g.2.size.say nm} bytes at {g.1.say nm}"
+   | none => s!"{g.2.size.say nm} bytes at {g.1.say nm}") ++
     (if g.2.slots.isEmpty then ""
      else " holding " ++
        ", ".intercalate (g.2.slots.map fun p => s!"{p.2.say nm} at {p.1.say nm}"))
@@ -268,6 +273,22 @@ def rowSay (r : RowS) (nm : Names) : String :=
     (if r.stride = r.width then "" else s!", {r.stride} bytes apart") ++
     s!", each {r.ty.say nm}"
 
+/-- How code a value is known to be differs from the code wanted of it: in
+which registers, in the regions held, in what is known, or in what else is
+held. So a return that gives back a region at another address, or leaves a
+register it was to keep, is said to do that. -/
+def codeDiff (nm : Names) : TyS → TyS → List String
+  | .code r1 f1 h1 k1 t1, .code r2 f2 h2 k2 t2 =>
+    (allRegs.filterMap fun r =>
+      if r1.get r == r2.get r then none
+      else some s!"{r.name64} is to hold {(r1.get r).say nm} there, and the code is typed for {(r2.get r).say nm}") ++
+    (if f1 == f2 then [] else ["the flags differ"]) ++
+    (if h1 == h2 then []
+     else [s!"it is to hold {heldSay h1 nm}; the code is typed for {heldSay h2 nm}"]) ++
+    (if k1 == k2 then [] else ["what is known there differs"]) ++
+    (if t1 == t2 then [] else ["what else is held there differs"])
+  | _, _ => []
+
 /-- **Each thing a context wanted asks that the context reached does not
 give**: register by register, region by region, fact by fact; by the same
 comparison the check makes. -/
@@ -295,7 +316,13 @@ def regardWhy (nm : Names) (sm : List (Val × TyS) → Val → Val → Bool) (en
       | some a, .code .. =>
         some s!"the code at {addrSay a} is not typed for what is wanted of it: why, follows"
       | _, _ =>
-        some s!"wanted known of {f.1.say nm}: {f.2.say nm}; not shown by what is known") ++
+        some (s!"wanted known of {f.1.say nm}: {f.2.say nm}; not shown by what is known" ++
+          (match Γ.known.find? fun g => sm Γ.known g.1 f.1 && g.2.isCode with
+           | some g =>
+             (match codeDiff nm f.2 g.2 with
+              | [] => ""
+              | ds => "; it is code typed for another family: " ++ "; ".intercalate ds)
+           | none => ""))) ++
   (if Δ.rest == Γ.rest then [] else ["what else is held is not what is wanted"]) ++
   (Δ.rows.filterMap fun r =>
     if sm Γ.known r.count (.lit 0) ||
