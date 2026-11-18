@@ -151,8 +151,10 @@ What is not there:
 - A link may be said with how many nodes the list it leads to has (a kind
   of block numbered by a term, and a value that is nought exactly when a
   term is), so the stack a function that goes down a list by calling itself
-  needs is said by the list's length. How deep a tree is, or any other
-  measure than one number counted down, is not said this way.
+  needs is said by the list's length; and by how deep a tree is, a link
+  being nought or a node of a tree no deeper than a number. A measure that
+  is shared out among several links, such as how many nodes a tree has, is
+  not said this way.
 - A label may say what each of a row of bytes or values in memory the code
   holds is (`rows`), and a store that puts one more of that kind at either
   end keeps it so: a number written out digit by digit is known to be

@@ -122,47 +122,71 @@ def CtxS.strNext (Γ : CtxS) : List (Val × TyS) :=
       else none
     | _ => none
 
-/-- What follows of values that are nought exactly when a term is: where
-the value is known not to be nought, neither is the term, and what is known
-of the value otherwise is known of it. So a link to a list, seen not to be
-nought, is a link to a list of one node or more. -/
+/-- The term a value is nought with, and what is known of the value where
+it is not: of a value nought exactly when a term is, or nought anyway and
+else so. -/
+def TyS.zeroWith : TyS → Option (Val × TyS)
+  | .zeroIff idx τ => some (idx, τ)
+  | .nullable (.zeroIff idx τ) => some (idx, τ)
+  | _ => none
+
+theorem TyS.zeroWith_has {ρ : Env} {υ : TyS} {idx : Val} {τ : TyS} (h : υ.zeroWith = some (idx, τ))
+    {Ψ' : MemTy} {n : Nat} {v : BitVec 64} (hv : HasTy fetch sys Ψ' n (υ.den ρ) v) (hnz : v ≠ 0) :
+    idx.den ρ ≠ 0 ∧ HasTy fetch sys Ψ' n (τ.den ρ) v := by
+  have key : ∀ {idx' : Val} {τ' : TyS}, HasTy fetch sys Ψ' n ((TyS.zeroIff idx' τ').den ρ) v →
+      idx'.den ρ ≠ 0 ∧ HasTy fetch sys Ψ' n (τ'.den ρ) v := by
+    intro idx' τ' hsrc
+    have hi : idx'.den ρ ≠ 0 := fun h0 => by
+      have : HasTy fetch sys Ψ' n (.range 0 0) v := by
+        simpa only [TyS.den, h0, ↓reduceIte] using hsrc
+      have hr := hasTy_range.mp this
+      exact hnz (by bv_omega)
+    exact ⟨hi, by simpa only [TyS.den, hi, ↓reduceIte] using hsrc⟩
+  unfold TyS.zeroWith at h
+  split at h
+  · cases h; exact key hv
+  · cases h
+    exact key ((hasTy_nullable (τ := (TyS.zeroIff idx τ).den ρ)).mp hv |>.resolve_left hnz)
+  · cases h
+
+/-- What follows of values that are nought exactly when a term is, or
+nought anyway and else known for something where the term is not nought:
+where the value is known not to be nought, neither is the term, and what is
+known of the value otherwise is known of it. So a link to a list, seen not
+to be nought, is a link to a list of one node or more. -/
 def CtxS.zeroNext (Γ : CtxS) : List (Val × TyS) :=
   Γ.known.flatMap fun f =>
-    match f.2 with
-    | .zeroIff idx τ =>
+    match f.2.zeroWith with
+    | some (idx, τ) =>
       if Γ.fits f.1 .nonZero && !Γ.known.contains (f.1, τ) then
         [(f.1, τ), (idx, .range 1 (-1))]
       else []
-    | _ => []
+    | none => []
 
 theorem CtxS.zeroNext_hasTy {ρ : Env} {Γ : CtxS} {Ψ' : MemTy} {n : Nat}
     (hg : ∀ g ∈ (Γ.den ρ).known, HasTy fetch sys Ψ' n g.2 g.1) :
     ∀ g ∈ Γ.zeroNext, HasTy fetch sys Ψ' n (g.2.den ρ) (g.1.den ρ) := by
   intro g hgm
   obtain ⟨g₀, hg₀, hin⟩ := List.mem_flatMap.mp hgm
-  cases hτ : g₀.2 with
-  | zeroIff idx τ =>
-    rw [hτ] at hin
+  cases hz : g₀.2.zeroWith with
+  | none => rw [hz] at hin; cases hin
+  | some p =>
+    obtain ⟨idx, τ⟩ := p
+    rw [hz] at hin
     simp only at hin
     split at hin
     · next hc =>
       rw [Bool.and_eq_true] at hc
       have hnz : g₀.1.den ρ ≠ 0 := Range.nonZero_has (CtxS.fits_has hc.1 hg)
       have hsrc := hg (g₀.1.den ρ, g₀.2.den ρ) (List.mem_map.mpr ⟨g₀, hg₀, rfl⟩)
-      rw [hτ] at hsrc
-      have hi : idx.den ρ ≠ 0 := fun h0 => by
-        have : HasTy fetch sys Ψ' n (.range 0 0) (g₀.1.den ρ) := by
-          simpa only [TyS.den, h0, ↓reduceIte] using hsrc
-        have hr := hasTy_range.mp this
-        exact hnz (by bv_omega)
+      obtain ⟨hi, hτ⟩ := TyS.zeroWith_has hz hsrc hnz
       rcases List.mem_cons.mp hin with rfl | hin
-      · simpa only [TyS.den, hi, ↓reduceIte] using hsrc
+      · exact hτ
       · rw [List.mem_singleton.mp hin]
         refine hasTy_range.mpr ?_
         show idx.den ρ - 1 ≤ (-1 : BitVec 64) - 1
         bv_omega
     · cases hin
-  | _ => rw [hτ] at hin; cases hin
 
 /-- A thing known, made as sharp as the ranges known allow: looked into
 only where it says a value may be null or an error number. -/

@@ -581,6 +581,8 @@ def factFrom (ent : TyS → TyS → Bool) (G : List (Val × TyS)) (f : Val × Ty
      | .upTo t strict => upToHolds G f.1 t strict
      | .zeroIff c υ =>
        rangeHolds G c 1 (-1) && G.any fun g => g.1.same f.1 && followsS g.2 υ
+     | .nullable (.zeroIff c υ) =>
+       rangeHolds G c 1 (-1) && G.any fun g => g.1.same f.1 && followsS g.2 υ
      | _ => false) || arrFrom G f
 
 /-- **What is so of itself, or follows from something known of the same
@@ -617,6 +619,19 @@ theorem factFrom_hasTy {ent : TyS → TyS → Bool} (he : EntSound fetch sys ent
         exact absurd hr' (by decide)
       have hsrc := hg' g₀ hg₀
       rw [hτ, ← Val.same_den ρ hs]
+      show HasTy fetch sys Ψ' n (if c.den ρ = 0 then .range 0 0 else υ.den ρ) _
+      simp only [hne, ↓reduceIte]
+      exact hsrc.sub (followsS_sub ρ _ _ _ hfo)
+    · next c υ hτ =>
+      simp only [Bool.and_eq_true, List.any_eq_true] at hr
+      obtain ⟨hc, g₀, hg₀, hs, hfo⟩ := hr
+      have hne : c.den ρ ≠ 0 := fun h0 => by
+        have hr' : c.den ρ - 1 ≤ (-1 : BitVec 64) - 1 := rangeHolds_has hc hg'
+        rw [h0] at hr'
+        exact absurd hr' (by decide)
+      have hsrc := hg' g₀ hg₀
+      rw [hτ, ← Val.same_den ρ hs]
+      refine (hasTy_nullable (τ := (TyS.zeroIff c υ).den ρ)).mpr (.inr ?_)
       show HasTy fetch sys Ψ' n (if c.den ρ = 0 then .range 0 0 else υ.den ρ) _
       simp only [hne, ↓reduceIte]
       exact hsrc.sub (followsS_sub ρ _ _ _ hfo)

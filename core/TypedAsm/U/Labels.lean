@@ -195,6 +195,7 @@ def bindTy : TyS → TyS → List (Nat × Val)
   | .zeroIff _ τ, υ => bindTy τ υ
   | .refN _ i _ _, .refN _ i' _ _ => bindB i i'
   | .nullable τ, .nullable τ' => bindTy τ τ'
+  | .nullable τ, υ => bindTy τ υ
   | _, _ => []
 
 /-- **The values of a family the context reached gives**: each name a
