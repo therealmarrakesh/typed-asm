@@ -108,21 +108,71 @@ theorem FOp.bound_has (o : FOp) (fl : Flags) (a b : BitVec 64) : o.bound.has (o.
     unfold condBit
     split <;> decide
 
-/-- **The range a value lies in, by the operator that gave it.** -/
+/-- The most a value of a range can be, as a number without sign. -/
+def Range.top (r : Range) : BitVec 64 := if r.lo ≤ r.hi then r.hi else -1
+
+theorem Range.le_top {r : Range} {v : BitVec 64} (h : r.has v) : v ≤ r.top := by
+  obtain ⟨lo, hi⟩ := r
+  simp only [Range.has] at h
+  simp only [Range.top]
+  split <;> bv_omega
+
+/-- **What both of two values have set is no more than either**, nor than
+the width it is taken at holds. -/
+theorem and_le (w : Width) (a b : BitVec 64) :
+    wide (a.setWidth w.bits &&& b.setWidth w.bits) ≤ a ∧
+      wide (a.setWidth w.bits &&& b.setWidth w.bits) ≤ b ∧
+      wide (a.setWidth w.bits &&& b.setWidth w.bits) ≤ w.range.top := by
+  have ha : (a.setWidth w.bits).toNat ≤ a.toNat := by
+    rw [BitVec.toNat_setWidth]; exact Nat.mod_le _ _
+  have hb : (b.setWidth w.bits).toNat ≤ b.toNat := by
+    rw [BitVec.toNat_setWidth]; exact Nat.mod_le _ _
+  have hl : (a.setWidth w.bits &&& b.setWidth w.bits).toNat ≤ (a.setWidth w.bits).toNat := by
+    rw [BitVec.toNat_and]; exact Nat.and_le_left
+  have hr : (a.setWidth w.bits &&& b.setWidth w.bits).toNat ≤ (b.setWidth w.bits).toNat := by
+    rw [BitVec.toNat_and]; exact Nat.and_le_right
+  have hw : (wide (a.setWidth w.bits &&& b.setWidth w.bits)).toNat
+      = (a.setWidth w.bits &&& b.setWidth w.bits).toNat := by
+    cases w <;> simp only [wide, BitVec.toNat_setWidth, Width.bits] <;> omega
+  refine ⟨?_, ?_, Range.le_top (wide_has w _)⟩ <;> rw [BitVec.le_def, hw] <;> omega
+
+/-- The lesser of two values, as numbers without sign. -/
+def least (a b : BitVec 64) : BitVec 64 := if a ≤ b then a else b
+
+/-- **The range a value lies in, by the operator that gave it**: and where
+it is what two values both have set, no more than either can be. So a value
+masked is at most the mask. -/
 def Val.bound : Val → Range
   | .lit v => ⟨v, v⟩
   | .un o _ => o.bound
   | .bin o _ _ => o.bound
+  | .fop (.alu .and w) _ a b => ⟨0, least (least a.bound.top b.bound.top) w.range.top⟩
   | .fop o _ _ _ => o.bound
   | _ => .all
 
-theorem Val.bound_has (ρ : Env) (v : Val) : v.bound.has (v.den ρ) := by
-  cases v with
-  | lit v => simp only [Val.bound, Range.has, Val.den, BitVec.sub_self, BitVec.le_refl]
-  | un o a => exact o.bound_has _
-  | bin o a b => exact o.bound_has _ _
-  | fop o fl a b => exact o.bound_has _ _ _
-  | _ => exact Range.all_has _
+theorem Val.bound_has (ρ : Env) : (v : Val) → v.bound.has (v.den ρ)
+  | .lit v => by simp only [Val.bound, Range.has, Val.den, BitVec.sub_self, BitVec.le_refl]
+  | .un o a => o.bound_has _
+  | .bin o a b => o.bound_has _ _
+  | .fop (.alu .and w) fl a b => by
+    have ha := Range.le_top (Val.bound_has ρ a)
+    have hb := Range.le_top (Val.bound_has ρ b)
+    obtain ⟨h1, h2, h3⟩ := and_le w (a.den ρ) (b.den ρ)
+    show (wide (BitVec.setWidth w.bits (a.den ρ) &&& BitVec.setWidth w.bits (b.den ρ))) - 0
+      ≤ least (least a.bound.top b.bound.top) w.range.top - 0
+    simp only [least]
+    split <;> split <;> bv_omega
+  | .fop (.alu .add w) fl a b => FOp.bound_has _ _ _ _
+  | .fop (.alu .or w) fl a b => FOp.bound_has _ _ _ _
+  | .fop (.alu .adc w) fl a b => FOp.bound_has _ _ _ _
+  | .fop (.alu .sbb w) fl a b => FOp.bound_has _ _ _ _
+  | .fop (.alu .sub w) fl a b => FOp.bound_has _ _ _ _
+  | .fop (.alu .xor w) fl a b => FOp.bound_has _ _ _ _
+  | .fop (.alu .cmp w) fl a b => FOp.bound_has _ _ _ _
+  | .fop (.cmov _ _) fl a b => FOp.bound_has _ _ _ _
+  | .fop (.setcc _) fl a b => FOp.bound_has _ _ _ _
+  | .fop (.condByte _) fl a b => FOp.bound_has _ _ _ _
+  | .var _ | .bvar _ _ | .slot _ | .tri _ _ _ _ | .app _ _ _ => Range.all_has _
 
 /-- Whether an operator only cuts a value down to its own range. -/
 def Un.cuts : Un → Bool

@@ -30,7 +30,7 @@ def pg : Prog :=
     statics := staticIn blocks (Asm.addr code base .array) }
 
 /-- `rdi` is the address of a row of as many values as `rsi` says. -/
-def row : List (Val × TyS) := [(.was .rdi, .arr (.was .rsi) .any)]
+def row : List (Val × TyS) := [(.was .rdi, .arr (.was .rsi) .any 8)]
 
 /-- The labels. `sum` takes in `rdi` a row of as many values as `rsi` says:
 whatever row, and however many. Going round the loop the same is so of what

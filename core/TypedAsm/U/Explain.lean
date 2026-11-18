@@ -49,7 +49,7 @@ def addrSay (a : BitVec 64) : String := "0x" ++ String.ofList (Nat.toDigits 16 a
 said by; `at_` says which label, where it is not the walk's own. -/
 def nameSay (j : Nat) (at_ : String := "") : String :=
   match allRegs[j]? with
-  | some r => s!"{r.name64} at the start" ++ at_
+  | some r => s!"{r.name64} where the walk{at_} starts"
   | none =>
     (if j = 16 then "the return address"
     else if j = 17 then "the start of the stack"
@@ -71,7 +71,7 @@ def namesVar (i : Nat) : Bool → Names → String
   | _, [] => s!"[a value met on the way, #{i}]"
   | own, f :: fs =>
     if f.base ≤ i ∧ i < f.base + f.width then
-      nameSay (i - f.base) (if own then "" else s!" walked from {addrSay f.addr}")
+      nameSay (i - f.base) (if own then "" else s!" from {addrSay f.addr}")
     else if i < f.base then namesVar i false fs
     else
       match f.made.lookup i with
@@ -105,6 +105,24 @@ def sumFin (p : List (Bool × String) × BitVec 64) : String :=
     (if neg then "-" else "") ++ t ++ moreSay ts ++
       (if p.2 = 0 then "" else if p.2.msb then s!" - {(-p.2).toNat}" else s!" + {litSay p.2}")
 
+/-- An operator on one value, to be read before the value. -/
+def Un.say : Un → String
+  | .neg _ => "the negative of"
+  | .not _ => "every bit turned of"
+  | .popcnt _ => "how many bits are set in"
+  | .bswap _ => "the bytes turned round of"
+  | .signFill _ => "the sign, through every bit, of"
+  | .trunc .w32 => "the low 32 bits of"
+  | .trunc .w64 => "all of"
+  | .zx _ .w8 => "the low byte of"
+  | .zx _ .w16 => "the low two bytes of"
+  | .sx _ .w8 => "the low byte, with its sign, of"
+  | .sx _ .w16 => "the low two bytes, with their sign, of"
+  | .sxd => "the low 32 bits, with their sign, of"
+  | .low8 => "the low byte of"
+  | .low16 => "the low two bytes of"
+  | .shl k => s!"shifted {k} left:"
+
 /-- A term as a sum: its terms, each to be read, and the number added. -/
 def Val.sum (nm : Names) : Val → List (Bool × String) × BitVec 64
   | .lit v => ([], v)
@@ -116,7 +134,7 @@ def Val.sum (nm : Names) : Val → List (Bool × String) × BitVec 64
   | .un (.shl k) a =>
     if k = 0 then a.sum nm else ([(false, paren (sumFin (a.sum nm)) ++ s!" << {k}")], 0)
   | .un (.neg _) a => ([(true, paren (sumFin (a.sum nm)))], 0)
-  | .un _ a => ([(false, s!"f({sumFin (a.sum nm)})")], 0)
+  | .un o a => ([(false, s!"[{o.say} {sumFin (a.sum nm)}]")], 0)
   | .bin (.imul _) a b =>
     ([(false, paren (sumFin (a.sum nm)) ++ " * " ++ paren (sumFin (b.sum nm)))], 0)
   | .bin _ a b => ([(false, s!"f({sumFin (a.sum nm)}, {sumFin (b.sum nm)})")], 0)
@@ -143,7 +161,8 @@ def TyS.say (nm : Names := []) : TyS → String
   | .atom i => s!"what name {i} stands for"
   | .code .. => "code wanting a family of contexts"
   | .range lo hi => s!"from {litSay lo} round to {litSay hi}"
-  | .arr c _ => s!"the address of {c.say nm} values in a row"
+  | .arr c _ st =>
+    s!"the address of {c.say nm} values in a row" ++ (if st = 8 then "" else s!", {st} bytes apart")
   | .upTo t strict => (if strict then "below " else "at most ") ++ t.say nm
 
 /-- A region held, to be read. -/

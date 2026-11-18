@@ -104,7 +104,7 @@ def labels : List U.Label :=
   [⟨entry, inProgram 11⟩,
    ⟨Asm.addr code base .fact,
      inFunction (known := [(.was .rdi, .range 0 0xFFFFFFF)]) (room := (Val.was .rdi) <<< 4)
-       (results := [(.rax, fac (Val.was .rdi).lift)])⟩]
+       (results := [(.rax, fac (Val.was .rdi))])⟩]
 
 /-! ## The check, and what it shows -/
 

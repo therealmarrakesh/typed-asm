@@ -121,6 +121,84 @@ def pushedSlots (top : Val) : Nat → List Pushed → List (Val × Val)
   | c, .saved r :: ps => (top.downBy (c + 8), Val.entered r) :: pushedSlots top (c + 8) ps
   | c, p :: ps => pushedSlots top (c + p.size) ps
 
+/-- What a register holds when the function returns: said in what a
+function returns with. -/
+def Val.given (r : Reg) : Val := .bvar 0 (128 + allRegs.idxOf r)
+
+/-- A value there is when the function returns, the `k`th: one the function
+has made, of which only what is said is known. -/
+def Val.made (k : Nat) : Val := .bvar 0 (192 + k)
+
+mutual
+
+/-- A term said where a function returns, `c` families in: what is said of
+the return (`Val.given`, `Val.made`) is of the family there, and each other
+value of a family is of the family one further out. -/
+def Val.atRet (c : Nat) : Val → Val
+  | .lit v => .lit v
+  | .var i => .var i
+  | .bvar d i =>
+    if d < c then .bvar d i
+    else if d = c ∧ 128 ≤ i then .bvar d (i - 128)
+    else .bvar (d + 1) i
+  | .slot s => .slot s
+  | .un u x => .un u (x.atRet c)
+  | .bin u x y => .bin u (x.atRet c) (y.atRet c)
+  | .tri u x y z => .tri u (x.atRet c) (y.atRet c) (z.atRet c)
+  | .fop u fl x y => .fop u (fl.atRet c) (x.atRet c) (y.atRet c)
+  | .app u x y => .app u (x.atRet c) (y.atRet c)
+
+def FlagsT.atRet (c : Nat) : FlagsT → FlagsT
+  | .lit f => .lit f
+  | .var i => .var i
+  | .bvar d => if d < c then .bvar d else .bvar (d + 1)
+  | .old => .old
+  | .src u fl x y z => .src u (fl.atRet c) (x.atRet c) (y.atRet c) (z.atRet c)
+
+end
+
+def RestS.atRet (c : Nat) : RestS → RestS
+  | .bvar d => if d < c then .bvar d else .bvar (d + 1)
+  | r => r
+
+mutual
+
+/-- A type said where a function returns: each of its terms so. -/
+def TyS.atRet (c : Nat) : TyS → TyS
+  | .any => .any
+  | .ptr S w off => .ptr (S.atRet c) w off
+  | .ref tag w off => .ref tag w off
+  | .nullable τ => .nullable (τ.atRet c)
+  | .orErr τ => .orErr (τ.atRet c)
+  | .str v => .str (v.atRet c)
+  | .atom i => .atom i
+  | .range lo hi => .range lo hi
+  | .arr v τ st => .arr (v.atRet c) (τ.atRet c) st
+  | .upTo t strict => .upTo (t.atRet c) strict
+  | .code regs flags held known rest =>
+    .code (regs.map (Val.atRet (c + 1))) (flags.atRet (c + 1))
+      (held.map fun h => (h.1.atRet (c + 1),
+        ⟨h.2.size.atRet (c + 1), h.2.slots.map fun p => (p.1.atRet (c + 1), p.2.atRet (c + 1))⟩))
+      (known.atRet (c + 1)) (rest.atRet (c + 1))
+
+def ShapeS.atRet (c : Nat) : ShapeS → ShapeS
+  | .mk size vals => .mk size (vals.atRet c)
+
+def ValsS.atRet (c : Nat) : ValsS → ValsS
+  | .nil => .nil
+  | .cons k τ rest => .cons k (τ.atRet c) (rest.atRet c)
+
+def FactsS.atRet (c : Nat) : FactsS → FactsS
+  | .nil => .nil
+  | .cons v τ rest => .cons (v.atRet c) (τ.atRet c) (rest.atRet c)
+
+end
+
+/-- Things known, one after another, from a list. -/
+def factsOf : List (Val × TyS) → FactsS
+  | [] => .nil
+  | f :: fs => .cons f.1 f.2 (factsOf fs)
+
 /-- **What a function returns with**, written one family in from a label
 of the function: the registers it keeps as they were at entry, the stack
 pointer past the return address, the bytes it was given below the stack
@@ -136,19 +214,21 @@ the stack pointer is so far below where it was, and the registers saved
 there are given back as they were. -/
 def returnsWith (results : List (Reg × Val) := []) (room : Val := 0)
     (takes : List (Reg × Val) := []) (gives : List (Reg × Val) := [])
-    (leaves : List (Reg × List (Val × Val)) := []) (pushed : List Pushed := []) : TyS :=
+    (leaves : List (Reg × List (Val × Val)) := []) (pushed : List Pushed := [])
+    (returns : List (Val × TyS) := []) : TyS :=
   .code
     (regsWith
       (regsWith anyRegs (keptRegs.map fun r =>
         (r, if (pushedSaved pushed).contains r then (Val.entered r).lift
           else .bvar 1 (allRegs.idxOf r))))
-      ((.rsp, .add (.bvar 1 4) (.lit (BitVec.ofNat 64 (8 + pushedBytes pushed)))) :: results))
+      ((.rsp, .add (.bvar 1 4) (.lit (BitVec.ofNat 64 (8 + pushedBytes pushed)))) ::
+        results.map fun r => (r.1, r.2.atRet 0)))
     (.bvar 0)
     ((((Val.bvar 1 4).upBy (pushedBytes pushed)).lessBy room.lift, ⟨room.lift.plus 8, []⟩) ::
       (takes.map fun t => (.bvar 1 (allRegs.idxOf t.1),
-        ⟨t.2.lift, ((leaves.lookup t.1).getD []).map fun p => (p.1.lift, p.2.lift)⟩)) ++
-      gives.map fun t => (.bvar 0 (allRegs.idxOf t.1), ⟨t.2.lift, []⟩))
-    .nil (.bvar 1)
+        ⟨t.2.lift, ((leaves.lookup t.1).getD []).map fun p => (p.1.lift, p.2.atRet 0)⟩)) ++
+      gives.map fun t => (.bvar 0 (allRegs.idxOf t.1), ⟨t.2.atRet 0, []⟩))
+    (factsOf (returns.map fun f => (f.1.atRet 0, f.2.atRet 0))) (.bvar 1)
 
 /-- **A label where a function is entered, or inside it**: the return
 address known to be code wanting what the function returns with; so many
@@ -160,17 +240,23 @@ caller when it returns; whatever else its caller holds; and the registers
 and facts said. How many bytes are terms: a number, or what a value at the
 label comes to. `holds` says what values a region taken holds where the
 label is, by the register it is taken at, how far in each value is, and the
-value; `leaves`, what it holds when the function gives it back. -/
+value; `leaves`, what it holds when the function gives it back. `returns`
+says what is known when the function returns: of what a register holds
+then (`Val.given`), of a value the function has made (`Val.made`, which
+`results`, `leaves` and `gives` may name), each a type. So a function is
+said to return one of a few numbers, or a pointer to text, or to leave a
+count in a region within its bounds. -/
 def inFunction (regs : List (Reg × Val) := []) (known : List (Val × TyS) := [])
     (room : Val := 0) (results : List (Reg × Val) := []) (takes : List (Reg × Val) := [])
     (gives : List (Reg × Val) := []) (leaves : List (Reg × List (Val × Val)) := [])
-    (pushed : List Pushed := []) (holds : List (Reg × List (Val × Val)) := []) : CtxS where
+    (pushed : List Pushed := []) (holds : List (Reg × List (Val × Val)) := [])
+    (returns : List (Val × TyS) := []) : CtxS where
   regs := regsWith anyRegs regs
   flags := .bvar 0
   held := (((Val.bvar 0 4).upBy (pushedBytes pushed)).lessBy room,
       ⟨room.plus 8, (room, .bvar 0 16) :: pushedSlots room 0 pushed⟩) ::
     takes.map fun t => (.bvar 0 (allRegs.idxOf t.1), ⟨t.2, (holds.lookup t.1).getD []⟩)
-  known := (.bvar 0 16, returnsWith results room takes gives leaves pushed) :: known
+  known := (.bvar 0 16, returnsWith results room takes gives leaves pushed returns) :: known
   rest := .bvar 0
 
 /-- How many arguments the program was handed, its own name among them:
@@ -205,7 +291,7 @@ def TyS.depth : TyS → Nat
   | .ptr S _ _ => S.depth
   | .nullable τ => τ.depth
   | .orErr τ => τ.depth
-  | .arr _ τ => τ.depth
+  | .arr _ τ _ => τ.depth
   | .code _ _ _ known _ => known.depth + 1
   | _ => 0
 
@@ -236,11 +322,6 @@ def needFuel (pg : Prog) (labels : List Label) (ks : List (Nat × ShapeS)) : Nat
     labels.foldl (fun d l => max d (factsDepth l.pat.known)) (factsDepth pg.statics) +
     ks.foldl (fun d k => max d k.2.depth) 0
 
-/-- Things known, one after another, from a list. -/
-def factsOf : List (Val × TyS) → FactsS
-  | [] => .nil
-  | f :: fs => .cons f.1 f.2 (factsOf fs)
-
 /-- **A pointer to code wanting a context**: what a value is known to be
 where it is the address of code that may be entered in any member of the
 context's family. A pointer to a function is a pointer to code wanting what
@@ -249,14 +330,26 @@ def codeOf (E : CtxS) : TyS := .code E.regs E.flags E.held (factsOf E.known) E.r
 
 /-- How many values of which `τ` is known a shape has in a row from byte
 `o`, eight bytes apart: looked for at most `fuel` far. -/
-def rowRun (vals : List (Nat × TyS)) (τ : TyS) : Nat → Nat → Nat
+def rowRun (vals : List (Nat × TyS)) (τ : TyS) (stride : Nat) : Nat → Nat → Nat
   | 0, _ => 0
-  | fuel + 1, o => if vals.contains (o, τ) then 1 + rowRun vals τ fuel (o + 8) else 0
+  | fuel + 1, o =>
+    if vals.contains (o, τ) then 1 + rowRun vals τ stride fuel (o + stride) else 0
+
+/-- How far apart the values of one type lie that a shape has in a row
+from byte `o`: the distance to the next of that type after it, or eight
+where there is none. So the records of a table, each of several values,
+are gone through a record at a time. -/
+def rowStride (vals : List (Nat × TyS)) (τ : TyS) (o : Nat) : Nat :=
+  match (vals.filter fun p => p.2 == τ && decide (o < p.1)).map (·.1) with
+  | [] => 8
+  | x :: xs => xs.foldl min x - o
 
 /-- **What a program says of an address in its static data**: all that the
 block it lies in shows of it. That it points so far into a block of that
 shape, or of that kind where the block is of one; that it is the address
-of as many values in a row as the block has there of one type; or, in the
+of as many values in a row as the block has there of one type, as far apart
+as they lie (a table's records, each of several values, are so many rows
+side by side); or, in the
 block's text, that it is the address of text, with more after it where
 there is. One way of saying it, whatever the data is: a record, a table to
 be gone through by a number, a node of a kind, a line of text. -/
@@ -271,11 +364,23 @@ def staticIn (blocks : List (BitVec 64 × LayoutS)) (a : BitVec 64) : List (Val 
        | none => [(.lit a, .ptr b.2.shape b.2.writable (a - b.1).toNat)]) ++
       (match b.2.shape.vals.toList.find? fun p => p.1 == (a - b.1).toNat with
        | some p =>
-         [(.lit a, .arr (.lit (BitVec.ofNat 64
-            (rowRun b.2.shape.vals.toList p.2 (b.2.shape.size / 8 + 1) (a - b.1).toNat))) p.2)]
+         (b.2.shape.vals.toList.filter fun q =>
+            decide ((a - b.1).toNat ≤ q.1) &&
+              decide (q.1 < (a - b.1).toNat + rowStride b.2.shape.vals.toList p.2 (a - b.1).toNat)).map
+          fun q =>
+            (.lit (b.1 + BitVec.ofNat 64 q.1), .arr (.lit (BitVec.ofNat 64
+              (rowRun b.2.shape.vals.toList q.2 (rowStride b.2.shape.vals.toList q.2 q.1)
+                (b.2.shape.size / 8 + 1) q.1))) q.2
+              (rowStride b.2.shape.vals.toList q.2 q.1))
        | none => [])
     else
       [(.lit a, .str (.lit (if (a - b.1).toNat + 1 < b.2.size then 1 else 0)))]
+
+/-- **That a value is the address of a record**: of each of its values, so
+far in, what is known. So a function says what it wants of a pointer to one
+record of a table, and is handed the address of any. -/
+def recordAt (v : Val) (fields : List (Nat × TyS)) : List (Val × TyS) :=
+  fields.map fun f => (if f.1 = 0 then v else .add v (litNat f.1), .arr (.lit 1) f.2 0)
 
 /-- A block of plain bytes. -/
 def plainBlock (size : Nat) (writable : Bool) : LayoutS :=

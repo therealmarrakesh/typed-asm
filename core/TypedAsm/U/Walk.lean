@@ -325,17 +325,6 @@ An addition or subtraction of the low halves of two values gives the low
 half of the sum, with nothing above it. Where what is known shows the sum
 of the whole values has nothing above its low half, that is the sum. -/
 
-theorem add_res32 (a b : BitVec 32) : (addCarry a b false).1 = a + b := by
-  apply BitVec.eq_of_toNat_eq
-  have := a.isLt; have := b.isLt
-  simp [addCarry, BitVec.toNat_add, BitVec.toNat_setWidth]
-
-theorem sub_res32 (a b : BitVec 32) : (subBorrow a b false).1 = a - b := by
-  apply BitVec.eq_of_toNat_eq
-  have := a.isLt; have := b.isLt
-  simp [subBorrow, BitVec.toNat_sub, BitVec.toNat_setWidth]
-  omega
-
 theorem add32_small (f : Flags) (a b : BitVec 64) (h : (a + b).toNat < 4294967296) :
     FOp.eval (.alu .add .w32) f a b = a + b := by
   show BitVec.setWidth 64 (addCarry (BitVec.setWidth 32 a) (BitVec.setWidth 32 b) false).1 = _

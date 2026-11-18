@@ -244,7 +244,7 @@ def TyS.under (k : Nat) : TyS → Bool
   | .nullable τ => τ.under k
   | .orErr τ => τ.under k
   | .str c => c.under k
-  | .arr c τ => c.under k && τ.under k
+  | .arr c τ _ => c.under k && τ.under k
   | .upTo t _ => t.under k
   | .code regs flags held known rest =>
     (regs.map (·.under k) == allTrue) && flags.under k && heldUnder k held && known.under k &&
@@ -282,7 +282,7 @@ theorem TyS.den_under {k : Nat} {ρ₁ ρ₂ : Env} (hs : Env.SameBelow k ρ₁ 
     show ρ₁.ty i = ρ₂.ty i
     rw [hs.ty]
   | .range _ _, _ => rfl
-  | .arr c τ, h => by
+  | .arr c τ _, h => by
     simp only [TyS.under, Bool.and_eq_true] at h
     simp only [TyS.den, Val.den_under hs c h.1, TyS.den_under hs τ h.2]
   | .upTo t _, h => by

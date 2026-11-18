@@ -34,7 +34,7 @@ whatever row, and however many. In `rdx` it takes any number at all as the
 index: the comparison it makes with `rsi` is what lets it read. -/
 def labels : List U.Label :=
   [⟨entry, inProgram 1⟩,
-   ⟨Asm.addr code base .get, inFunction (known := [(.was .rdi, .arr (.was .rsi) .any)])⟩]
+   ⟨Asm.addr code base .get, inFunction (known := [(.was .rdi, .arr (.was .rsi) .any 8)])⟩]
 
 /-! ## The check, and what it shows -/
 

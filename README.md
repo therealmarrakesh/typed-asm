@@ -100,6 +100,12 @@ has been put on the stack since the program started or the function was
 entered, one thing after another: a value, a register the function keeps
 for its caller, or so many bytes. `examples/Lengths` keeps a total on its
 stack across calls to a function that saves a register and loops.
+A function may say what is known when it returns (`returns`): that the
+value it gives back is one of a few numbers, or a pointer to text; or that
+a count it keeps in a region its caller lends it stays within bounds. A
+table of records is so many rows side by side, each a record's length
+apart, and a function that wants one record (`recordAt`) is handed the
+address of any, at an index found as the program runs.
 
 No proof is written for twenty-five of the twenty-six. In
 `examples/Fact`, the recursive factorial, two laws of the factorial are
@@ -129,6 +135,15 @@ What is not there:
   for bytes it made, not for bytes it read. A store of two or four bytes
   into a number it made leaves that number unknown; a store of one or of
   eight does not.
+- What is known of numbers is followed where it is sums, differences and
+  multiples by numbers written out, with wrapping at 32 and 64 bits and
+  masks. A bound that rests on more than that, as that a number has at
+  most twenty decimal digits, is not seen: the program compares the index.
+- A function cannot hand out part of a region it keeps and say the rest is
+  still its own, so an allocator over its own page is not typed; and the
+  stack a function needs cannot be said by how long a list is.
+- A label cannot say what each of the values or bytes of a region the code
+  holds is, only how many there are.
 - There are no signals in the model. An exit status is the value handed to
   `exit`; a parent process sees its low eight bits.
 - The examples are written as constructor terms; there is no notation for

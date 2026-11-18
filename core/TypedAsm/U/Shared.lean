@@ -210,18 +210,18 @@ theorem Reads.sharedAt {Γ : Ctx} {p a : BitVec 64} {τ : Ty} {Sh : Shape} {w : 
 be the address of, to be read**: the one so many along, where that is fewer
 than there are; and what is read is known to be of the type the row's
 values are. -/
-theorem Reads.arr {Γ : Ctx} {p a c : BitVec 64} {τ : Ty} {i : Nat}
-    (hf : (p, Ty.arr c τ) ∈ Γ.known) (ha : a = p + BitVec.ofNat 64 (8 * i)) (hi : i < c.toNat) :
+theorem Reads.arr {Γ : Ctx} {p a c : BitVec 64} {τ : Ty} {st i : Nat}
+    (hf : (p, Ty.arr c τ st) ∈ Γ.known) (ha : a = p + BitVec.ofNat 64 (st * i)) (hi : i < c.toNat) :
     Reads fetch sys Ψ Γ a 8 (fun x Γr => Γr = { Γ with known := (x, τ) :: Γ.known }) := by
   intro j Ψ' he hwf s hw
   obtain ⟨base, l, off, hl, hp, hall⟩ := hasTy_arr.mp (hw.known _ hf)
   have hmem := hall i hi
   have hfit := hwf.fits base l hl _ hmem
   have hp' : p = base + BitVec.ofNat 64 off := hp
-  have hab : a = base + BitVec.ofNat 64 (off + 8 * i) := by
+  have hab : a = base + BitVec.ofNat 64 (off + st * i) := by
     rw [ha, hp', BitVec.add_assoc, ← BitVec.ofNat_add]
   subst hab
-  have hsub : off + 8 * i + 8 ≤ l.size := by
+  have hsub : off + st * i + 8 ≤ l.size := by
     simp only [Layout.size]
     omega
   refine ⟨State.canRead_sub (hw.heapPerm base l hl).1 hsub, _, rfl, rfl, rfl, ?_⟩
@@ -238,7 +238,7 @@ theorem Writes.shared {Γ : Ctx} {p a : BitVec 64} {τ : Ty} {Sh : Shape} {off o
     (v : BitVec 64)
     (hf : (p, τ) ∈ Γ.known) (hτ : τ.pointee Ψ.kinds = some (Sh, true, off))
     (ha : a + BitVec.ofNat 64 off = p + BitVec.ofNat 64 o) (hin : o + n ≤ Sh.size) (hn : n ≤ 8)
-    (hv : ∀ q ∈ Sh.vals, (q.1 + 8 ≤ o ∨ o + n ≤ q.1) ∨
+    (hv : ∀ q ∈ Sh.vals, (q.1 + 8 ≤ o ∨ o + n ≤ q.1) ∨ q.2 = .any ∨
       (n = 8 ∧ q.1 = o ∧ ∀ (Ψ' : MemTy) (k : Nat),
         (∀ g ∈ Γ.known, HasTy fetch sys Ψ' k g.2 g.1) → HasTy fetch sys Ψ' k q.2 v)) :
     Writes fetch sys Ψ Γ a n v Γ := by
@@ -254,8 +254,9 @@ theorem Writes.shared {Γ : Ctx} {p a : BitVec 64} {τ : Ty} {Sh : Shape} {off o
     (storeN_flags _ _ _ _) (storeN_perm _ _ _ _)
     (fun y hy => storeN_load64_out _ _ _ _ _ hn hy)
     (fun x hx => storeN_mem_out _ _ _ _ _ hn hx) (fun q hq => ?_)
-  rcases hv q hq with hout | ⟨h8, hqo, hcons⟩
+  rcases hv q hq with hout | hany | ⟨h8, hqo, hcons⟩
   · exact .inl hout
+  · exact .inr (by rw [hany]; exact HasTy.any _)
   · subst h8
     rw [hqo]
     exact .inr (by

@@ -451,7 +451,7 @@ def readCell (kinds : Nat → Option ShapeS) (Γ : CtxS) (k : Nat) (next : BitVe
           | none => none
         else if n = 8 then
           match findArr Γ.known (eaS Γ.regs next m) Γ.known with
-          | some (_, _, τ) => some (.var k, [(.var k, τ)])
+          | some (_, _, τ, _) => some (.var k, [(.var k, τ)])
           | none => none
         else none
 
@@ -536,16 +536,16 @@ theorem readCell_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
           · next h8 =>
             subst h8
             split at h
-            · next p c τ hfa =>
+            · next p c τ st hfa =>
               cases h
               show Reads fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) 8 _
               intro j Ψ' he hwf s hw
               obtain ⟨hmem, i, ha, hi⟩ := findArr_spec (ρ := ρ) (Ψ' := Ψ') (n := j)
                 (fun g hg => hw.known (g.1.den ρ, g.2.den ρ) (List.mem_map.mpr ⟨g, hg, rfl⟩))
                 Γ.known hfa
-              have hf : (p.den ρ, Ty.arr (c.den ρ) (τ.den ρ)) ∈ (Γ.den ρ).known :=
-                List.mem_map.mpr ⟨(p, .arr c τ), hmem, rfl⟩
-              have haddr : eaOf (Γ.den ρ).val next m = p.den ρ + BitVec.ofNat 64 (8 * i) := by
+              have hf : (p.den ρ, Ty.arr (c.den ρ) (τ.den ρ) st) ∈ (Γ.den ρ).known :=
+                List.mem_map.mpr ⟨(p, .arr c τ st), hmem, rfl⟩
+              have haddr : eaOf (Γ.den ρ).val next m = p.den ρ + BitVec.ofNat 64 (st * i) := by
                 rw [← eaS_den]; exact ha
               obtain ⟨hr, Γr, hΓr, hv, hfl, hw'⟩ := Reads.arr hf haddr hi j Ψ' he hwf s hw
               refine ⟨hr, Γr, ⟨?_, Env.setVal_get_self ρ k _⟩, hv, hfl, hw'⟩
@@ -645,9 +645,30 @@ theorem writeCell_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk
             rw [← eaS_den]; exact ha
           show Writes fetch sys Ψ (Γ.den ρ) (eaOf (Γ.den ρ).val next m) n (v.den ρ) (Γ.den ρ)
           exact Writes.shared (v.den ρ) hf (TyS.pointee_den hk ρ hpt) haddr (by rw [ShapeS.den_size]; exact hin) hn
-            (by rw [ShapeS.den_vals]; exact valsOkS_sound ρ Sh.vals hvals)
+            (fun q hq => ((by rw [ShapeS.den_vals] at hq; exact valsOkS_sound ρ Sh.vals hvals q hq :
+              (q.1 + 8 ≤ o ∨ o + n ≤ q.1) ∨ _)).elim .inl (fun h => .inr (.inr h)))
         · cases h
       · cases h
+
+/-- Whether no typed value of a block reaches into the `n` bytes from `o`,
+but ones of which nothing is said: those hold whatever is stored. -/
+def ValsS.loose (o n : Nat) : ValsS → Bool
+  | .nil => true
+  | .cons o' τ rest => (o' + 8 ≤ o || o + n ≤ o' || τ == .any) && rest.loose o n
+
+theorem ValsS.loose_den (ρ : Env) (o n : Nat) :
+    (vs : ValsS) → vs.loose o n = true →
+    ∀ q ∈ vs.den ρ, (q.1 + 8 ≤ o ∨ o + n ≤ q.1) ∨ q.2 = .any
+  | .nil, _, _, hq => nomatch hq
+  | .cons o' τ rest, h, q, hq => by
+    simp only [ValsS.loose, Bool.and_eq_true, Bool.or_eq_true, decide_eq_true_eq,
+      beq_iff_eq] at h
+    rcases List.mem_cons.mp hq with rfl | hq
+    · rcases h.1 with (h1 | h1) | h1
+      · exact .inl (.inl h1)
+      · exact .inl (.inr h1)
+      · exact .inr (by rw [h1]; rfl)
+    · exact ValsS.loose_den ρ o n rest h.2 q hq
 
 /-- Whether no typed value of a block reaches into the `n` bytes from `o`. -/
 def ValsS.free (o n : Nat) : ValsS → Bool
@@ -761,7 +782,7 @@ def writeRanged (kinds : Nat → Option ShapeS) (Γ : CtxS) (next : BitVec 64) (
       if n ≤ 8 then
         match findFactR kinds Γ (eaS Γ.regs next m) n Γ.known with
         | some (_, _, Sh, w, off, d, M) =>
-          if w && Sh.vals.free (d + off) (M + n) then some Γ.held else none
+          if w && Sh.vals.loose (d + off) (M + n) then some Γ.held else none
         | none => none
       else none
 
@@ -791,18 +812,15 @@ theorem writeRanged_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : Kinds
             List.mem_map.mpr ⟨(p, τ), hmem, rfl⟩
           refine ⟨rfl, rfl, fun k' Ψ' he hwf s hw => ?_⟩
           obtain ⟨o', ha, h1, h2⟩ := CtxS.spanFrom_den hsp hw.known
-          have hall : ∀ q ∈ (Sh.den ρ).vals, ShapeOf.clearOf (d + off) (M + n) q = true := by
-            have := ValsS.free_den ρ (d + off) (M + n) Sh.vals
-            rw [hfree, ← ShapeS.den_vals, List.all_eq_true] at this
-            exact this
+          have hall : ∀ q ∈ (Sh.den ρ).vals,
+              (q.1 + 8 ≤ d + off ∨ d + off + (M + n) ≤ q.1) ∨ q.2 = .any := by
+            rw [ShapeS.den_vals]
+            exact ValsS.loose_den ρ _ _ Sh.vals hfree
           have W := Writes.shared (fetch := fetch) (sys := sys) (Ψ := Ψ) (v.den ρ) hfm
             (TyS.pointee_den hk ρ hpt) (a := (eaS Γ.regs next m).den ρ) (o := o' + off) (n := n)
             (by rw [ha, BitVec.ofNat_add, BitVec.add_assoc])
             (by rw [ShapeS.den_size]; omega) hn
-            (fun q hq => .inl (by
-              have := hall q hq
-              simp only [ShapeOf.clearOf, Bool.or_eq_true, decide_eq_true_eq] at this
-              omega))
+            (fun q hq => (hall q hq).elim (fun h => .inl (by omega)) (fun h => .inr (.inl h)))
           rw [← eaS_den]
           exact W.2.2 k' Ψ' he hwf s hw
         · cases h

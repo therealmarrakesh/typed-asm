@@ -155,7 +155,7 @@ def entryCtx (room : Nat) : CtxS where
     .bvar 0 8, .bvar 0 9, .bvar 0 10, .bvar 0 11, .bvar 0 12, .bvar 0 13, .bvar 0 14, .bvar 0 15⟩
   flags := .bvar 0
   held := [(.bvar 0 17, ⟨litNat (room + 8), [(litNat room, .bvar 0 18)]⟩)]
-  known := [(.add (.add (.bvar 0 17) (litNat room)) (.lit 8), .arr (.bvar 0 18) (.str (.lit 0)))]
+  known := [(.add (.add (.bvar 0 17) (litNat room)) (.lit 8), .arr (.bvar 0 18) (.str (.lit 0)) 8)]
   rest := .none
 
 /-- The member of that family a state is, the count being `c` and the
@@ -387,7 +387,7 @@ variable (p : State) (e : BitVec 64) (n : Nat) (args : List (List Byte)) (w : Wo
 /-- **The block after the count is a row of as many pointers to text as
 the count says.** -/
 theorem argv_known {Ψ : MemTy} (k : Nat) (hΨ : Ψ (argBase + 8) = some (argvLayout args)) :
-    HasTy fetch sys Ψ k (.arr (argCount args) (.str 0)) (argBase + 8) := by
+    HasTy fetch sys Ψ k (.arr (argCount args) (.str 0) 8) (argBase + 8) := by
   refine hasTy_arr.mpr ⟨argBase + 8, argvLayout args, 0, hΨ, by simp, fun i hi => ?_⟩
   have hc : (argCount args).toNat = (argsGiven args).length := by
     have := argsGiven_length_le args

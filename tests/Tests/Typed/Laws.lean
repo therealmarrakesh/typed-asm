@@ -65,7 +65,7 @@ def facLabels (result : Val) : List U.Label :=
      inFunction (known := smallArg) (room := (Val.was .rdi) <<< 4) (results := [(.rax, result)])⟩]
 
 /-- The factorial of the argument the function was entered with. -/
-def facOfArg : Val := Fact.fac (Val.was .rdi).lift
+def facOfArg : Val := Fact.fac (Val.was .rdi)
 
 -- the function returns the factorial of its argument, for every argument,
 -- and the program ends with the factorial of five

@@ -75,6 +75,184 @@ theorem atomCs_le (ρ : Env) (t : Val) : AllLe (natOf ρ) (atomCs t) := by
   · simp only [hle, ↓reduceIte, List.append_nil, List.mem_cons, List.not_mem_nil, or_false] at hc
     rcases hc with rfl | rfl <;> simp only [Lin.den, multDen] <;> omega
 
+theorem add_res32 (a b : BitVec 32) : (addCarry a b false).1 = a + b := by
+  apply BitVec.eq_of_toNat_eq
+  have := a.isLt; have := b.isLt
+  simp [addCarry, BitVec.toNat_add, BitVec.toNat_setWidth]
+
+theorem sub_res32 (a b : BitVec 32) : (subBorrow a b false).1 = a - b := by
+  apply BitVec.eq_of_toNat_eq
+  have := a.isLt; have := b.isLt
+  simp [subBorrow, BitVec.toNat_sub, BitVec.toNat_setWidth]
+  omega
+
+/-- What a term is the low part of, as a whole number, and how much the
+part holds: a sum or difference of low halves is the low half of the sum or
+difference itself, each number with its sign; a value cut to a width, the
+low part of the value. -/
+def halfOf : Val → Option (Lin Int × Int)
+  | .fop (.alu .add .w32) _ x y => some (Lin.addMul 1 (x.int true) (y.int true), 4294967296)
+  | .fop (.alu .sub .w32) _ x y => some (Lin.addMul (-1) (y.int true) (x.int true), 4294967296)
+  | .un (.trunc .w32) x => some (x.int true, 4294967296)
+  | .un .low8 x => some (x.int true, 256)
+  | .un .low16 x => some (x.int true, 65536)
+  | _ => none
+
+theorem halfOf_mod (ρ : Env) {t : Val} {E : Lin Int} {M : Int} (h : halfOf t = some (E, M)) :
+    0 < M ∧ natOf ρ t = E.den (natOf ρ) % M := by
+  unfold halfOf at h
+  split at h
+  · next fl x y =>
+    cases h
+    refine ⟨by omega, ?_⟩
+    have ex := Val.int_den ρ true x
+    have ey := Val.int_den ρ true y
+    rw [Lin.addMul_den]
+    generalize (x.int true).den (natOf ρ) = X at *
+    generalize (y.int true).den (natOf ρ) = Y at *
+    show ((BitVec.setWidth 64 (addCarry (BitVec.setWidth 32 (x.den ρ))
+      (BitVec.setWidth 32 (y.den ρ)) false).1).toNat : Int) = _
+    rw [add_res32, ← ex, ← ey]
+    simp only [BitVec.toNat_setWidth, BitVec.toNat_add, BitVec.toNat_ofInt]
+    omega
+  · next fl x y =>
+    cases h
+    refine ⟨by omega, ?_⟩
+    have ex := Val.int_den ρ true x
+    have ey := Val.int_den ρ true y
+    rw [Lin.addMul_den]
+    generalize (x.int true).den (natOf ρ) = X at *
+    generalize (y.int true).den (natOf ρ) = Y at *
+    show ((BitVec.setWidth 64 (subBorrow (BitVec.setWidth 32 (x.den ρ))
+      (BitVec.setWidth 32 (y.den ρ)) false).1).toNat : Int) = _
+    rw [sub_res32, ← ex, ← ey]
+    simp only [BitVec.toNat_setWidth, BitVec.toNat_sub, BitVec.toNat_ofInt]
+    omega
+  · next x =>
+    cases h
+    refine ⟨by omega, ?_⟩
+    have ex := Val.int_den ρ true x
+    generalize (x.int true).den (natOf ρ) = X at *
+    show ((BitVec.setWidth 64 (BitVec.setWidth 32 (x.den ρ))).toNat : Int) = _
+    rw [← ex]
+    simp only [BitVec.toNat_setWidth, BitVec.toNat_ofInt]
+    omega
+  · next x =>
+    cases h
+    refine ⟨by omega, ?_⟩
+    have ex := Val.int_den ρ true x
+    generalize (x.int true).den (natOf ρ) = X at *
+    show ((BitVec.setWidth 64 (BitVec.setWidth 8 (x.den ρ))).toNat : Int) = _
+    rw [← ex]
+    simp only [BitVec.toNat_setWidth, BitVec.toNat_ofInt]
+    omega
+  · next x =>
+    cases h
+    refine ⟨by omega, ?_⟩
+    have ex := Val.int_den ρ true x
+    generalize (x.int true).den (natOf ρ) = X at *
+    show ((BitVec.setWidth 64 (BitVec.setWidth 16 (x.den ρ))).toNat : Int) = _
+    rw [← ex]
+    simp only [BitVec.toNat_setWidth, BitVec.toNat_ofInt]
+    omega
+  · cases h
+
+/-- That one sum of multiples is another: each at most the other. -/
+def eqCs (A B : Lin Int) : List (Lin Int) := [Lin.addMul (-1) B A, Lin.addMul (-1) A B]
+
+/-- **The ways a low part may be**: what it is the low part of, itself; or
+that, a wrap more or less; or what it is the low part of is further off
+than that, and nothing more is said. Of any other term, the one way, saying
+nothing. -/
+def waysOf (t : Val) : List (List (Lin Int)) :=
+  match halfOf t with
+  | none => [[]]
+  | some (E, M) =>
+    [eqCs ⟨[(1, t)], 0⟩ E,
+     eqCs ⟨[(1, t)], 0⟩ ⟨E.ms, E.k + M⟩,
+     eqCs ⟨[(1, t)], 0⟩ ⟨E.ms, E.k - M⟩,
+     [Lin.from (2 * M) E],
+     [⟨E.ms, E.k + M + 1⟩]]
+
+theorem waysOf_le (ρ : Env) (t : Val) : ∃ w ∈ waysOf t, AllLe (natOf ρ) w := by
+  unfold waysOf
+  split
+  · exact ⟨[], List.mem_singleton.mpr rfl, fun c hc => nomatch hc⟩
+  · next E M hE =>
+    obtain ⟨hM, hm⟩ := halfOf_mod ρ hE
+    generalize hv : E.den (natOf ρ) = V at hm
+    have hV : multDen (natOf ρ) E.ms + E.k = V := hv
+    have hlo := Int.emod_nonneg V (Int.ne_of_gt hM)
+    have hhi := Int.emod_lt_of_pos V hM
+    by_cases h0 : 0 ≤ V ∧ V < M
+    · have e : V % M = V := Int.emod_eq_of_lt h0.1 h0.2
+      refine ⟨_, List.mem_cons_self, fun c hc => ?_⟩
+      simp only [eqCs, List.mem_cons, List.not_mem_nil, or_false] at hc
+      rcases hc with rfl | rfl <;> rw [Lin.addMul_den] <;> simp only [Lin.den, multDen] <;> omega
+    · by_cases h1 : -M ≤ V ∧ V < 0
+      · have e : V % M = V + M := by
+          rw [← Int.add_emod_right]; exact Int.emod_eq_of_lt (by omega) (by omega)
+        refine ⟨_, List.mem_cons_of_mem _ List.mem_cons_self, fun c hc => ?_⟩
+        simp only [eqCs, List.mem_cons, List.not_mem_nil, or_false] at hc
+        rcases hc with rfl | rfl <;> rw [Lin.addMul_den] <;> simp only [Lin.den, multDen] <;> omega
+      · by_cases h2 : M ≤ V ∧ V < 2 * M
+        · have e : V % M = V - M := by
+            rw [← Int.sub_emod_right]; exact Int.emod_eq_of_lt (by omega) (by omega)
+          refine ⟨_, List.mem_cons_of_mem _ (List.mem_cons_of_mem _ List.mem_cons_self),
+            fun c hc => ?_⟩
+          simp only [eqCs, List.mem_cons, List.not_mem_nil, or_false] at hc
+          rcases hc with rfl | rfl <;> rw [Lin.addMul_den] <;> simp only [Lin.den, multDen] <;>
+            omega
+        · by_cases h3 : 2 * M ≤ V
+          · refine ⟨_, List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+              (List.mem_cons_of_mem _ List.mem_cons_self)), fun c hc => ?_⟩
+            rw [List.mem_singleton.mp hc, Lin.from_den]
+            omega
+          · refine ⟨_, List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+              (List.mem_cons_of_mem _ List.mem_cons_self))), fun c hc => ?_⟩
+            rw [List.mem_singleton.mp hc]
+            simp only [Lin.den]
+            omega
+
+/-- Each way things may be, with each way each of some terms may be: but
+for the ways that cannot be. -/
+def addWays (fuel : Nat) : List Val → List (List (Lin Int)) → List (List (Lin Int))
+  | [], K => K
+  | t :: ts, K =>
+    match halfOf t with
+    | none => addWays fuel ts K
+    | some _ =>
+      addWays fuel ts
+        ((K.flatMap fun cs => (waysOf t).map (· ++ cs)).filter fun cs => !refute fuel cs)
+
+theorem addWays_le {ρ : Env} {fuel : Nat} : (ts : List Val) → (K : List (List (Lin Int))) →
+    (∃ cs ∈ K, AllLe (natOf ρ) cs) → ∃ cs ∈ addWays fuel ts K, AllLe (natOf ρ) cs
+  | [], _, h => h
+  | t :: ts, K, ⟨cs, hcs, hall⟩ => by
+    unfold addWays
+    split
+    · exact addWays_le ts K ⟨cs, hcs, hall⟩
+    · obtain ⟨w, hw, hwall⟩ := waysOf_le ρ t
+      have hboth : AllLe (natOf ρ) (w ++ cs) := fun c hc =>
+        (List.mem_append.mp hc).elim (hwall c) (hall c)
+      refine addWays_le ts _ ⟨w ++ cs, List.mem_filter.mpr
+        ⟨List.mem_flatMap.mpr ⟨cs, hcs, List.mem_map.mpr ⟨w, hw, rfl⟩⟩, ?_⟩, hboth⟩
+      cases hr : refute fuel (w ++ cs) with
+      | false => rfl
+      | true => exact (refute_false fuel _ hr hboth).elim
+
+/-- A term, and the terms it is a sum or difference of low halves of, and
+those of them: so far in. -/
+def inside : Nat → Val → List Val
+  | 0, t => [t]
+  | n + 1, t =>
+    t :: match halfOf t with
+      | some E => E.1.ms.flatMap fun p => inside n p.2
+      | none => []
+
+/-- The terms a term is made of, with those inside them. -/
+def termsIn (v : Val) : List Val := v.lin.ms.flatMap fun p => inside 3 p.2
+
 /-- **A term's whole number, where the things known show it does not
 wrap**: with the number added read without its sign, or with. -/
 def noWrap (fuel : Nat) (cs : List (Lin Int)) (u : Val) : Option (Lin Int) :=
@@ -201,8 +379,8 @@ theorem addFacts_le {ρ : Env} {Ψ' : MemTy} {n : Nat} {fuel : Nat} :
 /-- The terms the ranges known are of are made of. -/
 def factAtoms : List (Val × TyS) → List Val
   | [] => []
-  | (u, .range _ _) :: G => u.lin.ms.map (·.2) ++ factAtoms G
-  | (u, .upTo t _) :: G => u.lin.ms.map (·.2) ++ t.lin.ms.map (·.2) ++ factAtoms G
+  | (u, .range _ _) :: G => termsIn u ++ factAtoms G
+  | (u, .upTo t _) :: G => termsIn u ++ termsIn t ++ factAtoms G
   | _ :: G => factAtoms G
 
 /-- Whether a thing known is of a term made of one of some terms. -/
@@ -229,24 +407,29 @@ theorem cone_sub : (n : Nat) → (G : List (Val × TyS)) → (as : List Val) →
 
 /-- Each way things may be, by all of some ranges known: what is so of
 each term whatever is known, and what the ranges say; gone through twice,
-for a range may be of a term another shows not to wrap. -/
+for a range may be of a term another shows not to wrap; and between, each
+way a low part may be that the ranges leave open. -/
 def knowAll (G : List (Val × TyS)) (more : List Val) : List (List (Lin Int)) :=
   addFacts ((factAtoms G ++ more).length + 1) G
-    (addFacts ((factAtoms G ++ more).length + 1) G [(factAtoms G ++ more).eraseDups.flatMap atomCs])
+    (addWays ((factAtoms G ++ more).length + 1) (factAtoms G ++ more).eraseDups
+      (addFacts ((factAtoms G ++ more).length + 1) G
+        [(factAtoms G ++ more).eraseDups.flatMap atomCs]))
 
 /-- **Each way things may be, by the ranges known that bear on some
 terms.** -/
 def know (G : List (Val × TyS)) (more : List Val) : List (List (Lin Int)) :=
-  knowAll (cone G.length G more) more
+  knowAll (cone G.length G (more.flatMap (inside 3))) (more.flatMap (inside 3))
 
 theorem know_le {ρ : Env} {Ψ' : MemTy} {n : Nat} (G : List (Val × TyS)) (more : List Val)
     (hg : ∀ g ∈ G, HasTy fetch sys Ψ' n (g.2.den ρ) (g.1.den ρ)) :
     ∃ cs ∈ know G more, AllLe (natOf ρ) cs :=
-  have hg' : ∀ g ∈ cone G.length G more, HasTy fetch sys Ψ' n (g.2.den ρ) (g.1.den ρ) :=
+  have hg' : ∀ g ∈ cone G.length G (more.flatMap (inside 3)),
+      HasTy fetch sys Ψ' n (g.2.den ρ) (g.1.den ρ) :=
     fun g hgm => hg g (cone_sub _ _ _ g hgm)
-  addFacts_le _ _ hg' (addFacts_le _ _ hg' ⟨_, List.mem_singleton.mpr rfl, fun c hc => by
-    obtain ⟨t, _, hc⟩ := List.mem_flatMap.mp hc
-    exact atomCs_le ρ t c hc⟩)
+  addFacts_le _ _ hg' (addWays_le _ _ (addFacts_le _ _ hg'
+    ⟨_, List.mem_singleton.mpr rfl, fun c hc => by
+      obtain ⟨t, _, hc⟩ := List.mem_flatMap.mp hc
+      exact atomCs_le ρ t c hc⟩))
 
 /-- **Whether a term lies in a range, by the ranges known**, each way
 things may be: its whole number, seen not to wrap, lies there; on one side

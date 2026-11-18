@@ -135,7 +135,7 @@ An index is known to be below it by the program's own comparison of the two
 registers. -/
 
 /-- `rbx` is the address of as many values in a row as `rdx` says. -/
-def Parr : CtxS := { Pw with known := [(.bvar 0 3, .arr (.bvar 0 2) .any)] }
+def Parr : CtxS := { Pw with known := [(.bvar 0 3, .arr (.bvar 0 2) .any 8)] }
 
 /-- `cmp rcx, <reg>; <jcc> out; mov rax, [rbx + rcx*8 + disp]; out: exit`. -/
 def codeArr (other : Reg) (c : Cond) (disp : BitVec 32) : List (BitVec 64 × Instr × BitVec 64) :=
@@ -156,7 +156,7 @@ example : checkProgram (codeArr .rdx .ae 4) [lab 0 Parr] 10 0 = false := by deci
 
 /-- `rbx` is the address of a row of `rdx` values, and `rdx` is not nought. -/
 def Prow : CtxS :=
-  { Pw with known := [(.bvar 0 3, .arr (.bvar 0 2) .any), (.bvar 0 2, .range 1 (-1))] }
+  { Pw with known := [(.bvar 0 3, .arr (.bvar 0 2) .any 8), (.bvar 0 2, .range 1 (-1))] }
 
 /-- `loop: add rax, [rbx]; add rbx, <step>; sub rdx, 1; jne loop; exit`. -/
 def codeRow (step : BitVec 32) : List (BitVec 64 × Instr × BitVec 64) :=
@@ -170,7 +170,7 @@ example : checkProgram (codeRow 8) [lab 0 Prow] 10 0 = true := by decide +kernel
 example : checkProgram (codeRow 16) [lab 0 Prow] 10 0 = false := by decide +kernel
 -- a row that may be of none: the first read may be past it. Refused
 example : checkProgram (codeRow 8)
-    [lab 0 { Pw with known := [(.bvar 0 3, .arr (.bvar 0 2) .any)] }] 10 0 = false := by
+    [lab 0 { Pw with known := [(.bvar 0 3, .arr (.bvar 0 2) .any 8)] }] 10 0 = false := by
   decide +kernel
 
 end Tests.Unified

@@ -66,7 +66,7 @@ inductive TyS
   | range (lo hi : BitVec 64)
   /-- It is the address of so many values in a row, of each of which `τ` is
   known: how many being what a term stands for. -/
-  | arr (count : Val) (τ : TyS)
+  | arr (count : Val) (τ : TyS) (stride : Nat)
   /-- It is at most what a term stands for, or less than it. -/
   | upTo (t : Val) (strict : Bool)
 
@@ -99,7 +99,7 @@ def TyS.den (ρ : Env) : TyS → Ty
   | .str c => .str (c.den ρ)
   | .atom i => ρ.ty i
   | .range lo hi => .range lo hi
-  | .arr count τ => .arr (count.den ρ) (τ.den ρ)
+  | .arr count τ st => .arr (count.den ρ) (τ.den ρ) st
   | .upTo t strict => .upTo (t.den ρ) strict
   | .code regs flags held known rest => .code fun z =>
     { val := fun r => (regs.get r).den { ρ with bound := z :: ρ.bound }

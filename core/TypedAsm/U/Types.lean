@@ -77,7 +77,7 @@ inductive Ty
   /-- It is the address of so many values in a row, eight bytes each, in a
   block others may point into; and of each of them `τ` is known. How many
   is a value: the count a program is handed with its arguments, say. -/
-  | arr (count : BitVec 64) (τ : Ty)
+  | arr (count : BitVec 64) (τ : Ty) (stride : Nat)
   /-- It is at most a value, or less than it where that is said: as numbers
   without sign. So an index is said to be below a count. -/
   | upTo (w : BitVec 64) (strict : Bool)
@@ -236,9 +236,9 @@ def HasTy (fetch : Fetch) (sys : Syscall) : MemTy → Nat → Ty → BitVec 64 �
       s.rip = v → Matches (fun τ w => HasTy fetch sys Ψ' k τ w) Ψ' (pre x) s →
       SafeN fetch sys k s
   | _, _, .range lo hi, v => v - lo ≤ hi - lo
-  | Ψ, _, .arr count τ, v =>
+  | Ψ, _, .arr count τ st, v =>
     ∃ a l off, Ψ a = some l ∧ v = a + BitVec.ofNat 64 off ∧
-      ∀ i, i < count.toNat → (off + 8 * i, τ) ∈ l.shape.vals
+      ∀ i, i < count.toNat → (off + st * i, τ) ∈ l.shape.vals
   | _, _, .upTo w strict, v => if strict then v < w else v ≤ w
 termination_by _ n τ => (n, τ)
 

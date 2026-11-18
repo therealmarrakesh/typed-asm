@@ -67,7 +67,7 @@ theorem TyS.strip_follows (ρ : Env) {nz ne : Bool} {v : BitVec 64} (hnz : nz = 
   | .atom _ => Follows.refl _ _
   | .code .. => Follows.refl _ _
   | .range _ _ => Follows.refl _ _
-  | .arr _ _ => Follows.refl _ _
+  | .arr _ _ _ => Follows.refl _ _
   | .upTo _ _ => Follows.refl _ _
 
 /-- Whether a context knows of a value a range that lies within a given
@@ -94,15 +94,18 @@ theorem CtxS.knowsIn_has {ρ : Env} {Γ : CtxS} {v : Val} {R : Range} (h : Γ.kn
 
 /-- Whether a value is known to lie in a range: by the operator that gave
 it, or by what the context knows of it. -/
-def CtxS.fits (Γ : CtxS) (v : Val) (R : Range) : Bool := v.bound.within R || Γ.knowsIn v R
+def CtxS.fits (Γ : CtxS) (v : Val) (R : Range) : Bool :=
+  v.bound.within R || Γ.knowsIn v R || rangeHolds Γ.known v R.lo R.hi
 
 theorem CtxS.fits_has {ρ : Env} {Γ : CtxS} {v : Val} {R : Range} (h : Γ.fits v R = true)
     {Ψ' : MemTy} {n : Nat} (hg : ∀ g ∈ (Γ.den ρ).known, HasTy fetch sys Ψ' n g.2 g.1) :
     R.has (v.den ρ) := by
   unfold CtxS.fits at h
   rcases Bool.or_eq_true_iff.mp h with h | h
-  · exact Range.within_has h (Val.bound_has ρ v)
-  · exact CtxS.knowsIn_has h hg
+  · rcases Bool.or_eq_true_iff.mp h with h | h
+    · exact Range.within_has h (Val.bound_has ρ v)
+    · exact CtxS.knowsIn_has h hg
+  · exact rangeHolds_has h fun g hgm => hg (g.1.den ρ, g.2.den ρ) (List.mem_map.mpr ⟨g, hgm, rfl⟩)
 
 /-- What follows of the addresses one on from pointers to text: where a
 pointer's byte is known not to be nought, the address one on is a pointer to
@@ -183,7 +186,9 @@ theorem CmpT.rangeFacts_hasTy {ρ : Env} {p : CmpT} {b : Bool} (hp : p.den ρ = 
     exact hasTy_range.mpr (CmpT.range_sound hr hp)
 
 /-- What a comparison of two values for which is below teaches of the one
-against the other: that the one is less, or that the other is at most it. -/
+against the other: that the one is less, or that the other is at most it.
+And what one for whether they are the same teaches, where they are and
+neither is a number written out: that each is at most the other. -/
 def CmpT.orderFacts (p : CmpT) (b : Bool) : List (Val × TyS) :=
   match p.w, p.form.rel with
   | .w64, .ult =>
@@ -191,6 +196,10 @@ def CmpT.orderFacts (p : CmpT) (b : Bool) : List (Val × TyS) :=
       [(if p.form.swap then p.b else p.a, .upTo (if p.form.swap then p.a else p.b) true)]
     else
       [(if p.form.swap then p.a else p.b, .upTo (if p.form.swap then p.b else p.a) false)]
+  | .w64, .eq =>
+    if b != p.form.neg && p.a.lit?.isNone && p.b.lit?.isNone then
+      [(p.a, .upTo p.b false), (p.b, .upTo p.a false)]
+    else []
   | _, _ => []
 
 theorem CmpT.orderFacts_hasTy {ρ : Env} {p : CmpT} {b : Bool} (hp : p.den ρ = b)
@@ -215,6 +224,19 @@ theorem CmpT.orderFacts_hasTy {ρ : Env} {p : CmpT} {b : Bool} (hp : p.den ρ = 
         first
           | exact hp
           | exact BitVec.le_def.mpr (Nat.le_of_not_lt hp)
+    | eq =>
+      simp only [CmpT.orderFacts] at hf
+      split at hf
+      · next hc =>
+        have hc' := (Bool.and_eq_true_iff.mp (Bool.and_eq_true_iff.mp hc).1).1
+        have e : x.den ρ = y.den ρ := by
+          simp only [CmpT.den, Form.eval, Rel.eval, Val.denW, Width.bits, BitVec.setWidth_eq] at hp
+          cases neg <;> cases swap <;> cases b <;> simp_all
+        rcases List.mem_cons.mp hf with rfl | hf
+        · exact hasTy_upTo.mpr (by simp only [Bool.false_eq_true, ↓reduceIte]; rw [e]; exact BitVec.le_refl _)
+        · rw [List.mem_singleton.mp hf]
+          exact hasTy_upTo.mpr (by simp only [Bool.false_eq_true, ↓reduceIte]; rw [e]; exact BitVec.le_refl _)
+      · cases hf
     | _ => cases hf
 
 /-- What a relation says of a value against itself, where that is the same
