@@ -5,7 +5,7 @@ import TypedAsm.U.Checked
 # Swap: typing and safety
 
 The program is in `SwapProgram.lean`. This file says what its labels want
-and checks it: one check, run by Lean's kernel, that the code is typed and
+and checks it: one check, run as compiled code, that the code is typed and
 that the state the kernel loads the program into starts as its entry asks.
 Nothing is proved by hand.
 

@@ -7,7 +7,7 @@ import TypedAsm.Runs
 
 The program is in `HelloProgram.lean`. This file checks it and states what
 the check shows: it is safe, it ends only with status nought, and what it
-writes is its message. One check, run by Lean's kernel, decides that the
+writes is its message. One check, run as compiled code, decides that the
 program's code is typed and that the state the kernel loads it into starts
 as its entry asks. The page the message is on is never written, so its
 block says its bytes; and the program is typed against a system that lets a

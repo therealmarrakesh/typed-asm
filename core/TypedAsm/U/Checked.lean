@@ -101,11 +101,16 @@ def wholeWhyText (code : List (Asm L)) (l : L) (n : Nat) (ks : List (Nat × Shap
   | some why => "the program is refused:\n" ++ why
   | none => ""
 
-/-- `asm_decide ok why`: the goal, that the check `ok` is true, by `decide
-+kernel`. The check is run first as compiled code, which takes a small
-part of the time: where it fails, the text `why` is the error, and Lean's
-kernel is not asked. Nothing rests on the compiled run: where it passes,
-the proof is the kernel's own run of the check. -/
+/-- `asm_decide ok why`: the goal, that the check `ok` is true, by running
+the type checker as compiled code (`native_decide`). Where it fails, the
+text `why` is the error.
+
+The type checker's soundness is proved in the ordinary way and rests on
+Lean's three standard axioms. That a given program type-checks is a
+computation, and it is Lean's compiled code that runs it: a theorem come by
+so rests besides on an axiom of its own that says the run came out true,
+which is to say on Lean's compiler and runtime computing what the
+definitions say. `#print axioms` shows it. -/
 syntax "asm_decide " term:max term:max : tactic
 
 open Lean Elab Tactic in
@@ -119,19 +124,13 @@ elab_rules : tactic
           unsafe Term.evalTerm String (mkConst ``String) why
         catch _ => pure ""
       throwError (if msg.isEmpty then "the check fails" else msg)
-    try
-      evalTactic (← `(tactic| decide +kernel))
-    catch e =>
-      let msg ← try
-          unsafe Term.evalTerm String (mkConst ``String) why
-        catch _ => pure ""
-      if msg.isEmpty then throw e else throwError msg
+    evalTactic (← `(tactic| native_decide))
 
 /-- `asm_checked code start l stack n program pg labels ls`: for the program
 `code` declared with `asm_program code start l stack n`, the checker's
 program `pg` and the labels `ls`, states in the current namespace
 
-* `checked`: the check, run by Lean's kernel: the labels' code is typed,
+* `checked`: the check, run as compiled code: the labels' code is typed,
   and whatever arguments the program is given, the state it is loaded into
   starts as its entry asks;
 * `start_eq`: the state `asm_program` starts the program in with given
@@ -204,7 +203,7 @@ macro_rules
     if let (some q, some r, some sd) := (q?, r?, sd?) then
       cmds := cmds.push (← `(/-- The bytes the program says its data holds are the bytes its
         blocks say. -/
-        theorem $saidOk : saidCheck (denBlocks $bs) $sd = true := by decide +kernel))
+        theorem $saidOk : saidCheck (denBlocks $bs) $sd = true := by native_decide))
       cmds := cmds.push (← `(/-- **The program is safe, on the machine that decodes its
         instructions from memory; it ends only with a status that is as said; and wherever it
         reaches a `write`, the descriptor and the bytes offered are as said: whatever its

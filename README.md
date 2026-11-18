@@ -30,8 +30,12 @@ What exists and is checked today:
   contexts, which is what a function is; that it lies in a range, or below
   another value; that it is the address of a row of as many values as a
   value says.
-- A checker for the type system: a function, proved sound, that Lean's
-  kernel runs. Each instruction is a description, as data, of what it reads,
+- A checker for the type system: a function, proved sound. That it is
+  sound rests on Lean's three standard axioms and nothing else. That a
+  given program checks is a computation, run as compiled code
+  (`native_decide`): a theorem about a program rests besides on an axiom
+  that says the run came out true, that is, on Lean's compiler and runtime
+  computing what the definitions say. `#print axioms` shows it. Each instruction is a description, as data, of what it reads,
   writes and computes, and one rule types them all. The checker walks a
   program from each label to where control leaves, through branches and
   system calls, and at a label, a call or a return compares the context
@@ -59,15 +63,19 @@ What exists and is checked today:
   be proved to offer the kernel, at every `write`, only bytes satisfying a
   stated condition. `examples/Hello` is proved to end with 0 and to write
   its message and nothing else, on standard output.
-- Twenty-five example programs in `examples/`, each built into an executable
-  whose theorems depend only on Lean's three standard axioms.
+- Twenty-six example programs in `examples/`, each built into an executable
+  and checked. The largest, `examples/Regs`, is 548 instructions: it looks,
+  after every call the model has, at what the kernel left in each register,
+  and is proved to end with nought on the model; run on Linux it does.
 - Tests against real tools: 79,628 instructions against the GNU assembler,
   13,579 instruction sequences against a real processor, including which
-  fault each bad access raises, and 49 whole-program runs compared with the
+  fault each bad access raises, and 50 whole-program runs compared with the
   same programs run as Linux executables. The memory each program starts
   with in the model is checked to be its executable file, byte for byte.
   What the checker answers is tested case by case: what it accepts, and,
-  as theorems, what it refuses.
+  as theorems, what it refuses. Those tests are run by Lean's kernel, and a
+  number of the examples are checked by it too: so the compiled checker is
+  held against the definitions it is compiled from.
 
 The example programs are written as Lean constructor terms. What an author
 writes beyond the program is what the labels want that are jumped back to,
@@ -92,7 +100,7 @@ entered, one thing after another: a value, a register the function keeps
 for its caller, or so many bytes. `examples/Lengths` keeps a total on its
 stack across calls to a function that saves a register and loops.
 
-No proof is written for twenty-four of the twenty-five. In
+No proof is written for twenty-five of the twenty-six. In
 `examples/Fact`, the recursive factorial, two laws of the factorial are
 proved, in a dozen lines; with them its function is typed once for every
 argument: that it needs sixteen bytes of stack for each unit of its

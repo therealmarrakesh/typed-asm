@@ -4,8 +4,8 @@ import TypedAsm.U.Checked
 /-!
 # Regs: typing, safety, and that it ends with nought
 
-The program is in `RegsProgram.lean`. This file checks it: one check, run by
-Lean's kernel. Nothing is proved by hand, and one label is said, where the
+The program is in `RegsProgram.lean`. This file checks it: one check, run as
+compiled code. Nothing is proved by hand, and one label is said, where the
 program starts.
 
 That it ends only with status nought is the model of the kernel's word that

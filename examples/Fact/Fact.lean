@@ -5,7 +5,7 @@ import TypedAsm.U.Checked
 # Fact: typing, safety, and what it computes
 
 The program is in `FactProgram.lean`. This file says what its labels want
-and checks it: one check, run by Lean's kernel, that the code is typed and
+and checks it: one check, run as compiled code, that the code is typed and
 that the state the kernel loads the program into starts as its entry asks.
 
 The function has a label of its own, so it is typed once, for every
@@ -25,7 +25,7 @@ the function returns, the checker finds that what the machine computed is
 what the label says by matching a law.
 
 With that, the program is proved to end with 120: at the one call the
-program makes, the argument is five, and Lean's kernel computes the
+program makes, the argument is five, and the check computes the
 factorial of five.
 
 It is kept separate so that running the program does not link the checker.
