@@ -599,7 +599,9 @@ def walkFrom (pg : Prog) (ix : Index) (stops : BitVec 64 → Bool) :
         else
           match sysWorld Γ k (a + len) with
           | some Γ' =>
-            if Γ'.under (k + 2) then .sys k (walkFrom pg ix stops tl false fuel (k + 2) (a + len) Γ')
+            if (Γ'.addKnown [(.var k, ansTy Γ)]).sharpen.under (k + 2) then
+              .sys k (walkFrom pg ix stops tl false fuel (k + 2) (a + len)
+                (Γ'.addKnown [(.var k, ansTy Γ)]).sharpen)
             else .stop a Γ
           | none =>
             match sysMap Γ k (a + len) with
@@ -756,12 +758,19 @@ theorem walkFrom_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
             split at hW
             · next hu' =>
               subst hW
-              have ih := fun x y => (walkFrom_sound hD hkind pg hpre stops hcode hk ix hix tl false fuel (k + 2)
-                (e + len) Γ' (ρ.setSys k x y) hu' (h x y)).1
+              have ih := fun x y => Ok.regard (CtxS.sharpen_regards (ρ.setSys k x y) _)
+                (walkFrom_sound hD hkind pg hpre stops hcode hk ix hix tl false fuel (k + 2)
+                  (e + len) _ (ρ.setSys k x y) hu' (h x y)).1
               have hb := both fun m hm => by
                 refine Ok.step hf (sysWorld_sound hD hkind hw hu hpreΓ) ?_
-                rintro t Δ ⟨x, y, rfl, rfl⟩
-                exact ((ih x y).mono hm).arrives
+                rintro t Δ ⟨x, y, rfl, rfl, hans⟩
+                refine Arrives.learn [((Val.var k).den (ρ.setSys k x y),
+                  (ansTy Γ).den (ρ.setSys k x y))] ?_ (((ih x y).mono hm).arrives)
+                intro f hf' k' _ Ψ' _ _
+                rw [List.mem_singleton.mp hf']
+                show HasTy fetch sys Ψ' k' _ ((ρ.setSys k x y).val k)
+                rw [Env.setSys_k]
+                exact hans Ψ' k'
               exact ⟨hb.1, fun _ => hb.2⟩
             · subst hW; exact ⟨h, fun hm => nomatch hm⟩
           · split at hW

@@ -727,7 +727,10 @@ def regardWith (sm : List (Val × TyS) → Val → Val → Bool) (ent : TyS → 
      | some P => apartS Γ.known P && coverS Γ.held P
      | none => false) &&
     Δ.known.all (factFrom ent Γ.known) && Δ.rest == Γ.rest &&
-    Δ.rows.all (rowFrom (sm Γ.known) Γ.known Γ.rows) && Δ.rows.all fun r => r.fed.isNone
+    Δ.rows.all (rowFrom (sm Γ.known) Γ.known Γ.rows) &&
+    Δ.rows.all fun r => r.fed.isNone || Γ.rows.any fun g =>
+      g.fed == r.fed && g.byte == r.byte && g.stride == r.stride &&
+        sm Γ.known g.addr r.addr && sm Γ.known g.count r.count
 
 theorem regardWith_sound {sm : List (Val × TyS) → Val → Val → Bool} {ent : TyS → TyS → Bool}
     (he : EntSound fetch sys ent) (ρ : Env) {Γ Δ : CtxS}
@@ -771,12 +774,23 @@ theorem regardWith_sound {sm : List (Val × TyS) → Val → Val → Bool} {ent 
             (cellAt s' x.byte (x.addr.den ρ + BitVec.ofNat 64 (x.stride * i)))
           rw [he, ← hb, ← hst]
           exact HasTy.sub (followsS_sub ρ _ _ _ (List.all_eq_true.mp htys g hgr)) hty)
-        (fun _ _ _ _ r hr' off ho => by
+        (fun k' Ψ'' s' hw' r hr' off ho => by
           obtain ⟨x, hx, rfl⟩ := List.mem_map.mp (show r ∈ Δ.rows.map (RowS.den ρ) from hr')
-          have hn : x.fed = none := by simpa using hnofed x hx
           have ho' : x.fed.map (BitVec.ofNat 64) = some off := ho
-          rw [hn] at ho'
-          cases ho')
+          rcases Bool.or_eq_true_iff.mp (hnofed x hx) with hn | hany
+          · have hn' : x.fed = none := by simpa using hn
+            rw [hn'] at ho'
+            cases ho'
+          · obtain ⟨g, hgm, hc⟩ := List.any_eq_true.mp hany
+            simp only [Bool.and_eq_true, beq_iff_eq] at hc
+            obtain ⟨⟨⟨⟨hfe, hb⟩, hst⟩, ha⟩, hcn⟩ := hc
+            have hsm' := hsm Ψ'' k' (knownS hw'.known)
+            have hF := hw'.fed (g.den ρ) (List.mem_map.mpr ⟨g, hgm, rfl⟩) off
+              (show g.fed.map (BitVec.ofNat 64) = some off by rw [hfe]; exact ho')
+            show FedRow s' (RowOf.mk (x.addr.den ρ) (x.count.den ρ) x.stride x.byte (x.ty.den ρ)
+              (x.fed.map (BitVec.ofNat 64))) off
+            rw [← hsm' _ _ ha, ← hsm' _ _ hcn, ← hst, ← hb]
+            exact hF)
         k Ψ' hext hwf s hw
     · funext r
       exact (hsm Ψ' k hg _ _ (hr r (mem_allRegs r))).symm

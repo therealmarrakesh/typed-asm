@@ -168,10 +168,12 @@ What is not there:
 - A program may be proved to write only what it read: the world keeps what
   each `read` stored, a `read` leaves its buffer said to be those bytes, and
   a `write` from that buffer, of no more than were read, is seen to offer a
-  stretch of them (`preEcho`, `whole_echoes`). A store into the buffer, or
+  stretch of them (`asm_checked … exits q echoes`). A `write` is known to
+  answer no more than it was offered, so a loop that writes what is left
+  from where the last `write` stopped is typed too, its label saying the
+  buffer is still what was read (`readAt`). A store into the buffer, or
   another `read`, ends that. It is not yet said of bytes the program has
-  changed on the way (made upper case, say), nor of a buffer written out in
-  pieces from a moving pointer, nor in a label.
+  changed on the way (made upper case, say).
 - There are no signals in the model. An exit status is the value handed to
   `exit`; a parent process sees its low eight bits.
 - The examples are written as constructor terms; there is no notation for

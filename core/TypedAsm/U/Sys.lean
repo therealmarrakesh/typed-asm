@@ -61,8 +61,9 @@ theorem WellTyped.ret {n : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch sys 
 
 /-- What a call does to the program. -/
 inductive SysKind
-  /-- Nothing, beyond handing back a value. -/
-  | world
+  /-- Nothing, beyond handing back a value: an error number or no more than
+  a register says, where one is named. -/
+  | world (most : Option Reg := none)
   /-- It stores at most so many bytes at the address in a register: as many
   as another register says, or a fixed number. -/
   | fills (buf : Reg) (room : Reg ⊕ Nat) (logs : Bool := false)
@@ -115,7 +116,8 @@ describes that it lets through. -/
 def Describes (sys : Syscall) (D : SysDesc) : Prop :=
   ∀ (s : State) (k : SysKind), D.kind (s.getReg .rax) = some k → D.pre s →
     match k with
-    | .world => ∃ t, sys s = .next t ∧ Linux.OnlyWorld s t
+    | .world most => ∃ t, sys s = .next t ∧ Linux.OnlyWorld s t ∧
+      ∀ r, most = some r → Linux.Answered (s.getReg r).toNat (t.getReg .rax)
     | .fills b room logs => ∃ t, sys s = .next t ∧ Linux.Fills s (s.getReg b) (roomOf s room) t ∧
       Linux.Answered (roomOf s room) (t.getReg .rax) ∧
       (logs = true → Linux.Logged s (s.getReg b) (roomOf s room) t)
@@ -126,14 +128,18 @@ def Describes (sys : Syscall) (D : SysDesc) : Prop :=
 /-- **A call that does nothing to the program** returns with a value in
 `rax`, of which nothing is known. -/
 theorem Steps.world {D : SysDesc} (hD : Describes sys D) {Γ : Ctx} {next : BitVec 64}
-    (hk : D.kind (Γ.val .rax) = some .world)
+    {most : Option Reg} (hk : D.kind (Γ.val .rax) = some (.world most))
     (hpre : ∀ n, ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, s.rip = next →
       WellTyped fetch sys Ψ' n Γ s → D.pre s) :
-    Steps fetch sys Ψ .syscall next Γ fun t Γ' => t = next ∧ ∃ v r, Γ' = Γ.afterSys v r next := by
+    Steps fetch sys Ψ .syscall next Γ fun t Γ' => t = next ∧ ∃ v r, Γ' = Γ.afterSys v r next ∧
+      ∀ r', most = some r' → Linux.Answered (Γ.val r').toNat v := by
   intro n Ψ' he hwf s hrip hw
-  obtain ⟨t, hst, v, w, hreads, rfl⟩ :=
-    hD s .world (by rw [hw.val]; exact hk) (hpre n Ψ' he hwf s hrip hw)
-  refine ⟨_, hst, Γ.afterSys v (w.saved 0) next, ⟨hrip, v, _, rfl⟩, ?_⟩
+  obtain ⟨t, hst, ⟨v, w, hreads, rfl⟩, hans⟩ :=
+    hD s (.world most) (by rw [hw.val]; exact hk) (hpre n Ψ' he hwf s hrip hw)
+  refine ⟨_, hst, Γ.afterSys v (w.saved 0) next, ⟨hrip, v, _, rfl, fun r' hr' => by
+    have := hans r' hr'
+    rw [Linux.ret_rax, hw.val] at this
+    exact this⟩, ?_⟩
   rw [← hrip]
   exact hw.ret v w (.inl hreads)
 

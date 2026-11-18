@@ -175,13 +175,14 @@ Where the check fails, the error says why, in the program's terms
 each instruction or label that is refused and what is not so there. -/
 syntax "asm_checked " ident &" start " term:max &" stack " term:max &" program " term:max
   &" labels " term:max (&" blocks " term:max)? (&" kinds " term:max)?
-  (&" steps " term:max)? (&" exits " term:max)?
+  (&" steps " term:max)? (&" exits " term:max)? (&" echoes")?
   (&" writes " term:max &" said " term:max (&" each " term:max)?)?
   (&" laws " term:max)? : command
 
 macro_rules
   | `(asm_checked $code start $l stack $n program $pg labels $ls $[blocks $bs?]? $[kinds $ks?]?
-      $[steps $st?]? $[exits $q?]? $[writes $r? said $sd? $[each $e?]?]? $[laws $lw?]?) => do
+      $[steps $st?]? $[exits $q?]? $[echoes%$ec?]? $[writes $r? said $sd? $[each $e?]?]?
+      $[laws $lw?]?) => do
     let checked := mkIdent `checked
     let startEq := mkIdent `start_eq
     let safeIn := mkIdent `safe_in
@@ -259,6 +260,32 @@ macro_rules
       return mkNullNode cmds
     if r?.isSome then
       Macro.throwError "`writes` is said with `exits`: what the program ends with, then what it writes"
+    if ec?.isSome then
+      let some q := q?
+        | Macro.throwError "`echoes` is said with `exits`: what the program ends with, then that it writes only what it read"
+      let safeExitsEchoesIn := mkIdent `safe_exits_echoes_in
+      let echoes := mkIdent `echoes
+      cmds := cmds.push (← `(/-- **The program is safe, on the machine that decodes its
+        instructions from memory; it ends only with a status that is as said; and wherever it
+        reaches a `write`, it offers a stretch of what its last `read` stored: whatever its
+        arguments and whatever the world outside it holds.** -/
+        theorem $safeExitsEchoesIn (args : List (List Byte)) (w : World) :
+            SafeMem linux (startIn $code $l $n args w) ∧
+              ExitsOnly $fetch (fun c => ($q : BitVec 32 → Bool) c = true) (startIn $code $l $n args w) ∧
+              EchoesOnly $fetch (startIn $code $l $n args w) :=
+          whole_echoes $checked (Q := fun c => ($q : BitVec 32 → Bool) c = true) (q := ($q : BitVec 32 → Bool)) (fun _ h => h) rfl rfl
+            $lw args w))
+      cmds := cmds.push (← `(/-- So the program as it is run, with any arguments, is safe. -/
+        theorem $safe (args : List (List Byte)) : SafeMem linux ($startArgs args) :=
+          $startEq args ▸ ($safeExitsEchoesIn args ($startArgs args).world).1))
+      cmds := cmds.push (← `(/-- It ends only with a status that is as said. -/
+        theorem $exits (args : List (List Byte)) :
+            ExitsOnly $fetch (fun c => ($q : BitVec 32 → Bool) c = true) ($startArgs args) :=
+          $startEq args ▸ ($safeExitsEchoesIn args ($startArgs args).world).2.1))
+      cmds := cmds.push (← `(/-- And at a `write` offers only what it last read. -/
+        theorem $echoes (args : List (List Byte)) : EchoesOnly $fetch ($startArgs args) :=
+          $startEq args ▸ ($safeExitsEchoesIn args ($startArgs args).world).2.2))
+      return mkNullNode cmds
     match q? with
     | none =>
       cmds := cmds.push (← `(/-- **The program is safe, on the machine that decodes its

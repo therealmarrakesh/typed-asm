@@ -24,7 +24,8 @@ def linuxKind (nr : BitVec 64) : Option SysKind :=
   else if nr = 318 then some (.fills .rdi (.inl .rsi))
   else if nr = 9 then some .map
   else if nr = 11 then some .unmap
-  else if nr = 1 ∨ nr = 3 ∨ nr = 8 ∨ nr = 257 ∨ nr = 74 ∨ nr = 75 ∨ nr = 39 then some .world
+  else if nr = 1 then some (.world (some .rdx))
+  else if nr = 3 ∨ nr = 8 ∨ nr = 257 ∨ nr = 74 ∨ nr = 75 ∨ nr = 39 then some .world
   else none
 
 def linuxDesc : SysDesc := { kind := linuxKind }
@@ -104,23 +105,28 @@ theorem linux_describes : Describes linux linuxDesc := by
                 exact ⟨Linux.munmap s, by simp [linux, h11], munmap_unmaps s⟩
               · next h11 =>
                 split at hk
-                rotate_left
-                · cases hk
-                cases hk
-                have h60' : s.getReg .rax ≠ 60 := fun e => h60 (.inl e)
-                have h231 : s.getReg .rax ≠ 231 := fun e => h60 (.inr e)
-                show ∃ t, linux s = .next t ∧ Linux.OnlyWorld s t
-                unfold linux
-                simp only [h60', h231, h0, h9, h11, h5, h228, h318, ↓reduceIte]
-                repeat' split
-                all_goals first
-                  | exact ⟨_, rfl, Linux.write_only s⟩
-                  | exact ⟨_, rfl, Linux.close_only s⟩
-                  | exact ⟨_, rfl, Linux.lseek_only s⟩
-                  | exact ⟨_, rfl, Linux.openat_only s⟩
-                  | exact ⟨_, rfl, Linux.fsync_only s⟩
-                  | exact ⟨_, rfl, Linux.getpid_only s⟩
-                  | exact ⟨_, rfl, Linux.OnlyWorld.same s _⟩
+                · next h1 =>
+                  cases hk
+                  exact ⟨Linux.write s, by simp [linux, h1], Linux.write_only s, fun r hr => by
+                    cases hr; exact Linux.write_answered s⟩
+                · next h1 =>
+                  split at hk
+                  rotate_left
+                  · cases hk
+                  cases hk
+                  have h60' : s.getReg .rax ≠ 60 := fun e => h60 (.inl e)
+                  have h231 : s.getReg .rax ≠ 231 := fun e => h60 (.inr e)
+                  show ∃ t, linux s = .next t ∧ Linux.OnlyWorld s t ∧ _
+                  unfold linux
+                  simp only [h60', h231, h0, h1, h9, h11, h5, h228, h318, ↓reduceIte]
+                  repeat' split
+                  all_goals first
+                    | exact ⟨_, rfl, Linux.close_only s, fun _ hr => nomatch hr⟩
+                    | exact ⟨_, rfl, Linux.lseek_only s, fun _ hr => nomatch hr⟩
+                    | exact ⟨_, rfl, Linux.openat_only s, fun _ hr => nomatch hr⟩
+                    | exact ⟨_, rfl, Linux.fsync_only s, fun _ hr => nomatch hr⟩
+                    | exact ⟨_, rfl, Linux.getpid_only s, fun _ hr => nomatch hr⟩
+                    | exact ⟨_, rfl, Linux.OnlyWorld.same s _, fun _ hr => nomatch hr⟩
 
 /-- A system that lets through only exits whose status is as wanted does
 what the system under it is described to do, where the status of any exit
@@ -132,7 +138,7 @@ theorem Describes.exitsOnly {sys : Syscall} {D : SysDesc} (h : Describes sys D)
   intro s k hk hpre
   have := h s k hk hpre.1
   cases k with
-  | world =>
+  | world most =>
     obtain ⟨t, ht, hw⟩ := this
     exact ⟨t, Syscall.exitsOnly_next ht, hw⟩
   | fills b room logs =>

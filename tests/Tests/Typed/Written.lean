@@ -17,6 +17,7 @@ import Tests.Typed.Written.Related
 import Tests.Typed.Written.Filled
 import Tests.Typed.Written.RecList
 import Tests.Typed.Written.CatOnce
+import Tests.Typed.Written.CatPieces
 
 /-!
 # Programs written as an author would, each needing something of the type checker
@@ -38,5 +39,6 @@ of low halves bounded only by a relation between their operands; and a
 function that fills memory it is lent, its caller knowing what it left; and
 a function that goes down a list by calling itself, the stack it needs said
 by how long the list is; and a program that writes what it read, proved to
-write nothing else. Each is typed as it is compiled.
+write nothing else, at once or in pieces as the kernel takes them. Each is
+typed as it is compiled.
 -/

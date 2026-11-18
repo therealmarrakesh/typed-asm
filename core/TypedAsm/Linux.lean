@@ -1148,6 +1148,23 @@ theorem Answered.of_stored {buf : BitVec 64} {count : Nat} {t : State} (hc : cou
     rw [hrax, BitVec.toNat_ofNat, Nat.mod_eq_of_lt (by omega)]
     exact hlen
 
+/-- **A `write` answers an error number, or no more than it was offered.** -/
+theorem writeBy_answered (d : Fate) (s : State) :
+    Answered (s.getReg .rdx).toNat ((writeBy d s).getReg .rax) := by
+  have hn : (BitVec.ofNat 64 (taken d (readableRun s (s.getReg .rsi)
+      (min (s.getReg .rdx).toNat 0x7ffff000)))).toNat ≤ (s.getReg .rdx).toNat := by
+    rw [BitVec.toNat_ofNat]
+    exact Nat.le_trans (Nat.mod_le _ _) (Nat.le_trans (taken_le _ _)
+      (Nat.le_trans (readableRun_le _ _ _) (Nat.min_le_left _ _)))
+  simp only [writeBy]
+  repeat' (first
+    | (rw [ret_rax]; first
+        | exact .inl (by decide) | exact .inl (Errno.code_err _) | exact .inr hn)
+    | split)
+
+theorem write_answered (s : State) : Answered (s.getReg .rdx).toNat ((write s).getReg .rax) :=
+  writeBy_answered (nextFate s).1 (nextFate s).2
+
 theorem read_answered (s : State) : Answered (s.getReg .rdx).toNat ((read s).getReg .rax) :=
   .of_stored (s.getReg .rdx).isLt (read_stored s)
 

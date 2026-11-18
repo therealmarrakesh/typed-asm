@@ -88,22 +88,7 @@ def pg : Prog := { code := progCode (Asm.table base code), pre := preEcho (· ==
 
 def labels : List U.Label := [⟨entry, inProgram 2⟩]
 
-theorem checked :
-    wholeOkWith code .start 2 [] (blocksOf code .start) pg labels (needFuel pg labels []) = true := by
-  native_decide
-
-/-- **Whatever it is given to read, at every `write` the program offers a
-stretch of what its last `read` stored**; it is safe, and ends only with
-status nought. -/
-theorem echoes : ∀ args w, SafeMem linux (startIn code .start 2 args w) ∧
-    (∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startIn code .start 2 args w) s' →
-      ∀ len c, Asm.fetch (Asm.base code) code s'.rip = some (.syscall, len) →
-      linux { s' with rip := s'.rip + len } = .exit c → c = 0) ∧
-    (∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startIn code .start 2 args w) s' →
-      ∀ len, Asm.fetch (Asm.base code) code s'.rip = some (.syscall, len) →
-      s'.getReg .rax = 1 → Echoes { s' with rip := s'.rip + len }) :=
-  whole_echoes checked (Q := fun c => c = 0) (q := (· == 0))
-    (fun _ h => by simpa using h) rfl rfl (LawsHold.nil _)
+asm_checked code start .start stack 2 program pg labels labels exits (· == 0) echoes
 
 /-! The program of `examples/Buffer` reads and writes so in a loop, until
 there is no more: it is typed the same way, with the labels it has. -/

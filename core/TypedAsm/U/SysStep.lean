@@ -59,6 +59,66 @@ theorem CtxS.afterSys_den (ρ : Env) (Γ : CtxS) (v r : Val) (next : BitVec 64) 
   funext r
   cases r <;> rfl
 
+/-- What is known of the answer of a call given room for so many bytes,
+where it is no error number: that it is no more than the room. -/
+def roomTy (Γ : CtxS) : Reg ⊕ Nat → TyS
+  | .inl r =>
+    match (Γ.regs.get r).lit? with
+    | some c => .range 0 c
+    | none => .upTo (Γ.regs.get r) false
+  | .inr n => if n < 18446744073709551616 then .range 0 (BitVec.ofNat 64 n) else .any
+
+/-- **What is known of what a call that stores bytes answers**: an error
+number, or no more than the bytes it was given room for. -/
+def ansTy (Γ : CtxS) : TyS :=
+  match Γ.regs.rax.lit? with
+  | some nr =>
+    match linuxKind nr with
+    | some (.fills _ room _) => .orErr (roomTy Γ room)
+    | some (.world (some r)) => .orErr (roomTy Γ (.inl r))
+    | _ => .any
+  | none => .any
+
+theorem roomTy_has {ρ : Env} {Γ : CtxS} {k : Nat} (hu : Γ.under k = true) {room : Reg ⊕ Nat}
+    {x y : BitVec 64} (hans : Linux.Answered (roomVal (Γ.den ρ).val room) x) (Ψ' : MemTy) (n : Nat) :
+    HasTy fetch sys Ψ' n ((TyS.orErr (roomTy Γ room)).den (ρ.setSys k x y)) x := by
+  show HasTy fetch sys Ψ' n (.orErr ((roomTy Γ room).den (ρ.setSys k x y))) x
+  refine hasTy_orErr.mpr ?_
+  rcases hans with he | hle
+  · exact .inl he
+  · refine .inr ?_
+    cases room with
+    | inr m =>
+      simp only [roomTy]
+      split
+      · next hm =>
+        refine hasTy_range.mpr ?_
+        have hx : x.toNat ≤ m := hle
+        show x - 0 ≤ BitVec.ofNat 64 m - 0
+        rw [show x - 0 = x by simp, show BitVec.ofNat 64 m - 0 = BitVec.ofNat 64 m by simp,
+          BitVec.le_def, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hm]
+        exact hx
+      · show HasTy fetch sys Ψ' n .any x
+        rw [HasTy]
+        trivial
+    | inl r =>
+      have hx : x.toNat ≤ ((Γ.regs.get r).den ρ).toNat := hle
+      simp only [roomTy]
+      split
+      · next c hc =>
+        refine hasTy_range.mpr ?_
+        rw [Val.lit?_den hc] at hx
+        show x - 0 ≤ c - 0
+        rw [show x - 0 = x by simp, show c - 0 = c by simp, BitVec.le_def]
+        exact hx
+      · refine hasTy_upTo.mpr ?_
+        have e : (Γ.regs.get r).den (ρ.setSys k x y) = (Γ.regs.get r).den ρ :=
+          congrArg (fun Δ : Ctx => Δ.val r) (CtxS.den_setSys ρ k x y Γ hu)
+        show (if false = true then _ else x ≤ (Γ.regs.get r).den (ρ.setSys k x y))
+        rw [e]
+        simp only [Bool.false_eq_true, ↓reduceIte, BitVec.le_def]
+        exact hx
+
 /-- **A call that does nothing to the program, as a step on terms**: where
 the call number is written out and is such a call's, the context it returns
 in, with the name `k` for what it hands back. -/
@@ -66,7 +126,7 @@ def sysWorld (Γ : CtxS) (k : Nat) (next : BitVec 64) : Option CtxS :=
   match Γ.regs.rax.lit? with
   | some nr =>
     match linuxKind nr with
-    | some .world => some (Γ.afterSys (.var k) (.var (k + 1)) next)
+    | some (.world _) => some (Γ.afterSys (.var k) (.var (k + 1)) next)
     | _ => none
   | none => none
 
@@ -75,21 +135,37 @@ theorem sysWorld_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
     (h : sysWorld Γ k next = some Γ') (hu : Γ.under k = true)
     (hpre : PreAt fetch sys Ψ D (Γ.den ρ)) :
     Steps fetch sys Ψ .syscall next (Γ.den ρ) fun t Δ =>
-      ∃ x y, t = next ∧ Δ = Γ'.den (ρ.setSys k x y) := by
+      ∃ x y, t = next ∧ Δ = Γ'.den (ρ.setSys k x y) ∧
+        ∀ (Ψ' : MemTy) (n : Nat), HasTy fetch sys Ψ' n ((ansTy Γ).den (ρ.setSys k x y)) x := by
   unfold sysWorld at h
   split at h
   · next nr hnr =>
     split at h
-    · next hk =>
+    · next most hk =>
       cases h
       have hrax : (Γ.den ρ).val .rax = nr := Val.lit?_den hnr
       refine Steps.mono (Steps.world hD (by rw [hkind, hrax]; exact hk)
         (fun n Ψ' he hwf s _ hw => hpre n Ψ' he hwf s hw)) ?_
-      rintro t Δ ⟨rfl, x, y, rfl⟩
-      refine ⟨x, y, rfl, ?_⟩
-      rw [CtxS.afterSys_den, CtxS.den_setSys ρ k x y Γ hu]
-      show _ = CtxOf.afterSys (Γ.den ρ) ((ρ.setSys k x y).val k) ((ρ.setSys k x y).val (k + 1)) t
-      rw [Env.setSys_k, Env.setSys_k1]
+      rintro t Δ ⟨rfl, x, y, rfl, hans⟩
+      refine ⟨x, y, rfl, ?_, fun Ψ' n => ?_⟩
+      · rw [CtxS.afterSys_den, CtxS.den_setSys ρ k x y Γ hu]
+        show _ = CtxOf.afterSys (Γ.den ρ) ((ρ.setSys k x y).val k) ((ρ.setSys k x y).val (k + 1)) t
+        rw [Env.setSys_k, Env.setSys_k1]
+      · cases most with
+        | none =>
+          have e : ansTy Γ = .any := by
+            unfold ansTy
+            rw [hnr]
+            simp only [hk]
+          rw [e]
+          exact HasTy.any _
+        | some r =>
+          have e : ansTy Γ = .orErr (roomTy Γ (.inl r)) := by
+            unfold ansTy
+            rw [hnr]
+            simp only [hk]
+          rw [e]
+          exact roomTy_has (room := .inl r) hu (hans r rfl) Ψ' n
     · cases h
   · cases h
 
@@ -340,65 +416,6 @@ theorem readsHeld_sound {D : SysDesc} (hD : Describes sys D) {ρ : Env} {plain :
       rw [E, hb, Env.setSys_k]
       rfl
   · cases h
-
-/-- What is known of the answer of a call given room for so many bytes,
-where it is no error number: that it is no more than the room. -/
-def roomTy (Γ : CtxS) : Reg ⊕ Nat → TyS
-  | .inl r =>
-    match (Γ.regs.get r).lit? with
-    | some c => .range 0 c
-    | none => .upTo (Γ.regs.get r) false
-  | .inr n => if n < 18446744073709551616 then .range 0 (BitVec.ofNat 64 n) else .any
-
-/-- **What is known of what a call that stores bytes answers**: an error
-number, or no more than the bytes it was given room for. -/
-def ansTy (Γ : CtxS) : TyS :=
-  match Γ.regs.rax.lit? with
-  | some nr =>
-    match linuxKind nr with
-    | some (.fills _ room _) => .orErr (roomTy Γ room)
-    | _ => .any
-  | none => .any
-
-theorem roomTy_has {ρ : Env} {Γ : CtxS} {k : Nat} (hu : Γ.under k = true) {room : Reg ⊕ Nat}
-    {x y : BitVec 64} (hans : Linux.Answered (roomVal (Γ.den ρ).val room) x) (Ψ' : MemTy) (n : Nat) :
-    HasTy fetch sys Ψ' n ((TyS.orErr (roomTy Γ room)).den (ρ.setSys k x y)) x := by
-  show HasTy fetch sys Ψ' n (.orErr ((roomTy Γ room).den (ρ.setSys k x y))) x
-  refine hasTy_orErr.mpr ?_
-  rcases hans with he | hle
-  · exact .inl he
-  · refine .inr ?_
-    cases room with
-    | inr m =>
-      simp only [roomTy]
-      split
-      · next hm =>
-        refine hasTy_range.mpr ?_
-        have hx : x.toNat ≤ m := hle
-        show x - 0 ≤ BitVec.ofNat 64 m - 0
-        rw [show x - 0 = x by simp, show BitVec.ofNat 64 m - 0 = BitVec.ofNat 64 m by simp,
-          BitVec.le_def, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hm]
-        exact hx
-      · show HasTy fetch sys Ψ' n .any x
-        rw [HasTy]
-        trivial
-    | inl r =>
-      have hx : x.toNat ≤ ((Γ.regs.get r).den ρ).toNat := hle
-      simp only [roomTy]
-      split
-      · next c hc =>
-        refine hasTy_range.mpr ?_
-        rw [Val.lit?_den hc] at hx
-        show x - 0 ≤ c - 0
-        rw [show x - 0 = x by simp, show c - 0 = c by simp, BitVec.le_def]
-        exact hx
-      · refine hasTy_upTo.mpr ?_
-        have e : (Γ.regs.get r).den (ρ.setSys k x y) = (Γ.regs.get r).den ρ :=
-          congrArg (fun Δ : Ctx => Δ.val r) (CtxS.den_setSys ρ k x y Γ hu)
-        show (if false = true then _ else x ≤ (Γ.regs.get r).den (ρ.setSys k x y))
-        rw [e]
-        simp only [Bool.false_eq_true, ↓reduceIte, BitVec.le_def]
-        exact hx
 
 /-- **A call that stores bytes at an address the program gives, as a step
 on terms**: where the call number is written out and the bytes, as many as
