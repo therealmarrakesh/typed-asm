@@ -40,22 +40,22 @@ def pg : Prog := { code := progCode (Asm.table (Asm.base code) code) }
 /-- The labels: the start, with two slots of stack; where the call returns
 to, one slot pushed; and the function, which wants eight bytes of stack. -/
 def labels (n : Nat) : List U.Label :=
-  [⟨Asm.addr code (Asm.base code) .start, entryArgs (argRoom n)⟩,
-   ⟨Asm.addr code (Asm.base code) .back, inArgs (stack := n) (pushed := 8)⟩,
+  [⟨Asm.addr code (Asm.base code) .start, inProgram n⟩,
+   ⟨Asm.addr code (Asm.base code) .back, inProgram n (pushed := [.any])⟩,
    ⟨Asm.addr code (Asm.base code) .keep, inFunction (room := 8)⟩]
 
 /-- **The check.** -/
-theorem checked : wholeArgsOk code .start 2 [] (blocksOf code .start) pg (labels 2) 40 = true := by
+theorem checked : wholeOkWith code .start 2 [] (blocksOf code .start) pg (labels 2) 40 = true := by
   decide +kernel
 
 /-- So the program is safe, whatever its arguments and whatever the world
 outside it holds. -/
 theorem safe_in (args : List (List Byte)) (w : World) :
-    SafeMem linux (TypedAsm.U.startArgs code .start 2 args w) :=
-  whole_args_safe checked rfl (LawsHold.nil _) args w
+    SafeMem linux (startIn code .start 2 args w) :=
+  whole_safe checked rfl (LawsHold.nil _) args w
 
 -- with no stack below the arguments, the push is refused
-example : wholeArgsOk code .start 0 [] (blocksOf code .start) pg (labels 0) 40 = false := by
+example : wholeOkWith code .start 0 [] (blocksOf code .start) pg (labels 0) 40 = false := by
   decide +kernel
 
 end Tests.ArgsStack

@@ -1,9 +1,8 @@
 import TypedAsm.ArgWords
 import TypedAsm.U.Blocks
-import TypedAsm.U.Stack
 
 /-!
-# A program started with arguments
+# Where a program begins
 
 What the kernel puts on a new program's stack: how many arguments, the
 address of each one's text, four more words, and the texts. As the program
@@ -84,73 +83,73 @@ theorem textBytes_last : (ts : List (List Byte)) → ts ≠ [] →
         = ((textBytes (u :: ts)).length - 1) + 1 by omega, List.getElem?_cons_succ]
     exact ih
 
-/-- Where the stack's pages start, of a program started with arguments and
-given so many slots below them. -/
-def argLow (n : Nat) : Nat := 4096 * ((0x7fff0000 - 8 * n) / 4096)
+/-- Where the stack's pages start, of a program given so many slots below
+its arguments. -/
+def stackLow (n : Nat) : Nat := 4096 * ((0x7fff0000 - 8 * n) / 4096)
 
 /-- How many bytes of stack such a program has below its arguments: the
 slots it is given, to whole pages. -/
-def argRoom (n : Nat) : Nat := 0x7fff0000 - argLow n
+def stackRoom (n : Nat) : Nat := 0x7fff0000 - stackLow n
 
-theorem argLow_le (n : Nat) : argLow n ≤ 0x7fff0000 := by
-  unfold argLow
+theorem stackLow_le (n : Nat) : stackLow n ≤ 0x7fff0000 := by
+  unfold stackLow
   omega
 
-theorem argLow_room (n : Nat) : argLow n + argRoom n = 0x7fff0000 := by
-  have := argLow_le n
-  unfold argRoom
+theorem stackLow_room (n : Nat) : stackLow n + stackRoom n = 0x7fff0000 := by
+  have := stackLow_le n
+  unfold stackRoom
   omega
 
 /-- The state a program is started in with arguments: the program in
 memory, the stack given, so many slots below the arguments on it, and the
 instruction pointer at the entry; in any outside world. -/
-def argsState (p : State) (e : BitVec 64) (n : Nat) (args : List (List Byte)) (w : World) :
+def startState (p : State) (e : BitVec 64) (n : Nat) (args : List (List Byte)) (w : World) :
     State :=
   { p.withArgs n args with rip := e, world := w }
 
 section
 variable (p : State) (e : BitVec 64) (n : Nat) (args : List (List Byte)) (w : World)
 
-theorem argsState_rsp : (argsState p e n args w).getReg .rsp = argBase :=
+theorem argsState_rsp : (startState p e n args w).getReg .rsp = argBase :=
   State.getReg_withArgs p n args
 
 /-- The stack's memory may be read and written. -/
-theorem argsState_perm (hn : 8 * n ≤ 0x7fff0000) {x : BitVec 64} (h1 : argLow n ≤ x.toNat)
-    (h2 : x.toNat < argBase.toNat + 0x10000) : (argsState p e n args w).perm x = .rw :=
+theorem argsState_perm (hn : 8 * n ≤ 0x7fff0000) {x : BitVec 64} (h1 : stackLow n ≤ x.toNat)
+    (h2 : x.toNat < argBase.toNat + 0x10000) : (startState p e n args w).perm x = .rw :=
   State.perm_withArgs_in p n args hn h1 h2
 
 theorem argsState_canWrite (hn : 8 * n ≤ 0x7fff0000) {a : BitVec 64} {m : Nat}
-    (h1 : argLow n ≤ a.toNat) (h2 : a.toNat + m ≤ argBase.toNat + 0x10000) :
-    (argsState p e n args w).canWrite a m = true := by
+    (h1 : stackLow n ≤ a.toNat) (h2 : a.toNat + m ≤ argBase.toNat + 0x10000) :
+    (startState p e n args w).canWrite a m = true := by
   have hb : argBase.toNat = 0x7fff0000 := rfl
   refine State.canWrite_iff.mpr fun k hk => ?_
   rw [argsState_perm p e n args w hn (by bv_omega) (by bv_omega)]
   rfl
 
 theorem argsState_canRead (hn : 8 * n ≤ 0x7fff0000) {a : BitVec 64} {m : Nat}
-    (h1 : argLow n ≤ a.toNat) (h2 : a.toNat + m ≤ argBase.toNat + 0x10000) :
-    (argsState p e n args w).canRead a m = true := by
+    (h1 : stackLow n ≤ a.toNat) (h2 : a.toNat + m ≤ argBase.toNat + 0x10000) :
+    (startState p e n args w).canRead a m = true := by
   have hb : argBase.toNat = 0x7fff0000 := rfl
   refine State.canRead_iff.mpr fun k hk => ?_
   rw [argsState_perm p e n args w hn (by bv_omega) (by bv_omega)]
   rfl
 
 /-- The arguments' bytes are on the stack. -/
-theorem argsState_data : (argsState p e n args w).HasData argBase (argBytes args) :=
+theorem argsState_data : (startState p e n args w).HasData argBase (argBytes args) :=
   (State.hasData_withArgs p n args).congr rfl
 
 /-- Below the arguments, memory is the program's. -/
 theorem argsState_mem_below {x : BitVec 64} (hx : x.toNat < argBase.toNat) :
-    (argsState p e n args w).mem x = p.mem x :=
+    (startState p e n args w).mem x = p.mem x :=
   State.mem_withArgs_below p n args hx
 
 end
 
-/-- **The context a program started with arguments starts in**, as a
+/-- **The context a program starts in**, as a
 family: a region held of so many bytes of stack and eight more, the stack
 pointer at those eight, which hold a count; after them a row of that many
 pointers to text; every other register and the flags whatever they are. -/
-def entryArgs (room : Nat) : CtxS where
+def entryCtx (room : Nat) : CtxS where
   regs := ⟨.bvar 0 0, .bvar 0 1, .bvar 0 2, .bvar 0 3,
     .add (.bvar 0 17) (litNat room), .bvar 0 5, .bvar 0 6, .bvar 0 7,
     .bvar 0 8, .bvar 0 9, .bvar 0 10, .bvar 0 11, .bvar 0 12, .bvar 0 13, .bvar 0 14, .bvar 0 15⟩
@@ -161,20 +160,20 @@ def entryArgs (room : Nat) : CtxS where
 
 /-- The member of that family a state is, the count being `c` and the
 stack's region at `base`. -/
-def Fam.ofArgs (s : State) (c base : BitVec 64) : Fam where
+def Fam.ofStart (s : State) (c base : BitVec 64) : Fam where
   vals := fun i => if i = 16 then c else if i = 17 then base else (Fam.ofState s).vals i
   flags := s.flags
   rest := []
 
 /-- The member a state started with these arguments and so many slots is. -/
-abbrev argsFam (s : State) (n : Nat) (args : List (List Byte)) : Fam :=
-  Fam.ofArgs s (argCount args) (BitVec.ofNat 64 (argLow n))
+abbrev startFam (s : State) (n : Nat) (args : List (List Byte)) : Fam :=
+  Fam.ofStart s (argCount args) (BitVec.ofNat 64 (stackLow n))
 
 /-- What that context holds, of a member: the stack's region, the count at
 its end. -/
-theorem entryArgs_held (ρ : Env) (s : State) (c base : BitVec 64) {room : Nat}
+theorem entryCtx_held (ρ : Env) (s : State) (c base : BitVec 64) {room : Nat}
     (hsz : room + 8 < 18446744073709551616) :
-    ((entryArgs room).den { ρ with bound := Fam.ofArgs s c base :: ρ.bound }).held
+    ((entryCtx room).den { ρ with bound := Fam.ofStart s c base :: ρ.bound }).held
       = [(base, ⟨room + 8, [(room, c)]⟩)] := by
   show [(base, (⟨(BitVec.ofNat 64 (room + 8)).toNat, [((BitVec.ofNat 64 room).toNat, c)]⟩ : Held))]
     = _
@@ -185,7 +184,7 @@ and written as they say, the stack's region may be written, the stack
 pointer is at its last eight bytes and they hold the count, the region is
 apart from every block, and every byte the state can touch is in it or in
 a block. -/
-theorem starts_args {s : State} {blocks : List (BitVec 64 × Layout)} {kinds : Nat → Option Shape}
+theorem starts_entry {s : State} {blocks : List (BitVec 64 × Layout)} {kinds : Nat → Option Shape}
     (ρ : Env) {c base : BitVec 64} {room : Nat}
     (hperm : ∀ x ∈ blocks,
       s.canRead x.1 x.2.size = true ∧ (x.2.writable = true → s.canWrite x.1 x.2.size = true))
@@ -198,7 +197,7 @@ theorem starts_args {s : State} {blocks : List (BitVec 64 × Layout)} {kinds : N
     (hapart : ∀ x ∈ blocks, Disjoint base (room + 8) x.1 x.2.size)
     (hcomplete : ∀ a : BitVec 64, s.perm a ≠ .none →
       (a - base).toNat < room + 8 ∨ ∃ x ∈ blocks, (a - x.1).toNat < x.2.size) :
-    Starts blocks kinds ((entryArgs room).den { ρ with bound := Fam.ofArgs s c base :: ρ.bound })
+    Starts blocks kinds ((entryCtx room).den { ρ with bound := Fam.ofStart s c base :: ρ.bound })
       s where
   val := fun r => by
     cases r <;> first | rfl | exact hrsp
@@ -207,7 +206,7 @@ theorem starts_args {s : State} {blocks : List (BitVec 64 × Layout)} {kinds : N
   text := htext
   said := hsaid
   held := by
-    have hheld := entryArgs_held ρ s c base hsz
+    have hheld := entryCtx_held ρ s c base hsz
     refine ⟨fun b hb => ?_, fun b hb => ?_, fun b hb p hp => ?_, fun b hb p hp => ?_,
       fun b hb a l hl => ?_, ?_⟩
     · rw [hheld] at hb; cases List.mem_singleton.mp hb; exact hw
@@ -227,7 +226,7 @@ theorem starts_args {s : State} {blocks : List (BitVec 64 × Layout)} {kinds : N
       exact hapart (a, l) (MemTy.mem_of_ofList hl)
     · rw [hheld]; exact List.pairwise_singleton _ _
   complete := fun a ha => by
-    rw [entryArgs_held ρ s c base hsz]
+    rw [entryCtx_held ρ s c base hsz]
     rcases hcomplete a ha with h | ⟨x, hx, h⟩
     · exact .inl ⟨(base, ⟨room + 8, [(room, c)]⟩), List.mem_singleton.mpr rfl, h⟩
     · exact .inr ⟨x, hx, h⟩
@@ -250,7 +249,7 @@ variable (p : State) (e : BitVec 64) (n : Nat) (args : List (List Byte)) (w : Wo
 
 /-- The count is at the stack pointer. -/
 theorem argsState_count :
-    (argsState p e n args w).load64 ((argsState p e n args w).getReg .rsp) = argCount args := by
+    (startState p e n args w).load64 ((startState p e n args w).getReg .rsp) = argCount args := by
   rw [argsState_rsp]
   have h := (argsState_data p e n args w).load64 (i := 0) (by
     rw [argBytes_length]
@@ -264,24 +263,24 @@ entry asks**, under the blocks of the program below the stack and the two
 of the stack: where the program's blocks may be read and written as they
 say, hold what they say, lie below the stack, and with the stack's memory
 are all the memory there is. -/
-theorem starts_argsState (ρ : Env) {B : List (BitVec 64 × Layout)} {kinds : Nat → Option Shape}
-    (hB : ∀ x ∈ B, (argsState p e n args w).canRead x.1 x.2.size = true ∧
-      (x.2.writable = true → (argsState p e n args w).canWrite x.1 x.2.size = true))
+theorem starts_startState (ρ : Env) {B : List (BitVec 64 × Layout)} {kinds : Nat → Option Shape}
+    (hB : ∀ x ∈ B, (startState p e n args w).canRead x.1 x.2.size = true ∧
+      (x.2.writable = true → (startState p e n args w).canWrite x.1 x.2.size = true))
     (hBsaid : ∀ x ∈ B, ∀ bs : List (BitVec 8), x.2.said = some bs →
-      ∀ k (hk : k < bs.length), (argsState p e n args w).mem (x.1 + BitVec.ofNat 64 k) = bs[k])
+      ∀ k (hk : k < bs.length), (startState p e n args w).mem (x.1 + BitVec.ofNat 64 k) = bs[k])
     (hBtext : ∀ x ∈ B, x.2.text ≠ 0 →
-      (argsState p e n args w).mem (x.1 + BitVec.ofNat 64 (x.2.size - 1)) = 0)
+      (startState p e n args w).mem (x.1 + BitVec.ofNat 64 (x.2.size - 1)) = 0)
     (hn : 8 * n ≤ 0x7fff0000)
-    (hBbelow : ∀ x ∈ B, x.1.toNat + x.2.size ≤ argLow n)
-    (hcov : ∀ a : BitVec 64, (argsState p e n args w).perm a ≠ .none →
-      (argLow n ≤ a.toNat ∧ a.toNat < argBase.toNat + 0x10000) ∨
+    (hBbelow : ∀ x ∈ B, x.1.toNat + x.2.size ≤ stackLow n)
+    (hcov : ∀ a : BitVec 64, (startState p e n args w).perm a ≠ .none →
+      (stackLow n ≤ a.toNat ∧ a.toNat < argBase.toNat + 0x10000) ∨
         ∃ x ∈ B, (a - x.1).toNat < x.2.size) :
     Starts (B ++ argBlocks args) kinds
-      ((entryArgs (argRoom n)).den
-        { ρ with bound := argsFam (argsState p e n args w) n args :: ρ.bound })
-      (argsState p e n args w) := by
-  have hlow := argLow_room n
-  have hlowB : (BitVec.ofNat 64 (argLow n)).toNat = argLow n := by
+      ((entryCtx (stackRoom n)).den
+        { ρ with bound := startFam (startState p e n args w) n args :: ρ.bound })
+      (startState p e n args w) := by
+  have hlow := stackLow_room n
+  have hlowB : (BitVec.ofNat 64 (stackLow n)).toNat = stackLow n := by
     rw [BitVec.toNat_ofNat]
     omega
   have hbase : argBase.toNat = 0x7fff0000 := rfl
@@ -301,13 +300,13 @@ theorem starts_argsState (ρ : Env) {B : List (BitVec 64 × Layout)} {kinds : Na
         x = (argBase + BitVec.ofNat 64 (argBytes args).length, restLayout args) := by
     intro x hx
     simpa only [argBlocks, List.mem_cons, List.not_mem_nil, or_false] using hx
-  have hrsp : (argsState p e n args w).getReg .rsp
-      = BitVec.ofNat 64 (argLow n) + BitVec.ofNat 64 (argRoom n) := by
+  have hrsp : (startState p e n args w).getReg .rsp
+      = BitVec.ofNat 64 (stackLow n) + BitVec.ofNat 64 (stackRoom n) := by
     rw [argsState_rsp]
     apply BitVec.eq_of_toNat_eq
     rw [BitVec.toNat_add, BitVec.toNat_ofNat, BitVec.toNat_ofNat, hbase]
     omega
-  refine starts_args ρ (fun x hx => ?_) (fun x hx bs hs => ?_) (fun x hx ht => ?_) (by omega)
+  refine starts_entry ρ (fun x hx => ?_) (fun x hx bs hs => ?_) (fun x hx ht => ?_) (by omega)
     hrsp ?_ (argsState_count p e n args w) (fun x hx => ?_) (fun a ha => ?_)
   · rcases List.mem_append.mp hx with hx | hx
     · exact hB x hx
@@ -340,7 +339,7 @@ theorem starts_argsState (ρ : Env) {B : List (BitVec 64 × Layout)} {kinds : Na
           rw [BitVec.toNat_add (argBase + 8), hA8, BitVec.toNat_ofNat, BitVec.toNat_add argBase,
             BitVec.toNat_ofNat, hbase]
           omega
-        show (argsState p e n args w).mem (argBase + 8 + BitVec.ofNat 64 ((argvLayout args).size - 1))
+        show (startState p e n args w).mem (argBase + 8 + BitVec.ofNat 64 ((argvLayout args).size - 1))
           = 0
         rw [haddr, hd]
         have hat := argBlock_text (argsGiven args) ((textBytes (argsGiven args)).length - 1)
@@ -352,14 +351,14 @@ theorem starts_argsState (ρ : Env) {B : List (BitVec 64 × Layout)} {kinds : Na
         rw [List.getElem?_eq_getElem hk] at this
         exact Option.some.inj this
       · exact absurd rfl ht
-  · exact argsState_canWrite p e n args w hn (a := BitVec.ofNat 64 (argLow n))
-      (m := argRoom n + 8) (by omega) (by omega)
+  · exact argsState_canWrite p e n args w hn (a := BitVec.ofNat 64 (stackLow n))
+      (m := stackRoom n + 8) (by omega) (by omega)
   · rcases List.mem_append.mp hx with hx | hx
     · exact (disjoint_of_before (by have := hBbelow x hx; omega) (by omega)).symm
     · rcases hmemArg x hx with rfl | rfl
-      · exact disjoint_of_before (a := BitVec.ofNat 64 (argLow n)) (n := argRoom n + 8)
+      · exact disjoint_of_before (a := BitVec.ofNat 64 (stackLow n)) (n := stackRoom n + 8)
           (b := argBase + 8) (m := (argvLayout args).size) (by omega) (by omega)
-      · exact disjoint_of_before (a := BitVec.ofNat 64 (argLow n)) (n := argRoom n + 8)
+      · exact disjoint_of_before (a := BitVec.ofNat 64 (stackLow n)) (n := stackRoom n + 8)
           (b := argBase + BitVec.ofNat 64 (argBytes args).length) (m := (restLayout args).size)
           (by omega) (by omega)
   · rcases hcov a ha with ⟨h1, h2⟩ | ⟨x, hx, h⟩
@@ -401,7 +400,7 @@ theorem argv_known {Ψ : MemTy} (k : Nat) (hΨ : Ψ (argBase + 8) = some (argvLa
 theorem argv_heap {Ψ : MemTy} (k : Nat) (hΨ : Ψ (argBase + 8) = some (argvLayout args)) :
     ∀ q ∈ (argvLayout args).shape.vals,
       HasTy fetch sys Ψ k q.2
-        ((argsState p e n args w).load64 (argBase + 8 + BitVec.ofNat 64 q.1)) := by
+        ((startState p e n args w).load64 (argBase + 8 + BitVec.ofNat 64 q.1)) := by
   intro q hq
   have hbase : argBase.toNat = 0x7fff0000 := rfl
   have hA8 : (argBase + 8).toNat = 0x7fff0008 := rfl
@@ -414,7 +413,7 @@ theorem argv_heap {Ψ : MemTy} (k : Nat) (hΨ : Ψ (argBase + 8) = some (argvLay
     (List.getElem_mem hT)
   have htb : textBase (argsGiven args) = 0x7fff0000 + 8 * ((argsGiven args).length + 5) := by
     simp only [textBase, hbase]
-  have hload : (argsState p e n args w).load64 (argBase + 8 + BitVec.ofNat 64 (0 + 8 * i))
+  have hload : (startState p e n args w).load64 (argBase + 8 + BitVec.ofNat 64 (0 + 8 * i))
       = BitVec.ofNat 64 ((textsAt (argsGiven args) (textBase (argsGiven args)))[i]).1 := by
     have h := (argsState_data p e n args w).load64 (i := 8 * (i + 1)) (by omega)
     have ea : argBase + 8 + BitVec.ofNat 64 (0 + 8 * i) = argBase + BitVec.ofNat 64 (8 * (i + 1)) := by

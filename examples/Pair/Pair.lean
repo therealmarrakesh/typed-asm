@@ -33,7 +33,7 @@ def pg : Prog :=
 bytes of stack and hands its caller a page at each of the addresses it
 returns in `rax` and `rdx`. -/
 def labels : List U.Label :=
-  [⟨entry, entryOf 2⟩,
+  [⟨entry, inProgram 2⟩,
    ⟨Asm.addr code base .two, inFunction (room := 8) (gives := [(.rax, 4096), (.rdx, 4096)])⟩]
 
 /-! ## The check, and what it shows -/

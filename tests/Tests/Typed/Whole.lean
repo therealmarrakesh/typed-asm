@@ -4,9 +4,8 @@ import TypedAsm.U.Exits
 import TypedAsm.U.Writes
 import TypedAsm.U.Pages
 import TypedAsm.Linux
-import TypedAsm.U.Stack
 import TypedAsm.U.Loaded
-import TypedAsm.U.Whole
+import TypedAsm.U.Say
 import TypedAsm.U.Order
 import TypedAsm.U.Know
 import TypedAsm.U.Labels
@@ -70,7 +69,7 @@ def said : List (BitVec 64 × List (BitVec 8)) :=
 def pg : Prog :=
   { code := progCode (Asm.table (Asm.base code) code)
     pre := preOut said (· == 0) (fun fd b => fd == 1 && b == message) }
-def labels : List U.Label := [⟨Asm.addr code (Asm.base code) .start, entryOf 0⟩]
+def labels : List U.Label := [⟨Asm.addr code (Asm.base code) .start, inProgram 0⟩]
 
 theorem checked : wholeOk code .start 0 pg labels 12 = true := by decide +kernel
 theorem saidOk : saidCheck (denBlocks (blocksOf code .start)) said = true := by decide +kernel
@@ -78,17 +77,17 @@ theorem saidOk : saidCheck (denBlocks (blocksOf code .start)) said = true := by 
 /-- **Hello is safe on the machine that decodes its instructions from
 memory, ends only with status nought, and offers at its `write` exactly its
 message, to descriptor 1: whatever the world outside it holds.** -/
-theorem hello (w : World) :
-    SafeMem linux (startIn code .start 0 w) ∧
-      (∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startIn code .start 0 w) s' →
+theorem hello (args : List (List Byte)) (w : World) :
+    SafeMem linux (startIn code .start 0 args w) ∧
+      (∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startIn code .start 0 args w) s' →
         ∀ len c, Asm.fetch (Asm.base code) code s'.rip = some (.syscall, len) →
         linux { s' with rip := s'.rip + len } = .exit c → c = 0) ∧
-      (∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startIn code .start 0 w) s' →
+      (∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startIn code .start 0 args w) s' →
         ∀ len, Asm.fetch (Asm.base code) code s'.rip = some (.syscall, len) →
         s'.getReg .rax = 1 → s'.getReg .rdi = 1 ∧ s'.offered = message) :=
   whole_outputs checked (Q := fun c => c = 0) (q := fun c => c == 0) (fun c h => by simpa using h)
     (R := fun fd bs => fd = 1 ∧ bs = message) (r := fun fd b => fd == 1 && b == message)
-    (fun fd bs h => by simpa using h) saidOk rfl rfl (LawsHold.nil _) w
+    (fun fd bs h => by simpa using h) saidOk rfl rfl (LawsHold.nil _) args w
 end HelloU
 
 /-! ## A program end to end, with a stack
@@ -114,19 +113,19 @@ def code : List (Asm Label) := [
 def pg : Prog := { code := progCode (Asm.table (Asm.base code) code), pre := preExits (· == 0) }
 
 /-- One slot of stack: the page it is on is the region the entry holds. -/
-def labels : List U.Label := [⟨Asm.addr code (Asm.base code) .start, entryOf 1⟩]
+def labels : List U.Label := [⟨Asm.addr code (Asm.base code) .start, inProgram 1⟩]
 
 theorem checked : wholeOk code .start 1 pg labels 12 = true := by decide +kernel
 
 /-- **A program that pushes and pops is safe, on the machine that decodes
 its instructions from memory, and ends only with status nought.** -/
-theorem pushPop (w : World) :
-    SafeMem linux (startIn code .start 1 w) ∧
-      ∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startIn code .start 1 w) s' →
+theorem pushPop (args : List (List Byte)) (w : World) :
+    SafeMem linux (startIn code .start 1 args w) ∧
+      ∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startIn code .start 1 args w) s' →
         ∀ len c, Asm.fetch (Asm.base code) code s'.rip = some (.syscall, len) →
         linux { s' with rip := s'.rip + len } = .exit c → c = 0 :=
   whole_exits checked (Q := fun c => c = 0) (q := fun c => c == 0) (fun c h => by simpa using h)
-    rfl rfl (LawsHold.nil _) w
+    rfl rfl (LawsHold.nil _) args w
 
 end PushU
 

@@ -34,10 +34,10 @@ def pg : Prog :=
 /-- One label: the start, where the program finds the count of its
 arguments at the stack pointer. It uses the count as an index into the
 table only once it has compared it with the table's length. -/
-def labels : List U.Label := [⟨entry, inArgs⟩]
+def labels : List U.Label := [⟨entry, inProgram 0⟩]
 
 /-! ## The check, and what it shows -/
 
-asm_checked_args code start .start stack 0 program pg labels labels blocks blocks
+asm_checked code start .start stack 0 program pg labels labels blocks blocks
 
 end Pick

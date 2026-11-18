@@ -100,17 +100,7 @@ def code : List (Asm Label) := [
 
 -- Where the program is loaded, what it puts in memory, where it starts,
 -- all from the lines above.
-asm_program code start .start
-
-/-- A starting state but for the stack and `rip`: the program in memory. -/
-def prepared : State :=
-  Asm.load State.init base code .start
-
-/-- A starting state: `prepared`, given a stack that holds the arguments and
-four free slots below them, with `rip` at the entry. The first argument is
-by custom the program's own name. -/
-def startArgs (args : List (List Byte)) : State :=
-  { prepared.withArgs 4 args with rip := entry }
+asm_program code start .start stack 4
 
 /-- That state for arguments given as strings. -/
 def startWith (args : List String) : State :=
@@ -132,5 +122,4 @@ end Lengths
 def Lengths.program : Runnable where
   name := "lengths"
   elf := Asm.elf Lengths.base Lengths.code .start
-  start := Lengths.startArgs []
-  startArgs := some Lengths.startArgs
+  startArgs := Lengths.startArgs

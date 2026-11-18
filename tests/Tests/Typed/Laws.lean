@@ -60,7 +60,7 @@ def pgFac (laws : List LawS) (status : BitVec 32) : Prog :=
 
 /-- The labels, the function returning this. -/
 def facLabels (result : Val) : List U.Label :=
-  [⟨Fact.entry, entryOf 11⟩,
+  [⟨Fact.entry, inProgram 11⟩,
    ⟨Asm.addr Fact.code Fact.base .fact,
      inFunction (known := smallArg) (room := (Val.was .rdi) <<< 4) (results := [(.rax, result)])⟩]
 

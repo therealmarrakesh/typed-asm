@@ -33,7 +33,7 @@ def pg : Prog :=
 gives back the registers a function must as it found them. That the
 pointer is still in `rbx` after each call follows; it is not said. -/
 def labels : List U.Label :=
-  [⟨entry, entryOf 2⟩,
+  [⟨entry, inProgram 2⟩,
    ⟨Asm.addr code base .swap, inFunction [] [(.was .rdi, .ptr (.mk 16 .nil) true 0)]⟩]
 
 /-! ## The check, and what it shows -/

@@ -26,7 +26,7 @@ def pgLend : Prog :=
 /-- The labels: `work` returning this, and `fill` taking so many bytes at
 `rdi` and leaving these two values in the first sixteen. -/
 def lendLabels (result : Val) (taken : Val) (first second : Val) : List U.Label :=
-  [⟨Lend.entry, entryOf 4⟩,
+  [⟨Lend.entry, inProgram 4⟩,
    ⟨Asm.addr Lend.code Lend.base .work, inFunction (room := 24) (results := [(.rax, result)])⟩,
    ⟨Asm.addr Lend.code Lend.base .fill,
      inFunction (takes := [(.rdi, taken)]) (leaves := [(.rdi, [(0, first), (8, second)])])⟩]
@@ -51,7 +51,7 @@ def pgPair : Prog := { code := progCode (Asm.table Pair.base Pair.code) }
 
 /-- The labels: `two` handing its caller these. -/
 def pairLabels (gives : List (Reg × Val)) : List U.Label :=
-  [⟨Pair.entry, entryOf 2⟩,
+  [⟨Pair.entry, inProgram 2⟩,
    ⟨Asm.addr Pair.code Pair.base .two, inFunction (room := 8) (gives := gives)⟩]
 
 -- a page at each of the two addresses returned

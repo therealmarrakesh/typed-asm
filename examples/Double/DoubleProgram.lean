@@ -177,5 +177,5 @@ end Double
 def Double.program : Runnable where
   name := "double"
   elf := Asm.elf Double.base Double.code .start
-  start := Double.start
+  startArgs := Double.startArgs
   readsInput := true

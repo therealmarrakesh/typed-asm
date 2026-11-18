@@ -75,7 +75,7 @@ def pgFact : Prog := { code := progCode (Asm.table Fact.base Fact.code) }
 /-- The labels: the start; and the function, knowing this of its argument
 and wanting so much stack below its return address. -/
 def factLabels (known : List (Val × TyS)) (room : Val) : List U.Label :=
-  [⟨Fact.entry, entryOf 11⟩,
+  [⟨Fact.entry, inProgram 11⟩,
    ⟨Asm.addr Fact.code Fact.base .fact, inFunction (known := known) (room := room)⟩]
 
 /-- The argument is small enough that sixteen times it is a number of bytes. -/

@@ -83,13 +83,10 @@ structure Runnable where
   name : String := "program"
   /-- The program as a Linux executable. -/
   elf : List Byte
-  /-- The state it starts in, when it is given no arguments. -/
-  start : State
   /-- Whether it reads standard input. -/
   readsInput : Bool := false
-  /-- The state it starts in with given arguments, its own name first, if it
-  looks at its arguments. -/
-  startArgs : Option (List (List Byte) → State) := none
+  /-- The state it starts in with given arguments, its own name first. -/
+  startArgs : List (List Byte) → State
 
 namespace Runnable
 
@@ -100,9 +97,7 @@ given and the time it will be told. Requests for memory are answered by
 def startWith (p : Runnable) (args : List String) (input : List Byte) (files : Array File)
     (random : Nat → Byte := fun _ => 0)
     (time : Nat → Nat → Nat := fun _ _ => 0) : State :=
-  let start := match p.startArgs with
-    | some f => f ((p.name :: args).map bytesOf)
-    | none => p.start
+  let start := p.startArgs ((p.name :: args).map bytesOf)
   let start :=
     if p.readsInput then { start with world := { start.world with input := [.bytes input] } }
     else start

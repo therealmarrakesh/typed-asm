@@ -32,7 +32,7 @@ def pg : Prog :=
 /-- The labels: the start, with nothing known; and `pause`, a function that
 wants nothing. -/
 def labels : List U.Label :=
-  [⟨entry, entryOf 3⟩, ⟨Asm.addr code base .pause, inFunction⟩]
+  [⟨entry, inProgram 3⟩, ⟨Asm.addr code base .pause, inFunction⟩]
 
 /-! ## The check, and what it shows -/
 

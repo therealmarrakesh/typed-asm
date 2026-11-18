@@ -1,4 +1,4 @@
-import TypedAsm.U.Stack
+import TypedAsm.U.Pages
 
 /-!
 # The permissions of a loaded program's pages

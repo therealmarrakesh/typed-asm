@@ -50,8 +50,8 @@ What exists and is checked today:
   and that the state the kernel loads it into starts as its entry asks. The
   program says what blocks its segments are (a record, a table of pointers,
   the nodes of a list, a line of text) and the check reads that off the
-  program's own bytes. A program started with arguments is checked once for
-  every list of arguments.
+  program's own bytes. Every program is started as Linux starts it, with its
+  arguments on its stack, and is checked once for every list of arguments.
 - Beyond safety, what a program ends with: a program can be proved to exit
   only with a status satisfying a stated condition. And what it writes:
   data that is never written can say the bytes it holds, a number the
@@ -75,14 +75,20 @@ called or returned to, each said by what differs from nothing being known,
 and two commands:
 
 - `asm_program code start .l stack n` lays the program out and defines what
-  it puts in memory and the state it starts in.
+  it puts in memory and the state it starts in, given its arguments: as
+  Linux starts it, how many arguments there are at the stack pointer, their
+  addresses after that, and the stack it asks for below.
 - `asm_checked code start .l stack n program pg labels ls` runs the check
-  and states what it shows: the program is safe, whatever the outside world
-  holds. With `exits q` after it, also that the program ends only with a
-  status `q` holds of. `asm_checked_args` is the same for a program started
-  with arguments: safe whatever its arguments. Such a program has the
-  stack it asks for below its arguments, and may push and call as any
-  program may: `examples/Lengths` keeps a total there across calls.
+  and states what it shows: the program is safe, whatever its arguments and
+  whatever the outside world holds. With `exits q` after it, also that the
+  program ends only with a status `q` holds of.
+
+A label is said one way, in the program's own code (`inProgram`) or in a
+function (`inFunction`): what the registers hold, what is known, and what
+has been put on the stack since the program started or the function was
+entered, one thing after another: a value, a register the function keeps
+for its caller, or so many bytes. `examples/Lengths` keeps a total on its
+stack across calls to a function that saves a register and loops.
 
 No proof is written for twenty-four of the twenty-five. In
 `examples/Fact`, the recursive factorial, two laws of the factorial are

@@ -33,8 +33,8 @@ and uses sixteen bytes of stack below its return address; it is called
 through a pointer kept on the stack. `finish` is jumped to through a
 register, the stack as the program's start has it. -/
 def labels : List U.Label :=
-  [⟨entry, entryOf 4⟩,
-   ⟨Asm.addr code base .finish, entryOf 4⟩,
+  [⟨entry, inProgram 4⟩,
+   ⟨Asm.addr code base .finish, inProgram 4⟩,
    ⟨Asm.addr code base .compute,
      inFunction [] [(.was .rdi, .ptr (.mk 16 .nil) true 0)] (room := 16)⟩]
 

@@ -57,24 +57,24 @@ def pg (τ : TyS) : Prog :=
 /-- The labels: the start, and the two places the table leads to, each
 wanting what a program started with arguments has when it starts. -/
 def labels : List U.Label :=
-  [⟨Asm.addr code (Asm.base code) .start, entryArgs (argRoom 0)⟩,
-   ⟨Asm.addr code (Asm.base code) .zero, inArgs⟩,
-   ⟨Asm.addr code (Asm.base code) .one, inArgs⟩]
+  [⟨Asm.addr code (Asm.base code) .start, inProgram 0⟩,
+   ⟨Asm.addr code (Asm.base code) .zero, inProgram 0⟩,
+   ⟨Asm.addr code (Asm.base code) .one, inProgram 0⟩]
 
 /-- **The check**: the table holds the addresses of code wanting what the
 two labels want. -/
 theorem checked :
-    wholeArgsOk code .start 0 [] (blocks (codeOf inArgs)) (pg (codeOf inArgs)) labels 40 = true := by
+    wholeOkWith code .start 0 [] (blocks (codeOf (inProgram 0))) (pg (codeOf (inProgram 0))) labels 40 = true := by
   decide +kernel
 
 /-- So the program is safe, whatever its arguments and whatever the world
 outside it holds. -/
 theorem safe_in (args : List (List Byte)) (w : World) :
-    SafeMem linux (TypedAsm.U.startArgs code .start 0 args w) :=
-  whole_args_safe checked rfl (LawsHold.nil _) args w
+    SafeMem linux (startIn code .start 0 args w) :=
+  whole_safe checked rfl (LawsHold.nil _) args w
 
 -- said to hold the addresses of functions, which the code there is not: refused
-example : wholeArgsOk code .start 0 [] (blocks (codeOf inFunction)) (pg (codeOf inFunction))
+example : wholeOkWith code .start 0 [] (blocks (codeOf inFunction)) (pg (codeOf inFunction))
     labels 40 = false := by decide +kernel
 
 end Tests.ArgsCode

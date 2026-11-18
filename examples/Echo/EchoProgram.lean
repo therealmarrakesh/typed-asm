@@ -121,5 +121,5 @@ end Echo
 def Echo.program : Runnable where
   name := "echo"
   elf := Asm.elf Echo.base Echo.code .start
-  start := Echo.start
+  startArgs := Echo.startArgs
   readsInput := true

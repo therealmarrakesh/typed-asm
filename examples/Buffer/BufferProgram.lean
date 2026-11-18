@@ -98,5 +98,5 @@ end Buffer
 def Buffer.program : Runnable where
   name := "buffer"
   elf := Asm.elf Buffer.base Buffer.code .start
-  start := Buffer.start
+  startArgs := Buffer.startArgs
   readsInput := true

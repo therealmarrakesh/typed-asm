@@ -28,7 +28,7 @@ def pg : Prog :=
 sixteen bytes of the buffer below where it started. -/
 def labels : List U.Label :=
   [⟨entry, inProgram 2⟩,
-   ⟨Asm.addr code base .loop, inProgram 2 (pushed := 16)⟩]
+   ⟨Asm.addr code base .loop, inProgram 2 (pushed := [.bytes 16])⟩]
 
 /-! ## The check, and what it shows -/
 

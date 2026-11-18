@@ -36,7 +36,7 @@ def pg : Prog :=
 it echoes, wanting nothing known. That what was read fits the buffer, and
 that no more is written than was read, follows from what the calls
 answer. -/
-def labels : List U.Label := [⟨entry, entryOf 0⟩]
+def labels : List U.Label := [⟨entry, inProgram 0⟩]
 
 /-! ## The check, and what it shows -/
 

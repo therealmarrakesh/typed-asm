@@ -177,5 +177,5 @@ end Fresh
 def Fresh.program : Runnable where
   name := "fresh"
   elf := Asm.elf Fresh.base Fresh.code .start
-  start := Fresh.start
+  startArgs := Fresh.startArgs
   readsInput := true

@@ -39,13 +39,13 @@ Between files, and between reads of one, `r13` holds the count. A file's
 name is an argument whose number the program has compared with the count;
 the descriptor in `r12` is a number like any other. -/
 def labels : List U.Label :=
-  [⟨entry, inArgs⟩,
-   ⟨Asm.addr code base .file, inArgs [(.r13, argCountV)]⟩,
-   ⟨Asm.addr code base .next, inArgs [(.r13, argCountV)]⟩]
+  [⟨entry, inProgram 0⟩,
+   ⟨Asm.addr code base .file, inProgram 0 (regs := [(.r13, argCountV)])⟩,
+   ⟨Asm.addr code base .next, inProgram 0 (regs := [(.r13, argCountV)])⟩]
 
 /-! ## The check, and what it shows -/
 
-asm_checked_args code start .start stack 0 program pg labels labels blocks blocks fuel 60
+asm_checked code start .start stack 0 program pg labels labels blocks blocks fuel 60
   exits (fun c => c == 0 || c == 1)
 
 end Cat

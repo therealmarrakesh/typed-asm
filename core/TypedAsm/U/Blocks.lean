@@ -148,33 +148,6 @@ theorem text_in : ∀ x ∈ blocks, x.2.text ≠ 0 →
     rw [List.getElem?_eq_getElem hj] at hz
     exact Option.some.inj hz
 
-include hok hfull hoff hmem hperm hin in
-/-- **The state a program with a stack is loaded into starts as its entry
-asks**: the blocks it says, and the stack's pages the one region held. -/
-theorem loaded_starts_stack (ρ : Env) {kinds : Nat → Option Shape} {base : BitVec 64} {size : Nat}
-    (hb : base.toNat = 4096 * (State.pagesOf sb.toNat len.toNat).1)
-    (hs : size = 4096 * (State.pagesOf sb.toNat len.toNat).2)
-    (htop : base.toNat + size ≤ addrTop)
-    (hrsp : t.getReg .rsp = base + BitVec.ofNat 64 size)
-    (hapart : (blocks.all fun x => decide (Disjoint base size x.1 x.2.size)) = true)
-    (hc : ((sb, len) :: segStretches segs []).all
-      (stretchIn ((base, size) :: blocks.map fun x => (x.1, x.2.size))) = true) :
-    Starts blocks kinds
-      ((entryPatStack size).den { ρ with bound := Fam.ofStack t base :: ρ.bound }) t :=
-  starts_stack ρ (blocksPerm_in hok hfull hoff hperm hin) (said_in hok hmem hin)
-    (text_in hok hmem hin) (canWrite_stack hperm hb hs htop)
-    (by have hT : addrTop = 0x7ffffffff000 := rfl; omega) hrsp hapart
-    (((PermsWithin.init.loadSegs segs).setPerm sb len .rw).congr hperm) hc
-
-include hok hfull hoff hmem hperm hin in
-/-- **And one with no stack**: nothing held. -/
-theorem loaded_starts (ρ : Env) {kinds : Nat → Option Shape}
-    (hc : ((sb, len) :: segStretches segs []).all
-      (stretchIn (blocks.map fun x => (x.1, x.2.size))) = true) :
-    Starts blocks kinds (entryPat.den { ρ with bound := Fam.ofState t :: ρ.bound }) t :=
-  starts_entry ρ (blocksPerm_in hok hfull hoff hperm hin) (said_in hok hmem hin)
-    (text_in hok hmem hin) (((PermsWithin.init.loadSegs segs).setPerm sb len .rw).congr hperm) hc
-
 end
 
 end TypedAsm.U

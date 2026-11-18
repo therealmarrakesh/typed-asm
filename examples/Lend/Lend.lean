@@ -38,7 +38,7 @@ bytes of stack below its return address, its local and the return address
 of its call, and returns seven. `fill` takes sixteen bytes at the address
 in `rdi` and gives them back holding three and four. -/
 def labels : List U.Label :=
-  [⟨entry, entryOf 4⟩,
+  [⟨entry, inProgram 4⟩,
    ⟨Asm.addr code base .work, inFunction (room := 24) (results := [(.rax, 7)])⟩,
    ⟨Asm.addr code base .fill,
      inFunction (takes := [(.rdi, 16)]) (leaves := [(.rdi, [(0, 3), (8, 4)])])⟩]

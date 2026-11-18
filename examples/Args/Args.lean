@@ -33,12 +33,12 @@ Between arguments `r13` holds the count; within one, `rdi` also points into
 its text. That an argument's number is below the count is the program's own
 comparison; that there is more text is what each byte read says. -/
 def labels : List U.Label :=
-  [⟨entry, inArgs⟩,
-   ⟨Asm.addr code base .arg, inArgs [(.r13, argCountV)]⟩,
-   ⟨Asm.addr code base .scan, inArgs [(.r13, argCountV)] [(.was .rdi, .str (.lit 0))]⟩]
+  [⟨entry, inProgram 0⟩,
+   ⟨Asm.addr code base .arg, inProgram 0 (regs := [(.r13, argCountV)])⟩,
+   ⟨Asm.addr code base .scan, inProgram 0 (regs := [(.r13, argCountV)]) (known := [(.was .rdi, .str (.lit 0))])⟩]
 
 /-! ## The check, and what it shows -/
 
-asm_checked_args code start .start stack 0 program pg labels labels exits (· == 0)
+asm_checked code start .start stack 0 program pg labels labels exits (· == 0)
 
 end Args

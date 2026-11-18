@@ -224,21 +224,23 @@ theorem preOut_sound {Q : BitVec 32 → Prop} {q : BitVec 32 → Bool} (hq : ∀
 
 /-- **A program that checks against both is safe under Linux, ends only
 with a status as wanted, and offers at every `write` it reaches a
-descriptor and bytes as wanted.** -/
+descriptor and bytes as wanted**: started in a state that matches under a
+memory typing with the blocks it is typed under and maybe more. -/
 theorem outputs_of_checked {Q : BitVec 32 → Prop} {q : BitVec 32 → Bool}
     (hq : ∀ c, q c = true → Q c) {R : BitVec 64 → List (BitVec 8) → Prop}
     {r : BitVec 64 → List (BitVec 8) → Bool} (hr : ∀ fd bs, r fd bs = true → R fd bs)
     {said : List (BitVec 64 × List (BitVec 8))} (hsaid : SaidOk Ψ said)
     {pg : Prog} {labels : List Label} {fuel k : Nat} (hpg : pg.pre = preOut said q r)
     (hcode : ∀ e ∈ pg.code, fetch e.1 = some (e.2.1, e.2.2)) (hk : KindsOk Ψ pg.kinds)
-    (hst : StaticsOk fetch ((linux.exitsOnly Q).writesOnly R) Ψ pg.statics) (hwf : Ψ.WF)
+    (hst : StaticsOk fetch ((linux.exitsOnly Q).writesOnly R) Ψ pg.statics) {Ψ₂ : MemTy}
+    (hext : Ψ.Ext Ψ₂) (hwf : Ψ₂.WF)
     (h : checkProgram pg labels fuel k = true)
     {l : Label} (hl : l ∈ labels) {s : State} (hrip : s.rip = l.addr) (ρ : Env) (fam : Fam)
     (hfn : ρ.fn = pg.fns) (hlaws : LawsHold pg.fns pg.laws)
     (hw : ∀ n, (∀ l' ∈ labels, ∀ (ρ' : Env) (fam' : Fam), ρ'.fn = pg.fns →
         Ok fetch ((linux.exitsOnly Q).writesOnly R) Ψ n l'.addr
           (l'.pat.den { ρ' with bound := fam' :: ρ'.bound })) →
-      WellTyped fetch ((linux.exitsOnly Q).writesOnly R) Ψ n
+      WellTyped fetch ((linux.exitsOnly Q).writesOnly R) Ψ₂ n
         (l.pat.den { ρ with bound := fam :: ρ.bound }) s) :
     Safe fetch linux s ∧
       (∀ s', TypedAsm.Steps fetch linux s s' → ∀ len c, fetch s'.rip = some (.syscall, len) →
@@ -246,8 +248,9 @@ theorem outputs_of_checked {Q : BitVec 32 → Prop} {q : BitVec 32 → Bool}
       (∀ s', TypedAsm.Steps fetch linux s s' → ∀ len, fetch s'.rip = some (.syscall, len) →
         s'.getReg .rax = 1 → R (s'.getReg .rdi) s'.offered) :=
   have hW := Safe.of_writesOnly
-    (safe_of_checked (D := outDesc Q R) ((linux_describes.exitsOnly Q).writesOnly R) rfl
-      (by rw [hpg]; exact preOut_sound hq hr hsaid) hcode hk hst hwf hlaws h hl hrip ρ fam hfn hw)
+    (safe_of_checked_ext (D := outDesc Q R) ((linux_describes.exitsOnly Q).writesOnly R) rfl
+      (by rw [hpg]; exact preOut_sound hq hr hsaid) hcode hk hst hext hwf hlaws h hl hrip ρ fam hfn
+      hw)
   have hE := Safe.of_exitsOnly hW.1
   ⟨hE.1, hE.2, fun s' hs' len hf hax => hW.2 s' hs'.exitsOnly len hf hax⟩
 

@@ -166,5 +166,5 @@ end Alloc
 def Alloc.program : Runnable where
   name := "alloc"
   elf := Asm.elf Alloc.base Alloc.code .start
-  start := Alloc.start
+  startArgs := Alloc.startArgs
   readsInput := true

@@ -101,7 +101,7 @@ def pg : Prog :=
 argument small enough, wanting sixteen bytes of stack for each unit of it,
 and returning its factorial. -/
 def labels : List U.Label :=
-  [⟨entry, entryOf 11⟩,
+  [⟨entry, inProgram 11⟩,
    ⟨Asm.addr code base .fact,
      inFunction (known := [(.was .rdi, .range 0 0xFFFFFFF)]) (room := (Val.was .rdi) <<< 4)
        (results := [(.rax, fac (Val.was .rdi).lift)])⟩]

@@ -4,7 +4,6 @@ import TypedAsm.U.Exits
 import TypedAsm.U.Writes
 import TypedAsm.U.Pages
 import TypedAsm.Linux
-import TypedAsm.U.Stack
 import TypedAsm.U.Loaded
 import TypedAsm.U.Whole
 import TypedAsm.U.Order

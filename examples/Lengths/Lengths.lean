@@ -41,14 +41,14 @@ bytes of stack; in its loop it has pushed `r12`, and `rdi` is in text
 still. That an argument's number is below the count is the program's own
 comparison; that there is more text is what each byte read says. -/
 def labels : List U.Label :=
-  [⟨entry, inArgs (stack := 4)⟩,
-   ⟨Asm.addr code base .arg, inArgs [(.r13, argCountV)] (stack := 4) (pushed := 8)⟩,
+  [⟨entry, inProgram 4⟩,
+   ⟨Asm.addr code base .arg, inProgram 4 (pushed := [.any]) (regs := [(.r13, argCountV)])⟩,
    ⟨Asm.addr code base .len, inFunction (known := [(.was .rdi, .str (.lit 0))]) (room := 8)⟩,
    ⟨Asm.addr code base .scan,
-     inFunction (known := [(.was .rdi, .str (.lit 0))]) (room := 8) (saved := [.r12])⟩]
+     inFunction (known := [(.was .rdi, .str (.lit 0))]) (room := 8) (pushed := [.saved .r12])⟩]
 
 /-! ## The check, and what it shows -/
 
-asm_checked_args code start .start stack 4 program pg labels labels
+asm_checked code start .start stack 4 program pg labels labels
 
 end Lengths

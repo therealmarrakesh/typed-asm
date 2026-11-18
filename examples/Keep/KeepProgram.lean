@@ -97,5 +97,5 @@ end Keep
 def Keep.program : Runnable where
   name := "keep"
   elf := Asm.elf Keep.base Keep.code .start
-  start := Keep.start
+  startArgs := Keep.startArgs
   readsInput := true

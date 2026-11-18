@@ -32,8 +32,8 @@ def pg : Prog :=
 uses sixteen bytes of stack below its return address. `spin` goes round for
 ever, wanting nothing more than the program's start does. -/
 def labels : List U.Label :=
-  [⟨entry, entryOf 3⟩,
-   ⟨Asm.addr code base .spin, entryOf 3⟩,
+  [⟨entry, inProgram 3⟩,
+   ⟨Asm.addr code base .spin, inProgram 3⟩,
    ⟨Asm.addr code base .pick,
      inFunction [] [(.was .rdi, .ptr (.mk 16 .nil) true 0)] (room := 16)⟩]
 
