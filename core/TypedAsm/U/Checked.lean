@@ -221,10 +221,10 @@ macro_rules
         arguments and whatever the world outside it holds.** -/
         theorem $safeExitsWritesIn (args : List (List Byte)) (w : World) :
             SafeMem linux (startIn $code $l $n args w) ∧
-              ExitsOnly $fetch (fun c => $q c = true) (startIn $code $l $n args w) ∧
+              ExitsOnly $fetch (fun c => ($q : BitVec 32 → Bool) c = true) (startIn $code $l $n args w) ∧
               WritesOnly $fetch (fun fd bytes => $r fd bytes = true)
                 (startIn $code $l $n args w) :=
-          whole_outputs $checked (Q := fun c => $q c = true) (q := $q) (fun _ h => h)
+          whole_outputs $checked (Q := fun c => ($q : BitVec 32 → Bool) c = true) (q := ($q : BitVec 32 → Bool)) (fun _ h => h)
             (R := fun fd bytes => $r fd bytes = true) (r := $r) (fun _ _ h => h) $saidOk rfl rfl
             $lw args w))
       cmds := cmds.push (← `(/-- So the program as it is run, with any arguments, is safe. -/
@@ -232,7 +232,7 @@ macro_rules
           $startEq args ▸ ($safeExitsWritesIn args ($startArgs args).world).1))
       cmds := cmds.push (← `(/-- It ends only with a status that is as said. -/
         theorem $exits (args : List (List Byte)) :
-            ExitsOnly $fetch (fun c => $q c = true) ($startArgs args) :=
+            ExitsOnly $fetch (fun c => ($q : BitVec 32 → Bool) c = true) ($startArgs args) :=
           $startEq args ▸ ($safeExitsWritesIn args ($startArgs args).world).2.1))
       cmds := cmds.push (← `(/-- And at a `write` offers only what is as said. -/
         theorem $writes (args : List (List Byte)) :
@@ -258,15 +258,15 @@ macro_rules
         arguments and whatever the world outside it holds.** -/
         theorem $safeExitsIn (args : List (List Byte)) (w : World) :
             SafeMem linux (startIn $code $l $n args w) ∧
-              ExitsOnly $fetch (fun c => $q c = true) (startIn $code $l $n args w) :=
-          whole_exits $checked (Q := fun c => $q c = true) (q := $q) (fun _ h => h) rfl rfl
+              ExitsOnly $fetch (fun c => ($q : BitVec 32 → Bool) c = true) (startIn $code $l $n args w) :=
+          whole_exits $checked (Q := fun c => ($q : BitVec 32 → Bool) c = true) (q := ($q : BitVec 32 → Bool)) (fun _ h => h) rfl rfl
             $lw args w))
       cmds := cmds.push (← `(/-- So the program as it is run, with any arguments, is safe. -/
         theorem $safe (args : List (List Byte)) : SafeMem linux ($startArgs args) :=
           $startEq args ▸ ($safeExitsIn args ($startArgs args).world).1))
       cmds := cmds.push (← `(/-- And it ends only with a status that is as said. -/
         theorem $exits (args : List (List Byte)) :
-            ExitsOnly $fetch (fun c => $q c = true) ($startArgs args) :=
+            ExitsOnly $fetch (fun c => ($q : BitVec 32 → Bool) c = true) ($startArgs args) :=
           $startEq args ▸ ($safeExitsIn args ($startArgs args).world).2))
     return mkNullNode cmds
 

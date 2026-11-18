@@ -89,4 +89,40 @@ theorem State.load64_store8 (s : State) (a : BitVec 64) {i : Nat} (hi : i < 8) (
     (s.store8 (a + BitVec.ofNat 64 i) b).load64 a = setByte (s.load64 a) i b := by
   rw [State.load64_ofBytes, State.loadBytes_store8 s a hi, State.loadBytes_eight, setByte]
 
+/-- A value with two of its bytes, from the `i`th, replaced. -/
+def put16 (w : BitVec 64) (i : Nat) (x : BitVec 16) : BitVec 64 :=
+  setByte (setByte w i (x.extractLsb' 0 8)) (i + 1) (x.extractLsb' 8 8)
+
+/-- A value with four of its bytes, from the `i`th, replaced. -/
+def put32 (w : BitVec 64) (i : Nat) (x : BitVec 32) : BitVec 64 :=
+  put16 (put16 w i (x.extractLsb' 0 16)) (i + 2) (x.extractLsb' 16 16)
+
+theorem State.load64_store16 (s : State) (a : BitVec 64) {i : Nat} (hi : i + 2 ≤ 8)
+    (x : BitVec 16) :
+    (s.store16 (a + BitVec.ofNat 64 i) x).load64 a = put16 (s.load64 a) i x := by
+  have e : a + BitVec.ofNat 64 i + 1 = a + BitVec.ofNat 64 (i + 1) := by
+    rw [BitVec.add_assoc, BitVec.ofNat_add]
+    rfl
+  rw [State.store16, e, State.load64_store8 _ a (by omega), State.load64_store8 s a (by omega)]
+  rfl
+
+theorem State.load64_store32 (s : State) (a : BitVec 64) {i : Nat} (hi : i + 4 ≤ 8)
+    (x : BitVec 32) :
+    (s.store32 (a + BitVec.ofNat 64 i) x).load64 a = put32 (s.load64 a) i x := by
+  have e : a + BitVec.ofNat 64 i + 2 = a + BitVec.ofNat 64 (i + 2) := by
+    rw [BitVec.add_assoc, BitVec.ofNat_add]
+    rfl
+  rw [State.store32, e, State.load64_store16 _ a (by omega), State.load64_store16 s a (by omega)]
+  rfl
+
+/-- **A value with `n` of its bytes, from the `i`th, replaced by the low
+bytes of another**: one, two or four of them; of any other count, the
+value. -/
+def putBytes (w : BitVec 64) (i n : Nat) (v : BitVec 64) : BitVec 64 :=
+  match n with
+  | 1 => setByte w i (v.setWidth 8)
+  | 2 => put16 w i (v.setWidth 16)
+  | 4 => put32 w i (v.setWidth 32)
+  | _ => w
+
 end TypedAsm

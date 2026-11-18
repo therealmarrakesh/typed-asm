@@ -3,3 +3,4 @@ import Tests.Hardware
 import Tests.Programs
 import Tests.Syscalls
 import Tests.Typed.Cross
+import Tests.Typed.Written

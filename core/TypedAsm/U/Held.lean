@@ -279,15 +279,15 @@ theorem Writes.held {Γ : Ctx} {k : Nat} {b : BitVec 64} {S : Held} {o n : Nat} 
 
 /-- **And to be written, the region then described anew**: by any values
 that were there and keep clear of the bytes written; the value written,
-where it is eight bytes; and, where it is one byte stored into a value
-that was there, that value with the byte replaced. So of a region whose
+where it is eight bytes; and, where it is fewer stored wholly into a value
+that was there, that value with those bytes replaced. So of a region whose
 values are found to keep clear by what is known, which may be fewer than
 those that do. -/
 theorem Writes.heldTo {Γ : Ctx} {k : Nat} {b : BitVec 64} {S S' : Held} {o n : Nat} (v : BitVec 64)
     (hk : Γ.held[k]? = some (b, S)) (hin : o + n ≤ S.size) (hn : n ≤ 8) (hS' : S'.size = S.size)
     (hvals : ∀ p ∈ S'.vals, (p ∈ S.vals ∧ (p.1 + 8 ≤ o ∨ o + n ≤ p.1)) ∨ (n = 8 ∧ p = (o, v)) ∨
-      (n = 1 ∧ ∃ c w d, p = (c, setByte w d (v.setWidth 8)) ∧ (c, w) ∈ S.vals ∧
-        BitVec.ofNat 64 o = BitVec.ofNat 64 c + BitVec.ofNat 64 d ∧ d < 8)) :
+      (n < 8 ∧ ∃ c w d, p = (c, putBytes w d n v) ∧ (c, w) ∈ S.vals ∧
+        BitVec.ofNat 64 o = BitVec.ofNat 64 c + BitVec.ofNat 64 d ∧ d + n ≤ 8)) :
     Writes fetch sys Ψ Γ (b + BitVec.ofNat 64 o) n v
       { Γ with held := Γ.held.set k (b, S') } := by
   refine ⟨rfl, rfl, fun j Ψ' he hwf s hw => ?_⟩
@@ -309,10 +309,22 @@ theorem Writes.heldTo {Γ : Ctx} {k : Nat} {b : BitVec 64} {S S' : Held} {o n : 
     · exact .inl hp'
     · subst h8
       exact .inr (TypedAsm.State.load64_store64_same _ _ _)
-    · subst h1
-      refine .inr ?_
-      show (s.store8 (b + BitVec.ofNat 64 o) (v.setWidth 8)).load64 (b + BitVec.ofNat 64 c) = _
-      rw [ho, ← BitVec.add_assoc, State.load64_store8 s _ hd, hw.held.vals _ hmem (c, w) hcw]
+    · refine .inr ?_
+      have hval : s.load64 (b + BitVec.ofNat 64 c) = w := hw.held.vals _ hmem (c, w) hcw
+      show (storeN s n (b + BitVec.ofNat 64 o) v).load64 (b + BitVec.ofNat 64 c)
+        = putBytes w d n v
+      rw [ho, ← BitVec.add_assoc, ← hval]
+      by_cases h1 : n = 1
+      · subst h1; exact State.load64_store8 s _ (by omega) _
+      by_cases h2 : n = 2
+      · subst h2; exact State.load64_store16 s _ (by omega) _
+      by_cases h4 : n = 4
+      · subst h4; exact State.load64_store32 s _ (by omega) _
+      have es : ∀ a, storeN s n a v = s := fun a => by
+        unfold storeN; split <;> first | omega | rfl
+      have ep : ∀ x, putBytes x d n v = x := fun x => by
+        unfold putBytes; split <;> first | omega | rfl
+      rw [es, ep]
 
 /-- **And to be written somewhere within a stretch of the region**: the
 region then holds no value the stretch reaches into. So of a write at an

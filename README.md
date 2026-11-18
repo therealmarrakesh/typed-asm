@@ -132,9 +132,7 @@ is no number of steps for an author to give.
 What is not there:
 
 - What a program writes is followed for bytes its data says it holds and
-  for bytes it made, not for bytes it read. A store of two or four bytes
-  into a number it made leaves that number unknown; a store of one or of
-  eight does not.
+  for bytes it made, not for bytes it read.
 - What is known of numbers is followed where it is sums, differences and
   multiples by numbers written out, with wrapping at 32 and 64 bits and
   masks. A bound that rests on more than that, as that a number has at

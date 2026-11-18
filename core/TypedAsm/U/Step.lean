@@ -55,28 +55,29 @@ keep clear of them are left. -/
 def HeldS.clearT (K : List (Val × TyS)) (S : HeldS) (o : Val) (ls : List Val) (n : Nat) : HeldS :=
   ⟨S.size, S.slots.filter fun p => sumLe K (o :: ls) n [p.1] 0 || leS K p.1 8 o 0⟩
 
-/-- The value a byte stored at a place falls in, where the region is said
-to hold a number written out there and the byte stored is of a number
-written out: where that value is, and the number with the byte replaced. -/
-def HeldS.byteInto (S : HeldS) (o v : Val) : Option (Val × Val) :=
+/-- The value fewer than eight bytes stored at a place fall wholly in,
+where the region is said to hold a number written out there and what is
+stored is a number written out: where that value is, and the number with
+those bytes replaced. -/
+def HeldS.bytesInto (S : HeldS) (o : Val) (n : Nat) (v : Val) : Option (Val × Val) :=
   match v with
   | .lit x =>
     S.slots.findSome? fun p =>
       match o.minus p.1, p.2 with
       | some d, .lit w =>
-        if d.toNat < 8 then some (p.1, .lit (setByte w d.toNat (x.setWidth 8))) else none
+        if d.toNat + n ≤ 8 then some (p.1, .lit (putBytes w d.toNat n x)) else none
       | _, _ => none
   | _ => none
 
 /-- A region with `n` of its bytes, from a place, given a value. Of eight
-bytes, the region then holds the value there. Of one byte stored into a
-number the region held, it holds the number with that byte replaced. -/
+bytes, the region then holds the value there. Of fewer stored wholly into
+a number the region held, it holds the number with those bytes replaced. -/
 def HeldS.put (K : List (Val × TyS)) (S : HeldS) (o : Val) (n : Nat) (v : Val) : HeldS :=
   if n = 8 then ⟨S.size, (o, v) :: (S.clearT K o [] 8).slots⟩
-  else if n = 1 then
-    match S.byteInto o v with
-    | some c => ⟨S.size, c :: (S.clearT K o [] 1).slots⟩
-    | none => S.clearT K o [] 1
+  else if n < 8 then
+    match S.bytesInto o n v with
+    | some c => ⟨S.size, c :: (S.clearT K o [] n).slots⟩
+    | none => S.clearT K o [] n
   else S.clearT K o [] n
 
 theorem HeldS.put_size (K : List (Val × TyS)) (S : HeldS) (o : Val) (n : Nat) (v : Val) :
@@ -104,13 +105,13 @@ theorem HeldS.clearT_mem {ρ : Env} {Ψ' : MemTy} {m : Nat} {K : List (Val × Ty
   · have := leS_den h hg
     exact .inl (by show q.1.nat ρ + 8 ≤ _; omega)
 
-theorem HeldS.byteInto_den {ρ : Env} {S : HeldS} {o v : Val} {c : Val × Val}
-    (h : S.byteInto o v = some c) :
-    ∃ w d, slotDen ρ c = ((c.1.den ρ).toNat, setByte w d ((v.den ρ).setWidth 8)) ∧
+theorem HeldS.bytesInto_den {ρ : Env} {S : HeldS} {o v : Val} {n : Nat} {c : Val × Val}
+    (h : S.bytesInto o n v = some c) :
+    ∃ w d, slotDen ρ c = ((c.1.den ρ).toNat, putBytes w d n (v.den ρ)) ∧
       ((c.1.den ρ).toNat, w) ∈ (S.den ρ).vals ∧
       BitVec.ofNat 64 (o.nat ρ) = BitVec.ofNat 64 (c.1.den ρ).toNat + BitVec.ofNat 64 d ∧
-      d < 8 := by
-  unfold HeldS.byteInto at h
+      d + n ≤ 8 := by
+  unfold HeldS.bytesInto at h
   split at h
   · next x =>
     obtain ⟨p, hp, hx⟩ := List.exists_of_findSome?_eq_some h
@@ -135,8 +136,8 @@ theorem HeldS.put_mem {ρ : Env} {Ψ' : MemTy} {m : Nat} {K : List (Val × TyS)}
     {n : Nat} {v : Val} {p : Nat × BitVec 64} (hp : p ∈ ((S.put K o n v).den ρ).vals) :
     (p ∈ (S.den ρ).vals ∧ (p.1 + 8 ≤ o.nat ρ ∨ o.nat ρ + n ≤ p.1)) ∨
       (n = 8 ∧ p = (o.nat ρ, v.den ρ)) ∨
-      (n = 1 ∧ ∃ c w d, p = (c, setByte w d ((v.den ρ).setWidth 8)) ∧ (c, w) ∈ (S.den ρ).vals ∧
-        BitVec.ofNat 64 (o.nat ρ) = BitVec.ofNat 64 c + BitVec.ofNat 64 d ∧ d < 8) := by
+      (n < 8 ∧ ∃ c w d, p = (c, putBytes w d n (v.den ρ)) ∧ (c, w) ∈ (S.den ρ).vals ∧
+        BitVec.ofNat 64 (o.nat ρ) = BitVec.ofNat 64 c + BitVec.ofNat 64 d ∧ d + n ≤ 8) := by
   have clr : ∀ k, p ∈ ((S.clearT K o [] k).den ρ).vals →
       p ∈ (S.den ρ).vals ∧ (p.1 + 8 ≤ o.nat ρ ∨ o.nat ρ + k ≤ p.1) := fun k hp => by
     have := HeldS.clearT_mem hg (S := S) (o := o) (ls := []) (n := k) hp
@@ -155,13 +156,11 @@ theorem HeldS.put_mem {ρ : Env} {Ψ' : MemTy} {m : Nat} {K : List (Val × TyS)}
       split at hp
       · next c hc =>
         rcases List.mem_cons.mp (show p ∈ slotDen ρ c ::
-            (S.clearT K o [] 1).slots.map (slotDen ρ) from hp) with rfl | hp
-        · obtain ⟨w, d, he, hmem, ho, hd⟩ := HeldS.byteInto_den (ρ := ρ) hc
+            (S.clearT K o [] n).slots.map (slotDen ρ) from hp) with rfl | hp
+        · obtain ⟨w, d, he, hmem, ho, hd⟩ := HeldS.bytesInto_den (ρ := ρ) hc
           exact .inr (.inr ⟨h1, _, w, d, he, hmem, ho, hd⟩)
-        · have := clr 1 hp
-          exact .inl ⟨this.1, by omega⟩
-      · have := clr 1 hp
-        exact .inl ⟨this.1, by omega⟩
+        · exact .inl (clr n hp)
+      · exact .inl (clr n hp)
     · exact .inl (clr n hp)
 
 /-- What is shown of reading given what a context knows, is so of reading. -/

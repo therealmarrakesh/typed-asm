@@ -136,15 +136,39 @@ theorem and_le (w : Width) (a b : BitVec 64) :
     cases w <;> simp only [wide, BitVec.toNat_setWidth, Width.bits] <;> omega
   refine ⟨?_, ?_, Range.le_top (wide_has w _)⟩ <;> rw [BitVec.le_def, hw] <;> omega
 
+theorem Range.has_zero {T v : BitVec 64} (h : v ≤ T) : Range.has ⟨0, T⟩ v := by
+  simp only [Range.has]
+  bv_omega
+
+/-- **A value shifted right is no more than the value, so much less.** -/
+theorem shr_le (w : Width) (a : BitVec 64) (c : Nat) :
+    (wide (ShiftOp.eval .shr Flags.unknown (a.setWidth w.bits) c).1).toNat ≤ a.toNat / 2 ^ c := by
+  have hw : ∀ x : BitVec w.bits, (wide x).toNat = x.toNat := fun x => by
+    have := x.isLt
+    cases w <;> simp only [wide, BitVec.toNat_setWidth, Width.bits] at this ⊢ <;> omega
+  have hm : (a.setWidth w.bits).toNat ≤ a.toNat := by
+    rw [BitVec.toNat_setWidth]; exact Nat.mod_le _ _
+  rw [hw]
+  unfold ShiftOp.eval
+  split
+  · next h0 => subst h0; simpa using hm
+  · show (a.setWidth w.bits >>> c).toNat ≤ _
+    rw [BitVec.toNat_ushiftRight, Nat.shiftRight_eq_div_pow]
+    exact Nat.div_le_div_right hm
+
 /-- The lesser of two values, as numbers without sign. -/
 def least (a b : BitVec 64) : BitVec 64 := if a ≤ b then a else b
 
 /-- **The range a value lies in, by the operator that gave it**: and where
-it is what two values both have set, no more than either can be. So a value
-masked is at most the mask. -/
+it is what two values both have set, no more than either can be; where it
+is a value shifted right by a number written out, no more than the most the
+value can be, shifted so. So a value masked is at most the mask, and the
+high half of a byte is below sixteen. -/
 def Val.bound : Val → Range
   | .lit v => ⟨v, v⟩
   | .un o _ => o.bound
+  | .bin (.shift .shr w) a (.lit k) =>
+    ⟨0, BitVec.ofNat 64 (a.bound.top.toNat / 2 ^ (k.toNat % w.bits))⟩
   | .bin o _ _ => o.bound
   | .fop (.alu .and w) _ a b => ⟨0, least (least a.bound.top b.bound.top) w.range.top⟩
   | .fop o _ _ _ => o.bound
@@ -153,7 +177,26 @@ def Val.bound : Val → Range
 theorem Val.bound_has (ρ : Env) : (v : Val) → v.bound.has (v.den ρ)
   | .lit v => by simp only [Val.bound, Range.has, Val.den, BitVec.sub_self, BitVec.le_refl]
   | .un o a => o.bound_has _
-  | .bin o a b => o.bound_has _ _
+  | .bin (.shift .shr w) a (.lit k) => by
+    have ha := Range.le_top (Val.bound_has ρ a)
+    have h := shr_le w (a.den ρ) (k.toNat % w.bits)
+    have hd : (a.den ρ).toNat / 2 ^ (k.toNat % w.bits) ≤ a.bound.top.toNat / 2 ^ (k.toNat % w.bits) :=
+      Nat.div_le_div_right (BitVec.le_def.mp ha)
+    have ht : a.bound.top.toNat / 2 ^ (k.toNat % w.bits) < 2 ^ 64 :=
+      Nat.lt_of_le_of_lt (Nat.div_le_self _ _) a.bound.top.isLt
+    refine Range.has_zero (v := wide (ShiftOp.eval .shr Flags.unknown
+      (BitVec.setWidth w.bits (a.den ρ)) (k.toNat % w.bits)).1) (BitVec.le_def.mpr ?_)
+    rw [BitVec.toNat_ofNat, Nat.mod_eq_of_lt ht]
+    exact Nat.le_trans h hd
+  | .bin (.shift .shr w) a (.var _) | .bin (.shift .shr w) a (.bvar _ _)
+  | .bin (.shift .shr w) a (.slot _) | .bin (.shift .shr w) a (.un _ _)
+  | .bin (.shift .shr w) a (.bin _ _ _) | .bin (.shift .shr w) a (.tri _ _ _ _)
+  | .bin (.shift .shr w) a (.fop _ _ _ _) | .bin (.shift .shr w) a (.app _ _ _) =>
+    Bin.bound_has _ _ _
+  | .bin .add a b => Bin.bound_has _ _ _
+  | .bin (.imul _) a b => Bin.bound_has _ _ _
+  | .bin (.shift .shl _) a b | .bin (.shift .sar _) a b | .bin (.shift .rol _) a b
+  | .bin (.shift .ror _) a b => Bin.bound_has _ _ _
   | .fop (.alu .and w) fl a b => by
     have ha := Range.le_top (Val.bound_has ρ a)
     have hb := Range.le_top (Val.bound_has ρ b)
