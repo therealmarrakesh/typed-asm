@@ -177,6 +177,16 @@ theorem cellAt_congr {s s' : State} (h : ∀ a, s'.mem a = s.mem a) (b : Bool) (
     cellAt s' b a = cellAt s b a := by
   simp only [cellAt, State.load64, State.load32, State.load16, State.load8, h]
 
+/-- A row is bytes of the last `read` still, in a state whose memory is the
+same and whose world has stored the same by reading. -/
+theorem FedRow.congr {τ : Type} {s s' : State} (h : ∀ a, s'.mem a = s.mem a)
+    (hw : s'.world.reads = s.world.reads) {r : RowOf τ} {off : BitVec 64}
+    (hf : FedRow s r off) : FedRow s' r off := by
+  obtain ⟨hb, hst, chunk, hc, hle, hl⟩ := hf
+  refine ⟨hb, hst, chunk, by rw [hw]; exact hc, hle, ?_⟩
+  rw [← hl]
+  simp only [State.loadBytes, h]
+
 /-- Matching a context carries over to any weaker notion of what is known. -/
 theorem Matches.imp {H H' : Ty → BitVec 64 → Prop} {Γ : Ctx} {s : State}
     (h : Matches H Ψ Γ s) (himp : ∀ τ v, H τ v → H' τ v) : Matches H' Ψ Γ s :=
@@ -189,6 +199,7 @@ theorem Matches.imp {H H' : Ty → BitVec 64 → Prop} {Γ : Ctx} {s : State}
     said := h.said
     held := h.held
     rows := fun r hr i hi => himp _ _ (h.rows r hr i hi)
+    fed := h.fed
     complete := h.complete }
 
 /-- A state well typed at a step count is well typed at every smaller one. -/

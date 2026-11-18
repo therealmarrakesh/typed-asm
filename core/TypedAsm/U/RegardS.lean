@@ -727,7 +727,7 @@ def regardWith (sm : List (Val × TyS) → Val → Val → Bool) (ent : TyS → 
      | some P => apartS Γ.known P && coverS Γ.held P
      | none => false) &&
     Δ.known.all (factFrom ent Γ.known) && Δ.rest == Γ.rest &&
-    Δ.rows.all (rowFrom (sm Γ.known) Γ.known Γ.rows)
+    Δ.rows.all (rowFrom (sm Γ.known) Γ.known Γ.rows) && Δ.rows.all fun r => r.fed.isNone
 
 theorem regardWith_sound {sm : List (Val × TyS) → Val → Val → Bool} {ent : TyS → TyS → Bool}
     (he : EntSound fetch sys ent) (ρ : Env) {Γ Δ : CtxS}
@@ -737,7 +737,7 @@ theorem regardWith_sound {sm : List (Val × TyS) → Val → Val → Bool} {ent 
     (h : regardWith sm ent Γ Δ = true) :
     Regards fetch sys Ψ (Γ.den ρ) (Δ.den ρ) := by
   simp only [regardWith, Bool.and_eq_true, List.all_eq_true, beq_iff_eq] at h
-  obtain ⟨⟨⟨⟨⟨hr, hf⟩, hh⟩, hk⟩, hrest⟩, hrows⟩ := h
+  obtain ⟨⟨⟨⟨⟨⟨hr, hf⟩, hh⟩, hk⟩, hrest⟩, hrows⟩, hnofed⟩ := h
   cases hP : partsS sm Γ.known Γ.held Δ.held with
   | none => rw [hP] at hh; cases hh
   | some P =>
@@ -771,6 +771,12 @@ theorem regardWith_sound {sm : List (Val × TyS) → Val → Val → Bool} {ent 
             (cellAt s' x.byte (x.addr.den ρ + BitVec.ofNat 64 (x.stride * i)))
           rw [he, ← hb, ← hst]
           exact HasTy.sub (followsS_sub ρ _ _ _ (List.all_eq_true.mp htys g hgr)) hty)
+        (fun _ _ _ _ r hr' off ho => by
+          obtain ⟨x, hx, rfl⟩ := List.mem_map.mp (show r ∈ Δ.rows.map (RowS.den ρ) from hr')
+          have hn : x.fed = none := by simpa using hnofed x hx
+          have ho' : x.fed.map (BitVec.ofNat 64) = some off := ho
+          rw [hn] at ho'
+          cases ho')
         k Ψ' hext hwf s hw
     · funext r
       exact (hsm Ψ' k hg _ _ (hr r (mem_allRegs r))).symm

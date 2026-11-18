@@ -20,7 +20,8 @@ theorem WellTyped.dropHeld {s' : State} {k : Nat} {a : BitVec 64} {S : Held}
     (h : WellTyped fetch sys Ψ n Γ s) (hΨ : Ψ.WF) (hk : Γ.held[k]? = some (a, S))
     (hregs : s'.regs = s.regs) (hflags : s'.flags = s.flags) (hmem : s'.mem = s.mem)
     (hgone : ∀ x, (x - a).toNat < S.size → s'.perm x = .none)
-    (hkept : ∀ x, ¬ (x - a).toNat < S.size → s'.perm x = s.perm x) :
+    (hkept : ∀ x, ¬ (x - a).toNat < S.size → s'.perm x = s.perm x)
+    (hworld : s'.world.reads = s.world.reads) :
     WellTyped fetch sys Ψ n { Γ with held := Γ.held.eraseIdx k } s' := by
   obtain ⟨hklt, hkeq⟩ := List.getElem?_eq_some_iff.mp hk
   have hin : (a, S) ∈ Γ.held := hkeq ▸ List.getElem_mem hklt
@@ -47,6 +48,7 @@ theorem WellTyped.dropHeld {s' : State} {k : Nat} {a : BitVec 64} {S : Held}
     said := fun b l bs hl hs k hk => by rw [hmem]; exact h.said b l bs hl hs k hk
     rows := fun r hr i hi => by
       rw [cellAt_congr (fun x => congrFun hmem x)]; exact h.rows r hr i hi
+    fed := fun r hr off ho => (h.fed r hr off ho).congr (fun x => congrFun hmem x) hworld
     complete := fun x hx => by
       have hout : ¬ (x - a).toNat < S.size := fun hin => hx (hgone x hin)
       rw [hkept x hout] at hx
@@ -91,13 +93,13 @@ theorem Steps.unmap {D : SysDesc} (hD : Describes sys D) {Γ : Ctx} {next : BitV
   rcases hun with ⟨v, hv, rfl⟩ | ⟨hal, hfit, rfl⟩
   · refine ⟨_, hst, _, ⟨hrip, .inl ⟨v, s.world.saved 0, hv, rfl⟩⟩, ?_⟩
     rw [← hrip]
-    exact hw.ret v s.world
+    exact hw.ret v s.world (.inl rfl)
   · refine ⟨_, hst, _, ⟨hrip, .inr ⟨(s.unmap (Γ.val .rdi) S.size).world.saved 0, rfl⟩⟩, ?_⟩
     have hsz4 : S.size % 4096 = 0 := by rw [hsz]; exact Nat.mul_mod_left _ _
     have hD' := hw.dropHeld hwf hheld (s' := s.unmap (Γ.val .rdi) S.size) rfl rfl rfl
       (fun x hx => by rw [State.perm_unmap s hal hsz4 hfit]; simp only [hx, ↓reduceIte])
-      (fun x hx => by rw [State.perm_unmap s hal hsz4 hfit]; simp only [hx, ↓reduceIte])
+      (fun x hx => by rw [State.perm_unmap s hal hsz4 hfit]; simp only [hx, ↓reduceIte]) rfl
     rw [← hrip]
-    exact hD'.ret 0 (s.unmap (Γ.val .rdi) S.size).world
+    exact hD'.ret 0 (s.unmap (Γ.val .rdi) S.size).world (.inl rfl)
 
 end TypedAsm.U

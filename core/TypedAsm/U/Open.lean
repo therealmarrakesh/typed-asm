@@ -342,7 +342,7 @@ theorem FactsS.den_toList (ρ : Env) :
 
 def RowsS.toList : RowsS → List RowS
   | .nil => []
-  | .cons a c st b τ rest => ⟨a, c, st, b, τ⟩ :: rest.toList
+  | .cons a c st b τ rest => ⟨a, c, st, b, τ, none⟩ :: rest.toList
 
 theorem RowsS.den_toList (ρ : Env) : (rs : RowsS) → rs.den ρ = rs.toList.map (RowS.den ρ)
   | .nil => rfl
@@ -381,7 +381,8 @@ def CtxS.open (o : Opening) (Γ : CtxS) : CtxS where
   held := heldOpen o 0 Γ.held ++ (Γ.rest.openHeld o 0).1
   known := Γ.known.map fun f => (f.1.open o 0, f.2.open o 0)
   rest := (Γ.rest.openHeld o 0).2
-  rows := Γ.rows.map fun r => ⟨r.addr.open o 0, r.count.open o 0, r.stride, r.byte, r.ty.open o 0⟩
+  rows := Γ.rows.map fun r =>
+    ⟨r.addr.open o 0, r.count.open o 0, r.stride, r.byte, r.ty.open o 0, r.fed⟩
 
 /-- **It stands for the member of the family at the values the terms stand
 for.** -/
@@ -413,10 +414,10 @@ theorem CtxS.den_open (ρ : Env) (o : Opening) (ho : o.Closed) (Γ : CtxS) :
     rw [List.map_map]
     exact List.map_congr_left fun r _ => by
       show RowOf.mk ((r.addr.open o 0).den ρ) ((r.count.open o 0).den ρ) r.stride r.byte
-          ((r.ty.open o 0).den ρ)
+          ((r.ty.open o 0).den ρ) (r.fed.map (BitVec.ofNat 64))
         = RowOf.mk (r.addr.den { ρ with bound := famOf ρ o :: ρ.bound })
             (r.count.den { ρ with bound := famOf ρ o :: ρ.bound }) r.stride r.byte
-            (r.ty.den { ρ with bound := famOf ρ o :: ρ.bound })
+            (r.ty.den { ρ with bound := famOf ρ o :: ρ.bound }) (r.fed.map (BitVec.ofNat 64))
       rw [show (r.addr.open o 0).den ρ = _ from Val.den_open ρ o ho [] ρ.bound r.addr,
         show (r.count.open o 0).den ρ = _ from Val.den_open ρ o ho [] ρ.bound r.count,
         show (r.ty.open o 0).den ρ = _ from TyS.den_open ρ o ho [] ρ.bound r.ty]

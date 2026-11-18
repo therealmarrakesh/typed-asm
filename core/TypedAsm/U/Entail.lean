@@ -105,7 +105,10 @@ theorem Regards.parts {Γ Δ : Ctx} {E F : List Region} {L : List Part}
     (hrows : ∀ (k : Nat) (Ψ' : MemTy) (s : State), WellTyped fetch sys Ψ' k Γ s →
       ∀ r ∈ Δ.rows, ∀ i, i < r.count.toNat →
         HasTy fetch sys Ψ' k r.ty (cellAt s r.byte (r.addr + BitVec.ofNat 64 (r.stride * i)))
-      := by exact fun _ _ _ hw r h => hw.rows r h) :
+      := by exact fun _ _ _ hw r h => hw.rows r h)
+    (hfed : ∀ (k : Nat) (Ψ' : MemTy) (s : State), WellTyped fetch sys Ψ' k Γ s →
+      ∀ r ∈ Δ.rows, ∀ off, r.fed = some off → FedRow s r off
+      := by exact fun _ _ _ hw r h => hw.fed r h) :
     Regards fetch sys Ψ Γ Δ := by
   intro k Ψ' he hwf s hw
   have hE : ∀ b ∈ E, b ∈ Γ.held := fun b hb => by rw [hΓ]; exact List.mem_append_left _ hb
@@ -137,6 +140,7 @@ theorem Regards.parts {Γ Δ : Ctx} {E F : List Region} {L : List Part}
       text := hw.text
       said := hw.said
       rows := hrows k Ψ' s hw
+      fed := hfed k Ψ' s hw
       complete := fun a ha => by
         rcases hw.complete a ha with ⟨b, hb, hin⟩ | hr
         · rw [hΓ] at hb
@@ -241,6 +245,7 @@ theorem WellTyped.nameSlot {n : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch
       text := h.text
       said := h.said
       rows := h.rows
+      fed := h.fed
       complete := fun x hx => by
         rcases h.complete x hx with ⟨c, hc, hin⟩ | hr
         · obtain ⟨m, hm, rfl⟩ := List.mem_iff_getElem.mp hc

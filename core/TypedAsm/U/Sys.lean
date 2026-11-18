@@ -24,9 +24,11 @@ left there, and the flags are undefined. -/
 def CtxOf.afterSys (Γ : Ctx) (v r next : BitVec 64) : Ctx :=
   Γ.apply ⟨[(.rax, v), (.rcx, next), (.r11, r)], Flags.unknown, 0⟩
 
-/-- What is in the world outside is no part of what a context says. -/
+/-- What is in the world outside is no part of what a context says, but
+for what it keeps of what was last stored by reading. -/
 theorem WellTyped.setWorld {n : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch sys Ψ n Γ s)
-    (w : World) : WellTyped fetch sys Ψ n Γ { s with world := w } :=
+    (w : World) (hreads : w.reads = s.world.reads ∨ Γ.rows = []) :
+    WellTyped fetch sys Ψ n Γ { s with world := w } :=
   { val := h.val
     known := h.known
     flags := h.flags
@@ -35,6 +37,10 @@ theorem WellTyped.setWorld {n : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch
     text := h.text
     said := h.said
     rows := h.rows
+    fed := fun r hr off ho => hreads.elim
+      (fun e => FedRow.congr (s := s) (s' := { s with world := w }) (fun _ => rfl) e
+        (h.fed r hr off ho))
+      (fun e => by rw [e] at hr; cases hr)
     complete := h.complete
     held :=
       { perm := h.held.perm
@@ -47,11 +53,11 @@ theorem WellTyped.setWorld {n : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch
 /-- A state a call returns in, with the world changed, matches the context
 a call returns in. -/
 theorem WellTyped.ret {n : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch sys Ψ n Γ s)
-    (v : BitVec 64) (w : World) :
+    (v : BitVec 64) (w : World) (hreads : w.reads = s.world.reads ∨ Γ.rows = []) :
     WellTyped fetch sys Ψ n (Γ.afterSys v (w.saved 0) s.rip)
       (Linux.ret { s with world := w } v) :=
-  ((h.setWorld w).apply ⟨[(.rax, v), (.rcx, s.rip), (.r11, w.saved 0)], Flags.unknown, 0⟩).setWorld
-    w.spent
+  ((h.setWorld w hreads).apply
+    ⟨[(.rax, v), (.rcx, s.rip), (.r11, w.saved 0)], Flags.unknown, 0⟩).setWorld w.spent (.inl rfl)
 
 /-- What a call does to the program. -/
 inductive SysKind
@@ -124,10 +130,11 @@ theorem Steps.world {D : SysDesc} (hD : Describes sys D) {Γ : Ctx} {next : BitV
       WellTyped fetch sys Ψ' n Γ s → D.pre s) :
     Steps fetch sys Ψ .syscall next Γ fun t Γ' => t = next ∧ ∃ v r, Γ' = Γ.afterSys v r next := by
   intro n Ψ' he hwf s hrip hw
-  obtain ⟨t, hst, v, w, rfl⟩ := hD s .world (by rw [hw.val]; exact hk) (hpre n Ψ' he hwf s hrip hw)
+  obtain ⟨t, hst, v, w, hreads, rfl⟩ :=
+    hD s .world (by rw [hw.val]; exact hk) (hpre n Ψ' he hwf s hrip hw)
   refine ⟨_, hst, Γ.afterSys v (w.saved 0) next, ⟨hrip, v, _, rfl⟩, ?_⟩
   rw [← hrip]
-  exact hw.ret v w
+  exact hw.ret v w (.inl hreads)
 
 /-- `Havoc … Γ a n Γh`: whatever bytes, at most `n`, are stored at `a` where
 they may be written, a state that matched `Γ` matches `Γh`: `Γ` with nothing
@@ -145,7 +152,8 @@ theorem Steps.fills {D : SysDesc} (hD : Describes sys D) {Γ Γh : Ctx} {next : 
     {b : Reg} {room : Reg ⊕ Nat} (hk : D.kind (Γ.val .rax) = some (.fills b room))
     (hpre : ∀ n, ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, s.rip = next →
       WellTyped fetch sys Ψ' n Γ s → D.pre s)
-    (hh : Havoc fetch sys Ψ Γ (Γ.val b) (roomVal Γ.val room) Γh) :
+    (hh : Havoc fetch sys Ψ Γ (Γ.val b) (roomVal Γ.val room) Γh)
+    (hrows : Γ.rows = []) (hrowsh : Γh.rows = []) :
     Steps fetch sys Ψ .syscall next Γ fun t Γ' =>
       t = next ∧ ∃ v r, (Γ' = Γ.afterSys v r next ∨ Γ' = Γh.afterSys v r next) ∧
         Linux.Answered (roomVal Γ.val room) v := by
@@ -161,7 +169,7 @@ theorem Steps.fills {D : SysDesc} (hD : Describes sys D) {Γ Γh : Ctx} {next : 
   · rw [Linux.ret_rax] at hans
     refine ⟨_, hst, Γ.afterSys v (w.saved 0) next, ⟨hrip, v, _, .inl rfl, hans⟩, ?_⟩
     rw [← hrip]
-    exact hw.ret v w
+    exact hw.ret v w (.inr hrows)
   · rw [Linux.give_rax] at hans
     refine ⟨_, hst, Γh.afterSys v (w.saved 0) next, ⟨hrip, v, _, .inr rfl, hans⟩, ?_⟩
     rw [hroom] at hlen
@@ -169,7 +177,7 @@ theorem Steps.fills {D : SysDesc} (hD : Describes sys D) {Γ Γh : Ctx} {next : 
     rw [hb] at hcw
     have h₁ := hh.2.2 n Ψ' he hwf s hw data hlen hcw
     rw [← hrip, hb]
-    exact h₁.ret v w
+    exact h₁.ret v w (.inr hrowsh)
 
 /-- **A call that ends the program** is typed, whatever follows it. -/
 theorem Ok.ends {D : SysDesc} (hD : Describes sys D) {Γ : Ctx} {a len : BitVec 64} {n : Nat}

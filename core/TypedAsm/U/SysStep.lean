@@ -210,7 +210,9 @@ theorem fillsHeld_sound {D : SysDesc} (hD : Describes sys D) {ρ : Env} {plain :
       rw [ha'] at hcw ⊢
       exact H.2.2 k' Ψ' he hwf s hw data hlen hcw
     refine Steps.mono (Steps.fills hD hk
-      (fun n Ψ' he hwf s _ hw => hpre n Ψ' he hwf s hw) hH) ?_
+      (fun n Ψ' he hwf s _ hw => hpre n Ψ' he hwf s hw) hH
+      (by show Γ.rows.map _ = []; rw [hrows]; rfl)
+      (by show Γ.rows.map _ = []; rw [hrows]; rfl)) ?_
     rintro t Δ ⟨rfl, x, y, hcase, hans⟩
     have hΓ : Γ.den (ρ.setSys k x y) = Γ.den ρ := CtxS.den_setSys ρ k x y Γ hu
     refine ⟨x, y, rfl, ?_, hans⟩
@@ -406,7 +408,9 @@ theorem sysFills_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
                     omega) (by show Γ.rows.map _ = []; rw [hrows]; rfl)
                 exact H.2.2 k' Ψ' he hwf s hw data (by omega) hcw
               refine Steps.mono (Steps.fills hD (by rw [hkind, hrax]; exact hk)
-                (fun n Ψ' he hwf s _ hw => hpre n Ψ' he hwf s hw) hH) ?_
+                (fun n Ψ' he hwf s _ hw => hpre n Ψ' he hwf s hw) hH
+                (by show Γ.rows.map _ = []; rw [hrows]; rfl)
+                (by show Γ.rows.map _ = []; rw [hrows]; rfl)) ?_
               rintro t Δ ⟨rfl, x, y, hcase, hans⟩
               have hΓ : Γ.den (ρ.setSys k x y) = Γ.den ρ := CtxS.den_setSys ρ k x y Γ hu
               have e : (Γ.afterSys (.var k) (.var (k + 1)) t).den (ρ.setSys k x y)

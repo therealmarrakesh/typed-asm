@@ -102,6 +102,7 @@ theorem Starts.matches {blocks : List (BitVec 64 × Layout)} {kinds : Nat → Op
   said := fun a l bs hl => h.said (a, l) (MemTy.mem_of_ofList hl) bs
   held := h.held
   rows := fun r hr => by rw [hrows] at hr; cases hr
+  fed := fun r hr => by rw [hrows] at hr; cases hr
   complete := fun a ha =>
     (h.complete a ha).imp id fun ⟨x, hx, hlt⟩ =>
       ⟨x.1, x.2, MemTy.ofList_of_mem blocks hnd x hx, hlt⟩

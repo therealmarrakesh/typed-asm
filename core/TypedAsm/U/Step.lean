@@ -1159,7 +1159,7 @@ def newRow (Γ : CtxS) (wa : Val) (n : Nat) (v : Val) : List RowS :=
     match Γ.within (cellVal (decide (n = 1)) v) with
     | some (lo, hi) =>
       if hi < 18446744073709551616 ∧ (0 < lo ∨ hi < 18446744073709551615) then
-        [⟨wa, .lit 1, n, decide (n = 1), .range (BitVec.ofNat 64 lo) (BitVec.ofNat 64 hi)⟩]
+        [⟨wa, .lit 1, n, decide (n = 1), .range (BitVec.ofNat 64 lo) (BitVec.ofNat 64 hi), none⟩]
       else []
     | none => []
   else []
@@ -1221,22 +1221,22 @@ theorem newRow_sound {ρ : Env} {Γ : CtxS} {wa v : Val} {n : Nat} {k : Nat} {Ψ
 /-- **What is so of rows once `n` bytes at an address are stored**: of each
 row the context has, what `rowAfter` leaves; nothing where the bytes are
 not found in a region held. -/
-def rowsAfter (ent : TyS → TyS → Bool) (Γ : CtxS) (wa : Val) (n : Nat) (v : Val) : List RowS :=
+def rowsKept (ent : TyS → TyS → Bool) (Γ : CtxS) (wa : Val) (n : Nat) (v : Val) : List RowS :=
   if n ≤ 8 then
     match findHeld2 Γ.known wa [] n Γ.held with
     | some (j, _, _, ow) => Γ.rows.filterMap (rowAfter ent Γ j ow n v wa) ++ newRow Γ wa n v
     | none => []
   else []
 
-theorem rowsAfter_sound {ρ : Env} {ent : TyS → TyS → Bool} (he : EntSound fetch sys ent)
+theorem rowsKept_sound {ρ : Env} {ent : TyS → TyS → Bool} (he : EntSound fetch sys ent)
     {Γ : CtxS} {wa v : Val} {n : Nat} {k : Nat} {Ψ' : MemTy} {s : State}
     (hw : WellTyped fetch sys Ψ' k (Γ.den ρ) s) :
-    ∀ r ∈ (rowsAfter ent Γ wa n v).map (RowS.den ρ), ∀ i, i < r.count.toNat →
+    ∀ r ∈ (rowsKept ent Γ wa n v).map (RowS.den ρ), ∀ i, i < r.count.toNat →
       HasTy fetch sys Ψ' k r.ty
         (cellAt (storeN s n (wa.den ρ) (v.den ρ)) r.byte (r.addr + BitVec.ofNat 64 (r.stride * i))) := by
   intro r hr
   obtain ⟨r', hr', rfl⟩ := List.mem_map.mp hr
-  unfold rowsAfter at hr'
+  unfold rowsKept at hr'
   split at hr'
   · next hn =>
     split at hr'
@@ -1249,6 +1249,30 @@ theorem rowsAfter_sound {ρ : Env} {ent : TyS → TyS → Bool} (he : EntSound f
       · exact newRow_sound hw _ (List.mem_map.mpr ⟨_, hr', rfl⟩)
     · cases hr'
   · cases hr'
+
+/-- **What is so of rows once `n` bytes at an address are stored**: what
+the store keeps of each row; none said any longer to be bytes of the last
+`read`. -/
+def rowsAfter (ent : TyS → TyS → Bool) (Γ : CtxS) (wa : Val) (n : Nat) (v : Val) : List RowS :=
+  (rowsKept ent Γ wa n v).map fun r => { r with fed := none }
+
+theorem rowsAfter_sound {ρ : Env} {ent : TyS → TyS → Bool} (he : EntSound fetch sys ent)
+    {Γ : CtxS} {wa v : Val} {n : Nat} {k : Nat} {Ψ' : MemTy} {s : State}
+    (hw : WellTyped fetch sys Ψ' k (Γ.den ρ) s) :
+    ∀ r ∈ (rowsAfter ent Γ wa n v).map (RowS.den ρ), ∀ i, i < r.count.toNat →
+      HasTy fetch sys Ψ' k r.ty
+        (cellAt (storeN s n (wa.den ρ) (v.den ρ)) r.byte (r.addr + BitVec.ofNat 64 (r.stride * i))) := by
+  intro r hr
+  obtain ⟨r', hr', rfl⟩ := List.mem_map.mp hr
+  obtain ⟨r₀, hr₀, rfl⟩ := List.mem_map.mp hr'
+  exact rowsKept_sound he hw (r₀.den ρ) (List.mem_map.mpr ⟨r₀, hr₀, rfl⟩)
+
+theorem rowsAfter_fed {ρ : Env} {ent : TyS → TyS → Bool} {Γ : CtxS} {wa v : Val} {n : Nat} :
+    ∀ r ∈ (rowsAfter ent Γ wa n v).map (RowS.den ρ), r.fed = none := by
+  intro r hr
+  obtain ⟨r', hr', rfl⟩ := List.mem_map.mp hr
+  obtain ⟨r₀, -, rfl⟩ := List.mem_map.mp hr'
+  rfl
 
 /-- The row a context has that the `n` bytes at an address are a value of:
 so many along, and fewer than there are. -/
@@ -1461,7 +1485,7 @@ theorem stepHeld_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
             rw [(fill_den s next hΓ hx).1 _ hstore,
               show (eaS Γ.regs next m).den (ρ.setVal k x) = eaOf (Γ.den ρ).val next m from by
                 rw [← hval]; exact eaS_den (ρ.setVal k x) _ next m] at hRm
-            exact Writes.rows _ hW fun k' Ψ' _ _ st hw => hRm k' Ψ' st hw
+            exact Writes.rows _ hW (fun k' Ψ' _ _ st hw => hRm k' Ψ' st hw) rowsAfter_fed
         · rintro x Γr ⟨rfl, hx⟩ Ψ' n hk
           have hΓ : Γ.den (ρ.setVal k x) = Γ.den ρ := CtxS.den_setVal ρ k x Γ hu
           have hfill := fill_den s next hΓ hx

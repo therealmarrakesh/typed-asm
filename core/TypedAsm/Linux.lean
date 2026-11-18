@@ -621,27 +621,28 @@ the outside world and the registers a call always changes, or does that and
 also stores bytes in a buffer it was handed. Each fact a call must satisfy
 is proved once for each of the two. -/
 
-/-- `t` is `s` after a call that touched nothing of the program's. -/
+/-- `t` is `s` after a call that touched nothing of the program's, and
+stored nothing by reading. -/
 def OnlyWorld (s t : State) : Prop :=
-  ∃ v w, t = ret { s with world := w } v
+  ∃ v w, w.reads = s.world.reads ∧ t = ret { s with world := w } v
 
 namespace OnlyWorld
 
 variable {t : State}
 
 theorem same (s : State) (v : BitVec 64) : OnlyWorld s (ret s v) :=
-  ⟨v, s.world, rfl⟩
+  ⟨v, s.world, rfl, rfl⟩
 
-theorem intro (s : State) (v : BitVec 64) (w : World) :
+theorem intro (s : State) (v : BitVec 64) (w : World) (h : w.reads = s.world.reads) :
     OnlyWorld s (ret { s with world := w } v) :=
-  ⟨v, w, rfl⟩
+  ⟨v, w, h, rfl⟩
 
 theorem rip (hf : OnlyWorld s t) : t.rip = s.rip := by
-  obtain ⟨v, w, rfl⟩ := hf
+  obtain ⟨v, w, -, rfl⟩ := hf
   rfl
 
 theorem frame (hf : OnlyWorld s t) : Frame s t := by
-  obtain ⟨v, w, rfl⟩ := hf
+  obtain ⟨v, w, -, rfl⟩ := hf
   exact Frame.of_eq rfl rfl
 
 end OnlyWorld
@@ -649,16 +650,16 @@ end OnlyWorld
 /-- `t` is `s` after a call that at most stored up to `room` bytes at `buf`,
 all of them in writable memory. -/
 def Fills (s : State) (buf : BitVec 64) (room : Nat) (t : State) : Prop :=
-  OnlyWorld s t ∨
+  (∃ v w, t = ret { s with world := w } v) ∨
     ∃ data v w, data.length ≤ room ∧ s.canWrite buf data.length = true ∧ t = give s buf data v w
 
 theorem Fills.same (s : State) (buf : BitVec 64) (room : Nat) (v : BitVec 64) :
     Fills s buf room (ret s v) :=
-  .inl (.same s v)
+  .inl ⟨v, s.world, rfl⟩
 
 theorem Fills.only (s : State) (buf : BitVec 64) (room : Nat) (v : BitVec 64) (w : World) :
     Fills s buf room (ret { s with world := w } v) :=
-  .inl (.intro s v w)
+  .inl ⟨v, w, rfl⟩
 
 theorem canWrite_le {a : BitVec 64} {m k : Nat} (h : s.canWrite a m = true) (hle : k ≤ m) :
     s.canWrite a k = true := by
@@ -675,14 +676,14 @@ namespace Fills
 variable {t : State} {r : Reg} {room : Nat}
 
 theorem rip {buf : BitVec 64} (hf : Fills s buf room t) : t.rip = s.rip := by
-  rcases hf with hf | ⟨data, v, w, -, -, rfl⟩
-  · exact hf.rip
+  rcases hf with ⟨v, w, rfl⟩ | ⟨data, v, w, -, -, rfl⟩
+  · rfl
   · rfl
 
 /-- Only bytes of the buffer change, and those were writable. -/
 theorem frame {buf : BitVec 64} (hf : Fills s buf room t) (hroom : room ≤ 2 ^ 64) : Frame s t := by
-  rcases hf with hf | ⟨data, v, w, hlen, hw, rfl⟩
-  · exact hf.frame
+  rcases hf with ⟨v, w, rfl⟩ | ⟨data, v, w, hlen, hw, rfl⟩
+  · exact Frame.of_eq rfl rfl
   · refine .of_perm rfl (fun x hx => ?_)
     show (s.storeBytes buf data).mem x = s.mem x
     rw [State.mem_storeBytes s _ x _ (by omega)]
@@ -705,7 +706,7 @@ plain return. -/
 local macro "only_world" : tactic =>
   `(tactic| repeat' (first
     | (with_reducible exact OnlyWorld.same _ _)
-    | (with_reducible exact OnlyWorld.intro _ _ _)
+    | (exact OnlyWorld.intro _ _ _ rfl)
     | split))
 
 /-- Settles a call that fills a buffer: every way it can end is a plain

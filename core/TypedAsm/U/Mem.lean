@@ -76,6 +76,12 @@ theorem WellTyped.apply {n : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch sy
     | nil => exact fun t => ⟨rfl, rfl⟩
     | cons p l ih => exact fun t => ih _
   obtain ⟨hm, hp⟩ := same e.regs s
+  have hworld : ∀ (l : List (Reg × BitVec 64)) (t : State),
+      (l.foldl (fun t p => t.setReg p.1 p.2) t).world = t.world := by
+    intro l
+    induction l with
+    | nil => exact fun t => rfl
+    | cons p l ih => exact fun t => ih _
   have hmem : ∀ a, (State.mem { e.regs.foldl (fun t p => t.setReg p.1 p.2) s with
       flags := e.flags }) a = s.mem a := fun a => by
     show (e.regs.foldl (fun t p => t.setReg p.1 p.2) s).memory.get a = s.memory.get a
@@ -102,6 +108,8 @@ theorem WellTyped.apply {n : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch sy
       text := fun a l hl ht => by rw [hmem]; exact h.text a l hl ht
       said := fun a l bs hl hs k hk => by rw [hmem]; exact h.said a l bs hl hs k hk
       rows := fun r hr i hi => by rw [cellAt_congr hmem]; exact h.rows r hr i hi
+      fed := fun r hr off ho => (h.fed r hr off ho).congr hmem
+        (congrArg World.reads (hworld e.regs s))
       complete := fun a ha => by rw [hperm] at ha; exact h.complete a ha
       held :=
         { perm := fun b hb => by rw [hcw]; exact h.held.perm b hb

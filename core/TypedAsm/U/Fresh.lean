@@ -374,7 +374,7 @@ theorem CtxS.den_under {k : Nat} {ρ₁ ρ₂ : Env} (hs : Env.SameBelow k ρ₁
   · show Γ.rows.map _ = Γ.rows.map _
     refine List.map_congr_left fun r hr' => ?_
     have h3 := hrows r hr'
-    show RowOf.mk _ _ _ _ _ = RowOf.mk _ _ _ _ _
+    show RowOf.mk _ _ _ _ _ _ = RowOf.mk _ _ _ _ _ _
     rw [Val.den_under hs _ h3.1.1, Val.den_under hs _ h3.1.2, TyS.den_under hs _ h3.2]
 
 /-! ## The case of one name more -/

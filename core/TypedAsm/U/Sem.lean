@@ -65,6 +65,7 @@ theorem WellTyped.setRip {n : Nat} {Γ : Ctx} {s : State} (h : WellTyped fetch s
     text := h.text
     said := h.said
     rows := h.rows
+    fed := h.fed
     complete := h.complete
     held :=
       { perm := h.held.perm

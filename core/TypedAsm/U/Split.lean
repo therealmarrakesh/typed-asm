@@ -81,6 +81,7 @@ theorem WellTyped.reheld (h : WellTyped fetch sys Ψ n Γ s) (L : List Region)
     text := h.text
     said := h.said
     rows := h.rows
+    fed := h.fed
     held := hheld
     complete := fun a ha => by
       rcases h.complete a ha with ⟨b, hb, hlt⟩ | hr

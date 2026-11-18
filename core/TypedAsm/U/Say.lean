@@ -236,7 +236,7 @@ def returnsWith (results : List (Reg × Val) := []) (room : Val := 0)
       gives.map fun t => (t.1.atRet 0, ⟨t.2.atRet 0, []⟩))
     (factsOf (returns.map fun f => (f.1.atRet 0, f.2.atRet 0))) (.bvar 1)
     (RowsS.ofList (rows.map fun r => ⟨r.addr.atRet 0, r.count.atRet 0, r.stride, r.byte,
-      r.ty.atRet 0⟩))
+      r.ty.atRet 0, none⟩))
 
 /-- **A label where a function is entered, or inside it**: the return
 address known to be code wanting what the function returns with; so many
@@ -282,7 +282,7 @@ def inFunction (regs : List (Reg × Val) := []) (known : List (Val × TyS) := []
 
 /-- So many bytes in a row from an address, of each of which a thing is
 known: said of memory the code holds, where a label is. -/
-def bytesAt (addr count : Val) (τ : TyS) : RowS := ⟨addr, count, 1, true, τ⟩
+def bytesAt (addr count : Val) (τ : TyS) : RowS := ⟨addr, count, 1, true, τ, none⟩
 
 /-- The address of a byte of what a program has put on its stack: so far
 up from where its stack pointer is, the program having `n` slots of stack
@@ -293,7 +293,7 @@ def stackAt (n : Nat) (pushed : List Pushed) (off : Val) : Val :=
 
 /-- So many values of eight bytes in a row from an address, of each of
 which a thing is known. -/
-def cellsAt (addr count : Val) (τ : TyS) : RowS := ⟨addr, count, 8, false, τ⟩
+def cellsAt (addr count : Val) (τ : TyS) : RowS := ⟨addr, count, 8, false, τ, none⟩
 
 /-- How many arguments the program was handed, its own name among them:
 the value held where the stack pointer is when it starts. -/

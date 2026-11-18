@@ -75,7 +75,8 @@ theorem writeShared {a : BitVec 64} {l : Layout} {lo cnt : Nat} {s' : State}
     (hvals : ∀ p ∈ l.shape.vals, (p.1 + 8 ≤ lo ∨ lo + cnt ≤ p.1) ∨
       HasTy fetch sys Ψ n p.2 (s'.load64 (a + BitVec.ofNat 64 p.1)))
     (hrows : ∀ r ∈ Γ.rows, ∀ i, i < r.count.toNat →
-      HasTy fetch sys Ψ n r.ty (cellAt s' r.byte (r.addr + BitVec.ofNat 64 (r.stride * i)))) :
+      HasTy fetch sys Ψ n r.ty (cellAt s' r.byte (r.addr + BitVec.ofNat 64 (r.stride * i))))
+    (hfed : ∀ r ∈ Γ.rows, ∀ off, r.fed = some off → FedRow s' r off) :
     WellTyped fetch sys Ψ n Γ s' := by
   have hsz := hΨ.size_lt a l hl
   have hg : ∀ r, s'.getReg r = s.getReg r := fun r => by simp only [State.getReg, hregs]
@@ -121,6 +122,7 @@ theorem writeShared {a : BitVec 64} {l : Layout} {lo cnt : Nat} {s' : State}
       rw [hM _ (fun hc => hΨ.said_outside_bytes hl (hΨ.said_none hl hwr) hle hc hl' hs hk)]
       exact h.said b l' bs hl' hs k hk
     rows := hrows
+    fed := hfed
     complete := fun x hx => h.complete x (by rw [← hperm]; exact hx)
     held :=
       { perm := fun c hc => by rw [State.canWrite_congr hperm]; exact h.held.perm c hc
@@ -138,7 +140,8 @@ theorem writeShared {a : BitVec 64} {l : Layout} {lo cnt : Nat} {s' : State}
 /-- What is said of rows may be anything that is so of memory as it is. -/
 theorem setRows (h : WellTyped fetch sys Ψ n Γ s) (R : List (RowOf Ty))
     (hR : ∀ r ∈ R, ∀ i, i < r.count.toNat →
-      HasTy fetch sys Ψ n r.ty (cellAt s r.byte (r.addr + BitVec.ofNat 64 (r.stride * i)))) :
+      HasTy fetch sys Ψ n r.ty (cellAt s r.byte (r.addr + BitVec.ofNat 64 (r.stride * i))))
+    (hF : ∀ r ∈ R, ∀ off, r.fed = some off → FedRow s r off) :
     WellTyped fetch sys Ψ n { Γ with rows := R } s :=
   { val := h.val
     known := h.known
@@ -148,6 +151,7 @@ theorem setRows (h : WellTyped fetch sys Ψ n Γ s) (R : List (RowOf Ty))
     text := h.text
     said := h.said
     rows := hR
+    fed := hF
     complete := h.complete
     held :=
       { perm := h.held.perm
@@ -160,7 +164,7 @@ theorem setRows (h : WellTyped fetch sys Ψ n Γ s) (R : List (RowOf Ty))
 /-- What is said of rows may be let go. -/
 theorem dropRows (h : WellTyped fetch sys Ψ n Γ s) :
     WellTyped fetch sys Ψ n { Γ with rows := [] } s :=
-  h.setRows [] fun _ hr => nomatch hr
+  h.setRows [] (fun _ hr => nomatch hr) (fun _ hr => nomatch hr)
 
 /-- Facts that are so may be added to what a context knows. -/
 theorem addKnown (h : WellTyped fetch sys Ψ n Γ s) (fs : List Fact)
@@ -177,6 +181,7 @@ theorem addKnown (h : WellTyped fetch sys Ψ n Γ s) (fs : List Fact)
     text := h.text
     said := h.said
     rows := h.rows
+    fed := h.fed
     complete := h.complete
     held :=
       { perm := h.held.perm
@@ -304,6 +309,7 @@ theorem Writes.shared {Γ : Ctx} {p a : BitVec 64} {τ : Ty} {Sh : Shape} {off o
     (fun y hy => storeN_load64_out _ _ _ _ _ hn hy)
     (fun x hx => storeN_mem_out _ _ _ _ _ hn hx) (fun q hq => ?_)
     (by rw [hrows]; exact fun r hr => nomatch hr)
+    (by rw [hrows]; exact fun r hr => nomatch hr)
   rcases hv q hq with hout | hany | ⟨h8, hqo, hcons⟩
   · exact .inl hout
   · exact .inr (by rw [hany]; exact HasTy.any _)
@@ -322,11 +328,13 @@ theorem Writes.rows {Γ Γw : Ctx} {a v : BitVec 64} {n : Nat} (R : List (RowOf 
     (hR : ∀ k, ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, WellTyped fetch sys Ψ' k Γ s →
       ∀ r ∈ R, ∀ i, i < r.count.toNat →
         HasTy fetch sys Ψ' k r.ty
-          (cellAt (storeN s n a v) r.byte (r.addr + BitVec.ofNat 64 (r.stride * i)))) :
+          (cellAt (storeN s n a v) r.byte (r.addr + BitVec.ofNat 64 (r.stride * i))))
+    (hF : ∀ r ∈ R, r.fed = none) :
     Writes fetch sys Ψ Γ a n v { Γw with rows := R } :=
   ⟨h.1, h.2.1, fun k Ψ' he hwf s hw =>
     ⟨(h.2.2 k Ψ' he hwf s (WellTyped.dropRows hw)).1,
-      (h.2.2 k Ψ' he hwf s (WellTyped.dropRows hw)).2.setRows R (hR k Ψ' he hwf s hw)⟩⟩
+      (h.2.2 k Ψ' he hwf s (WellTyped.dropRows hw)).2.setRows R (hR k Ψ' he hwf s hw)
+        (fun r hr off ho => by rw [hF r hr] at ho; cases ho)⟩⟩
 
 /-- **A row's values are as they were after a store in the region the row
 is in that keeps clear of it**: the store wholly below the row, or wholly

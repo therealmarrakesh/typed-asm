@@ -45,6 +45,7 @@ theorem Havoc.held {Γ : Ctx} {k : Nat} {b : BitVec 64} {S : Held} {o n : Nat}
     (fun y hy => storeBytes_load64_out _ _ _ _ hl hy)
     (fun x hx => storeBytes_mem_out _ _ _ _ hl hx) ?_
     (by rw [hrows]; exact fun r hr => nomatch hr)
+    (by rw [hrows]; exact fun r hr => nomatch hr)
   · intro p hp
     simp only [ShapeOf.clear, List.mem_filter] at hp
     exact hw.held.fits _ hmem p hp.1
@@ -72,6 +73,7 @@ theorem Havoc.heldTo {Γ : Ctx} {k : Nat} {b : BitVec 64} {S S' : Held} {o n : N
     (fun y hy => storeBytes_load64_out _ _ _ _ hl hy)
     (fun x hx => storeBytes_mem_out _ _ _ _ hl hx) ?_
     (by rw [hrows]; exact fun r hr => nomatch hr)
+    (by rw [hrows]; exact fun r hr => nomatch hr)
   · intro p hp
     rw [hS']
     exact hw.held.fits _ hmem p (hvals p hp).1
@@ -97,6 +99,7 @@ theorem Havoc.shared {Γ : Ctx} {p a : BitVec 64} {τ : Ty} {Sh : Shape} {off o 
   refine hw.writeShared hwf hl (hlw rfl) (lo := o) (cnt := data.length) (by omega) rfl rfl rfl
     (fun y hy => storeBytes_load64_out _ _ _ _ hl' hy)
     (fun x hx => storeBytes_mem_out _ _ _ _ hl' hx) (fun q hq => ?_)
+    (by rw [hrows]; exact fun r hr => nomatch hr)
     (by rw [hrows]; exact fun r hr => nomatch hr)
   have := List.all_eq_true.mp hfree q hq
   simp only [ShapeOf.clearOf, Bool.or_eq_true, decide_eq_true_eq] at this

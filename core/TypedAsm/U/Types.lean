@@ -36,6 +36,9 @@ structure RowOf (τ : Type) where
   stride : Nat
   byte : Bool
   ty : τ
+  /-- Where the row is said to be bytes of the last `read`: how far into
+  what that stored its first byte is. -/
+  fed : Option (BitVec 64) := none
 
 /-- The value a row has at an address: the byte there, or the eight. -/
 def cellAt (s : State) (byte : Bool) (a : BitVec 64) : BitVec 64 :=
@@ -205,6 +208,14 @@ structure HeldOk (Ψ : MemTy) (Γ : Ctx) (s : State) : Prop where
   heap : ∀ b ∈ Γ.held, ∀ a l, Ψ a = some l → Disjoint b.1 b.2.size a l.size
   apart : Γ.held.Pairwise fun b c => Disjoint b.1 b.2.size c.1 c.2.size
 
+/-- **A row is bytes of the last `read`**, from so far into what that
+stored: bytes one after another, no more of them than it stored from
+there, and in memory what the world keeps of them. -/
+def FedRow {τ : Type} (s : State) (r : RowOf τ) (off : BitVec 64) : Prop :=
+  r.byte = true ∧ r.stride = 1 ∧ ∃ chunk, s.world.reads.head? = some chunk ∧
+    off.toNat + r.count.toNat ≤ chunk.length ∧
+    s.loadBytes r.addr r.count.toNat = (chunk.drop off.toNat).take r.count.toNat
+
 /-- `Matches H Ψ Γ s`: the state `s` matches the context `Γ`, where `H τ v`
 says what it means for `τ` to be known of the value `v`. -/
 structure Matches (H : Ty → BitVec 64 → Prop) (Ψ : MemTy) (Γ : Ctx) (s : State) : Prop where
@@ -230,6 +241,8 @@ structure Matches (H : Ty → BitVec 64 → Prop) (Ψ : MemTy) (Γ : Ctx) (s : S
   /-- Each value of each row is as the row says. -/
   rows : ∀ r ∈ Γ.rows, ∀ i, i < r.count.toNat →
     H r.ty (cellAt s r.byte (r.addr + BitVec.ofNat 64 (r.stride * i)))
+  /-- Each row said to be bytes of the last `read` is. -/
+  fed : ∀ r ∈ Γ.rows, ∀ off, r.fed = some off → FedRow s r off
   /-- Every byte of memory the machine can touch lies in a region the
   context holds or in a block of the memory typing. With the rest, the held
   regions and the blocks are the accessible memory, each byte once: the
