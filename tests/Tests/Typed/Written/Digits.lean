@@ -82,7 +82,7 @@ def labels : List U.Label :=
   [⟨entry, inProgram 4⟩,
    ⟨Asm.addr code base .digit, inProgram 4 (pushed := [.bytes 32])
       (regs := [(.r8, 10)]) (known := [(.was .rcx, .upTo (.lit 31) false)])
-      (rows := [bytesAt (.add (.add (.bvar 0 17) (litNat (stackRoom 4 - 32))) (.was .rcx))
+      (rows := [bytesAt (stackAt 4 [.bytes 32] (.was .rcx))
         (.add (.lit 31) (-(Val.was .rcx))) (.range 48 57)])⟩]
 
 asm_checked code start .start stack 4 program pg labels labels exits (· == 0)

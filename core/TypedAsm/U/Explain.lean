@@ -262,6 +262,12 @@ def tidy : List Refusal → List Refusal → List Refusal
 
 /-! ## Why a context may not be regarded as another -/
 
+/-- A row of values in memory, to be read. -/
+def rowSay (r : RowS) (nm : Names) : String :=
+  s!"{r.count.say nm} {if r.byte then "bytes" else "values"} in a row from {r.addr.say nm}" ++
+    (if r.stride = r.width then "" else s!", {r.stride} bytes apart") ++
+    s!", each {r.ty.say nm}"
+
 /-- **Each thing a context wanted asks that the context reached does not
 give**: register by register, region by region, fact by fact; by the same
 comparison the check makes. -/
@@ -290,7 +296,16 @@ def regardWhy (nm : Names) (sm : List (Val × TyS) → Val → Val → Bool) (en
         some s!"the code at {addrSay a} is not typed for what is wanted of it: why, follows"
       | _, _ =>
         some s!"wanted known of {f.1.say nm}: {f.2.say nm}; not shown by what is known") ++
-  (if Δ.rest == Γ.rest then [] else ["what else is held is not what is wanted"])
+  (if Δ.rest == Γ.rest then [] else ["what else is held is not what is wanted"]) ++
+  (Δ.rows.filterMap fun r =>
+    if sm Γ.known r.count (.lit 0) ||
+        (Γ.rows.any fun g => sm Γ.known g.addr r.addr && sm Γ.known g.count r.count &&
+          g.stride == r.stride && g.byte == r.byte && g.ty == r.ty) then none
+    else
+      some (s!"wanted of memory: {rowSay r nm}; " ++
+        (match Γ.rows with
+         | [] => "nothing is said of rows there"
+         | gs => "what is said: " ++ "; ".intercalate (gs.map fun g => rowSay g nm))))
 
 /-- **Why a context reached may not be made a member of a family**: as the
 check makes it ready, and then each thing wanted that is not so. Where the

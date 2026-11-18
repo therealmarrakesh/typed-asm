@@ -142,8 +142,13 @@ What is not there:
 - A function cannot hand out part of a region it keeps and say the rest is
   still its own, so an allocator over its own page is not typed; and the
   stack a function needs cannot be said by how long a list is.
-- A label cannot say what each of the values or bytes of a region the code
-  holds is, only how many there are.
+- A label may say what each of a row of bytes or values in memory the code
+  holds is (`rows`), and a store that puts one more of that kind at either
+  end keeps it so: a number written out digit by digit is known to be
+  digits. What is said of a row is let go by a store elsewhere than the
+  region the row is in, by a system call that stores or maps memory, and
+  across a call; and it says of each value its own type, not how the values
+  stand to one another: that a row is sorted is not said.
 - There are no signals in the model. An exit status is the value handed to
   `exit`; a parent process sees its low eight bits.
 - The examples are written as constructor terms; there is no notation for

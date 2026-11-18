@@ -266,6 +266,13 @@ def inFunction (regs : List (Reg × Val) := []) (known : List (Val × TyS) := []
 known: said of memory the code holds, where a label is. -/
 def bytesAt (addr count : Val) (τ : TyS) : RowS := ⟨addr, count, 1, true, τ⟩
 
+/-- The address of a byte of what a program has put on its stack: so far
+up from where its stack pointer is, the program having `n` slots of stack
+and having pushed what `pushed` says. `off` is a term: a number, or what a
+register holds. So a row in a buffer on the stack is said by where it is. -/
+def stackAt (n : Nat) (pushed : List Pushed) (off : Val) : Val :=
+  .add (.add (.bvar 0 17) (litNat (stackRoom n - pushedBytes pushed))) off
+
 /-- So many values of eight bytes in a row from an address, of each of
 which a thing is known. -/
 def cellsAt (addr count : Val) (τ : TyS) : RowS := ⟨addr, count, 8, false, τ⟩
