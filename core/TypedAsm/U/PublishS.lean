@@ -71,9 +71,10 @@ def tagFactsS (b : Val) : Option Nat → List (Val × TyS)
   | none => []
 
 /-- Whether a kind a block is to be of is, in the program's table, of the
-block's shape. -/
+block's shape, and that speaks of no number among a family's kinds: the
+block is then of the first of them. -/
 def tagOk (kinds : Nat → Option ShapeS) (K : ShapeS) : Option Nat → Bool
-  | some t => kinds t == some K
+  | some t => kinds t == some K && K.closedAt 0
   | none => true
 
 /-- **The context once the region at an address has become a block of a
@@ -115,21 +116,30 @@ theorem publishS_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
       have hsz : K.size = (S.den ρ).size := hsz'.symm
       have hjlt : j < (Γ.held.map fun b => (b.1.den ρ, b.2.den ρ)).length := by
         rw [List.length_map]; exact (List.getElem?_eq_some_iff.mp hl).1
-      have hP := Publishes.region (fetch := fetch) (sys := sys) (Ψ := Ψ) (K := K.den ρ) tag
+      have hP := Publishes.region (fetch := fetch) (sys := sys) (Ψ := Ψ) (K := K.den ρ)
+        (tag.map (· * 18446744073709551616))
         (CtxS.held_den ρ Γ hl) (by rw [ShapeS.den_size]; exact hpos)
         (by rw [ShapeS.den_size]; exact hsz)
         (by rw [ShapeS.den_vals, ShapeS.den_size]; exact ValsS.fitsIn_den ρ K.vals hfit)
         (by rw [ShapeS.den_vals]; exact valsPub_sound ρ K.vals hvals)
         (fun t ht => by
-          subst ht
-          exact hk ρ t K (by simpa only [tagOk, beq_iff_eq] using htag))
+          cases tag with
+          | none => cases ht
+          | some t' =>
+            cases ht
+            simp only [tagOk, Bool.and_eq_true, beq_iff_eq] at htag
+            have := hk ρ t' K (.lit 0) rfl htag.1
+            rw [show ((Val.lit 0).den ρ).toNat = 0 from rfl, Nat.add_zero,
+              ShapeS.atIdx_den ρ K rfl htag.2] at this
+            exact this)
       have e : CtxS.den ρ { Γ with
             held := Γ.held.eraseIdx j
             known := (base, .ptr K true 0) :: (tagFactsS base tag ++ Γ.known) }
           = { Γ.den ρ with
               held := (Γ.den ρ).held.eraseIdx j
               known := (base.den ρ, Ty.ptr (K.den ρ) true 0) ::
-                (tagFacts (base.den ρ) tag ++ (Γ.den ρ).known) } := by
+                (tagFacts (base.den ρ) (tag.map (· * 18446744073709551616))
+                  ++ (Γ.den ρ).known) } := by
         refine ctx_ext rfl rfl ?_ ?_
         · show (Γ.held.eraseIdx j).map (fun b => (b.1.den ρ, b.2.den ρ)) ++ restDen ρ Γ.rest
             = ((Γ.held.map fun b => (b.1.den ρ, b.2.den ρ)) ++ restDen ρ Γ.rest).eraseIdx j

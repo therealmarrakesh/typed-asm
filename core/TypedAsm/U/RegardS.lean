@@ -411,6 +411,7 @@ def followsS (τ : TyS) : TyS → Bool
   | .any => true
   | .ptr S w off => τ == .ptr S w off || τ == .ptr S true off
   | .ref tag w off => τ == .ref tag w off || τ == .ref tag true off
+  | .refN base idx w off => τ == .refN base idx w off || τ == .refN base idx true off
   | .nullable υ =>
     τ == .nullable υ || followsS τ υ ||
       (match τ with
@@ -430,6 +431,7 @@ def followsS (τ : TyS) : TyS → Bool
   | .atom i => τ == .atom i
   | .code r f h k rest rows => τ == .code r f h k rest rows
   | .arr c υ st => τ == .arr c υ st
+  | .zeroIff c υ => τ == .zeroIff c υ
   | .upTo t strict => τ == .upTo t strict
   | .range lo hi =>
     match τ with
@@ -445,6 +447,11 @@ theorem followsS_sub (ρ : Env) (v : BitVec 64) :
     · exact .refl _ _
     · exact .readOnly _ _ _ _
   | .ref tag w off, τ, h => by
+    simp only [followsS, Bool.or_eq_true, beq_iff_eq] at h
+    rcases h with rfl | rfl
+    · exact .refl _ _
+    · exact .refReadOnly _ _ _ _
+  | .refN base idx w off, τ, h => by
     simp only [followsS, Bool.or_eq_true, beq_iff_eq] at h
     rcases h with rfl | rfl
     · exact .refl _ _
@@ -481,6 +488,10 @@ theorem followsS_sub (ρ : Env) (v : BitVec 64) :
     subst h
     exact .refl _ _
   | .arr c υ st, τ, h => by
+    simp only [followsS, beq_iff_eq] at h
+    subst h
+    exact .refl _ _
+  | .zeroIff c υ, τ, h => by
     simp only [followsS, beq_iff_eq] at h
     subst h
     exact .refl _ _
@@ -532,10 +543,12 @@ theorem outright_hasTy (ρ : Env) (Ψ' : MemTy) (n : Nat) (v : Val) :
     · exact .inr (outright_hasTy ρ Ψ' n v τ h)
   | .ptr _ _ _, h => nomatch h
   | .ref _ _ _, h => nomatch h
+  | .refN .., h => nomatch h
   | .str _, h => nomatch h
   | .atom _, h => nomatch h
   | .code .., h => nomatch h
   | .arr .., h => nomatch h
+  | .zeroIff .., h => nomatch h
   | .upTo .., h => nomatch h
   | .range lo hi, h => by
     simp only [outright] at h
@@ -566,6 +579,8 @@ def factFrom (ent : TyS → TyS → Bool) (G : List (Val × TyS)) (f : Val × Ty
     (match f.2 with
      | .range lo hi => rangeHolds G f.1 lo hi
      | .upTo t strict => upToHolds G f.1 t strict
+     | .zeroIff c υ =>
+       rangeHolds G c 1 (-1) && G.any fun g => g.1.same f.1 && followsS g.2 υ
      | _ => false) || arrFrom G f
 
 /-- **What is so of itself, or follows from something known of the same
@@ -593,6 +608,18 @@ theorem factFrom_hasTy {ent : TyS → TyS → Bool} (he : EntSound fetch sys ent
     · next t strict hτ =>
       rw [hτ]
       exact hasTy_upTo.mpr (upToHolds_has hr hg')
+    · next c υ hτ =>
+      simp only [Bool.and_eq_true, List.any_eq_true] at hr
+      obtain ⟨hc, g₀, hg₀, hs, hfo⟩ := hr
+      have hne : c.den ρ ≠ 0 := fun h0 => by
+        have hr' : c.den ρ - 1 ≤ (-1 : BitVec 64) - 1 := rangeHolds_has hc hg'
+        rw [h0] at hr'
+        exact absurd hr' (by decide)
+      have hsrc := hg' g₀ hg₀
+      rw [hτ, ← Val.same_den ρ hs]
+      show HasTy fetch sys Ψ' n (if c.den ρ = 0 then .range 0 0 else υ.den ρ) _
+      simp only [hne, ↓reduceIte]
+      exact hsrc.sub (followsS_sub ρ _ _ _ hfo)
     · cases hr
   · exact arrFrom_hasTy harr hg'
 

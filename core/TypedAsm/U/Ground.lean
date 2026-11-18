@@ -116,7 +116,9 @@ def TyS.plain : TyS → Bool
   | .nullable τ => τ.plain
   | .orErr τ => τ.plain
   | .str c => c.plain
+  | .refN _ idx _ _ => idx.plain
   | .arr c τ _ => c.plain && τ.plain
+  | .zeroIff c τ => c.plain && τ.plain
   | .upTo t _ => t.plain
   | .atom _ => false
   | .code regs flags held known _ rows =>
@@ -153,9 +155,14 @@ theorem TyS.den_bare (ρ : Env) : (τ : TyS) → τ.plain = true → τ.den ρ.b
     simp only [TyS.den, TyS.den_bare ρ τ (by simpa only [TyS.plain] using h)]
   | .str c, h => by
     simp only [TyS.den, Val.den_bare ρ c (by simpa only [TyS.plain] using h)]
+  | .refN _ idx _ _, h => by
+    simp only [TyS.den, Val.den_bare ρ idx (by simpa only [TyS.plain] using h)]
   | .atom _, h => nomatch h
   | .range _ _, _ => rfl
   | .arr c τ _, h => by
+    simp only [TyS.plain, Bool.and_eq_true] at h
+    simp only [TyS.den, Val.den_bare ρ c h.1, TyS.den_bare ρ τ h.2]
+  | .zeroIff c τ, h => by
     simp only [TyS.plain, Bool.and_eq_true] at h
     simp only [TyS.den, Val.den_bare ρ c h.1, TyS.den_bare ρ τ h.2]
   | .upTo t _, h => by
@@ -237,5 +244,28 @@ theorem ShapeS.den_ground (ρ₁ ρ₂ : Env) (S : ShapeS) (h : S.ground = true)
     (fun _ hd => absurd hd (Nat.not_lt_zero _)) S hc
   rw [← ShapeS.den_bare ρ₁ S hp, ← ShapeS.den_bare ρ₂ S hp, ← b1, ← b2]
   exact ShapeS.den_under (sameBelow_bare ρ₁ ρ₂) S hu
+
+/-- Whether a shape mentions nothing from outside but the first value of
+one family: the number, among the kinds of a family, its kind is. -/
+def ShapeS.famGround (S : ShapeS) : Bool := S.under 0 && S.closedAt 1 && S.plain
+
+/-- **Such a shape stands for the same whatever names stand for, the
+family's member being the same.** -/
+theorem ShapeS.den_fam (ρ₁ ρ₂ : Env) (z : Fam) (S : ShapeS) (h : S.famGround = true) :
+    S.den { ρ₁ with bound := z :: ρ₁.bound } = S.den { ρ₂ with bound := [z] } := by
+  simp only [ShapeS.famGround, Bool.and_eq_true] at h
+  obtain ⟨⟨hu, hc⟩, hp⟩ := h
+  have hz : ∀ zs, Agree 1 [z] (z :: zs) := fun zs d hd => by
+    have : d = 0 := by omega
+    subst this; rfl
+  have b1 := ShapeS.den_agree ρ₁.bare 1 [z] (z :: ρ₁.bound) (hz _) S hc
+  rw [← ShapeS.den_bare { ρ₁ with bound := z :: ρ₁.bound } S hp,
+    ← ShapeS.den_bare { ρ₂ with bound := [z] } S hp]
+  show S.den { ρ₁.bare with bound := z :: ρ₁.bound } = S.den { ρ₂.bare with bound := [z] }
+  rw [← b1]
+  exact ShapeS.den_under (⟨fun _ h => absurd h (Nat.not_lt_zero _),
+    fun _ h => absurd h (Nat.not_lt_zero _), fun _ h => absurd h (Nat.not_lt_zero _),
+    rfl, rfl, rfl, rfl, rfl⟩ : Env.SameBelow 0 { ρ₁.bare with bound := [z] }
+      { ρ₂.bare with bound := [z] }) S hu
 
 end TypedAsm.U

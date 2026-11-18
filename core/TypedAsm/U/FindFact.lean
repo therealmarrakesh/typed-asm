@@ -1,5 +1,7 @@
 import TypedAsm.U.Fresh
 import TypedAsm.U.Shared
+import TypedAsm.U.Open
+import TypedAsm.U.Ground
 
 /-!
 # Bytes of a block others may point into, found through a fact
@@ -15,23 +17,47 @@ namespace TypedAsm.U
 
 open TypedAsm
 
+/-- A family's values taken to be one term each: for the number of a kind
+among the kinds of its family. -/
+def idxOpen (n : Val) : Opening := { b := fun _ => n, f := .lit Flags.unknown }
+
+theorem idxOpen_closed {n : Val} (h : n.closedAt 0 = true) : (idxOpen n).Closed :=
+  ⟨fun _ => h, rfl, rfl, rfl⟩
+
+/-- **The shape of the kind a term numbers, among the kinds of a family**:
+the family's shape, with the number put where the shape speaks of it. -/
+def ShapeS.atIdx (S : ShapeS) (n : Val) : ShapeS := S.open (idxOpen n) 0
+
+/-- A shape that speaks of no family's values is the shape of each kind of
+its family alike. -/
+theorem ShapeS.atIdx_den (ρ : Env) (S : ShapeS) {n : Val} (hn : n.closedAt 0 = true)
+    (hS : S.closedAt 0 = true) : (S.atIdx n).den ρ = S.den ρ := by
+  have h1 := ShapeS.den_open ρ (idxOpen n) (idxOpen_closed hn) [] ρ.bound S
+  have h2 := ShapeS.den_agree ρ 0 (famOf ρ (idxOpen n) :: ρ.bound) ρ.bound
+    (fun _ hd => absurd hd (Nat.not_lt_zero _)) S hS
+  exact h1.trans h2
+
 /-- The block a value is known to point into, by what is known of it, as
 terms: its shape, whether it may be written through the value, and how far
 in. A pointer says the shape; a pointer by kind says the kind, whose shape
-the program's table of kinds has. -/
+the program's table of kinds has: the first of its family, or the one a
+term numbers. -/
 def TyS.pointee (kinds : Nat → Option ShapeS) : TyS → Option (ShapeS × Bool × Nat)
   | .ptr Sh w off => some (Sh, w, off)
-  | .ref tag w off => (kinds tag).map fun Sh => (Sh, w, off)
+  | .ref tag w off => (kinds tag).map fun Sh => (Sh.atIdx (.lit 0), w, off)
+  | .refN base idx w off =>
+    if idx.closedAt 0 then (kinds base).map fun Sh => (Sh.atIdx idx, w, off) else none
   | _ => none
 
-/-- Each kind in a program's table is a kind of the memory typing, of that
-shape. The shapes of kinds mention no names: they stand for the same
-whatever names stand for. -/
+/-- Each family of kinds in a program's table is one of the memory
+typing's: the kind of the family a term numbers has the family's shape
+with that number. -/
 def KindsOk (Ψ : MemTy) (kinds : Nat → Option ShapeS) : Prop :=
-  ∀ (ρ : Env) (t : Nat) (Sh : ShapeS), kinds t = some Sh → Ψ.kinds t = some (Sh.den ρ)
+  ∀ (ρ : Env) (t : Nat) (Sh : ShapeS) (n : Val), n.closedAt 0 = true → kinds t = some Sh →
+    Ψ.kinds (t * 18446744073709551616 + (n.den ρ).toNat) = some ((Sh.atIdx n).den ρ)
 
 /-- A program with no kinds asks nothing of the memory typing's. -/
-theorem KindsOk.none (Ψ : MemTy) : KindsOk Ψ fun _ => none := fun _ _ _ h => nomatch h
+theorem KindsOk.none (Ψ : MemTy) : KindsOk Ψ fun _ => none := fun _ _ _ _ _ h => nomatch h
 
 theorem TyS.pointee_den {Ψ : MemTy} {kinds : Nat → Option ShapeS} (hk : KindsOk Ψ kinds) (ρ : Env)
     {τ : TyS} {Sh : ShapeS} {w : Bool} {off : Nat} (h : τ.pointee kinds = some (Sh, w, off)) :
@@ -45,9 +71,24 @@ theorem TyS.pointee_den {Ψ : MemTy} {kinds : Nat → Option ShapeS} (hk : Kinds
     | some Sh' =>
       rw [hkt] at h
       cases h
-      show (Ψ.kinds tag).map _ = _
-      rw [hk ρ tag _ hkt]
+      show (Ψ.kinds (tag * 18446744073709551616)).map _ = _
+      have := hk ρ tag _ (.lit 0) rfl hkt
+      rw [show ((Val.lit 0).den ρ).toNat = 0 from rfl, Nat.add_zero] at this
+      rw [this]
       rfl
+  | refN base idx w' off' =>
+    simp only [TyS.pointee] at h
+    split at h
+    · next hc =>
+      cases hkt : kinds base with
+      | none => rw [hkt] at h; cases h
+      | some Sh' =>
+        rw [hkt] at h
+        cases h
+        show (Ψ.kinds (base * 18446744073709551616 + (idx.den ρ).toNat)).map _ = _
+        rw [hk ρ base _ idx hc hkt]
+        rfl
+    · cases h
   | _ => cases h
 
 /-- The shape found stands for the same, whatever a name the fact does not
@@ -67,7 +108,23 @@ theorem TyS.pointee_setVal {Ψ : MemTy} {kinds : Nat → Option ShapeS} (hk : Ki
     | some Sh' =>
       rw [hkt] at h
       cases h
-      exact Option.some.inj ((hk (ρ.setVal k x) tag _ hkt).symm.trans (hk ρ tag _ hkt))
+      exact Option.some.inj ((hk (ρ.setVal k x) tag _ (.lit 0) rfl hkt).symm.trans
+        (hk ρ tag _ (.lit 0) rfl hkt))
+  | refN base idx w' off' =>
+    simp only [TyS.pointee] at h
+    split at h
+    · next hc =>
+      cases hkt : kinds base with
+      | none => rw [hkt] at h; cases h
+      | some Sh' =>
+        rw [hkt] at h
+        cases h
+        have e : idx.den (ρ.setVal k x) = idx.den ρ :=
+          Val.den_setVal ρ k x idx (by simpa only [TyS.under] using hu)
+        have h1 := hk (ρ.setVal k x) base _ idx hc hkt
+        rw [e] at h1
+        exact Option.some.inj (h1.symm.trans (hk ρ base _ idx hc hkt))
+    · cases h
   | _ => cases h
 
 /-- The fact a context has that an address is so far into a block others

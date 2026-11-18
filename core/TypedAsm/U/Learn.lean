@@ -63,11 +63,13 @@ theorem TyS.strip_follows (ρ : Env) {nz ne : Bool} {v : BitVec 64} (hnz : nz = 
   | .any => Follows.refl _ _
   | .ptr _ _ _ => Follows.refl _ _
   | .ref _ _ _ => Follows.refl _ _
+  | .refN .. => Follows.refl _ _
   | .str _ => Follows.refl _ _
   | .atom _ => Follows.refl _ _
   | .code .. => Follows.refl _ _
   | .range _ _ => Follows.refl _ _
   | .arr _ _ _ => Follows.refl _ _
+  | .zeroIff _ _ => Follows.refl _ _
   | .upTo _ _ => Follows.refl _ _
 
 /-- Whether a context knows of a value a range that lies within a given
@@ -120,6 +122,48 @@ def CtxS.strNext (Γ : CtxS) : List (Val × TyS) :=
       else none
     | _ => none
 
+/-- What follows of values that are nought exactly when a term is: where
+the value is known not to be nought, neither is the term, and what is known
+of the value otherwise is known of it. So a link to a list, seen not to be
+nought, is a link to a list of one node or more. -/
+def CtxS.zeroNext (Γ : CtxS) : List (Val × TyS) :=
+  Γ.known.flatMap fun f =>
+    match f.2 with
+    | .zeroIff idx τ =>
+      if Γ.fits f.1 .nonZero && !Γ.known.contains (f.1, τ) then
+        [(f.1, τ), (idx, .range 1 (-1))]
+      else []
+    | _ => []
+
+theorem CtxS.zeroNext_hasTy {ρ : Env} {Γ : CtxS} {Ψ' : MemTy} {n : Nat}
+    (hg : ∀ g ∈ (Γ.den ρ).known, HasTy fetch sys Ψ' n g.2 g.1) :
+    ∀ g ∈ Γ.zeroNext, HasTy fetch sys Ψ' n (g.2.den ρ) (g.1.den ρ) := by
+  intro g hgm
+  obtain ⟨g₀, hg₀, hin⟩ := List.mem_flatMap.mp hgm
+  cases hτ : g₀.2 with
+  | zeroIff idx τ =>
+    rw [hτ] at hin
+    simp only at hin
+    split at hin
+    · next hc =>
+      rw [Bool.and_eq_true] at hc
+      have hnz : g₀.1.den ρ ≠ 0 := Range.nonZero_has (CtxS.fits_has hc.1 hg)
+      have hsrc := hg (g₀.1.den ρ, g₀.2.den ρ) (List.mem_map.mpr ⟨g₀, hg₀, rfl⟩)
+      rw [hτ] at hsrc
+      have hi : idx.den ρ ≠ 0 := fun h0 => by
+        have : HasTy fetch sys Ψ' n (.range 0 0) (g₀.1.den ρ) := by
+          simpa only [TyS.den, h0, ↓reduceIte] using hsrc
+        have hr := hasTy_range.mp this
+        exact hnz (by bv_omega)
+      rcases List.mem_cons.mp hin with rfl | hin
+      · simpa only [TyS.den, hi, ↓reduceIte] using hsrc
+      · rw [List.mem_singleton.mp hin]
+        refine hasTy_range.mpr ?_
+        show idx.den ρ - 1 ≤ (-1 : BitVec 64) - 1
+        bv_omega
+    · cases hin
+  | _ => rw [hτ] at hin; cases hin
+
 /-- A thing known, made as sharp as the ranges known allow: looked into
 only where it says a value may be null or an error number. -/
 def CtxS.sharp (Γ : CtxS) (f : Val × TyS) : Val × TyS :=
@@ -135,7 +179,7 @@ and past a byte of text known not to be nought there is text. Whenever a
 range comes to be known, by a comparison or of what a call hands back, this
 is done; so it does not matter in which order things were learnt. -/
 def CtxS.sharpen (Γ : CtxS) : CtxS :=
-  { Γ with known := Γ.strNext ++ Γ.known.map Γ.sharp }
+  { Γ with known := Γ.zeroNext ++ (Γ.strNext ++ Γ.known.map Γ.sharp) }
 
 theorem CtxS.sharpen_regards (ρ : Env) (Γ : CtxS) :
     Regards fetch sys Ψ (Γ.den ρ) (Γ.sharpen.den ρ) := by
@@ -143,6 +187,8 @@ theorem CtxS.sharpen_regards (ρ : Env) (Γ : CtxS) :
     (fun _ hx => nomatch hx) .nil (fun i b hb => by simp at hb)
   intro f hf Ψ' n hg
   obtain ⟨g, hg', rfl⟩ := List.mem_map.mp hf
+  rcases List.mem_append.mp hg' with hz | hg'
+  · exact CtxS.zeroNext_hasTy hg g hz
   rcases List.mem_append.mp hg' with hn | hs
   · obtain ⟨g₀, hg₀, hsome⟩ := List.mem_filterMap.mp hn
     cases hτ : g₀.2 with

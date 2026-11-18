@@ -148,8 +148,11 @@ What is not there:
   decimal digits, is not seen: the program compares the index. A signed
   product, and a sum or difference with carry, are known only to fit their
   width.
-- The stack a function needs cannot be said by how long a list is, so a
-  function that goes down a list by calling itself is not typed.
+- A link may be said with how many nodes the list it leads to has (a kind
+  of block numbered by a term, and a value that is nought exactly when a
+  term is), so the stack a function that goes down a list by calling itself
+  needs is said by the list's length. How deep a tree is, or any other
+  measure than one number counted down, is not said this way.
 - A label may say what each of a row of bytes or values in memory the code
   holds is (`rows`), and a store that puts one more of that kind at either
   end keeps it so: a number written out digit by digit is known to be

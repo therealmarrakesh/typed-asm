@@ -15,6 +15,7 @@ import Tests.Typed.Written.RetLost
 import Tests.Typed.Written.Bounds
 import Tests.Typed.Written.Related
 import Tests.Typed.Written.Filled
+import Tests.Typed.Written.RecList
 
 /-!
 # Programs written as an author would, each needing something of the type checker
@@ -33,6 +34,7 @@ piece off memory it is lent and gives back the rest; and, refused, a function
 that stores over the address it returns to, the store named; and indices
 bounded by what each operator does to the ranges of its operands; and sums
 of low halves bounded only by a relation between their operands; and a
-function that fills memory it is lent, its caller knowing what it left. Each
-is typed as it is compiled.
+function that fills memory it is lent, its caller knowing what it left; and
+a function that goes down a list by calling itself, the stack it needs said
+by how long the list is. Each is typed as it is compiled.
 -/

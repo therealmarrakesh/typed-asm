@@ -72,7 +72,12 @@ def tyHolds (j : BitVec 64 → CtxS → Bool) (bs : List (BitVec 64 × LayoutS))
   | .ptr S w off, v => bs.any fun b =>
       b.2.shape == S && (!w || b.2.writable) && v == b.1 + BitVec.ofNat 64 off
   | .ref tag w off, v => bs.any fun b =>
-      b.2.tag == some tag && (!w || b.2.writable) && v == b.1 + BitVec.ofNat 64 off
+      b.2.tag == some tag && b.2.idx == 0 && (!w || b.2.writable) &&
+        v == b.1 + BitVec.ofNat 64 off
+  | .refN base idx w off, v => bs.any fun b =>
+      b.2.tag == some base && b.2.idx == (idx.den {}).toNat && (!w || b.2.writable) &&
+        v == b.1 + BitVec.ofNat 64 off
+  | .zeroIff idx τ, v => if idx.den {} = 0 then v == 0 else tyHolds j bs τ v
   | .str (.lit c), v => staticOk (denBlocks bs) (.lit v, .str (.lit c))
   | _, _ => false
 
@@ -117,13 +122,39 @@ theorem tyHolds_hasTy {j : BitVec 64 → CtxS → Bool} {bs : List (BitVec 64 ×
   | .ref tag w off, v, h => by
     simp only [tyHolds, List.any_eq_true, Bool.and_eq_true, beq_iff_eq, Bool.or_eq_true,
       Bool.not_eq_true'] at h
-    obtain ⟨b, hb, ⟨ht, hw⟩, hv⟩ := h
+    obtain ⟨b, hb, ⟨⟨ht, hi⟩, hw⟩, hv⟩ := h
     simp only [TyS.den, HasTy]
     refine ⟨b.1, b.2.den, MemTy.ofList_of_mem _ hnd (b.1, b.2.den) (List.mem_map.mpr ⟨b, hb, rfl⟩),
-      ht, fun hw' => ?_, hv⟩
-    rcases hw with hw | hw
-    · rw [hw] at hw'; cases hw'
-    · exact hw
+      ?_, fun hw' => ?_, hv⟩
+    · show b.2.tag.map (· * 18446744073709551616 + b.2.idx) = _
+      rw [ht, hi, Option.map_some, Nat.add_zero]
+    · rcases hw with hw | hw
+      · rw [hw] at hw'; cases hw'
+      · exact hw
+  | .refN base idx w off, v, h => by
+    simp only [tyHolds, List.any_eq_true, Bool.and_eq_true, beq_iff_eq, Bool.or_eq_true,
+      Bool.not_eq_true'] at h
+    obtain ⟨b, hb, ⟨⟨ht, hi⟩, hw⟩, hv⟩ := h
+    simp only [TyS.den, HasTy]
+    refine ⟨b.1, b.2.den, MemTy.ofList_of_mem _ hnd (b.1, b.2.den) (List.mem_map.mpr ⟨b, hb, rfl⟩),
+      ?_, fun hw' => ?_, hv⟩
+    · show b.2.tag.map (· * 18446744073709551616 + b.2.idx) = _
+      rw [ht, hi, Option.map_some]
+    · rcases hw with hw | hw
+      · rw [hw] at hw'; cases hw'
+      · exact hw
+  | .zeroIff idx τ, v, h => by
+    simp only [tyHolds] at h
+    simp only [TyS.den]
+    split at h
+    · next h0 =>
+      simp only [h0, ↓reduceIte]
+      rw [beq_iff_eq] at h
+      subst h
+      exact hasTy_range.mpr (by decide)
+    · next h0 =>
+      simp only [h0, ↓reduceIte]
+      exact tyHolds_hasTy hnd n hj τ v h
   | .orErr _, _, h => nomatch h
   | .str (.var _), _, h => nomatch h
   | .str (.bvar _ _), _, h => nomatch h

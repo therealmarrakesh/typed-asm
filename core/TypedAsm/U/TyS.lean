@@ -52,7 +52,13 @@ mutual
 inductive TyS
   | any
   | ptr (shape : ShapeS) (writable : Bool) (off : Nat)
+  /-- It is the address of byte `off` of a block of the kind `tag`: the
+  first of the family of kinds of that number. -/
   | ref (tag : Nat) (writable : Bool) (off : Nat)
+  /-- It is the address of byte `off` of a block of one of a family of
+  kinds: the one of the family `base` that a term numbers. So a link to a
+  list is said with how many nodes the list has. -/
+  | refN (base : Nat) (idx : Val) (writable : Bool) (off : Nat)
   | nullable (τ : TyS)
   | orErr (τ : TyS)
   | str (c : Val)
@@ -67,6 +73,9 @@ inductive TyS
   /-- It is the address of so many values in a row, of each of which `τ` is
   known: how many being what a term stands for. -/
   | arr (count : Val) (τ : TyS) (stride : Nat)
+  /-- It is nought exactly when a term is; and where it is not, `τ` is
+  known of it. So a link to a list is nought when the list has no nodes. -/
+  | zeroIff (idx : Val) (τ : TyS)
   /-- It is at most what a term stands for, or less than it. -/
   | upTo (t : Val) (strict : Bool)
 
@@ -100,13 +109,15 @@ mutual
 def TyS.den (ρ : Env) : TyS → Ty
   | .any => .any
   | .ptr S w off => .ptr (S.den ρ) w off
-  | .ref tag w off => .ref tag w off
+  | .ref tag w off => .ref (tag * 18446744073709551616) w off
+  | .refN base idx w off => .ref (base * 18446744073709551616 + (idx.den ρ).toNat) w off
   | .nullable τ => .nullable (τ.den ρ)
   | .orErr τ => .orErr (τ.den ρ)
   | .str c => .str (c.den ρ)
   | .atom i => ρ.ty i
   | .range lo hi => .range lo hi
   | .arr count τ st => .arr (count.den ρ) (τ.den ρ) st
+  | .zeroIff idx τ => if idx.den ρ = 0 then .range 0 0 else τ.den ρ
   | .upTo t strict => .upTo (t.den ρ) strict
   | .code regs flags held known rest rows => .code fun z =>
     { val := fun r => (regs.get r).den { ρ with bound := z :: ρ.bound }

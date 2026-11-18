@@ -166,6 +166,8 @@ def TyS.say (nm : Names := []) : TyS → String
   | .ptr (.mk n _) w off =>
     s!"a pointer {off} bytes into a block of {n}" ++ (if w then " that may be written" else "")
   | .ref t _ off => s!"a pointer {off} bytes into a block of kind {t}"
+  | .refN base idx _ off =>
+    s!"a pointer {off} bytes into a block of the kind {idx.say nm} past kind {base}"
   | .nullable _ => "nought, or something known"
   | .orErr _ => "an error number, or something known"
   | .str _ => "a pointer to text"
@@ -174,6 +176,7 @@ def TyS.say (nm : Names := []) : TyS → String
   | .range lo hi => s!"from {litSay lo} round to {litSay hi}"
   | .arr c _ st =>
     s!"the address of {c.say nm} values in a row" ++ (if st = 8 then "" else s!", {st} bytes apart")
+  | .zeroIff c τ => s!"nought exactly when {c.say nm} is; else {τ.say nm}"
   | .upTo t strict => (if strict then "below " else "at most ") ++ t.say nm
 
 /-- A region held, to be read. -/

@@ -186,11 +186,32 @@ def leftover (held : List (Val × HeldS)) (Γ : CtxS) : List (Val × HeldS) :=
         (stretch Γ.known g)
     | none => []
 
+/-- The values of a family a thing known gives: where what is wanted of a
+value numbers a kind by a name, or says the value is nought when a name is,
+and what the context knows of the value does so by a term, the name is
+that term. -/
+def bindTy : TyS → TyS → List (Nat × Val)
+  | .zeroIff i τ, .zeroIff i' τ' => bindB i i' ++ bindTy τ τ'
+  | .zeroIff _ τ, υ => bindTy τ υ
+  | .refN _ i _ _, .refN _ i' _ _ => bindB i i'
+  | .nullable τ, .nullable τ' => bindTy τ τ'
+  | _, _ => []
+
+/-- **The values of a family the context reached gives**: each name a
+register is said to hold, or to hold a sum with; then each that what is
+wanted of such a value numbers a kind by. -/
+def bindVals (P Γ : CtxS) : List (Nat × Val) :=
+  let bs₁ := bindRegs P.regs.get Γ.regs.get
+  bs₁ ++ P.known.flatMap fun f =>
+    (Γ.known.filter fun g =>
+      g.1.same (f.1.open { b := fun j => (bs₁.lookup j).getD (.lit 0), f := .lit Flags.unknown } 0)
+      ).flatMap fun g => bindTy f.2 g.2
+
 /-- The regions a family wants, with their addresses, their sizes and how
 far in their values are as terms of the context reached, by what the
 registers give. What the values are is left as the family says it. -/
 def wantedRegions (P Γ : CtxS) : List (Val × HeldS) :=
-  let bs₁ := bindRegs P.regs.get Γ.regs.get
+  let bs₁ := bindVals P Γ
   let o₁ : Opening := { b := fun j => (bs₁.lookup j).getD (.lit 0), f := Γ.flags }
   P.held.map fun d => (d.1.open o₁ 0,
     ⟨d.2.size.open o₁ 0, d.2.slots.map fun p => (p.1.open o₁ 0, p.2)⟩)
@@ -200,7 +221,7 @@ the registers, then from the regions at the addresses those give; and,
 where the family ranges over whatever else is held, all that the context
 holds besides. -/
 def matchOpen (P Γ : CtxS) : OpenL :=
-  let bs₁ := bindRegs P.regs.get Γ.regs.get
+  let bs₁ := bindVals P Γ
   let bs₂ := (wantedRegions P Γ).flatMap fun d =>
     match hostExtent Γ.known d.1 d.2.size Γ.held with
     | some (_, off, G) =>
@@ -659,7 +680,9 @@ def TyS.bmax (d : Nat) : TyS → Nat
   | .nullable τ => τ.bmax d
   | .orErr τ => τ.bmax d
   | .str c => c.bmax d
+  | .refN _ idx _ _ => idx.bmax d
   | .arr c τ _ => max (c.bmax d) (τ.bmax d)
+  | .zeroIff c τ => max (c.bmax d) (τ.bmax d)
   | .upTo t _ => t.bmax d
   | .code regs flags held known _ rows =>
     max (max (allRegs.foldl (fun m r => max m ((regs.get r).bmax (d + 1))) 0) (flags.bmax (d + 1)))

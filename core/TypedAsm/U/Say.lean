@@ -171,9 +171,11 @@ def TyS.atRet (c : Nat) : TyS → TyS
   | .nullable τ => .nullable (τ.atRet c)
   | .orErr τ => .orErr (τ.atRet c)
   | .str v => .str (v.atRet c)
+  | .refN base idx w off => .refN base (idx.atRet c) w off
   | .atom i => .atom i
   | .range lo hi => .range lo hi
   | .arr v τ st => .arr (v.atRet c) (τ.atRet c) st
+  | .zeroIff v τ => .zeroIff (v.atRet c) (τ.atRet c)
   | .upTo t strict => .upTo (t.atRet c) strict
   | .code regs flags held known rest rows =>
     .code (regs.map (Val.atRet (c + 1))) (flags.atRet (c + 1))
@@ -328,6 +330,7 @@ def TyS.depth : TyS → Nat
   | .nullable τ => τ.depth
   | .orErr τ => τ.depth
   | .arr _ τ _ => τ.depth
+  | .zeroIff _ τ => τ.depth
   | .code _ _ _ known _ rows => max known.depth rows.depth + 1
   | _ => 0
 
@@ -401,7 +404,9 @@ def staticIn (blocks : List (BitVec 64 × LayoutS)) (a : BitVec 64) : List (Val 
   | some b =>
     if (a - b.1).toNat < b.2.shape.size then
       (match b.2.tag with
-       | some t => [(.lit a, .ref t b.2.writable (a - b.1).toNat)]
+       | some t =>
+         [(.lit a, if b.2.idx = 0 then .ref t b.2.writable (a - b.1).toNat
+           else .refN t (.lit (BitVec.ofNat 64 b.2.idx)) b.2.writable (a - b.1).toNat)]
        | none => [(.lit a, .ptr b.2.shape b.2.writable (a - b.1).toNat)]) ++
       (match b.2.shape.vals.toList.find? fun p => p.1 == (a - b.1).toNat with
        | some p =>

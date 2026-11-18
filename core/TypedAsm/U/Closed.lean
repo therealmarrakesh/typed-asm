@@ -148,7 +148,9 @@ def TyS.closedAt (n : Nat) : TyS → Bool
   | .nullable τ => τ.closedAt n
   | .orErr τ => τ.closedAt n
   | .str c => c.closedAt n
+  | .refN _ idx _ _ => idx.closedAt n
   | .arr c τ _ => c.closedAt n && τ.closedAt n
+  | .zeroIff c τ => c.closedAt n && τ.closedAt n
   | .upTo t _ => t.closedAt n
   | .code regs flags held known rest rows =>
     (regs.map (Val.closedAt (n + 1)) == allTrue) && flags.closedAt (n + 1) &&
@@ -187,9 +189,14 @@ theorem TyS.den_agree (ρ : Env) (n : Nat) (zs zs' : List Fam) (hz : Agree n zs 
     simp only [TyS.den, TyS.den_agree ρ n zs zs' hz τ (by simpa only [TyS.closedAt] using h)]
   | .str c, h => by
     simp only [TyS.den, Val.den_agree ρ n zs zs' hz c (by simpa only [TyS.closedAt] using h)]
+  | .refN _ idx _ _, h => by
+    simp only [TyS.den, Val.den_agree ρ n zs zs' hz idx (by simpa only [TyS.closedAt] using h)]
   | .atom _, _ => rfl
   | .range _ _, _ => rfl
   | .arr c τ _, h => by
+    simp only [TyS.closedAt, Bool.and_eq_true] at h
+    simp only [TyS.den, Val.den_agree ρ n zs zs' hz c h.1, TyS.den_agree ρ n zs zs' hz τ h.2]
+  | .zeroIff c τ, h => by
     simp only [TyS.closedAt, Bool.and_eq_true] at h
     simp only [TyS.den, Val.den_agree ρ n zs zs' hz c h.1, TyS.den_agree ρ n zs zs' hz τ h.2]
   | .upTo t _, h => by
