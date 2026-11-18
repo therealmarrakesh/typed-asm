@@ -123,6 +123,14 @@ def Un.say : Un → String
   | .low16 => "the low two bytes of"
   | .shl k => s!"shifted {k} left:"
 
+/-- A shift or rotation, to be read between its operands. -/
+def _root_.TypedAsm.ShiftOp.say : ShiftOp → String
+  | .shl => "shifted left by"
+  | .shr => "shifted right by"
+  | .sar => "shifted right, with its sign, by"
+  | .rol => "rotated left by"
+  | .ror => "rotated right by"
+
 /-- A term as a sum: its terms, each to be read, and the number added. -/
 def Val.sum (nm : Names) : Val → List (Bool × String) × BitVec 64
   | .lit v => ([], v)
@@ -137,12 +145,15 @@ def Val.sum (nm : Names) : Val → List (Bool × String) × BitVec 64
   | .un o a => ([(false, s!"[{o.say} {sumFin (a.sum nm)}]")], 0)
   | .bin (.imul _) a b =>
     ([(false, paren (sumFin (a.sum nm)) ++ " * " ++ paren (sumFin (b.sum nm)))], 0)
-  | .bin _ a b => ([(false, s!"f({sumFin (a.sum nm)}, {sumFin (b.sum nm)})")], 0)
+  | .bin (.shift op w) a b =>
+    ([(false, s!"[{sumFin (a.sum nm)}" ++ (if w = .w32 then " (low half)" else "") ++
+      s!" {op.say} {sumFin (b.sum nm)}]")], 0)
   | .tri _ a b c =>
     ([(false, s!"f({sumFin (a.sum nm)}, {sumFin (b.sum nm)}, {sumFin (c.sum nm)})")], 0)
   | .fop (.alu op w) _ a b =>
     ([(false, s!"[{op.mnemonic} of {sumFin (a.sum nm)} and {sumFin (b.sum nm)}" ++
-      (if w = .w32 then ", low halves" else "") ++ ": not taken as arithmetic]")], 0)
+      (if w = .w32 then ", low halves" else "") ++
+      (if op = .and || op = .or || op = .xor then "]" else ": not taken as arithmetic]"))], 0)
   | .fop _ _ a b => ([(false, s!"f({sumFin (a.sum nm)}, {sumFin (b.sum nm)})")], 0)
   | .app f a b => ([(false, s!"fn{f}({sumFin (a.sum nm)}, {sumFin (b.sum nm)})")], 0)
 

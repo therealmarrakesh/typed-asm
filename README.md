@@ -139,10 +139,15 @@ What is not there:
 
 - What a program writes is followed for bytes its data says it holds and
   for bytes it made, not for bytes it read.
-- What is known of numbers is followed where it is sums, differences and
-  multiples by numbers written out, with wrapping at 32 and 64 bits and
-  masks. A bound that rests on more than that, as that a number has at
-  most twenty decimal digits, is not seen: the program compares the index.
+- What is known of numbers is followed in two ways: sums, differences and
+  multiples by numbers written out, related to one another, with wrapping
+  at 32 and 64 bits; and the least and the most each value can be, from
+  what each operator does to the least and the most of its operands (masks,
+  shifts, quotients and what is left of them, either of two, and the rest).
+  A bound that rests on more than that, as that a number has at most twenty
+  decimal digits, is not seen: the program compares the index. A signed
+  product, and a sum or difference with carry, are known only to fit their
+  width.
 - The stack a function needs cannot be said by how long a list is, so a
   function that goes down a list by calling itself is not typed.
 - A label may say what each of a row of bytes or values in memory the code

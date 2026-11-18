@@ -95,7 +95,7 @@ theorem CtxS.knowsIn_has {ρ : Env} {Γ : CtxS} {v : Val} {R : Range} (h : Γ.kn
 /-- Whether a value is known to lie in a range: by the operator that gave
 it, or by what the context knows of it. -/
 def CtxS.fits (Γ : CtxS) (v : Val) (R : Range) : Bool :=
-  v.bound.within R || Γ.knowsIn v R || rangeHolds Γ.known v R.lo R.hi
+  (v.boundIn Γ.known).within R || Γ.knowsIn v R || rangeHolds Γ.known v R.lo R.hi
 
 theorem CtxS.fits_has {ρ : Env} {Γ : CtxS} {v : Val} {R : Range} (h : Γ.fits v R = true)
     {Ψ' : MemTy} {n : Nat} (hg : ∀ g ∈ (Γ.den ρ).known, HasTy fetch sys Ψ' n g.2 g.1) :
@@ -103,7 +103,7 @@ theorem CtxS.fits_has {ρ : Env} {Γ : CtxS} {v : Val} {R : Range} (h : Γ.fits 
   unfold CtxS.fits at h
   rcases Bool.or_eq_true_iff.mp h with h | h
   · rcases Bool.or_eq_true_iff.mp h with h | h
-    · exact Range.within_has h (Val.bound_has ρ v)
+    · exact Range.within_has h (Val.boundIn_has (rangesHold_of (knownS hg)) v)
     · exact CtxS.knowsIn_has h hg
   · exact rangeHolds_has h fun g hgm => hg (g.1.den ρ, g.2.den ρ) (List.mem_map.mpr ⟨g, hgm, rfl⟩)
 

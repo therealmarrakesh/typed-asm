@@ -53,20 +53,21 @@ theorem Range.of_nat {lo hi v : BitVec 64}
 
 /-- What is so of a term whatever is known: it is a value of the machine,
 and lies where its operator makes it lie. -/
-def atomCs (t : Val) : List (Lin Int) :=
+def atomCs (G : List (Val × TyS)) (t : Val) : List (Lin Int) :=
   [⟨[(-1, t)], 0⟩, ⟨[(1, t)], -18446744073709551615⟩] ++
-    if t.bound.lo ≤ t.bound.hi then
-      [⟨[(-1, t)], t.bound.lo.toNat⟩, ⟨[(1, t)], -(t.bound.hi.toNat : Int)⟩]
+    if (t.boundIn G).lo ≤ (t.boundIn G).hi then
+      [⟨[(-1, t)], (t.boundIn G).lo.toNat⟩, ⟨[(1, t)], -((t.boundIn G).hi.toNat : Int)⟩]
     else []
 
-theorem atomCs_le (ρ : Env) (t : Val) : AllLe (natOf ρ) (atomCs t) := by
+theorem atomCs_le {ρ : Env} {G : List (Val × TyS)} (hG : RangesHold ρ G) (t : Val) :
+    AllLe (natOf ρ) (atomCs G t) := by
   have h0 := natOf_nonneg ρ t
   have h1 := natOf_lt ρ t
-  have hb := Range.has_nat (lo := t.bound.lo) (hi := t.bound.hi) (Val.bound_has ρ t)
+  have hb := Range.has_nat (lo := (t.boundIn G).lo) (hi := (t.boundIn G).hi) (Val.boundIn_has hG t)
   have e : natOf ρ t = ((t.den ρ).toNat : Int) := rfl
   intro c hc
   unfold atomCs at hc
-  generalize t.bound = b at hb hc
+  generalize t.boundIn G = b at hb hc
   obtain ⟨lo, hi⟩ := b
   by_cases hle : lo ≤ hi
   · simp only [hle, ↓reduceIte, List.cons_append, List.nil_append, List.mem_cons,
@@ -413,7 +414,7 @@ def knowAll (G : List (Val × TyS)) (more : List Val) : List (List (Lin Int)) :=
   addFacts ((factAtoms G ++ more).length + 1) G
     (addWays ((factAtoms G ++ more).length + 1) (factAtoms G ++ more).eraseDups
       (addFacts ((factAtoms G ++ more).length + 1) G
-        [(factAtoms G ++ more).eraseDups.flatMap atomCs]))
+        [(factAtoms G ++ more).eraseDups.flatMap (atomCs G)]))
 
 /-- **Each way things may be, by the ranges known that bear on some
 terms.** -/
@@ -429,7 +430,7 @@ theorem know_le {ρ : Env} {Ψ' : MemTy} {n : Nat} (G : List (Val × TyS)) (more
   addFacts_le _ _ hg' (addWays_le _ _ (addFacts_le _ _ hg'
     ⟨_, List.mem_singleton.mpr rfl, fun c hc => by
       obtain ⟨t, _, hc⟩ := List.mem_flatMap.mp hc
-      exact atomCs_le ρ t c hc⟩))
+      exact atomCs_le (rangesHold_of hg') t c hc⟩))
 
 /-- **Whether a term lies in a range, by the ranges known**, each way
 things may be: its whole number, seen not to wrap, lies there; on one side
