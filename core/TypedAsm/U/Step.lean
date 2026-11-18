@@ -998,6 +998,188 @@ theorem readFull_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
     | none => exact ⟨hR.1, rfl, hR.2⟩
     | some mn => exact hR
 
+/-! ## What is so of rows once bytes are stored -/
+
+/-- What a value of a row is, of a value stored: the value, or its low
+byte. -/
+def cellVal (byte : Bool) (v : Val) : Val := if byte then mkUn .low8 v else v
+
+theorem cellVal_den (ρ : Env) (byte : Bool) (v : Val) :
+    (cellVal byte v).den ρ
+      = if byte then ((v.den ρ).setWidth 8).setWidth 64 else v.den ρ := by
+  cases byte
+  · rfl
+  · exact mkUn_den ρ .low8 v
+
+theorem sumNat_replicate (ρ : Env) (c : Val) : (n : Nat) →
+    sumNat ρ (List.replicate n c) = n * c.nat ρ
+  | 0 => by simp [sumNat]
+  | n + 1 => by
+    show c.nat ρ + sumNat ρ (List.replicate n c) = _
+    rw [sumNat_replicate ρ c n, Nat.succ_mul]
+    omega
+
+/-- Where an address lies in a region held, so many bytes and more: found
+with what it is from the region's address written out, or not. -/
+def findHeld2 (G : List (Val × TyS)) (a : Val) (ls : List Val) (n : Nat)
+    (held : List (Val × HeldS)) : Option (Nat × Val × HeldS × Val) :=
+  match findHeldP true G a ls n held 0 with
+  | some r => some r
+  | none => findHeldP false G a ls n held 0
+
+theorem findHeld2_spec {ρ : Env} {Ψ' : MemTy} {m : Nat} {G : List (Val × TyS)}
+    {a : Val} {ls : List Val} {n : Nat} (l : List (Val × HeldS)) {k : Nat} {b : Val} {S : HeldS}
+    {o : Val} (h : findHeld2 G a ls n l = some (k, b, S, o))
+    (hg : ∀ g ∈ G, HasTy fetch sys Ψ' m (g.2.den ρ) (g.1.den ρ)) :
+    l[k]? = some (b, S) ∧ o.nat ρ + (sumNat ρ ls + n) ≤ S.size.nat ρ ∧
+      a.den ρ = b.den ρ + BitVec.ofNat 64 (o.nat ρ) := by
+  unfold findHeld2 at h
+  split at h
+  · next r hr =>
+    cases h
+    obtain ⟨j, hj, hl, hin, ha⟩ := findHeldP_spec (ρ := ρ) l 0 hr hg
+    rw [Nat.zero_add] at hj
+    subst hj
+    exact ⟨hl, hin, ha⟩
+  · obtain ⟨j, hj, hl, hin, ha⟩ := findHeldP_spec (ρ := ρ) l 0 h hg
+    rw [Nat.zero_add] at hj
+    subst hj
+    exact ⟨hl, hin, ha⟩
+
+/-- How many bytes a value of a row is. -/
+def RowS.width (r : RowS) : Nat := if r.byte then 1 else 8
+
+/-- **What a row is once bytes are stored in the region `j`, so far in**:
+as it was, where the store keeps clear of it; with a value more at its end
+or at its start, where the store puts one of its type there; and nothing,
+where it is not seen to be so. -/
+def rowAfter (ent : TyS → TyS → Bool) (Γ : CtxS) (j : Nat) (ow : Val) (n : Nat) (v wa : Val)
+    (r : RowS) : Option RowS :=
+  if decide (r.width ≤ r.stride) then
+    match findHeld2 Γ.known r.addr (List.replicate r.stride r.count) 0 Γ.held with
+    | some (j', _, _, orr) =>
+      if j' = j then
+        if sumLe Γ.known (orr :: List.replicate r.stride r.count) 0 [ow] 0 then
+          if decide (n = r.width) &&
+              sumLe Γ.known [ow] 0 (orr :: List.replicate r.stride r.count) 0 &&
+              factFrom ent Γ.known (cellVal r.byte v, r.ty) then
+            some { r with count := .add r.count (.lit 1) }
+          else some r
+        else if sumLe Γ.known [ow] n [orr] 0 then
+          if decide (n = r.width) && sumLe Γ.known [ow] r.stride [orr] 0 &&
+              sumLe Γ.known [orr] 0 [ow] r.stride &&
+              factFrom ent Γ.known (cellVal r.byte v, r.ty) then
+            some { r with addr := wa, count := .add r.count (.lit 1) }
+          else some r
+        else none
+      else none
+    | none => none
+  else none
+
+theorem rowAfter_sound {ρ : Env} {ent : TyS → TyS → Bool} (he : EntSound fetch sys ent)
+    {Γ : CtxS} {j : Nat} {ow v wa : Val} {n : Nat} {r r' : RowS}
+    (h : rowAfter ent Γ j ow n v wa r = some r') (hr : r ∈ Γ.rows) {base : Val} {S : HeldS}
+    (hj : Γ.held[j]? = some (base, S))
+    (hwa : wa.den ρ = base.den ρ + BitVec.ofNat 64 (ow.nat ρ)) (hn : n ≤ 8)
+    {k : Nat} {Ψ' : MemTy} {s : State} (hw : WellTyped fetch sys Ψ' k (Γ.den ρ) s)
+    (hfit : ow.nat ρ + n ≤ S.size.nat ρ) :
+    ∀ i, i < (r'.den ρ).count.toNat → HasTy fetch sys Ψ' k (r'.den ρ).ty
+      (cellAt (storeN s n (wa.den ρ) (v.den ρ)) (r'.den ρ).byte
+        ((r'.den ρ).addr + BitVec.ofNat 64 ((r'.den ρ).stride * i))) := by
+  have hg := knownS hw.known
+  have hrd : r.den ρ ∈ (Γ.den ρ).rows := List.mem_map.mpr ⟨r, hr, rfl⟩
+  have hjd := CtxS.held_den ρ Γ hj
+  unfold rowAfter at h
+  split at h
+  · next hwid =>
+    have hwid' : (if (r.den ρ).byte then 1 else 8) ≤ (r.den ρ).stride := of_decide_eq_true hwid
+    split at h
+    · next j' b' S' orr hfind =>
+      obtain ⟨hl, hin, hra⟩ := findHeld2_spec (ρ := ρ) Γ.held hfind hg
+      split at h
+      · next hjj =>
+        subst hjj
+        have hbs : (b', S') = (base, S) := Option.some.inj (hl.symm.trans hj)
+        cases hbs
+        rw [sumNat_replicate, Nat.add_zero] at hin
+        have hra' : (r.den ρ).addr = base.den ρ + BitVec.ofNat 64 (orr.nat ρ) := hra
+        have hrow : orr.nat ρ + (r.den ρ).stride * (r.den ρ).count.toNat ≤ (S.den ρ).size := hin
+        rw [hwa]
+        split at h
+        · next hpast =>
+          have hp := sumLe_den hpast hg
+          simp only [sumNat, sumNat_replicate, Nat.add_zero] at hp
+          split at h
+          · next hc =>
+            cases h
+            simp only [Bool.and_eq_true, decide_eq_true_eq] at hc
+            obtain ⟨⟨hnw, hback⟩, hf⟩ := hc
+            have hb := sumLe_den hback hg
+            simp only [sumNat, sumNat_replicate, Nat.add_zero] at hb
+            have hv := factFrom_hasTy he ρ hf Ψ' k hw.known
+            rw [cellVal_den] at hv
+            exact rowAppended hw hjd hrd hfit hra' hwid'
+              (show ow.nat ρ = orr.nat ρ + r.stride * r.count.nat ρ by omega) hnw hv
+          · cases h
+            exact rowKept hw hjd hrd hn hfit hrow hra' hwid'
+              (.inl (show orr.nat ρ + r.stride * r.count.nat ρ ≤ ow.nat ρ by omega)) _
+        · split at h
+          · next hbelow =>
+            have hp := sumLe_den hbelow hg
+            simp only [sumNat, Nat.add_zero] at hp
+            split at h
+            · next hc =>
+              cases h
+              simp only [Bool.and_eq_true, decide_eq_true_eq] at hc
+              obtain ⟨⟨⟨hnw, h1⟩, h2⟩, hf⟩ := hc
+              have h1' := sumLe_den h1 hg
+              have h2' := sumLe_den h2 hg
+              simp only [sumNat, Nat.add_zero] at h1' h2'
+              have hv := factFrom_hasTy he ρ hf Ψ' k hw.known
+              rw [cellVal_den] at hv
+              show ∀ i, i < (r.count.den ρ + 1).toNat → HasTy fetch sys Ψ' k (r.ty.den ρ)
+                (cellAt (storeN s n (base.den ρ + BitVec.ofNat 64 (ow.nat ρ)) (v.den ρ)) r.byte
+                  (wa.den ρ + BitVec.ofNat 64 (r.stride * i)))
+              rw [hwa]
+              exact rowPrepended hw hjd hrd hfit hrow hra' hwid'
+                (show ow.nat ρ + r.stride = orr.nat ρ by omega) hnw hv
+            · cases h
+              exact rowKept hw hjd hrd hn hfit hrow hra' hwid' (.inr hp) _
+          · cases h
+      · cases h
+    · cases h
+  · cases h
+
+/-- **What is so of rows once `n` bytes at an address are stored**: of each
+row the context has, what `rowAfter` leaves; nothing where the bytes are
+not found in a region held. -/
+def rowsAfter (ent : TyS → TyS → Bool) (Γ : CtxS) (wa : Val) (n : Nat) (v : Val) : List RowS :=
+  if n ≤ 8 then
+    match findHeld2 Γ.known wa [] n Γ.held with
+    | some (j, _, _, ow) => Γ.rows.filterMap (rowAfter ent Γ j ow n v wa)
+    | none => []
+  else []
+
+theorem rowsAfter_sound {ρ : Env} {ent : TyS → TyS → Bool} (he : EntSound fetch sys ent)
+    {Γ : CtxS} {wa v : Val} {n : Nat} {k : Nat} {Ψ' : MemTy} {s : State}
+    (hw : WellTyped fetch sys Ψ' k (Γ.den ρ) s) :
+    ∀ r ∈ (rowsAfter ent Γ wa n v).map (RowS.den ρ), ∀ i, i < r.count.toNat →
+      HasTy fetch sys Ψ' k r.ty
+        (cellAt (storeN s n (wa.den ρ) (v.den ρ)) r.byte (r.addr + BitVec.ofNat 64 (r.stride * i))) := by
+  intro r hr
+  obtain ⟨r', hr', rfl⟩ := List.mem_map.mp hr
+  unfold rowsAfter at hr'
+  split at hr'
+  · next hn =>
+    split at hr'
+    · next j b S ow hfind =>
+      obtain ⟨hl, hin, ha⟩ := findHeld2_spec (ρ := ρ) Γ.held hfind (knownS hw.known)
+      obtain ⟨r0, hr0, hra⟩ := List.mem_filterMap.mp hr'
+      simp only [sumNat, Nat.zero_add] at hin
+      exact rowAfter_sound he hra hr0 hl ha hn hw hin
+    · cases hr'
+  · cases hr'
+
 /-- The row a context has that the `n` bytes at an address are a value of:
 so many along, and fewer than there are. -/
 def rowAt (Γ : CtxS) (next : BitVec 64) (m : Mem) (n : Nat) : Option RowS :=
@@ -1099,18 +1281,21 @@ def stepHeld (kinds : Nat → Option ShapeS) (Γ : CtxS) (k : Nat) (next : BitVe
     Option (CtxS × Val) :=
   match i.sem with
   | some s =>
-    if s.wr.isSome && !Γ.rows.isEmpty then none else
     match readRows kinds Γ k next s.rd with
     | some (cell, extra, heldR) =>
       let Γ₁ : CtxS := { Γ with known := extra ++ Γ.known, held := heldR }
       let σ := fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell
       if !s.guard.okS Γ₁ Γ.flags (s.ga.fillN σ) (s.gb.fillN σ) (s.gc.fillN σ) then none else
-      match writeAny kinds Γ₁ next (s.store.fillN σ) s.wr with
+      match writeAny kinds { Γ₁ with rows := [] } next (s.store.fillN σ) s.wr with
       | some held' =>
         some ({ Γ₁ with
                 regs := setRegs σ s.outs Γ.regs
                 flags := s.flags.fill σ
-                held := held' },
+                held := held'
+                rows := match s.wr with
+                  | some (m, n) =>
+                    rowsAfter noEnt Γ₁ (eaS Γ.regs next m) n (s.store.fillN σ)
+                  | none => Γ.rows },
           match s.goes with
           | some t => t.fillN σ
           | none => .lit next)
@@ -1134,13 +1319,6 @@ theorem stepHeld_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
     simp only [Sem.slotOnly, Bool.and_eq_true] at hso
     obtain ⟨⟨⟨⟨⟨⟨hga, hgb⟩, hgc⟩, houts⟩, hflags⟩, hstore⟩, hgoes⟩ := hso
     split at h
-    · cases h
-    next hnr =>
-    have hrows : s.wr.isSome = true → Γ.rows = [] := fun hw => by
-      cases hre : Γ.rows with
-      | nil => rfl
-      | cons r rs => exact absurd (by rw [hw, hre]; rfl) hnr
-    split at h
     · next cell extra heldR hrc =>
       have hgd : s.guard.okS { Γ with known := extra ++ Γ.known, held := heldR } Γ.flags
           (s.ga.fillN (fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell))
@@ -1163,7 +1341,13 @@ theorem stepHeld_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
           (R := fun x Γr => Γr = CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known, held := heldR } ∧
             cell.den (ρ.setVal k x) = x)
           (W := fun x _ Γw => Γw = CtxS.den (ρ.setVal k x)
-            { Γ with known := extra ++ Γ.known, held := held' }) hd ?_ ?_ ?_) ?_
+            { Γ with known := extra ++ Γ.known, held := held',
+                     rows := match s.wr with
+                       | some (m, n) =>
+                         rowsAfter noEnt { Γ with known := extra ++ Γ.known, held := heldR }
+                           (eaS Γ.regs next m) n
+                           (s.store.fillN (fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell))
+                       | none => Γ.rows }) hd ?_ ?_ ?_) ?_
         · show match s.rd with
             | some (m, n) => _
             | none => _
@@ -1178,23 +1362,36 @@ theorem stepHeld_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
         · rintro x Γr ⟨rfl, hx⟩
           refine ⟨_, rfl, ?_⟩
           have hΓ : Γ.den (ρ.setVal k x) = Γ.den ρ := CtxS.den_setVal ρ k x Γ hu
-          have hval : (CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known, held := heldR }).val
+          have hval : (CtxS.den (ρ.setVal k x)
+                { Γ with known := extra ++ Γ.known, held := heldR, rows := [] }).val
               = (Γ.den ρ).val := (congrArg CtxOf.val hΓ : (Γ.den (ρ.setVal k x)).val = _)
           have hW := writeAny_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) (ρ := ρ.setVal k x) hk
-            (Γ := { Γ with known := extra ++ Γ.known, held := heldR }) s.wr hrows hwc
+            (Γ := { Γ with known := extra ++ Γ.known, held := heldR, rows := [] }) s.wr
+            (fun _ => rfl) hwc
+          have hRows := fun (m : Mem) (n : Nat) (k' : Nat) (Ψ' : MemTy) (st : State)
+              (hw : WellTyped fetch sys Ψ' k'
+                (CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known, held := heldR }) st) =>
+            rowsAfter_sound (fetch := fetch) (sys := sys) (ρ := ρ.setVal k x) noEnt_sound
+              (wa := eaS Γ.regs next m) (n := n)
+              (v := s.store.fillN (fillOf Γ s.srcs next (eaTerm Γ next s.ea) cell)) hw
           show match s.wr with
             | some (m, n) => _
             | none => _
           cases hwr : s.wr with
           | none =>
             rw [hwr] at hW
-            show CtxS.den (ρ.setVal k x) { Γ with known := extra ++ Γ.known, held := held' } = _
+            show CtxS.den (ρ.setVal k x)
+              { Γ with known := extra ++ Γ.known, held := held', rows := Γ.rows } = _
             rw [hW]
           | some mn =>
             obtain ⟨m, n⟩ := mn
             rw [hwr] at hW
+            have hRm := hRows m n
             rw [(fill_den s next hΓ hx).1 _ hstore, hval] at hW
-            exact hW
+            rw [(fill_den s next hΓ hx).1 _ hstore,
+              show (eaS Γ.regs next m).den (ρ.setVal k x) = eaOf (Γ.den ρ).val next m from by
+                rw [← hval]; exact eaS_den (ρ.setVal k x) _ next m] at hRm
+            exact Writes.rows _ hW fun k' Ψ' _ _ st hw => hRm k' Ψ' st hw
         · rintro x Γr ⟨rfl, hx⟩ Ψ' n hk
           have hΓ : Γ.den (ρ.setVal k x) = Γ.den ρ := CtxS.den_setVal ρ k x Γ hu
           have hfill := fill_den s next hΓ hx

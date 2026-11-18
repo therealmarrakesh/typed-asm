@@ -159,6 +159,72 @@ theorem shr_le (w : Width) (a : BitVec 64) (c : Nat) :
 /-- The lesser of two values, as numbers without sign. -/
 def least (a b : BitVec 64) : BitVec 64 := if a ≤ b then a else b
 
+/-- The greater of two values, as numbers without sign. -/
+def greatest (a b : BitVec 64) : BitVec 64 := if a ≤ b then b else a
+
+/-- The most what is left over of a division can be, by a number written
+out: one less than the number; or, where the machine would fault and the
+high half is as it was, the most that can be. -/
+def remTop (o : Tri) (hiTop : BitVec 64) : Val → Option (BitVec 64)
+  | .lit d =>
+    match o with
+    | .mulHi .div w => some (greatest hiTop (wide (d.setWidth w.bits) - 1))
+    | _ => none
+  | _ => none
+
+theorem remTop_spec {o : Tri} {hiTop t : BitVec 64} {src : Val} (h : remTop o hiTop src = some t)
+    (ρ : Env) {hi : BitVec 64} (hhi : hi ≤ hiTop) (lo : BitVec 64) :
+    o.eval hi lo (src.den ρ) ≤ t := by
+  unfold remTop at h
+  split at h
+  · next d =>
+    split at h
+    · next w =>
+      cases h
+      show (match MulDivOp.eval .div (hi.setWidth w.bits) (lo.setWidth w.bits) (d.setWidth w.bits) with
+        | .next (_, r, _) => wide r
+        | _ => hi) ≤ _
+      generalize hres : MulDivOp.eval .div (hi.setWidth w.bits) (lo.setWidth w.bits)
+        (d.setWidth w.bits) = res
+      unfold MulDivOp.eval at hres
+      simp only at hres
+      split at hres
+      · subst hres
+        show hi ≤ _
+        simp only [greatest]
+        split <;> bv_omega
+      · next hnf =>
+        subst hres
+        show wide (BitVec.setWidth w.bits
+          ((hi.setWidth w.bits ++ lo.setWidth w.bits) %
+            (d.setWidth w.bits).setWidth (w.bits + w.bits))) ≤ _
+        simp only [Bool.or_eq_true, beq_iff_eq, not_or] at hnf
+        have hd0 : (d.setWidth w.bits).toNat ≠ 0 := fun h0 =>
+          hnf.1 (BitVec.eq_of_toNat_eq (by simpa using h0))
+        have hdlt := (d.setWidth w.bits).isLt
+        have hdd : ((d.setWidth w.bits).setWidth (w.bits + w.bits)).toNat
+            = (d.setWidth w.bits).toNat := by
+          rw [BitVec.toNat_setWidth]
+          exact Nat.mod_eq_of_lt
+            (Nat.lt_of_lt_of_le hdlt (Nat.pow_le_pow_right (by omega) (by omega)))
+        have hm : ((hi.setWidth w.bits ++ lo.setWidth w.bits) %
+            (d.setWidth w.bits).setWidth (w.bits + w.bits)).toNat < (d.setWidth w.bits).toNat := by
+          rw [BitVec.toNat_umod, hdd]
+          exact Nat.mod_lt _ (Nat.pos_of_ne_zero hd0)
+        generalize (hi.setWidth w.bits ++ lo.setWidth w.bits) %
+          (d.setWidth w.bits).setWidth (w.bits + w.bits) = q at hm
+        have hrem : (wide (BitVec.setWidth w.bits q)).toNat < (d.setWidth w.bits).toNat := by
+          cases w <;> simp only [wide, BitVec.toNat_setWidth, Width.bits] at hm hdlt ⊢ <;> omega
+        have hwd : (wide (d.setWidth w.bits)).toNat = (d.setWidth w.bits).toNat := by
+          cases w <;> simp only [wide, BitVec.toNat_setWidth, Width.bits] at hdlt ⊢ <;> omega
+        generalize wide (BitVec.setWidth w.bits q) = R at hrem
+        generalize wide (d.setWidth w.bits) = D at hwd
+        generalize (d.setWidth w.bits).toNat = dn at hrem hwd hd0
+        simp only [greatest]
+        split <;> bv_omega
+    · cases h
+  · cases h
+
 /-- **The range a value lies in, by the operator that gave it**: and where
 it is what two values both have set, no more than either can be; where it
 is a value shifted right by a number written out, no more than the most the
@@ -172,6 +238,10 @@ def Val.bound : Val → Range
   | .bin o _ _ => o.bound
   | .fop (.alu .and w) _ a b => ⟨0, least (least a.bound.top b.bound.top) w.range.top⟩
   | .fop o _ _ _ => o.bound
+  | .tri o hi _ src =>
+    match remTop o hi.bound.top src with
+    | some t => ⟨0, t⟩
+    | none => .all
   | _ => .all
 
 theorem Val.bound_has (ρ : Env) : (v : Val) → v.bound.has (v.den ρ)
@@ -215,7 +285,15 @@ theorem Val.bound_has (ρ : Env) : (v : Val) → v.bound.has (v.den ρ)
   | .fop (.cmov _ _) fl a b => FOp.bound_has _ _ _ _
   | .fop (.setcc _) fl a b => FOp.bound_has _ _ _ _
   | .fop (.condByte _) fl a b => FOp.bound_has _ _ _ _
-  | .var _ | .bvar _ _ | .slot _ | .tri _ _ _ _ | .app _ _ _ => Range.all_has _
+  | .tri o hi lo src => by
+    show (match remTop o hi.bound.top src with
+      | some t => (⟨0, t⟩ : Range)
+      | none => .all).has (o.eval (hi.den ρ) (lo.den ρ) (src.den ρ))
+    cases hrt : remTop o hi.bound.top src with
+    | none => exact Range.all_has _
+    | some t =>
+      exact Range.has_zero (remTop_spec hrt ρ (Range.le_top (Val.bound_has ρ hi)) _)
+  | .var _ | .bvar _ _ | .slot _ | .app _ _ _ => Range.all_has _
 
 /-- Whether an operator only cuts a value down to its own range. -/
 def Un.cuts : Un → Bool

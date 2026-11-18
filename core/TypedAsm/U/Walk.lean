@@ -533,8 +533,8 @@ theorem pubAt_sound {ρ : Env} {pg : Prog} (hk : KindsOk Ψ pg.kinds) {k : Nat} 
   · cases h
 
 /-- **A context with what it says of rows let go, where the instruction
-about to run would not keep it**: one that stores in memory, or a system
-call that stores in memory or hands back fresh memory. Else the context. -/
+about to run would not keep it**: a system call that stores in memory or
+hands back fresh memory. Else the context. A store keeps what it can. -/
 def rowsFor (ix : Index) (hint : Nat) (a : BitVec 64) (Γ : CtxS) : CtxS :=
   if Γ.rows.isEmpty then Γ else
   match seek ix hint a with
@@ -547,10 +547,7 @@ def rowsFor (ix : Index) (hint : Nat) (a : BitVec 64) (Γ : CtxS) : CtxS :=
               | some .map => true
               | _ => false)
            | none => false)
-        else
-          (match i.sem with
-           | some s => s.wr.isSome
-           | none => false)) then { Γ with rows := [] }
+        else false) then { Γ with rows := [] }
     else Γ
   | none => Γ
 

@@ -614,7 +614,9 @@ def regardWith (sm : List (Val × TyS) → Val → Val → Bool) (ent : TyS → 
      | some P => apartS Γ.known P && coverS Γ.held P
      | none => false) &&
     Δ.known.all (factFrom ent Γ.known) && Δ.rest == Γ.rest &&
-    Δ.rows.all fun r => Γ.rows.contains r
+    Δ.rows.all fun r => sm Γ.known r.count (.lit 0) ||
+      Γ.rows.any fun g => sm Γ.known g.addr r.addr && sm Γ.known g.count r.count &&
+        g.stride == r.stride && g.byte == r.byte && g.ty == r.ty
 
 theorem regardWith_sound {sm : List (Val × TyS) → Val → Val → Bool} {ent : TyS → TyS → Bool}
     (he : EntSound fetch sys ent) (ρ : Env) {Γ Δ : CtxS}
@@ -636,9 +638,17 @@ theorem regardWith_sound {sm : List (Val × TyS) → Val → Val → Bool} {ent 
     refine Regards.parts (Γ := Γ.den ρ) (Δ := Δ.den ρ) (E := Γ.held.map (regionDen ρ))
       (F := restDen ρ Γ.rest)
       (L := P.map (partDen ρ)) ?_ ?_ ?_ rfl ?_ hok (apartS_den ρ hg P hh.1)
-      (coverS_den ρ Γ.held P hh.2) (fun r hr' => by
+      (coverS_den ρ Γ.held P hh.2) (fun Ψ'' n' hg'' r hr' => by
         obtain ⟨x, hx, rfl⟩ := List.mem_map.mp (show r ∈ Δ.rows.map (RowS.den ρ) from hr')
-        exact List.mem_map.mpr ⟨x, List.contains_iff_mem.mp (hrows x hx), rfl⟩) k Ψ' hext hwf s hw
+        have hsm' := hsm Ψ'' n' (knownS hg'')
+        rcases Bool.or_eq_true_iff.mp (hrows x hx) with h0 | hany
+        · exact .inr (hsm' _ _ h0)
+        · obtain ⟨g, hgm, hc⟩ := List.any_eq_true.mp hany
+          simp only [Bool.and_eq_true, beq_iff_eq] at hc
+          obtain ⟨⟨⟨⟨ha, hcn⟩, hst⟩, hb⟩, hty⟩ := hc
+          refine .inl (List.mem_map.mpr ⟨g, hgm, ?_⟩)
+          show RowOf.mk _ _ _ _ _ = RowOf.mk _ _ _ _ _
+          rw [hsm' _ _ ha, hsm' _ _ hcn, hst, hb, hty]) k Ψ' hext hwf s hw
     · funext r
       exact (hsm Ψ' k hg _ _ (hr r (mem_allRegs r))).symm
     · show Δ.flags.den ρ = Γ.flags.den ρ

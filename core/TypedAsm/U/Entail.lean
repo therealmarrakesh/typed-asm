@@ -102,7 +102,8 @@ theorem Regards.parts {Γ Δ : Ctx} {E F : List Region} {L : List Part}
     (hok : ∀ x ∈ L, PartOk E x) (hap : L.Pairwise PartsApart)
     (hcov : ∀ i b, E[i]? = some b → ∀ o, o < b.2.size →
       ∃ x ∈ L, x.1 = i ∧ x.2.1 ≤ o ∧ o < x.2.1 + x.2.2.size)
-    (hrows : ∀ r ∈ Δ.rows, r ∈ Γ.rows := by exact fun _ h => h) :
+    (hrows : ∀ (Ψ' : MemTy) (n : Nat), (∀ g ∈ Γ.known, HasTy fetch sys Ψ' n g.2 g.1) →
+      ∀ r ∈ Δ.rows, r ∈ Γ.rows ∨ r.count = 0 := by exact fun _ _ _ _ h => .inl h) :
     Regards fetch sys Ψ Γ Δ := by
   intro k Ψ' he hwf s hw
   have hE : ∀ b ∈ E, b ∈ Γ.held := fun b hb => by rw [hΓ]; exact List.mem_append_left _ hb
@@ -133,7 +134,10 @@ theorem Regards.parts {Γ Δ : Ctx} {E F : List Region} {L : List Part}
       heap := hw.heap
       text := hw.text
       said := hw.said
-      rows := fun r hr => hw.rows r (hrows r hr)
+      rows := fun r hr i hi =>
+        match hrows Ψ' k hw.known r hr with
+        | .inl h => hw.rows r h i hi
+        | .inr h0 => absurd hi (by rw [h0]; exact Nat.not_lt_zero i)
       complete := fun a ha => by
         rcases hw.complete a ha with ⟨b, hb, hin⟩ | hr
         · rw [hΓ] at hb

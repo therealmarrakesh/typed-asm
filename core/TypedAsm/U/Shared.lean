@@ -328,4 +328,106 @@ theorem Writes.rows {Γ Γw : Ctx} {a v : BitVec 64} {n : Nat} (R : List (RowOf 
     ⟨(h.2.2 k Ψ' he hwf s (WellTyped.dropRows hw)).1,
       (h.2.2 k Ψ' he hwf s (WellTyped.dropRows hw)).2.setRows R (hR k Ψ' he hwf s hw)⟩⟩
 
+/-- **A row's values are as they were after a store in the region the row
+is in that keeps clear of it**: the store wholly below the row, or wholly
+above. -/
+theorem rowKept {Ψ' : MemTy} {k : Nat} {Γ : Ctx} {s : State}
+    (hw : WellTyped fetch sys Ψ' k Γ s) {j : Nat} {base : BitVec 64} {S : Held}
+    (hj : Γ.held[j]? = some (base, S)) {r : RowOf Ty} (hr : r ∈ Γ.rows) {ow orr n : Nat}
+    (hn : n ≤ 8) (hwfit : ow + n ≤ S.size) (hrow : orr + r.stride * r.count.toNat ≤ S.size)
+    (hra : r.addr = base + BitVec.ofNat 64 orr) (hwid : (if r.byte then 1 else 8) ≤ r.stride)
+    (hclear : orr + r.stride * r.count.toNat ≤ ow ∨ ow + n ≤ orr) (v : BitVec 64) :
+    ∀ i, i < r.count.toNat → HasTy fetch sys Ψ' k r.ty
+      (cellAt (storeN s n (base + BitVec.ofNat 64 ow) v) r.byte
+        (r.addr + BitVec.ofNat 64 (r.stride * i))) := by
+  intro i hi
+  have hsz : S.size < 2 ^ 64 := hw.held.size_lt (base, S) (List.mem_of_getElem? hj)
+  have hstep : r.stride * i + r.stride ≤ r.stride * r.count.toNat := by
+    rw [← Nat.mul_succ]; exact Nat.mul_le_mul_left _ hi
+  have hd : Disjoint (base + BitVec.ofNat 64 ow) n (r.addr + BitVec.ofNat 64 (r.stride * i))
+      (if r.byte then 1 else 8) := by
+    rw [hra]
+    have hw8 : (if r.byte then 1 else 8) ≤ 8 := by split <;> omega
+    generalize r.stride * i = t at hstep ⊢
+    generalize r.stride * r.count.toNat = T at hstep hrow hclear
+    generalize (if r.byte = true then 1 else 8) = wd at hwid hw8 ⊢
+    generalize r.stride = st at hstep hwid
+    refine ⟨fun _ => ?_, fun _ => ?_⟩ <;> bv_omega
+  rw [cellAt_storeN_out s n _ v _ r.byte hn hd]
+  exact hw.rows r hr i hi
+
+/-- **A row with one value more at its end**, where a store of a value of
+its type puts one there. -/
+theorem rowAppended {Ψ' : MemTy} {k : Nat} {Γ : Ctx} {s : State}
+    (hw : WellTyped fetch sys Ψ' k Γ s) {j : Nat} {base : BitVec 64} {S : Held}
+    (hj : Γ.held[j]? = some (base, S)) {r : RowOf Ty} (hr : r ∈ Γ.rows) {ow orr n : Nat}
+    (hwfit : ow + n ≤ S.size) (hra : r.addr = base + BitVec.ofNat 64 orr)
+    (hwid : (if r.byte then 1 else 8) ≤ r.stride)
+    (hat : ow = orr + r.stride * r.count.toNat) (hnw : n = if r.byte then 1 else 8)
+    {v : BitVec 64}
+    (hv : HasTy fetch sys Ψ' k r.ty (if r.byte then (v.setWidth 8).setWidth 64 else v)) :
+    ∀ i, i < (r.count + 1).toNat → HasTy fetch sys Ψ' k r.ty
+      (cellAt (storeN s n (base + BitVec.ofNat 64 ow) v) r.byte
+        (r.addr + BitVec.ofNat 64 (r.stride * i))) := by
+  intro i hi
+  have hsz : S.size < 2 ^ 64 := hw.held.size_lt (base, S) (List.mem_of_getElem? hj)
+  have hn8 : n ≤ 8 := by rw [hnw]; split <;> omega
+  have hpos : 0 < r.stride := by
+    have : 0 < (if r.byte then 1 else 8) := by split <;> omega
+    omega
+  have hcle : r.count.toNat ≤ r.stride * r.count.toNat := Nat.le_mul_of_pos_left _ hpos
+  have hc1 : (r.count + 1).toNat = r.count.toNat + 1 := by
+    have : n ≠ 0 := by rw [hnw]; split <;> omega
+    bv_omega
+  rw [hc1] at hi
+  by_cases hlt : i < r.count.toNat
+  · exact rowKept hw hj hr hn8 hwfit (by omega) hra hwid (.inl (by omega)) v i hlt
+  · have hi' : i = r.count.toNat := by omega
+    subst hi'
+    have ea : r.addr + BitVec.ofNat 64 (r.stride * r.count.toNat) = base + BitVec.ofNat 64 ow := by
+      rw [hra, hat, BitVec.add_assoc, ← BitVec.ofNat_add]
+    rw [ea, hnw, cellAt_storeN_same]
+    exact hv
+
+/-- **A row with one value more at its start**, where a store of a value of
+its type puts one just before it. -/
+theorem rowPrepended {Ψ' : MemTy} {k : Nat} {Γ : Ctx} {s : State}
+    (hw : WellTyped fetch sys Ψ' k Γ s) {j : Nat} {base : BitVec 64} {S : Held}
+    (hj : Γ.held[j]? = some (base, S)) {r : RowOf Ty} (hr : r ∈ Γ.rows) {ow orr n : Nat}
+    (hwfit : ow + n ≤ S.size) (hrow : orr + r.stride * r.count.toNat ≤ S.size)
+    (hra : r.addr = base + BitVec.ofNat 64 orr)
+    (hwid : (if r.byte then 1 else 8) ≤ r.stride)
+    (hat : ow + r.stride = orr) (hnw : n = if r.byte then 1 else 8)
+    {v : BitVec 64}
+    (hv : HasTy fetch sys Ψ' k r.ty (if r.byte then (v.setWidth 8).setWidth 64 else v)) :
+    ∀ i, i < (r.count + 1).toNat → HasTy fetch sys Ψ' k r.ty
+      (cellAt (storeN s n (base + BitVec.ofNat 64 ow) v) r.byte
+        (base + BitVec.ofNat 64 ow + BitVec.ofNat 64 (r.stride * i))) := by
+  intro i hi
+  have hsz : S.size < 2 ^ 64 := hw.held.size_lt (base, S) (List.mem_of_getElem? hj)
+  have hn8 : n ≤ 8 := by rw [hnw]; split <;> omega
+  have hpos : 0 < r.stride := by
+    have : 0 < (if r.byte then 1 else 8) := by split <;> omega
+    omega
+  have hcle : r.count.toNat ≤ r.stride * r.count.toNat := Nat.le_mul_of_pos_left _ hpos
+  have hc1 : (r.count + 1).toNat = r.count.toNat + 1 := by bv_omega
+  rw [hc1] at hi
+  cases i with
+  | zero =>
+    have e0 : base + BitVec.ofNat 64 ow + BitVec.ofNat 64 (r.stride * 0)
+        = base + BitVec.ofNat 64 ow := by
+      rw [Nat.mul_zero]
+      simp
+    rw [e0, hnw, cellAt_storeN_same]
+    exact hv
+  | succ i' =>
+    have ea : base + BitVec.ofNat 64 ow + BitVec.ofNat 64 (r.stride * (i' + 1))
+        = r.addr + BitVec.ofNat 64 (r.stride * i') := by
+      rw [hra, ← hat, Nat.mul_succ, BitVec.add_assoc, BitVec.add_assoc, ← BitVec.ofNat_add,
+        ← BitVec.ofNat_add]
+      congr 2
+      omega
+    rw [ea]
+    exact rowKept hw hj hr hn8 hwfit hrow hra hwid (.inr (by rw [hnw]; omega)) v i' (by omega)
+
 end TypedAsm.U
