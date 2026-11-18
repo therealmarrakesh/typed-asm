@@ -22,7 +22,8 @@ inductive L
 
 def rd : Asm L := .ins (.movzx .w32 .rdx .w8 (.mem (.sib (some .rbx) (some (.rax, .s1)) 0)))
 
-def code : List (Asm L) := [
+/-- The program, with a table of so many bytes. -/
+def codeOf (size : Nat) : List (Asm L) := [
   .label .start,
   .ref (.lea .w64 .rbx (.rip 0)) .table,
   .ins (.mov .w64 (.r_m .rcx (.sib (some .rsp) none 0))),        -- x: nothing known
@@ -74,20 +75,38 @@ def code : List (Asm L) := [
   .ins (.mov .w32 (.rm_i (.reg .rax) 60)),
   .ins .syscall,
   .segment .ro,
-  .label .table, .bytes (List.replicate 32 0)]
+  .label .table, .bytes (List.replicate size 0)]
+
+def code : List (Asm L) := codeOf 32
 
 asm_program code start .start stack 0
 
 #guard exitsWith 0 (runMem linux 1000 start)
 
-def blocks : List (BitVec 64 × U.LayoutS) :=
-  blocksWith code .start [(Asm.addr code base .table, plainBlock 32 false)]
+def blocksFor (size : Nat) : List (BitVec 64 × U.LayoutS) :=
+  blocksWith (codeOf size) .start
+    [(Asm.addr (codeOf size) (Asm.base (codeOf size)) .table, plainBlock size false)]
 
-def pg : Prog :=
-  { code := progCode (Asm.table base code), pre := preExits (· == 0)
-    statics := staticIn blocks (Asm.addr code base .table) }
+def pgFor (size : Nat) : Prog :=
+  { code := progCode (Asm.table (Asm.base (codeOf size)) (codeOf size)), pre := preExits (· == 0)
+    statics := staticIn (blocksFor size) (Asm.addr (codeOf size) (Asm.base (codeOf size)) .table) }
 
-def labels : List U.Label := [⟨entry, inProgram 0⟩]
+def labelsFor (size : Nat) : List U.Label := [⟨Asm.addr (codeOf size) (Asm.base (codeOf size)) .start, inProgram 0⟩]
+
+def blocks : List (BitVec 64 × U.LayoutS) := blocksFor 32
+
+def pg : Prog := pgFor 32
+
+def labels : List U.Label := labelsFor 32
+
+/-- Whether the program with a table of so many bytes is typed. -/
+def typed (size : Nat) : Bool :=
+  wholeOkWith (codeOf size) .start 0 [] (blocksFor size) (pgFor size) (labelsFor size)
+    (needFuel (pgFor size) (labelsFor size) [])
+
+#guard typed 32
+-- a table one byte shorter: the difference may be thirty-one, one past it. Refused
+#guard !typed 31
 
 asm_checked code start .start stack 0 program pg labels labels blocks blocks exits (· == 0)
 

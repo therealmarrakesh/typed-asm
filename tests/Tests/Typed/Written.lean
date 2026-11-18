@@ -13,6 +13,7 @@ import Tests.Typed.Written.OrNull
 import Tests.Typed.Written.Arena
 import Tests.Typed.Written.RetLost
 import Tests.Typed.Written.Bounds
+import Tests.Typed.Written.Related
 
 /-!
 # Programs written as an author would, each needing something of the type checker
@@ -29,6 +30,7 @@ what is written to standard output proved to be digits and an end of line; a
 function that hands its caller a page, or nought; a function that carves a
 piece off memory it is lent and gives back the rest; and, refused, a function
 that stores over the address it returns to, the store named; and indices
-bounded by what each operator does to the ranges of its operands. Each is typed as
+bounded by what each operator does to the ranges of its operands; and sums
+of low halves bounded only by a relation between their operands. Each is typed as
 it is compiled.
 -/

@@ -92,72 +92,44 @@ theorem litSum_eq (ρ : Env) : (xs : List Val) → {s : Nat} → litSum xs = som
   | .tri .. :: _, _, h => by cases h
   | .fop .. :: _, _, h => by cases h
 
-/-- What terms come to added up, as a sum of multiples of whole numbers,
-where the things known show none of them wraps. -/
-def natLins (cs : List (Lin Int)) : List Val → Option (Lin Int)
-  | [] => some ⟨[], 0⟩
-  | x :: xs =>
-    match noWrap (cs.length + 1) cs x, natLins cs xs with
-    | some P, some Q => some (Lin.addMul 1 P Q)
-    | _, _ => none
+/-- What terms come to added up, as a sum of multiples of whole numbers. -/
+def wholeSum : List Val → Lin Int
+  | [] => ⟨[], 0⟩
+  | x :: xs => Lin.addMul 1 x.alone (wholeSum xs)
 
-theorem natLins_eq {ρ : Env} {cs : List (Lin Int)} (hall : AllLe (natOf ρ) cs) :
-    (xs : List Val) → {P : Lin Int} → natLins cs xs = some P →
-    P.den (natOf ρ) = (sumNat ρ xs : Int)
-  | [], _, h => by cases h; simp [Lin.den, multDen, sumNat]
-  | x :: xs, P, h => by
-    simp only [natLins] at h
-    split at h
-    · next P' Q hP hQ =>
-      cases h
-      have e := noWrap_eq hP hall
-      have e' : natOf ρ x = (x.nat ρ : Int) := rfl
-      rw [Lin.addMul_den, natLins_eq hall xs hQ]
-      show _ = ((x.nat ρ + sumNat ρ xs : Nat) : Int)
-      omega
-    · cases h
-
-/-- The terms a list of terms is made of. -/
-def atomsOf (xs : List Val) : List Val := xs.flatMap fun x => x.lin.ms.map (·.2)
+theorem wholeSum_den (ρ : Env) : (xs : List Val) →
+    (wholeSum xs).den (natOf ρ) = (sumNat ρ xs : Int)
+  | [] => by simp [wholeSum, Lin.den, multDen, sumNat]
+  | x :: xs => by
+    have e' : natOf ρ x = (x.nat ρ : Int) := rfl
+    rw [wholeSum, Lin.addMul_den, wholeSum_den ρ xs, Val.alone_den]
+    show _ = ((x.nat ρ + sumNat ρ xs : Nat) : Int)
+    omega
 
 /-- **Whether some numbers and so much come to at most others and so
 much**, the numbers being terms: by looking, where all are written out;
-else by what is known, each way things may be, none wrapping. -/
+else by what is known, each way things may be. -/
 def sumLe (G : List (Val × TyS)) (xs : List Val) (c : Nat) (ys : List Val) (d : Nat) : Bool :=
   match litSum xs, litSum ys with
   | some a, some b => decide (a + c ≤ b + d)
   | _, _ =>
-    (know G (atomsOf xs ++ atomsOf ys)).all fun cs =>
-      match natLins cs xs, natLins cs ys with
-      | some P, some Q =>
-        entails (cs.length + 1) cs ((Lin.addMul (-1) Q P).less ((d : Int) - (c : Int)))
-      | _, _ => false
+    byKnown G (xs ++ ys) fun cs =>
+      entails (cs.length + 1) cs
+        ((Lin.addMul (-1) (wholeSum ys) (wholeSum xs)).less ((d : Int) - (c : Int)))
 
 theorem sumLe_den {ρ : Env} {Ψ' : MemTy} {n : Nat} {G : List (Val × TyS)} {xs ys : List Val}
     {c d : Nat} (h : sumLe G xs c ys d = true)
     (hg : ∀ g ∈ G, HasTy fetch sys Ψ' n (g.2.den ρ) (g.1.den ρ)) :
     sumNat ρ xs + c ≤ sumNat ρ ys + d := by
-  have gen : ((know G (atomsOf xs ++ atomsOf ys)).all fun cs =>
-      match natLins cs xs, natLins cs ys with
-      | some P, some Q =>
-        entails (cs.length + 1) cs ((Lin.addMul (-1) Q P).less ((d : Int) - (c : Int)))
-      | _, _ => false) = true → sumNat ρ xs + c ≤ sumNat ρ ys + d := fun h => by
-    obtain ⟨cs, hcs, hall⟩ := know_le (ρ := ρ) G (atomsOf xs ++ atomsOf ys) hg
-    have hc := List.all_eq_true.mp h cs hcs
-    split at hc
-    · next P Q hP hQ =>
-      have ex := natLins_eq hall xs hP
-      have ey := natLins_eq hall ys hQ
-      have b := entails_le hc hall
-      rw [Lin.less_den, Lin.addMul_den] at b
-      omega
-    · cases hc
   unfold sumLe at h
   split at h
   · next a b ha hb =>
     rw [litSum_eq ρ xs ha, litSum_eq ρ ys hb]
     exact of_decide_eq_true h
-  · exact gen h
+  · refine byKnown_of h hg fun cs hc hall => ?_
+    have b := entails_le hc hall
+    rw [Lin.less_den, Lin.addMul_den, wholeSum_den, wholeSum_den] at b
+    omega
 
 /-- **Whether one number and so much is at most another and so much.** -/
 def leS (G : List (Val × TyS)) (x : Val) (c : Nat) (y : Val) (d : Nat) : Bool :=

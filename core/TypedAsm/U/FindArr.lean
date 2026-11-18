@@ -7,25 +7,18 @@ variable {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
 /-- Whether a count of whole numbers is fewer than what a term stands for,
 by the ranges known: each way things may be. -/
 def inCount (G : List (Val × TyS)) (P : Lin Int) (c : Val) : Bool :=
-  (know G (P.ms.map (·.2) ++ c.lin.ms.map (·.2))).all fun cs =>
-    match noWrap (cs.length + 1) cs c with
-    | some Pc => entails (cs.length + 1) cs (Lin.addMul (-1) Pc ⟨P.ms, P.k + 1⟩)
-    | none => false
+  byKnown G (c :: P.ms.map (·.2)) fun cs =>
+    entails (cs.length + 1) cs (Lin.addMul (-1) c.alone ⟨P.ms, P.k + 1⟩)
 
 theorem inCount_lt {ρ : Env} {Ψ' : MemTy} {n : Nat} {G : List (Val × TyS)} {P : Lin Int} {c : Val}
     (h : inCount G P c = true)
     (hg : ∀ g ∈ G, HasTy fetch sys Ψ' n (g.2.den ρ) (g.1.den ρ)) :
     P.den (natOf ρ) < natOf ρ c := by
-  obtain ⟨cs, hcs, hall⟩ := know_le (ρ := ρ) G _ hg
-  have hc := List.all_eq_true.mp h cs hcs
-  split at hc
-  · next Pc hPc =>
-    have e := noWrap_eq hPc hall
-    have a := entails_le hc hall
-    rw [Lin.addMul_den] at a
-    simp only [Lin.den] at a e ⊢
-    omega
-  · cases hc
+  refine byKnown_of h hg fun cs hc hall => ?_
+  have a := entails_le hc hall
+  rw [Lin.addMul_den, Val.alone_den] at a
+  simp only [Lin.den] at a ⊢
+  omega
 
 /-- The fact a context has that an address is one of a row of values, so
 many along and fewer than there are: the first such. -/
@@ -80,29 +73,19 @@ theorem findArr_spec {ρ : Env} {Ψ' : MemTy} {n : Nat} {G : List (Val × TyS)} 
 all fewer than what a term stands for, by the ranges known: each way
 things may be. -/
 def suffixOk (G : List (Val × TyS)) (m : Nat) (Pj : Lin Int) (c c' : Val) : Bool :=
-  (know G (Pj.ms.map (·.2) ++ c.lin.ms.map (·.2) ++ c'.lin.ms.map (·.2))).all fun cs =>
-    match noWrap (cs.length + 1) cs c, noWrap (cs.length + 1) cs c' with
-    | some Pc, some Pc' =>
-      entails (cs.length + 1) cs
-        (Lin.addMul (-1) Pc (Lin.addMul (m : Int) Pc' ⟨Pj.ms, Pj.k + 1 - (m : Int)⟩))
-    | _, _ => false
+  byKnown G (c :: c' :: Pj.ms.map (·.2)) fun cs =>
+    entails (cs.length + 1) cs
+      (Lin.addMul (-1) c.alone (Lin.addMul (m : Int) c'.alone ⟨Pj.ms, Pj.k + 1 - (m : Int)⟩))
 
 theorem suffixOk_le {ρ : Env} {Ψ' : MemTy} {n : Nat} {G : List (Val × TyS)} {m : Nat}
     {Pj : Lin Int} {c c' : Val} (h : suffixOk G m Pj c c' = true)
     (hg : ∀ g ∈ G, HasTy fetch sys Ψ' n (g.2.den ρ) (g.1.den ρ)) :
     Pj.den (natOf ρ) + (m : Int) * natOf ρ c' + 1 - (m : Int) ≤ natOf ρ c := by
-  obtain ⟨cs, hcs, hall⟩ := know_le (ρ := ρ) G _ hg
-  have hc := List.all_eq_true.mp h cs hcs
-  split at hc
-  · next Pc Pc' hPc hPc' =>
-    have e := noWrap_eq hPc hall
-    have e' := noWrap_eq hPc' hall
-    have a := entails_le hc hall
-    rw [Lin.addMul_den, Lin.addMul_den] at a
-    simp only [Lin.den] at a e e' ⊢
-    rw [e, e']
-    omega
-  · cases hc
+  refine byKnown_of h hg fun cs hc hall => ?_
+  have a := entails_le hc hall
+  rw [Lin.addMul_den, Lin.addMul_den, Val.alone_den, Val.alone_den] at a
+  simp only [Lin.den] at a ⊢
+  omega
 
 /-- Whether a thing wanted is that a value is the address of a row, and a
 row is known that it is the rest of: one starting so many before it, of at

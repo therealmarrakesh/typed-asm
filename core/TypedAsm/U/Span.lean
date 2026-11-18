@@ -28,69 +28,6 @@ variable {fetch : Fetch} {sys : Syscall}
 
 /-! ## The least and the most a sum of multiples can be -/
 
-/-- A term standing for a number at most the sum. No sum of multiples has a
-number written out among its terms, so it is none of them. -/
-def underMark : Val := .lit 0
-
-/-- A term standing for a number at least the sum. -/
-def overMark : Val := .lit 1
-
-/-- The terms the things known are of, but for the two marks. -/
-def termsOf (cs : List (Lin Int)) : List Val :=
-  ((cs.flatMap fun c => c.ms.map (·.2)).eraseDups).filter fun t =>
-    !(t == underMark) && !(t == overMark)
-
-/-- The things known, with a number under the sum and one over it, every
-other term done away with. -/
-def project (cs : List (Lin Int)) (P : Lin Int) : List (Lin Int) :=
-  let all := Lin.addMul (-1) P (Lin.leaf underMark) :: Lin.addMul (-1) (Lin.leaf overMark) P :: cs
-  (termsOf all).foldl (fun l t => elim t l) all
-
-/-- The lesser of a bound and another there may not be. -/
-def tighter (pick : Int → Int → Int) : Option Int → Int → Option Int
-  | some x, y => some (pick x y)
-  | none, y => some y
-
-/-- The most the number under the sum is left free to be. -/
-def mostOf (pr : List (Lin Int)) : Option Int :=
-  pr.foldl (fun best c =>
-    if coeffOf overMark c.ms = 0 && decide (0 < coeffOf underMark c.ms) then
-      tighter min best ((-c.k) / coeffOf underMark c.ms)
-    else best) none
-
-/-- The least the number over the sum is left free to be. -/
-def leastOf (pr : List (Lin Int)) : Option Int :=
-  pr.foldl (fun best c =>
-    if coeffOf underMark c.ms = 0 && decide (coeffOf overMark c.ms < 0) then
-      tighter max best (-((-c.k) / (-(coeffOf overMark c.ms))))
-    else best) none
-
-/-- **The least and the most a sum of multiples can be**, the things known
-being so: guessed, and then shown. -/
-def boundsOf (cs : List (Lin Int)) (P : Lin Int) : Option (Int × Int) :=
-  match leastOf (project cs P), mostOf (project cs P) with
-  | some lo, some hi =>
-    if entails (cs.length + 1) cs (Lin.from lo P) && entails (cs.length + 1) cs (P.less hi) then
-      some (lo, hi)
-    else none
-  | _, _ => none
-
-theorem boundsOf_le {f : Val → Int} {cs : List (Lin Int)} {P : Lin Int} {lo hi : Int}
-    (h : boundsOf cs P = some (lo, hi)) (hall : AllLe f cs) : lo ≤ P.den f ∧ P.den f ≤ hi := by
-  unfold boundsOf at h
-  split at h
-  · split at h
-    · next hc =>
-      cases h
-      rw [Bool.and_eq_true] at hc
-      have a := entails_le hc.1 hall
-      have b := entails_le hc.2 hall
-      rw [Lin.from_den] at a
-      rw [Lin.less_den] at b
-      omega
-    · cases h
-  · cases h
-
 /-- The least and the most over every way things may be. -/
 def boundsAll (one : List (Lin Int) → Option (Int × Int)) :
     List (List (Lin Int)) → Option (Int × Int)
@@ -137,8 +74,7 @@ theorem boundsAll_mem {one : List (Lin Int) → Option (Int × Int)} :
 what the context knows: each way things may be, its whole number is seen
 not to wrap, and the least and the most of that are found. -/
 def CtxS.within (Γ : CtxS) (d : Val) : Option (Nat × Nat) :=
-  match boundsAll (fun cs => (noWrap (cs.length + 1) cs d).bind (boundsOf cs))
-      (know Γ.known (d.lin.ms.map (·.2))) with
+  match boundsAll (fun cs => boundsOf cs d.alone) (knowWays Γ.known [d]) with
   | some (lo, hi) => some (lo.toNat, hi.toNat)
   | none => none
 
@@ -150,18 +86,14 @@ theorem CtxS.within_den {ρ : Env} {Γ : CtxS} {d : Val} {lo hi : Nat}
   split at h
   · next l u hb =>
     cases h
-    obtain ⟨cs, hcs, hall⟩ := know_le (ρ := ρ) (fetch := fetch) (sys := sys) (Ψ' := Ψ') (n := n)
-      Γ.known (d.lin.ms.map (·.2))
+    obtain ⟨cs, hcs, hall⟩ := knowWays_le (ρ := ρ) (fetch := fetch) (sys := sys) (Ψ' := Ψ')
+      (n := n) Γ.known [d]
       (fun g hgm => hg (g.1.den ρ, g.2.den ρ) (List.mem_map.mpr ⟨g, hgm, rfl⟩))
     obtain ⟨l', u', hone, hl, hu⟩ := boundsAll_mem _ hb cs hcs
-    cases hP : noWrap (cs.length + 1) cs d with
-    | none => rw [hP] at hone; cases hone
-    | some P =>
-      rw [hP] at hone
-      have e := noWrap_eq hP hall
-      have b := boundsOf_le hone hall
-      have e' : natOf ρ d = ((d.den ρ).toNat : Int) := rfl
-      omega
+    have b := boundsOf_le hone hall
+    rw [Val.alone_den] at b
+    have e' : natOf ρ d = ((d.den ρ).toNat : Int) := rfl
+    omega
   · cases h
 
 /-- **The most a value can be**, as a number without sign. -/

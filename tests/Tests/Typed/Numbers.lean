@@ -47,6 +47,67 @@ example : rangeHolds [(.var 0, .range 0 4)] (.add (.var 0) (.lit 1)) 0 4 = false
 example : rangeHolds [(.var 0, .range 0 4), (.var 0, .range 4 2)]
     (.add (.var 0) (.lit 3)) 7 5 = true := by decide +kernel
 
+/-! ## Values that wrap
+
+A term an operator made by wrapping is the sum it was made from, less so
+many times what it holds. How many times is found from what is known; where
+it may be several, each is gone into only if the question needs it. These
+are run as the checker is run, by its compiled code. -/
+
+def wx : Val := .var 1
+def wy : Val := .var 2
+def wa : Val := .var 3
+def wb : Val := .var 4
+def wc : Val := .var 5
+def lo32 (v : Val) : Val := .un (.trunc .w32) v
+def add32 (u v : Val) : Val := .fop (.alu .add .w32) (.var 0) u v
+def sub32 (u v : Val) : Val := .fop (.alu .sub .w32) (.var 0) u v
+
+-- a thing known of a sum that may wrap still says where what was added to lies:
+-- x + 5 from 10 to 20, so x from 5 to 15, and no closer
+#guard rangeHolds [(.add wx (.lit 5), .range 10 20)] wx 5 15
+#guard !(rangeHolds [(.add wx (.lit 5), .range 10 20)] wx 6 15)
+-- a difference of two values nothing is known of may wrap: it need not be at
+-- most the first. Where the second is at most the first, it is
+#guard !(upToHolds [] (.add wx (.un (.neg .w64) wy)) wx false)
+#guard upToHolds [(wy, .upTo wx false)] (.add wx (.un (.neg .w64) wy)) wx false
+-- one less than a value that may be nought is not at most nine; of a value at
+-- least one, it is
+#guard !(rangeHolds [(wx, .range 0 10)] (.add wx (.lit (-1))) 0 9)
+#guard rangeHolds [(wx, .range 1 10)] (.add wx (.lit (-1))) 0 9
+-- and of the value that may be nought, it is at most nine or the largest value
+-- there is: seen by going into both ways it may be
+#guard rangeHolds [(wx, .range 0 10)] (.add wx (.lit (-1))) (-1) 9
+-- a value masked to its low byte is at most the value, however many times it is
+-- off it; the value is not at most the byte
+#guard upToHolds [] (.fop (.alu .and .w32) (.var 0) wx (.lit 0xff)) wx false
+#guard !(upToHolds [] wx (.fop (.alu .and .w32) (.var 0) wx (.lit 0xff)) false)
+-- four low halves added one to the next, each sum a low half: the last is at
+-- most the four added as whole numbers, and less by at most three wraps; not
+-- by one fewer than that
+#guard sumLe [] [add32 (add32 (add32 (lo32 wa) (lo32 wb)) (lo32 wc)) (lo32 wx)] 0
+    [lo32 wa, lo32 wb, lo32 wc, lo32 wx] 0
+#guard sumLe [] [lo32 wa, lo32 wb, lo32 wc, lo32 wx] 0
+    [add32 (add32 (add32 (lo32 wa) (lo32 wb)) (lo32 wc)) (lo32 wx)] 12884901888
+#guard !(sumLe [] [lo32 wa, lo32 wb, lo32 wc, lo32 wx] 0
+    [add32 (add32 (add32 (lo32 wa) (lo32 wb)) (lo32 wc)) (lo32 wx)] 12884901887)
+-- a sum of low halves need not be at least either of them
+#guard !(upToHolds [] (lo32 wa) (add32 (lo32 wa) (lo32 wb)) false)
+-- a low part settled only by what another, settled, says: a byte less 48 at 32
+-- bits, cut again, is at most nine; so the byte is a digit, and no closer
+#guard rangeHolds [(lo32 (sub32 wx (.lit 48)), .range 0 9), (wx, .range 0 255)] wx 48 57
+#guard !(rangeHolds [(lo32 (sub32 wx (.lit 48)), .range 0 9), (wx, .range 0 255)] wx 49 57)
+-- a sum of low halves known to be three, of a value below two to the
+-- thirty-second and one at most two: it did not wrap, so the first is from one
+-- to three, and no closer
+#guard rangeHolds [(add32 wa wb, .range 3 3), (wa, .range 0 4294967295), (wb, .range 0 2)]
+    wa 1 3
+#guard !(rangeHolds [(add32 wa wb, .range 3 3), (wa, .range 0 4294967295), (wb, .range 0 2)]
+    wa 2 3)
+-- a value shifted left is so many times it, where that does not wrap
+#guard rangeHolds [(wx, .range 0 100)] (.un (.shl 3) wx) 0 800
+#guard !(rangeHolds [(wx, .range 0 100)] (.un (.shl 3) wx) 0 799)
+
 /-! ## Between what numbers, by everything known -/
 
 /-- The stack, `rdx` at most so much, and `rcx` below `rdx`. -/
@@ -61,8 +122,9 @@ example : (Pbelow 4).within (.bvar 0 2) = some (1, 4) := by decide +kernel
 -- at most twenty-four more
 example : (Pbelow 4).spanFrom (.add (.add (.bvar 0 16) (.lit 32)) (.un (.shl 3) (.bvar 0 1)))
     (.bvar 0 16) = some (32, 24) := by decide +kernel
--- an address nothing ties to the region: no answer
-example : (Pbelow 4).spanFrom (.bvar 0 5) (.bvar 0 16) = none := by decide +kernel
+-- an address nothing ties to the region: anywhere at all
+example : (Pbelow 4).spanFrom (.bvar 0 5) (.bvar 0 16) = some (0, 18446744073709551615) := by
+  decide +kernel
 
 /-- `mov rax, [rsp + rcx*8]`, and the program ends. -/
 def codeBelow : List (BitVec 64 × Instr × BitVec 64) :=
