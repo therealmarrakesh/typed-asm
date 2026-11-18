@@ -87,7 +87,8 @@ theorem hello (args : List (List Byte)) (w : World) :
         s'.getReg .rax = 1 → s'.getReg .rdi = 1 ∧ s'.offered = message) :=
   whole_outputs checked (Q := fun c => c = 0) (q := fun c => c == 0) (fun c h => by simpa using h)
     (R := fun fd bs => fd = 1 ∧ bs = message) (r := fun fd b => fd == 1 && b == message)
-    (fun fd bs h => by simpa using h) saidOk rfl rfl (LawsHold.nil _) args w
+    (fun fd bs h => by simpa using h) (each := none) (fun _ he => nomatch he) saidOk rfl rfl
+    (LawsHold.nil _) args w
 end HelloU
 
 /-! ## A program end to end, with a stack

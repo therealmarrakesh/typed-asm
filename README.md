@@ -147,7 +147,8 @@ What is not there:
 - A label may say what each of a row of bytes or values in memory the code
   holds is (`rows`), and a store that puts one more of that kind at either
   end keeps it so: a number written out digit by digit is known to be
-  digits. What is said of a row is let go by a store elsewhere than the
+  digits, and with `writes … each e` the program is proved to write only
+  bytes `e` takes, whatever the number. What is said of a row is let go by a store elsewhere than the
   region the row is in, by a system call that stores or maps memory, and
   across a call; and it says of each value its own type, not how the values
   stand to one another: that a row is sorted is not said.

@@ -152,6 +152,10 @@ With `writes r said sd` after that, where `pg` asks besides that each
 says the program's data holds (`pre := preOut sd q r`), it states
 `said_ok`, that the data holds those bytes; `safe_exits_writes_in`; and
 with `safe` and `exits`, the theorem `writes`.
+With `each e` after `said sd` (and `pre := preOut sd q r (some e)`), a
+`write` may offer besides any bytes each of which `e` takes for the
+descriptor: bytes the program stored that rows its labels say are each of a
+kind.
 
 `blocks bs` after the labels gives the blocks the program says its segments
 are; where it is left out, each segment is one block of plain bytes.
@@ -171,12 +175,13 @@ Where the check fails, the error says why, in the program's terms
 each instruction or label that is refused and what is not so there. -/
 syntax "asm_checked " ident &" start " term:max &" stack " term:max &" program " term:max
   &" labels " term:max (&" blocks " term:max)? (&" kinds " term:max)?
-  (&" steps " term:max)? (&" exits " term:max)? (&" writes " term:max &" said " term:max)?
+  (&" steps " term:max)? (&" exits " term:max)?
+  (&" writes " term:max &" said " term:max (&" each " term:max)?)?
   (&" laws " term:max)? : command
 
 macro_rules
   | `(asm_checked $code start $l stack $n program $pg labels $ls $[blocks $bs?]? $[kinds $ks?]?
-      $[steps $st?]? $[exits $q?]? $[writes $r? said $sd?]? $[laws $lw?]?) => do
+      $[steps $st?]? $[exits $q?]? $[writes $r? said $sd? $[each $e?]?]? $[laws $lw?]?) => do
     let checked := mkIdent `checked
     let startEq := mkIdent `start_eq
     let safeIn := mkIdent `safe_in
@@ -212,6 +217,19 @@ macro_rules
           $startArgs args = startIn $code $l $n args ($startArgs args).world :=
         startArgs_eq $code $l $n args))
     if let (some q, some r, some sd) := (q?, r?, sd?) then
+      let e? := e?.join
+      let rT ← match e? with
+        | some e => `(fun fd bytes => $r fd bytes = true ∨ bytes.all ($e fd) = true)
+        | none => `(fun fd bytes => $r fd bytes = true)
+      let hrT ← match e? with
+        | some _ => `(fun _ _ h => Or.inl h)
+        | none => `(fun _ _ h => h)
+      let heT ← match e? with
+        | some _ => `(fun _ he _ _ h => by cases he; exact Or.inr h)
+        | none => `(fun _ he => nomatch he)
+      let eachT ← match e? with
+        | some e => `(some $e)
+        | none => `(none)
       cmds := cmds.push (← `(/-- The bytes the program says its data holds are the bytes its
         blocks say. -/
         theorem $saidOk : saidCheck (denBlocks $bs) $sd = true := by native_decide))
@@ -222,10 +240,10 @@ macro_rules
         theorem $safeExitsWritesIn (args : List (List Byte)) (w : World) :
             SafeMem linux (startIn $code $l $n args w) ∧
               ExitsOnly $fetch (fun c => ($q : BitVec 32 → Bool) c = true) (startIn $code $l $n args w) ∧
-              WritesOnly $fetch (fun fd bytes => $r fd bytes = true)
+              WritesOnly $fetch $rT
                 (startIn $code $l $n args w) :=
           whole_outputs $checked (Q := fun c => ($q : BitVec 32 → Bool) c = true) (q := ($q : BitVec 32 → Bool)) (fun _ h => h)
-            (R := fun fd bytes => $r fd bytes = true) (r := $r) (fun _ _ h => h) $saidOk rfl rfl
+            (R := $rT) (r := $r) (each := $eachT) $hrT $heT $saidOk rfl rfl
             $lw args w))
       cmds := cmds.push (← `(/-- So the program as it is run, with any arguments, is safe. -/
         theorem $safe (args : List (List Byte)) : SafeMem linux ($startArgs args) :=
@@ -236,7 +254,7 @@ macro_rules
           $startEq args ▸ ($safeExitsWritesIn args ($startArgs args).world).2.1))
       cmds := cmds.push (← `(/-- And at a `write` offers only what is as said. -/
         theorem $writes (args : List (List Byte)) :
-            WritesOnly $fetch (fun fd bytes => $r fd bytes = true) ($startArgs args) :=
+            WritesOnly $fetch $rT ($startArgs args) :=
           $startEq args ▸ ($safeExitsWritesIn args ($startArgs args).world).2.2))
       return mkNullNode cmds
     if r?.isSome then

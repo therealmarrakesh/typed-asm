@@ -269,7 +269,8 @@ def tidy : List Refusal → List Refusal → List Refusal
 
 /-- A row of values in memory, to be read. -/
 def rowSay (r : RowS) (nm : Names) : String :=
-  s!"{r.count.say nm} {if r.byte then "bytes" else "values"} in a row from {r.addr.say nm}" ++
+  s!"{r.count.say nm} {if r.byte then (if r.count == .lit 1 then "byte" else "bytes")
+    else (if r.count == .lit 1 then "value" else "values")} in a row from {r.addr.say nm}" ++
     (if r.stride = r.width then "" else s!", {r.stride} bytes apart") ++
     s!", each {r.ty.say nm}"
 
@@ -381,8 +382,12 @@ def stepWhy (nm : Names) (pg : Prog) (path : List Was) (Γ : CtxS) (k : Nat) (a 
           else if nr = 1 then
             ("the bytes written here are not shown to be as wanted",
               ["wanted: a descriptor written out, and bytes the program's data is said to " ++
-                  "hold or the program has stored",
-                regSay path Γ .rdi nm, regSay path Γ .rsi nm, regSay path Γ .rdx nm])
+                  "hold or the program has stored; or rows of bytes from the address, as many " ++
+                  "as are written, each of a kind that may be written",
+                regSay path Γ .rdi nm, regSay path Γ .rsi nm, regSay path Γ .rdx nm] ++
+                (match Γ.rows with
+                 | [] => []
+                 | gs => ["rows said there: " ++ "; ".intercalate (gs.map fun g => rowSay g nm)]))
           else
             ("the system call here is not seen to meet what is asked of the program",
               [regSay path Γ .rax nm])

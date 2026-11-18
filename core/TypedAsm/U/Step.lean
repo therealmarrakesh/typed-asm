@@ -1150,13 +1150,81 @@ theorem rowAfter_sound {ρ : Env} {ent : TyS → TyS → Bool} (he : EntSound fe
     · cases h
   · cases h
 
+/-- **The row a store makes**: of one value, the one stored, of the least
+and the most the context shows it to be; where it shows anything. So the
+bytes a program stores one by one are each known as they are stored, and
+a label may say so of them. -/
+def newRow (Γ : CtxS) (wa : Val) (n : Nat) (v : Val) : List RowS :=
+  if n = 1 ∨ n = 8 then
+    match Γ.within (cellVal (decide (n = 1)) v) with
+    | some (lo, hi) =>
+      if hi < 18446744073709551616 ∧ (0 < lo ∨ hi < 18446744073709551615) then
+        [⟨wa, .lit 1, n, decide (n = 1), .range (BitVec.ofNat 64 lo) (BitVec.ofNat 64 hi)⟩]
+      else []
+    | none => []
+  else []
+
+theorem newRow_sound {ρ : Env} {Γ : CtxS} {wa v : Val} {n : Nat} {k : Nat} {Ψ' : MemTy}
+    {s : State} (hw : WellTyped fetch sys Ψ' k (Γ.den ρ) s) :
+    ∀ r ∈ (newRow Γ wa n v).map (RowS.den ρ), ∀ i, i < r.count.toNat →
+      HasTy fetch sys Ψ' k r.ty
+        (cellAt (storeN s n (wa.den ρ) (v.den ρ)) r.byte (r.addr + BitVec.ofNat 64 (r.stride * i))) := by
+  intro r hr i hi
+  obtain ⟨r', hr', rfl⟩ := List.mem_map.mp hr
+  unfold newRow at hr'
+  split at hr'
+  · next hn =>
+    split at hr'
+    · next lo hi' hwin =>
+      split at hr'
+      · next hcond =>
+        rw [List.mem_singleton] at hr'
+        subst hr'
+        have hi0 : i = 0 := by
+          have h1 : (BitVec.ofNat 64 1 : BitVec 64).toNat = 1 := rfl
+          have : i < (BitVec.ofNat 64 1 : BitVec 64).toNat := hi
+          omega
+        subst hi0
+        have hb := CtxS.within_den hwin hw.known
+        have hrange : ∀ x : BitVec 64, lo ≤ x.toNat → x.toNat ≤ hi' →
+            HasTy fetch sys Ψ' k (.range (BitVec.ofNat 64 lo) (BitVec.ofNat 64 hi')) x := by
+          intro x h1 h2
+          refine hasTy_range.mpr ?_
+          have hx := x.isLt
+          have hhi : hi' < 2 ^ 64 := hcond.1
+          have hlo : lo < 2 ^ 64 := by omega
+          rw [BitVec.le_def, BitVec.toNat_sub, BitVec.toNat_sub, BitVec.toNat_ofNat,
+            BitVec.toNat_ofNat, Nat.mod_eq_of_lt hlo, Nat.mod_eq_of_lt hhi]
+          omega
+        have ea : wa.den ρ + BitVec.ofNat 64 (n * 0) = wa.den ρ := by simp
+        show HasTy fetch sys Ψ' k (.range (BitVec.ofNat 64 lo) (BitVec.ofNat 64 hi'))
+          (cellAt (storeN s n (wa.den ρ) (v.den ρ)) (decide (n = 1))
+            (wa.den ρ + BitVec.ofNat 64 (n * 0)))
+        rw [ea]
+        rcases hn with rfl | rfl
+        · have hc := cellAt_storeN_same s (wa.den ρ) (v.den ρ) true
+          have hv := cellVal_den ρ true v
+          simp only [↓reduceIte] at hc hv
+          show HasTy fetch sys Ψ' k _ (cellAt (storeN s 1 (wa.den ρ) (v.den ρ)) true (wa.den ρ))
+          rw [hc, ← hv]
+          exact hrange _ hb.1 hb.2
+        · have hc := cellAt_storeN_same s (wa.den ρ) (v.den ρ) false
+          have hv := cellVal_den ρ false v
+          simp only [Bool.false_eq_true, ↓reduceIte] at hc hv
+          show HasTy fetch sys Ψ' k _ (cellAt (storeN s 8 (wa.den ρ) (v.den ρ)) false (wa.den ρ))
+          rw [hc, ← hv]
+          exact hrange _ hb.1 hb.2
+      · cases hr'
+    · cases hr'
+  · cases hr'
+
 /-- **What is so of rows once `n` bytes at an address are stored**: of each
 row the context has, what `rowAfter` leaves; nothing where the bytes are
 not found in a region held. -/
 def rowsAfter (ent : TyS → TyS → Bool) (Γ : CtxS) (wa : Val) (n : Nat) (v : Val) : List RowS :=
   if n ≤ 8 then
     match findHeld2 Γ.known wa [] n Γ.held with
-    | some (j, _, _, ow) => Γ.rows.filterMap (rowAfter ent Γ j ow n v wa)
+    | some (j, _, _, ow) => Γ.rows.filterMap (rowAfter ent Γ j ow n v wa) ++ newRow Γ wa n v
     | none => []
   else []
 
@@ -1174,9 +1242,11 @@ theorem rowsAfter_sound {ρ : Env} {ent : TyS → TyS → Bool} (he : EntSound f
     split at hr'
     · next j b S ow hfind =>
       obtain ⟨hl, hin, ha⟩ := findHeld2_spec (ρ := ρ) Γ.held hfind (knownS hw.known)
-      obtain ⟨r0, hr0, hra⟩ := List.mem_filterMap.mp hr'
-      simp only [sumNat, Nat.zero_add] at hin
-      exact rowAfter_sound he hra hr0 hl ha hn hw hin
+      rcases List.mem_append.mp hr' with hr' | hr'
+      · obtain ⟨r0, hr0, hra⟩ := List.mem_filterMap.mp hr'
+        simp only [sumNat, Nat.zero_add] at hin
+        exact rowAfter_sound he hra hr0 hl ha hn hw hin
+      · exact newRow_sound hw _ (List.mem_map.mpr ⟨_, hr', rfl⟩)
     · cases hr'
   · cases hr'
 

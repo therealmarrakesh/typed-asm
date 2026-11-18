@@ -76,15 +76,24 @@ def startWith (args : List String) : State := startArgs (args.map bytesOf)
 #guard (runMemFinal linux 10000 (startWith ["p", "a", "b"])).1.world.output == bytesOf "3\n"
 #guard (runMemFinal linux 10000 (startWith ((List.range 12).map toString))).1.world.output == bytesOf "12\n"
 
-def pg : Prog := { code := progCode (Asm.table base code), pre := preExits (· == 0) }
+/-- A byte that is a digit or the end of a line, written to standard output. -/
+def digitOrLine (fd : BitVec 64) (b : BitVec 8) : Bool :=
+  fd == 1 && ((48 ≤ b && b ≤ 57) || b == 10)
+
+def pg : Prog :=
+  { code := progCode (Asm.table base code)
+    pre := preOut [] (· == 0) (fun _ _ => false) (some digitOrLine) }
 
 def labels : List U.Label :=
   [⟨entry, inProgram 4⟩,
    ⟨Asm.addr code base .digit, inProgram 4 (pushed := [.bytes 32])
       (regs := [(.r8, 10)]) (known := [(.was .rcx, .upTo (.lit 31) false)])
       (rows := [bytesAt (stackAt 4 [.bytes 32] (.was .rcx))
-        (.add (.lit 31) (-(Val.was .rcx))) (.range 48 57)])⟩]
+        (.add (.lit 31) (-(Val.was .rcx))) (.range 48 57),
+        bytesAt (stackAt 4 [.bytes 32] 31) 1 (.range 10 10)])⟩]
 
 asm_checked code start .start stack 4 program pg labels labels exits (· == 0)
+  writes (fun _ _ => false) said [] each digitOrLine
 
 end Tests.Written.Digits
+

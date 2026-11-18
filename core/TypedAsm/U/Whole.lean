@@ -454,8 +454,10 @@ theorem whole_outputs {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat ×
     (h : wholeOkWith code l n ks bs pg labels fuel = true)
     {Q : BitVec 32 → Prop} {q : BitVec 32 → Bool} (hq : ∀ c, q c = true → Q c)
     {R : BitVec 64 → List (BitVec 8) → Prop} {r : BitVec 64 → List (BitVec 8) → Bool}
-    (hr : ∀ fd bs, r fd bs = true → R fd bs) {said : List (BitVec 64 × List (BitVec 8))}
-    (hsaid : saidCheck (denBlocks bs) said = true) (hpg : pg.pre = preOut said q r)
+    (hr : ∀ fd bs, r fd bs = true → R fd bs) {each : Option (BitVec 64 → BitVec 8 → Bool)}
+    (heach : ∀ e, each = some e → ∀ fd bs, bs.all (e fd) = true → R fd bs)
+    {said : List (BitVec 64 × List (BitVec 8))}
+    (hsaid : saidCheck (denBlocks bs) said = true) (hpg : pg.pre = preOut said q r each)
     (hpk : pg.kinds = kindsOf ks) (hlaws : LawsHold pg.fns pg.laws) :
     ∀ args w, SafeMem linux (startIn code l n args w) ∧
       (∀ s', TypedAsm.Steps (Asm.fetch (Asm.base code) code) linux (startIn code l n args w) s' →
@@ -466,12 +468,12 @@ theorem whole_outputs {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat ×
         s'.getReg .rax = 1 → R (s'.getReg .rdi) s'.offered) := fun args w =>
   have f := wholeOk_facts h args w
   have hso := saidOk_of_check (kinds := kindsDen ks) f.nd hsaid
-  have o := outputs_of_checked hq hr hso hpg f.hcode (hpk ▸ f.kindsOk) (f.statics _ _) f.ext f.wf
+  have o := outputs_of_checked hq hr heach hso hpg f.hcode (hpk ▸ f.kindsOk) (f.statics _ _) f.ext f.wf
     f.check f.entry rfl { fn := pg.fns } (startFam (startIn code l n args w) n args) rfl hlaws
     fun k H =>
       f.typed _ _ k fun a E hj ρ fam hfn =>
         justifyF_sound (D := outDesc Q R) ((linux_describes.exitsOnly Q).writesOnly R) rfl
-          (by rw [hpg]; exact preOut_sound hq hr hso) pg.index_mem (fun _ _ => labelIx_find) f.hcode (hpk ▸ f.kindsOk)
+          (by rw [hpg]; exact preOut_sound hq hr heach hso) pg.index_mem (fun _ _ => labelIx_find) f.hcode (hpk ▸ f.kindsOk)
           (f.statics _ _) hlaws H fuel 0 a E hj ρ fam hfn
   ⟨SafeMem.of_safe linux_frame f.loaded o.1, o.2.1, o.2.2⟩
 

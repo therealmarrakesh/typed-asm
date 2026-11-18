@@ -21,7 +21,8 @@ bytes with its indices masked; a sort in place of a row that may be
 written; words counted, the count's low byte the status; four bytes stored into a
 number the program made, the number known still; a count chosen by a
 conditional move; a function that moves its pointer through a buffer lent;
-a number written out in digits, each byte stored known to be a digit; a
+a number written out in digits, each byte stored known to be a digit and
+what is written to standard output proved to be digits and an end of line; a
 function that hands its caller a page, or nought. Each is typed as
 it is compiled.
 -/
