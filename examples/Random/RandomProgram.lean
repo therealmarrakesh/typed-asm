@@ -49,7 +49,7 @@ namespace Random
 
 inductive Label
   | start | fail | buffer
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 /-- The buffer's bytes as they sit in the file: 512 full stops. -/
 def bufferBytes : List Byte := List.replicate 512 0x2e

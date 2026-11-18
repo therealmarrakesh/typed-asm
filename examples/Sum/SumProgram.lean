@@ -44,7 +44,7 @@ namespace Sum
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive Label
   | start | afterCall | sum | loop | done | array
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 def array : List (BitVec 64) := [3, 1, 4, 1, 5]
 

@@ -459,6 +459,39 @@ def TyS.isCode : TyS → Bool
   | .code .. => true
   | _ => false
 
+/-- **A program's labels, to be found quickly**: in order, and a table
+from an address to how far along the first label there is. It is made once
+for a program. -/
+structure LabelIx where
+  arr : Array Label
+  byAddr : Trie
+
+/-- The index of some labels. -/
+def labelIx (labels : List Label) : LabelIx :=
+  ⟨labels.toArray, Trie.ofAddrs (labels.map (·.addr)) 0 .nil⟩
+
+/-- The label at an address: found by the table, looked at, and taken only
+if it is at the address. -/
+def LabelIx.find (lx : LabelIx) (a : BitVec 64) : Option Label :=
+  match lx.byAddr.find 64 a.toNat with
+  | some i =>
+    match lx.arr[i]? with
+    | some l => if l.addr = a then some l else none
+    | none => none
+  | none => none
+
+theorem labelIx_find {labels : List Label} {a : BitVec 64} {l : Label}
+    (h : (labelIx labels).find a = some l) : l ∈ labels ∧ l.addr = a := by
+  unfold LabelIx.find at h
+  split at h
+  · split at h
+    · next l₀ hl₀ =>
+      split at h
+      · next ha => cases h; exact ⟨List.mem_toArray.mp (Array.mem_of_getElem? hl₀), ha⟩
+      · cases h
+    · cases h
+  · cases h
+
 /-- Whether a walk leaves nothing to be shown: every instruction it stepped
 over is seen not to fault of itself, every jump is decided, and every way
 through it ends the program, or stops at a label in a context that may be
@@ -466,10 +499,11 @@ regarded as a member of the label's family, or goes to a value known to be
 code wanting a family the context reached may be regarded as a member of.
 `cc` is how a context is made ready and regarded; `k` is a name no term of
 the walk yet mentions. -/
-def Walk.closes (cc : CtxS → CtxS → Nat → Option (CtxS × OpenL)) (labels : List Label) :
+def Walk.closes (cc : CtxS → CtxS → Nat → Option (CtxS × OpenL))
+    (findL : BitVec 64 → Option Label) :
     Nat → Walk → Bool
   | k, .stop a Γ =>
-    match labels.find? fun l => l.addr == a with
+    match findL a with
     | some l => (cc l.pat Γ k).isSome
     | none => false
   | k, .arrive t Γ =>
@@ -480,31 +514,32 @@ def Walk.closes (cc : CtxS → CtxS → Nat → Option (CtxS × OpenL)) (labels 
          | some (Γ', _) => Γ'.known.contains (tv, .code regs flags held known rest)
          | none => false)
     | _ => false
-  | _, .step _ _ _ k rest => rest.closes cc labels (k + 1)
-  | _, .sys k rest => rest.closes cc labels (k + 2)
-  | _, .sys2 k a b => a.closes cc labels (k + 2) && b.closes cc labels (k + 2)
+  | _, .step _ _ _ k rest => rest.closes cc findL (k + 1)
+  | _, .sys k rest => rest.closes cc findL (k + 2)
+  | _, .sys2 k a b => a.closes cc findL (k + 2) && b.closes cc findL (k + 2)
   | _, .ends => true
   | _, .vacuous => true
   | k, .branch c fl taken fall =>
-    fl.decides c && taken.closes cc labels k && fall.closes cc labels k
+    fl.decides c && taken.closes cc findL k && fall.closes cc findL k
 
 /-- Such a walk holds, where the code at each label is typed for every
 member of the label's family. -/
 theorem Walk.holds_of_closes {n : Nat} {labels : List Label}
+    {findL : BitVec 64 → Option Label}
+    (hfl : ∀ a l, findL a = some l → l ∈ labels ∧ l.addr = a)
     {fns : Nat → BitVec 64 → BitVec 64 → BitVec 64}
     {cc : CtxS → CtxS → Nat → Option (CtxS × OpenL)} (hcc : CloseSound fetch sys Ψ n fns cc)
     (H : ∀ l ∈ labels, ∀ (ρ' : Env) (fam : Fam), ρ'.fn = fns →
       Ok fetch sys Ψ n l.addr (l.pat.den { ρ' with bound := fam :: ρ'.bound })) :
-    (W : Walk) → (k : Nat) → (ρ : Env) → ρ.fn = fns → W.closes cc labels k = true →
+    (W : Walk) → (k : Nat) → (ρ : Env) → ρ.fn = fns → W.closes cc findL k = true →
     W.holds (Ok fetch sys Ψ n) (Arrives fetch sys Ψ n) ρ
   | .stop a Γ, k, ρ, hfn, h => by
     unfold Walk.closes at h
-    cases hfind : labels.find? fun l => l.addr == a with
+    cases hfind : findL a with
     | none => rw [hfind] at h; cases h
     | some l =>
       rw [hfind] at h
-      have hmem := List.mem_of_find?_eq_some hfind
-      have ha : l.addr = a := by simpa using List.find?_some hfind
+      obtain ⟨hmem, ha⟩ := hfl a l hfind
       obtain ⟨⟨Γ', o⟩, hc⟩ := Option.isSome_iff_exists.mp h
       show Ok fetch sys Ψ n a (Γ.den ρ)
       refine hcc (Ok fetch sys Ψ n a) (fun hi _ ho h => Ok.nameSlot hi ho h)
@@ -541,30 +576,32 @@ theorem Walk.holds_of_closes {n : Nat} {labels : List Label}
           exact List.mem_map.mpr ⟨_, h, rfl⟩
         exact Arrives.code _ hf hreg
     · cases h
-  | .step i Γ next k rest, _, ρ, hfn, h => fun x => Walk.holds_of_closes hcc H rest _ _ hfn h
-  | .sys k rest, _, ρ, hfn, h => fun x y => Walk.holds_of_closes hcc H rest _ _ hfn h
+  | .step i Γ next k rest, _, ρ, hfn, h => fun x => Walk.holds_of_closes hfl hcc H rest _ _ hfn h
+  | .sys k rest, _, ρ, hfn, h => fun x y => Walk.holds_of_closes hfl hcc H rest _ _ hfn h
   | .sys2 k a b, _, ρ, hfn, h => by
     simp only [Walk.closes, Bool.and_eq_true] at h
-    exact fun x y => ⟨Walk.holds_of_closes hcc H a _ _ hfn h.1,
-      Walk.holds_of_closes hcc H b _ _ hfn h.2⟩
+    exact fun x y => ⟨Walk.holds_of_closes hfl hcc H a _ _ hfn h.1,
+      Walk.holds_of_closes hfl hcc H b _ _ hfn h.2⟩
   | .ends, _, _, _, _ => trivial
   | .vacuous, _, _, _, _ => trivial
   | .branch c fl taken fall, k, ρ, hfn, h => by
     simp only [Walk.closes, Bool.and_eq_true] at h
     exact ⟨FlagsT.decides_den ρ fl c h.1.1,
-      fun _ => Walk.holds_of_closes hcc H taken k ρ hfn h.1.2,
-      fun _ => Walk.holds_of_closes hcc H fall k ρ hfn h.2⟩
+      fun _ => Walk.holds_of_closes hfl hcc H taken k ρ hfn h.1.2,
+      fun _ => Walk.holds_of_closes hfl hcc H fall k ρ hfn h.2⟩
 
 /-- Nothing justified of any address. -/
 def noJustify : Nat → BitVec 64 → CtxS → Bool := fun _ _ _ => false
 
 /-- A walk in a program with no labels, nothing justified of any address:
 every way through ends the program or goes to a value known to be code. -/
-def Walk.auto (W : Walk) : Bool := W.closes (closeCtx sameK (fun _ => noEnt) noJustify) [] 0
+def Walk.auto (W : Walk) : Bool :=
+  W.closes (closeCtx sameK (fun _ => noEnt) noJustify) (fun _ => none) 0
 
 theorem Walk.holds_of_auto {n : Nat} (W : Walk) (ρ : Env) (h : W.auto = true) :
     W.holds (Ok fetch sys Ψ n) (Arrives fetch sys Ψ n) ρ :=
-  Walk.holds_of_closes (fns := ρ.fn)
+  Walk.holds_of_closes (labels := []) (findL := fun _ => none) (fun _ _ hx => by cases hx)
+    (fns := ρ.fn)
     (closeCtx_sound (fun ρ' _ _ _ _ _ _ _ hs => Val.same_den ρ' hs) (fun _ => noEnt_sound)
       (justify := noJustify) fun _ _ _ hj => by cases hj)
     (fun _ hm => (List.not_mem_nil hm).elim) W 0 ρ rfl h
@@ -715,47 +752,48 @@ theorem entF_sound : (f : Nat) → ∀ K, EntSound fetch sys (entF f K)
 goes: it is a label, and each member of the family may be regarded as a
 member of the label's; or the code there, walked from a member of the
 family at names of its own, leaves nothing to be shown. -/
-def justifyF (pg : Prog) (ix : Index) (labels : List Label)
+def justifyF (pg : Prog) (ix : Index) (findL : BitVec 64 → Option Label)
     (stops : BitVec 64 → Bool) (fuelW : Nat) : Nat → Nat → BitVec 64 → CtxS → Bool
   | 0, _, _, _ => false
   | f + 1, k, a, E =>
     E.under k && ((E.open (freshOpening k)).addKnown pg.statics).under (k + E.width) &&
-      ((match labels.find? fun l => l.addr == a with
+      ((match findL a with
         | some l =>
-          (closeCtx (sameBy pg.fns pg.laws) (entF fuelW) (justifyF pg ix labels stops fuelW f) l.pat
+          (closeCtx (sameBy pg.fns pg.laws) (entF fuelW) (justifyF pg ix findL stops fuelW f) l.pat
             ((E.open (freshOpening k)).addKnown pg.statics) (k + E.width)).isSome
         | none => false) ||
        (walkFrom pg ix stops 0 true fuelW (k + E.width) a
           (evalFor pg.fns ((E.open (freshOpening k)).addKnown pg.statics) (k + E.width))).closes
-          (closeCtx (sameBy pg.fns pg.laws) (entF fuelW) (justifyF pg ix labels stops fuelW f)) labels
+          (closeCtx (sameBy pg.fns pg.laws) (entF fuelW) (justifyF pg ix findL stops fuelW f)) findL
           (k + E.width))
 
 theorem justifyF_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxKind)
     {n : Nat} {pg : Prog} (hpre : PreSound fetch sys Ψ D pg.pre)
     {ix : Index} (hix : ∀ e ∈ ix.arr, e ∈ pg.code)
-    {labels : List Label} {stops : BitVec 64 → Bool} {fuelW : Nat}
+    {labels : List Label} {findL : BitVec 64 → Option Label}
+    (hfl : ∀ a l, findL a = some l → l ∈ labels ∧ l.addr = a)
+    {stops : BitVec 64 → Bool} {fuelW : Nat}
     (hcode : ∀ e ∈ pg.code, fetch e.1 = some (e.2.1, e.2.2)) (hk : KindsOk Ψ pg.kinds)
     (hst : StaticsOk fetch sys Ψ pg.statics) (hlaws : LawsHold pg.fns pg.laws)
     (H : ∀ l ∈ labels, ∀ (ρ' : Env) (fam : Fam), ρ'.fn = pg.fns →
       Ok fetch sys Ψ n l.addr (l.pat.den { ρ' with bound := fam :: ρ'.bound })) :
-    (f : Nat) → JustSound fetch sys Ψ n pg.fns (justifyF pg ix labels stops fuelW f)
+    (f : Nat) → JustSound fetch sys Ψ n pg.fns (justifyF pg ix findL stops fuelW f)
   | 0 => fun _ _ _ hj => nomatch hj
   | f + 1 => by
     intro k a E hj ρ fam hfn
     have hcc := closeCtx_sound (sm := sameBy pg.fns pg.laws)
       (fun ρ' hfn' _ _ _ hg _ _ hs => sameBy_den hfn' hlaws hg hs) (entF_sound fuelW)
-      (justifyF_sound hD hkind hpre hix (stops := stops) (fuelW := fuelW) hcode hk hst hlaws H f)
+      (justifyF_sound hD hkind hpre hix hfl (stops := stops) (fuelW := fuelW) hcode hk hst hlaws H f)
     unfold justifyF at hj
     simp only [Bool.and_eq_true, Bool.or_eq_true] at hj
     obtain ⟨⟨hE, hΔ⟩, hor⟩ := hj
     refine ok_of_open hE (fun ρ' hfn' => ok_statics hst ρ' ?_) ρ fam hfn
     rcases hor with hl | hw
-    · cases hfind : labels.find? fun l => l.addr == a with
+    · cases hfind : findL a with
       | none => rw [hfind] at hl; cases hl
       | some l =>
         rw [hfind] at hl
-        have hmem := List.mem_of_find?_eq_some hfind
-        have ha : l.addr = a := by simpa using List.find?_some hfind
+        obtain ⟨hmem, ha⟩ := hfl a l hfind
         obtain ⟨⟨Γ', o⟩, hc⟩ := Option.isSome_iff_exists.mp hl
         refine hcc (Ok fetch sys Ψ n a) (fun hi _ ho h => Ok.nameSlot hi ho h)
           (fun hr hΔ => Ok.regard hr hΔ)
@@ -767,30 +805,28 @@ theorem justifyF_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
     · exact Ok.regard (evalFor_regards hfn' _ _)
         (walkFrom_sound hD hkind pg hpre stops hcode hk ix hix 0 true fuelW (k + E.width) a
           (evalFor pg.fns ((E.open (freshOpening k)).addKnown pg.statics) (k + E.width)) ρ'
-          (evalFor_under hΔ) (Walk.holds_of_closes hcc H _ (k + E.width) ρ' hfn' hw)).1
+          (evalFor_under hΔ) (Walk.holds_of_closes hfl hcc H _ (k + E.width) ρ' hfn' hw)).1
 
 /-! ## A program -/
 
 /-- **Whether a program is typed**: each label's family mentions no name
 from the `k`th on, and from each label, started at names from the `k`th on,
 the walk gets somewhere and leaves nothing to be shown. -/
-def checkWith (pg : Prog) (ix : Index) (at_ : Trie) (labels : List Label) (fuel k : Nat) : Bool :=
+def checkWith (pg : Prog) (ix : Index) (lx : LabelIx) (labels : List Label) (fuel k : Nat) :
+    Bool :=
   labels.all fun l =>
     l.pat.under k && ((l.start k).addKnown pg.statics).under (k + l.pat.width) &&
-      (let W := walkFrom pg ix at_.has 0 true fuel (k + l.pat.width) l.addr
+      (let W := walkFrom pg ix lx.byAddr.has 0 true fuel (k + l.pat.width) l.addr
         (evalFor pg.fns ((l.start k).addKnown pg.statics) (k + l.pat.width))
        W.moved &&
         W.closes (closeCtx (sameBy pg.fns pg.laws) (entF fuel)
-          (justifyF pg ix labels at_.has fuel fuel)) labels
+          (justifyF pg ix lx.find lx.byAddr.has fuel fuel)) lx.find
           (k + l.pat.width))
-
-/-- The addresses that have labels, as a table. -/
-def labelAddrs (labels : List Label) : Trie := Trie.ofAddrs (labels.map (·.addr)) 0 .nil
 
 /-- **Whether a program is typed**: `checkWith`, with the program's
 instructions and the labels' addresses made ready to be found once. -/
 def checkProgram (pg : Prog) (labels : List Label) (fuel k : Nat) : Bool :=
-  checkWith pg pg.index (labelAddrs labels) labels fuel k
+  checkWith pg pg.index (labelIx labels) labels fuel k
 
 /-- **A program that checks is typed at every label, for every member of
 the label's family, for any number of steps**: on any machine that fetches
@@ -815,14 +851,14 @@ theorem program_ok {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = linuxK
     obtain ⟨⟨hfree, hu⟩, hm, hc⟩ := this
     have hcc := closeCtx_sound (sm := sameBy pg.fns pg.laws)
       (fun ρ' hfn' _ _ _ hg _ _ hs => sameBy_den hfn' hlaws hg hs) (entF_sound fuel)
-      (justifyF_sound hD hkind hpre pg.index_mem
-        (stops := (labelAddrs labels).has) (fuelW := fuel) hcode hk hst hlaws
+      (justifyF_sound hD hkind hpre pg.index_mem (fun _ _ => labelIx_find)
+        (stops := (labelIx labels).byAddr.has) (fuelW := fuel) hcode hk hst hlaws
         ih fuel)
     refine ok_of_open (k := k) hfree (fun ρ' hfn' => ok_statics hst ρ' ?_) ρ fam hfn
     exact Ok.regard (evalFor_regards hfn' _ _)
       ((walkFrom_sound hD hkind pg hpre _ hcode hk pg.index pg.index_mem 0 true fuel
         (k + l.pat.width) l.addr
         (evalFor pg.fns ((l.start k).addKnown pg.statics) (k + l.pat.width)) ρ' (evalFor_under hu)
-        (Walk.holds_of_closes hcc ih _ (k + l.pat.width) ρ' hfn' hc)).2 hm)
+        (Walk.holds_of_closes (fun _ _ => labelIx_find) hcc ih _ (k + l.pat.width) ρ' hfn' hc)).2 hm)
 
 end TypedAsm.U

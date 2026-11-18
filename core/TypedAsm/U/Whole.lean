@@ -17,11 +17,13 @@ is the one the kernel makes of it.
 
 namespace TypedAsm.U
 
+attribute [local instance] IsLabel.dec
+
 open TypedAsm
 
 deriving instance DecidableEq for CtxS
 
-variable {L : Type} [DecidableEq L]
+variable {L : Type} [IsLabel L]
 
 /-- The blocks of a program's first memory typing: each segment, as the
 block of its pages. -/
@@ -35,7 +37,8 @@ def blocksOf (code : List (Asm L)) (l : L) : List (BitVec 64 × LayoutS) :=
 /-- Whether an address is code wanting a family, by a program's labels:
 asked of each address a said block's shape says is code. -/
 def codeJ (pg : Prog) (labels : List Label) (fuel : Nat) : BitVec 64 → CtxS → Bool :=
-  fun a E => justifyF pg pg.index labels (labelAddrs labels).has fuel fuel 0 a E
+  fun a E =>
+    justifyF pg pg.index (labelIx labels).find (labelIx labels).byAddr.has fuel fuel 0 a E
 
 /-- The stretch of memory a program is given for its stack: so many slots
 below where the kernel puts its arguments, and the room for those. -/
@@ -422,7 +425,7 @@ theorem whole_safe {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat × Sh
       (hpk ▸ f.kindsOk) (f.statics _ _) f.ext f.wf hlaws f.check f.entry rfl { fn := pg.fns }
       (startFam (startIn code l n args w) n args) rfl fun k H =>
         f.typed _ _ k fun a E hj ρ fam hfn =>
-          justifyF_sound linux_describes rfl (PreSound.all (fun _ => trivial) _) pg.index_mem
+          justifyF_sound linux_describes rfl (PreSound.all (fun _ => trivial) _) pg.index_mem (fun _ _ => labelIx_find)
             f.hcode (hpk ▸ f.kindsOk) (f.statics _ _) hlaws H fuel 0 a E hj ρ fam hfn)
 
 /-- **And where it checks against the wanted status, ends only with it.** -/
@@ -441,7 +444,7 @@ theorem whole_exits {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat × S
     rfl hlaws fun k H =>
       f.typed _ _ k fun a E hj ρ fam hfn =>
         justifyF_sound (D := exitsDesc Q) (linux_describes.exitsOnly Q) rfl
-          (by rw [hpg]; exact preExits_sound hq) pg.index_mem f.hcode (hpk ▸ f.kindsOk)
+          (by rw [hpg]; exact preExits_sound hq) pg.index_mem (fun _ _ => labelIx_find) f.hcode (hpk ▸ f.kindsOk)
           (f.statics _ _) hlaws H fuel 0 a E hj ρ fam hfn
   ⟨SafeMem.of_safe linux_frame f.loaded r.1, r.2⟩
 
@@ -468,7 +471,7 @@ theorem whole_outputs {code : List (Asm L)} {l : L} {n : Nat} {ks : List (Nat ×
     fun k H =>
       f.typed _ _ k fun a E hj ρ fam hfn =>
         justifyF_sound (D := outDesc Q R) ((linux_describes.exitsOnly Q).writesOnly R) rfl
-          (by rw [hpg]; exact preOut_sound hq hr hso) pg.index_mem f.hcode (hpk ▸ f.kindsOk)
+          (by rw [hpg]; exact preOut_sound hq hr hso) pg.index_mem (fun _ _ => labelIx_find) f.hcode (hpk ▸ f.kindsOk)
           (f.statics _ _) hlaws H fuel 0 a E hj ρ fam hfn
   ⟨SafeMem.of_safe linux_frame f.loaded o.1, o.2.1, o.2.2⟩
 

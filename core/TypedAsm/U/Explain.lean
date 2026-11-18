@@ -440,7 +440,7 @@ def justifyWhy (pg : Prog) (labels : List Label) (stops : BitVec 64 → Bool) (f
       match labels.find? fun l => l.addr == a with
       | some l =>
         let w := closeWhy (⟨k, E.width, a⟩ :: outer) (sameBy pg.fns pg.laws) (entF fuelW)
-          (justifyF pg pg.index labels stops fuelW f)
+          (justifyF pg pg.index (labelIx labels).find stops fuelW f)
           (justifyWhy pg labels stops fuelW f (⟨k, E.width, a⟩ :: outer)) [] l.pat
           ((E.open (freshOpening k)).addKnown pg.statics) (k + E.width)
         ⟨a, a, "the code here is a label, wanted for a family the label does not allow", w.1⟩ ::
@@ -454,7 +454,7 @@ def justifyWhy (pg : Prog) (labels : List Label) (stops : BitVec 64 → Bool) (f
              (evalFor pg.fns ((E.open (freshOpening k)).addKnown pg.statics) (k + E.width))
              (k + E.width) a
            [⟨a, a, w.1, w.2⟩]) ++
-          W.faults pg (entF fuelW) (justifyF pg pg.index labels stops fuelW f)
+          W.faults pg (entF fuelW) (justifyF pg pg.index (labelIx labels).find stops fuelW f)
             (justifyWhy pg labels stops fuelW f (⟨k, E.width, a⟩ :: outer)) labels a
             (⟨k, E.width, a⟩ :: outer) fuelW [] (k + E.width)
 
@@ -467,10 +467,10 @@ def explain (pg : Prog) (labels : List Label) (fuel : Nat) (k : Nat := 0) : List
       [⟨l.addr, l.addr, "the label mentions a name it may not", []⟩]
     else
       let Γs := evalFor pg.fns ((l.start k).addKnown pg.statics) (k + l.pat.width)
-      let stops := (labelAddrs labels).has
+      let stops := (labelIx labels).byAddr.has
       let W := walk pg stops true fuel (k + l.pat.width) l.addr Γs
       if W.moved then
-        W.faults pg (entF fuel) (justifyF pg pg.index labels stops fuel fuel)
+        W.faults pg (entF fuel) (justifyF pg pg.index (labelIx labels).find stops fuel fuel)
           (justifyWhy pg labels stops fuel fuel [⟨k, l.pat.width, l.addr⟩]) labels l.addr
           [⟨k, l.pat.width, l.addr⟩] fuel [] (k + l.pat.width)
       else

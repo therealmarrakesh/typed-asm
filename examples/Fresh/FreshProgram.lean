@@ -83,7 +83,7 @@ namespace Fresh
 
 inductive Label
   | start | back | loop | done | page | fail
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 def code : List (Asm Label) := [
   .label .start,

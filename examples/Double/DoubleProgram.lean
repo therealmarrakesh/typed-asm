@@ -81,7 +81,7 @@ namespace Double
 
 inductive Label
   | start | back | fail | double | loop | done
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 def code : List (Asm Label) := [
   .label .start,

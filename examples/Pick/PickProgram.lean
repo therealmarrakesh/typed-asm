@@ -42,7 +42,7 @@ namespace Pick
 
 inductive Label
   | start | out | table
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 def code : List (Asm Label) := [
   .label .start,

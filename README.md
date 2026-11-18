@@ -77,7 +77,8 @@ What exists and is checked today:
   number of the examples are checked by it too: so the compiled checker is
   held against the definitions it is compiled from.
 
-The example programs are written as Lean constructor terms. What an author
+The example programs are written as Lean constructor terms, their labels a
+type of the program's own (`deriving DecidableEq, Hashable`). What an author
 writes beyond the program is what the labels want that are jumped back to,
 called or returned to, each said by what differs from nothing being known,
 and two commands:

@@ -37,7 +37,7 @@ namespace Hello
 
 inductive Label
   | start | message
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 /-- The line the program writes. -/
 def message : List Byte := "Hello, world!\n".toUTF8.toList.map fun b => BitVec.ofNat 8 b.toNat

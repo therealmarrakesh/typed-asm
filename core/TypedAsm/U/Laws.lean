@@ -232,13 +232,27 @@ theorem sameBy_den {ρ : Env} {Ψ' : MemTy} {n : Nat}
 
 variable {Ψ : MemTy}
 
-/-- A context with every function of numbers written out computed, in what
-its registers hold and in the values its regions hold. -/
+/-- A sum, written out from what it comes apart into: each term once, and
+the numbers added as one. A term taken some number of times other than
+once, or once away, is left as it was written. -/
+def Val.gather (v : Val) : Val :=
+  if v.lin.ms.all (fun p => p.1 = 1 || p.1 = -1) then
+    match v.lin.ms.map (fun p => if p.1 = 1 then p.2 else Val.un (.neg .w64) p.2) with
+    | [] => .lit v.lin.k
+    | t :: ts =>
+      if v.lin.k = 0 then ts.foldl (fun acc x => .bin .add acc x) t
+      else .bin .add (ts.foldl (fun acc x => .bin .add acc x) t) (.lit v.lin.k)
+  else v
+
+/-- A context with each value a function gives of numbers worked out, and
+each sum gathered: so that a value does not grow by what is added to it and
+taken away again, as the stack pointer's does at each call and return. -/
 def CtxS.evalApps (fns : Nat → BitVec 64 → BitVec 64 → BitVec 64) (Γ : CtxS) : CtxS :=
   { Γ with
-    regs := Γ.regs.map (·.evalApps fns)
+    regs := Γ.regs.map fun v => (v.evalApps fns).gather
     held := Γ.held.map fun b =>
-      (b.1, ⟨b.2.size, b.2.slots.map fun p => (p.1, p.2.evalApps fns)⟩) }
+      (b.1.gather,
+        ⟨b.2.size.gather, b.2.slots.map fun p => (p.1.gather, (p.2.evalApps fns).gather)⟩) }
 
 /-- The same, where the context may be regarded so and mentions no name
 from `k` on; else the context. So where a walk starts: a value a function

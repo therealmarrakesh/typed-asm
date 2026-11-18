@@ -49,7 +49,7 @@ at its one `write` it offers exactly its message, to descriptor 1. -/
 namespace HelloU
 inductive Label
   | start | message
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 def message : List Byte := "Hello, world!\n".toUTF8.toList.map fun b => BitVec.ofNat 8 b.toNat
 def code : List (Asm Label) := [
   .label .start,
@@ -99,7 +99,7 @@ namespace PushU
 
 inductive Label
   | start
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 /-- `push rbx; pop rbx; mov eax, 60; xor edi, edi; syscall`. -/
 def code : List (Asm Label) := [

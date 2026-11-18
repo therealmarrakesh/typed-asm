@@ -13,13 +13,15 @@ program. `asm_program` makes them.
 
 namespace TypedAsm
 
+attribute [local instance] IsLabel.dec
+
 open Lean
 
 /-- **The state the kernel starts a program in**, given its arguments: its
 segments in memory as the kernel puts them there, the arguments on the
 stack with how many they are at `rsp`, `n` writable slots of stack below,
 and `rip` at the label it starts at. -/
-def Asm.startArgs {L : Type} [DecidableEq L] (code : List (Asm L)) (l : L) (n : Nat)
+def Asm.startArgs {L : Type} [IsLabel L] (code : List (Asm L)) (l : L) (n : Nat)
     (args : List (List Byte)) : State :=
   { State.withArgs (Asm.load State.init (Asm.base code) code l) n args with
     rip := Asm.addr code (Asm.base code) l }

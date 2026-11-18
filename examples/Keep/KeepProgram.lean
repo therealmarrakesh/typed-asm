@@ -51,7 +51,7 @@ namespace Keep
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive Label
   | start | back | done | pause
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 def code : List (Asm Label) := [
   .label .start,

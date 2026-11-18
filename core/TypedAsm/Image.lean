@@ -12,6 +12,8 @@ sense the machine with code in memory needs.
 
 namespace TypedAsm
 
+attribute [local instance] IsLabel.dec
+
 /-- Memory holds these bytes from an address on, and if the permission asked
 for is to execute, they are executable. -/
 def State.Holds (s : State) (g : Nat × Perm × List Byte) : Prop :=
@@ -51,16 +53,16 @@ theorem State.holds_of_check {s : State} {parts : List (Nat × Perm × List Byte
 
 namespace Asm
 
-variable {L : Type} [DecidableEq L]
+variable {L : Type} [IsLabel L]
 
-omit [DecidableEq L] in
+omit [IsLabel L] in
 /-- A line that is an instruction comes to that instruction's bytes. -/
 theorem lineBytes_of_instr {target : L → BitVec 64} {a : Nat} {x : Asm L} {i : Instr}
     (h : instr target (BitVec.ofNat 64 (next a x)) x = some i) :
     lineBytes target a x = i.encode := by
   cases x <;> simp_all [lineBytes, instr]
 
-omit [DecidableEq L] in
+omit [IsLabel L] in
 /-- Every instruction in the table has its true length, and its bytes are
 among what the program puts in memory, at its address, to be executed. -/
 theorem tableFrom_mem (target : L → BitVec 64) (a : Nat) (p : Perm) (prog : List (Asm L)) :

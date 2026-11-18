@@ -17,7 +17,7 @@ namespace Tests.ArgsCode
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive L
   | start | bad | zero | one | table
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 /-- An index, compared with the table's length; a jump through the table;
 and at each of the table's two addresses, the program ending. -/

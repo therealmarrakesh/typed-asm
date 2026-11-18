@@ -15,6 +15,8 @@ is what the machine fetches at its address is decided by looking each up.
 
 namespace TypedAsm.U
 
+attribute [local instance] IsLabel.dec
+
 open TypedAsm
 
 /-- An instruction table, its addresses as machine words. -/
@@ -78,7 +80,7 @@ def tableOk (table : List (Nat × Instr × BitVec 64)) : Bool :=
 
 /-- **Where it is, the machine that looks instructions up in the assembled
 program fetches each entry at its address.** -/
-theorem hcode_of_tableOk {L : Type} [DecidableEq L] {base : BitVec 64} {prog : List (Asm L)}
+theorem hcode_of_tableOk {L : Type} [IsLabel L] {base : BitVec 64} {prog : List (Asm L)}
     (h : tableOk (Asm.table base prog) = true) :
     ∀ e ∈ progCode (Asm.table base prog), Asm.fetch base prog e.1 = some (e.2.1, e.2.2) := by
   intro e he

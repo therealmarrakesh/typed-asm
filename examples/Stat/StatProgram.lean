@@ -81,7 +81,7 @@ namespace Stat
 
 inductive Label
   | start | fail | path | buffer
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 /-- The file's name, `input.txt`, as bytes. -/
 def name : List Byte := [0x69, 0x6e, 0x70, 0x75, 0x74, 0x2e, 0x74, 0x78, 0x74]

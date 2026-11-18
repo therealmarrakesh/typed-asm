@@ -76,7 +76,7 @@ namespace Cat
 
 inductive Label
   | start | file | next | eof | done | fail | buffer
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 /-- The data's bytes: a buffer of 64. -/
 def dataBytes : List Byte := List.replicate 64 0

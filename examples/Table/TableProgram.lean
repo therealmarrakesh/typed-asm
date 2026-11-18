@@ -44,7 +44,7 @@ namespace Table
 /-- Labels mark where control can arrive from elsewhere, and where the data is. -/
 inductive Label
   | start | table | record
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 def code : List (Asm Label) := [
   .label .start,

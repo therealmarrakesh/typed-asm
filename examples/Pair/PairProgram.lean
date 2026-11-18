@@ -80,7 +80,7 @@ namespace Pair
 
 inductive Label
   | start | back | two | fail
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 /-- The arguments of an `mmap` of one page, the call, and the test that sends
 an error number to `fail`. -/

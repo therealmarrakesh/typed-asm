@@ -11,6 +11,8 @@ holds, and the stack is as the program, or the function, has it.
 
 namespace TypedAsm.U
 
+attribute [local instance] IsLabel.dec
+
 open TypedAsm
 
 /-- Every register holding whatever it holds: each a value of the family. -/
@@ -301,7 +303,7 @@ def textBlock (bytes : List Byte) : LayoutS :=
 that of the text's first byte, with more after it. -/
 def staticText (a : BitVec 64) : List (Val × TyS) := [(.lit a, .str (.lit 1))]
 
-variable {L : Type} [DecidableEq L]
+variable {L : Type} [IsLabel L]
 
 /-- **A program's first blocks, some of them said**: each segment's pages
 cut into the blocks said of it, which are to be given in the order of their

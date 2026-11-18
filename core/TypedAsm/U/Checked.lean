@@ -12,9 +12,11 @@ program. `asm_checked` states them.
 
 namespace TypedAsm.U
 
+attribute [local instance] IsLabel.dec
+
 open Lean
 
-variable {L : Type} [DecidableEq L]
+variable {L : Type} [IsLabel L]
 
 /-- The first of some things looked for that is not so, as what to say of it. -/
 def firstNot : List (Bool × (Unit → String)) → Option String

@@ -53,7 +53,7 @@ def rspSlot (disp : BitVec 32) : Mem := .sib (some .rsp) none disp
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive Label
   | start | afterCall | spin | pick | skip | record
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 /-- The record's two fields. -/
 def record : List (BitVec 64) := [0x1234, 1]

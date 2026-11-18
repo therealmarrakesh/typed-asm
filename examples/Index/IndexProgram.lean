@@ -44,7 +44,7 @@ namespace Index
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive Label
   | start | afterCall | get | inbounds | array
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 def array : List (BitVec 64) := [10, 20, 30, 40, 50]
 

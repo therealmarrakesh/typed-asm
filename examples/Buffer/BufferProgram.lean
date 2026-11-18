@@ -48,7 +48,7 @@ namespace Buffer
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive Label
   | start | loop | done
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 def code : List (Asm Label) := [
   .label .start,

@@ -59,7 +59,7 @@ namespace Args
 
 inductive Label
   | start | arg | scan | found | done | newline
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 /-- The data's bytes: the end of a line, filled out to eight bytes. -/
 def dataBytes : List Byte := [0x0a, 0, 0, 0, 0, 0, 0, 0]

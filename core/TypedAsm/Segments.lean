@@ -18,6 +18,8 @@ with the permission the program gave it.
 
 namespace TypedAsm
 
+attribute [local instance] IsLabel.dec
+
 /-! ## What loading puts in memory
 
 A program is loaded by placing each segment's bytes in turn and giving the
@@ -328,7 +330,7 @@ end Loaded
 
 namespace Asm
 
-variable {L : Type} [DecidableEq L]
+variable {L : Type} [IsLabel L]
 
 /-- How many `segment` lines a program has: its segments after the first. -/
 def segCount (prog : List (Asm L)) : Nat :=
@@ -371,7 +373,7 @@ def segmentsRev (target : L → BitVec 64) :
       (cur.1, cur.2.1, cur.2.2.reverse.flatten) :: segmentsRev target (pageUp a) (pageUp a, q, []) rest
     | x => segmentsRev target (next a x) (cur.1, cur.2.1, lineBytes target a x :: cur.2.2) rest
 
-omit [DecidableEq L] in
+omit [IsLabel L] in
 theorem segmentsRev_eq (target : L → BitVec 64) : (prog : List (Asm L)) → (a c : Nat) →
     (p : Perm) → (chunks : List (List Byte)) →
     segmentsRev target a (c, p, chunks) prog
@@ -410,10 +412,10 @@ theorem imageFast_eq (base : BitVec 64) (prog : List (Asm L)) (start : L) :
 /-- `imageFast`, with the labels found once. -/
 def imageFastC (base : BitVec 64) (prog : List (Asm L)) (start : L) :
     List (Nat × Perm × List Byte) :=
-  match segmentsRev (addrIn (labelsFrom base.toNat prog)) base.toNat (base.toNat, .rx, []) prog with
+  match segmentsRev (addrIn (labelsOf base prog)) base.toNat (base.toNat, .rx, []) prog with
   | [] => []
   | (a, p, first) :: rest =>
-    let head := Elf.headers (addrIn (labelsFrom base.toNat prog) start).toNat first.length rest
+    let head := Elf.headers (addrIn (labelsOf base prog) start).toNat first.length rest
     (a - head.length, p, head ++ first) :: rest
 
 @[csimp] theorem imageFast_eq_imageFastC : @imageFast = @imageFastC := by
@@ -446,7 +448,7 @@ theorem le_alignUp (a n : Nat) : a ≤ alignUp a n := by
     rw [Nat.mul_succ, Nat.mul_comm] at h
     omega
 
-omit [DecidableEq L] in
+omit [IsLabel L] in
 /-- A line that does not start a segment ends where the next begins. -/
 theorem next_eq (target : L → BitVec 64) (a : Nat) (x : Asm L) (hx : ∀ q, x ≠ .segment q) :
     next a x = a + (lineBytes target a x).length := by
@@ -471,7 +473,7 @@ theorem next_eq (target : L → BitVec 64) (a : Nat) (x : Asm L) (hx : ∀ q, x 
   | quad l => show a + 8 = a + (le64 _).length; simp [le64, le32]
   | space n => show a + n = a + (List.replicate n (0 : Byte)).length; rw [List.length_replicate]
 
-omit [DecidableEq L] in
+omit [IsLabel L] in
 /-- The segment being put together is among the segments, with what was
 put in it so far at its start. -/
 theorem segmentsFrom_grows (target : L → BitVec 64) :
@@ -492,7 +494,7 @@ theorem segmentsFrom_grows (target : L → BitVec 64) :
       exact ⟨seg, by rw [hstep]; exact hs, h1, h2, lineBytes target a x ++ more,
         by rw [hm]; exact List.append_assoc _ _ _⟩
 
-omit [DecidableEq L] in
+omit [IsLabel L] in
 /-- **Each line's bytes are in a segment, where the line is.** -/
 theorem partsFrom_has (target : L → BitVec 64) :
     ∀ (prog : List (Asm L)) (a : Nat) (p : Perm) (cur : Nat × Perm × List Byte),
@@ -545,7 +547,7 @@ def lineLen (a : Nat) : Asm L → Nat
   | .segment _ => 0
   | x => next a x - a
 
-omit [DecidableEq L] in
+omit [IsLabel L] in
 theorem lineBytes_length (target : L → BitVec 64) (a : Nat) (x : Asm L) :
     (lineBytes target a x).length = lineLen a x := by
   by_cases hx : ∃ q, x = .segment q
@@ -561,7 +563,7 @@ def partsExtFrom : Nat → Perm → List (Asm L) → List (Nat × Perm × Nat)
   | _, _, [] => []
   | a, p, x :: rest => (a, p, lineLen a x) :: partsExtFrom (next a x) (perm p x) rest
 
-omit [DecidableEq L] in
+omit [IsLabel L] in
 theorem partsFrom_ext (target : L → BitVec 64) :
     ∀ (prog : List (Asm L)) (a : Nat) (p : Perm),
       (partsFrom target a p prog).map Loaded.ext = partsExtFrom a p prog
@@ -579,7 +581,7 @@ def segExtFrom : Nat → Nat × Perm × Nat → List (Asm L) → List (Nat × Pe
     | .segment q => cur :: segExtFrom (pageUp a) (pageUp a, q, 0) rest
     | x => segExtFrom (next a x) (cur.1, cur.2.1, cur.2.2 + lineLen a x) rest
 
-omit [DecidableEq L] in
+omit [IsLabel L] in
 theorem segmentsFrom_ext (target : L → BitVec 64) :
     ∀ (prog : List (Asm L)) (a : Nat) (cur : Nat × Perm × List Byte),
       (segmentsFrom target a cur prog).map Loaded.ext = segExtFrom a (Loaded.ext cur) prog

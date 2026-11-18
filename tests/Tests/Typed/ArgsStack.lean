@@ -16,7 +16,7 @@ namespace Tests.ArgsStack
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive L
   | start | back | keep
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 /-- The count of arguments is pushed, a function called that pushes and
 pops a register of its own, the count popped again, and the program ends

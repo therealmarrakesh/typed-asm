@@ -46,7 +46,7 @@ namespace Echo
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive Label
   | start | done | buffer
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 /-- The buffer's bytes as they sit in the file: sixteen zeros. -/
 def bufferBytes : List Byte := List.replicate 16 0

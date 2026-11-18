@@ -56,7 +56,7 @@ namespace Dispatch
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive Label
   | start | afterFirst | afterSecond | afterThird | bad | double | square | table
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 def code : List (Asm Label) := [
   .label .start,

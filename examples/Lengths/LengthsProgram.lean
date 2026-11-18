@@ -62,7 +62,7 @@ namespace Lengths
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive Label
   | start | arg | back | done | len | scan | found
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 def code : List (Asm Label) := [
   .label .start,

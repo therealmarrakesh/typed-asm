@@ -45,7 +45,7 @@ def field (disp : BitVec 32) : Mem := .sib (some .rdi) none disp
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive Label
   | start | afterFirst | afterSecond | swap | record
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 /-- The record's two fields. -/
 def record : List (BitVec 64) := [3, 5]

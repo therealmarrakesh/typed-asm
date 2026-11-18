@@ -33,7 +33,7 @@ after each call, the path a call is given, and where the pages are done
 with. -/
 inductive Label
   | start | fail | after (k : Nat) | path | noPage | done
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 /-- What a register is given before a call: a number, the address of the
 buffer on the stack, or the address of the path. -/
@@ -41,7 +41,7 @@ inductive Arg
   | num (n : BitVec 32)
   | buf
   | path
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 /-- The registers looked at, each with the number it holds where a call
 does not take it. -/

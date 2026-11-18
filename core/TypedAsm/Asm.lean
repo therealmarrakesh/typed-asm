@@ -1,6 +1,7 @@
 import TypedAsm.Step
 import TypedAsm.Encode
 import TypedAsm.Lookup
+import Std.Data.HashMap
 
 /-!
 # Programs with labels
@@ -48,9 +49,24 @@ inductive Asm (L : Type)
   /-- So many bytes, all zero. -/
   | space (n : Nat)
 
+/-- **What the labels of a program are to be**: told apart, and each with a
+number to look it up by. A type that has both (`deriving DecidableEq,
+Hashable`) is one. The number is used only to find a label's address
+quickly when a program is laid out; what a program means is said without
+it. -/
+class IsLabel (L : Type) extends Hashable L where
+  dec : DecidableEq L
+
+attribute [instance_reducible] IsLabel.dec
+
+instance (priority := low) {L : Type} [DecidableEq L] [Hashable L] : IsLabel L :=
+  { dec := inferInstance }
+
 namespace Asm
 
-variable {L : Type} [DecidableEq L]
+attribute [local instance] IsLabel.dec
+
+variable {L : Type} [IsLabel L]
 
 /-- The number of bytes a line occupies, for a line whose size does not
 depend on where it is. A jump or call has the same length whatever its
@@ -260,45 +276,54 @@ def segments (base : BitVec 64) (prog : List (Asm L)) : List (Nat × Perm × Lis
 /-! ## Labels found once
 
 `addr` goes through the program for each label asked for. That is the
-definition. To lay a program out, every label's address is found in one
-pass, and each reference looked up among the labels: the same answer, come
-by without going through the program's lines again for each reference.
-Compiled code uses these; what is proved is of the definitions above. -/
+definition. To lay a program out, every label's address is put in a table
+in one pass, and each reference looked up in it by the label's number: the
+same answer, come by without going through the program again for each
+reference. Compiled code uses these; what is proved is of the definitions
+above. -/
 
-/-- Each label of the lines from address `a`, with its address, in order. -/
-def labelsFrom : Nat → List (Asm L) → List (L × Nat)
-  | _, [] => []
-  | a, x :: rest =>
+/-- Each label of the lines from address `a` with its address, added to a
+table: the first address, where a label stands twice. -/
+def labelMap : Nat → List (Asm L) → Std.HashMap L Nat → Std.HashMap L Nat
+  | _, [], m => m
+  | a, x :: rest, m =>
     match x with
-    | .label l => (l, a) :: labelsFrom a rest
-    | x => labelsFrom (next a x) rest
+    | .label l => labelMap a rest (m.insertIfNew l a)
+    | x => labelMap (next a x) rest m
 
-theorem lookup_labelsFrom (l : L) : (a : Nat) → (prog : List (Asm L)) →
-    (labelsFrom a prog).lookup l = find l a prog
-  | _, [] => rfl
-  | a, x :: rest => by
+theorem labelMap_get (l : L) : (a : Nat) → (prog : List (Asm L)) → (m : Std.HashMap L Nat) →
+    (labelMap a prog m)[l]? = (m[l]?).or (find l a prog)
+  | _, [], m => by simp [labelMap, find]
+  | a, x :: rest, m => by
     cases x with
     | label l' =>
-      show ((l', a) :: labelsFrom a rest).lookup l = if l' = l then some a else find l a rest
+      show (labelMap a rest (m.insertIfNew l' a))[l]?
+        = (m[l]?).or (if l' = l then some a else find l a rest)
+      rw [labelMap_get l a rest, Std.HashMap.getElem?_insertIfNew]
       by_cases h : l' = l
       · subst h
-        simp [List.lookup]
-      · have h' : (l == l') = false := by simpa using fun e => h e.symm
-        simp only [List.lookup, h', h, ↓reduceIte]
-        exact lookup_labelsFrom l a rest
-    | _ => exact lookup_labelsFrom l _ rest
+        by_cases hm : l' ∈ m
+        · simp [hm]
+        · simp [hm]
+      · have h' : (l' == l) = false := by simpa using h
+        simp [h', h]
+    | _ => exact labelMap_get l _ rest m
 
-/-- The address of each label, from the labels found once. -/
-def addrIn (ls : List (L × Nat)) (l : L) : BitVec 64 := BitVec.ofNat 64 ((ls.lookup l).getD 0)
+/-- The address of each label, from the table. -/
+def addrIn (m : Std.HashMap L Nat) (l : L) : BitVec 64 := BitVec.ofNat 64 ((m[l]?).getD 0)
+
+/-- The table of a program's labels. -/
+def labelsOf (base : BitVec 64) (prog : List (Asm L)) : Std.HashMap L Nat :=
+  labelMap base.toNat prog ∅
 
 theorem addrIn_eq (prog : List (Asm L)) (base : BitVec 64) :
-    addrIn (labelsFrom base.toNat prog) = addr prog base := by
+    addrIn (labelsOf base prog) = addr prog base := by
   funext l
-  simp only [addrIn, addr, lookup_labelsFrom]
+  simp only [addrIn, labelsOf, addr, labelMap_get, Std.HashMap.getElem?_empty, Option.none_or]
 
 /-- `table`, with the labels found once. -/
 def tableC (base : BitVec 64) (prog : List (Asm L)) : List (Nat × Instr × BitVec 64) :=
-  tableFrom (addrIn (labelsFrom base.toNat prog)) base.toNat .rx prog
+  tableFrom (addrIn (labelsOf base prog)) base.toNat .rx prog
 
 @[csimp] theorem table_eq_tableC : @table = @tableC := by
   funext L _ base prog
@@ -306,7 +331,7 @@ def tableC (base : BitVec 64) (prog : List (Asm L)) : List (Nat × Instr × BitV
 
 /-- `parts`, with the labels found once. -/
 def partsC (base : BitVec 64) (prog : List (Asm L)) : List (Nat × Perm × List Byte) :=
-  partsFrom (addrIn (labelsFrom base.toNat prog)) base.toNat .rx prog
+  partsFrom (addrIn (labelsOf base prog)) base.toNat .rx prog
 
 @[csimp] theorem parts_eq_partsC : @parts = @partsC := by
   funext L _ base prog
@@ -314,7 +339,7 @@ def partsC (base : BitVec 64) (prog : List (Asm L)) : List (Nat × Perm × List 
 
 /-- `offsetsFit`, with the labels found once. -/
 def offsetsFitC (base : BitVec 64) (prog : List (Asm L)) : Bool :=
-  offsetsFitFrom (addrIn (labelsFrom base.toNat prog)) base.toNat prog
+  offsetsFitFrom (addrIn (labelsOf base prog)) base.toNat prog
 
 @[csimp] theorem offsetsFit_eq_offsetsFitC : @offsetsFit = @offsetsFitC := by
   funext L _ base prog
@@ -322,7 +347,7 @@ def offsetsFitC (base : BitVec 64) (prog : List (Asm L)) : Bool :=
 
 /-- `segments`, with the labels found once. -/
 def segmentsC (base : BitVec 64) (prog : List (Asm L)) : List (Nat × Perm × List Byte) :=
-  segmentsFrom (addrIn (labelsFrom base.toNat prog)) base.toNat (base.toNat, .rx, []) prog
+  segmentsFrom (addrIn (labelsOf base prog)) base.toNat (base.toNat, .rx, []) prog
 
 @[csimp] theorem segments_eq_segmentsC : @segments = @segmentsC := by
   funext L _ base prog

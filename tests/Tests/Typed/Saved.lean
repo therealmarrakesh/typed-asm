@@ -18,7 +18,7 @@ namespace Tests.Saved
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive L
   | start | f | loop
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 /-- A function that pushes a register it keeps, uses it in a loop, and
 ends as given. -/
@@ -68,7 +68,7 @@ example : wholeOk (code restored) .start 2 (pg restored) (labels restored []) 40
 
 inductive M
   | start | loop
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 /-- A number pushed, a loop that leaves the stack alone, and the number
 popped to end with. -/

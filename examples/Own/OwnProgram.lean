@@ -91,7 +91,7 @@ namespace Own
 
 inductive Label
   | start | fail | record
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 /-- The data's bytes: a record of one number, 58. -/
 def recordBytes : List Byte := [58, 0, 0, 0, 0, 0, 0, 0]

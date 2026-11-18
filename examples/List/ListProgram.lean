@@ -44,7 +44,7 @@ namespace List3
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive Label
   | start | loop | done | first | second | third
-  deriving DecidableEq
+  deriving DecidableEq, Hashable
 
 def code : List (Asm Label) := [
   .label .start,
