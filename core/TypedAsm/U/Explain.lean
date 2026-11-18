@@ -183,12 +183,29 @@ def heldSay (h : List (Val × HeldS)) (nm : Names := []) : String :=
 
 /-! ## Which instruction left a register as it is -/
 
+/-- Whether a context says a region holds a value it knows to be code: the
+address a function returns to, kept on its stack. -/
+def holdsRet (Γ : CtxS) : Bool :=
+  Γ.held.any fun g => g.2.slots.any fun p =>
+    Γ.known.any fun f => f.2.isCode && f.1.lit?.isNone && f.1.same p.2
+
 /-- An instruction stepped over on the way: where it is, and the context
 before it. -/
 structure Was where
   addr : BitVec 64
   i : Instr
   before : CtxS
+
+/-- Where the address a function returns to stopped being held, if it was:
+the store after which it was not said to be. -/
+def lostRet (path : List Was) (Γ : CtxS) : List String :=
+  if holdsRet Γ then []
+  else
+    match path.find? fun w => holdsRet w.before with
+    | some w =>
+      [s!"the address the function returns to was held on the stack until `{w.i.toAsm}` at " ++
+        s!"{addrSay w.addr}, which stored where it may have been"]
+    | none => []
 
 /-- **Which instruction left a register holding what it holds**: the last
 on the way, the nearest first, before which it held something else. -/
@@ -325,6 +342,7 @@ def regardWhy (nm : Names) (sm : List (Val × TyS) → Val → Val → Bool) (en
               | ds => "; it is code typed for another family: " ++ "; ".intercalate ds)
            | none => ""))) ++
   (if Δ.rest == Γ.rest then [] else ["what else is held is not what is wanted"]) ++
+  (if Δ.known.any (fun f => f.2.isCode && !factFrom ent Γ.known f) then lostRet path Γ else []) ++
   (Δ.rows.filterMap fun r =>
     if sm Γ.known r.count (.lit 0) ||
         (Γ.rows.any fun g => sm Γ.known g.addr r.addr && sm Γ.known g.count r.count &&
@@ -532,7 +550,8 @@ def Walk.faults (pg : Prog) (ent : Nat → TyS → TyS → Bool)
       [⟨from_, (path.head?.map (·.addr)).getD 0, s!"goes to {t.say nm}, not known to be code",
         ["a return or a jump through a value: the value must be known to be code wanting a " ++
             "family the context is a member of",
-          "on the machine: control could go anywhere"]⟩]
+          "on the machine: control could go anywhere"] ++
+        lostRet path Γ⟩]
   | path, _, .step i Γ next k rest =>
     rest.faults pg ent justify whyJ labels from_
       (nm.making k s!"what `{i.toAsm}` at {addrSay (stepAddr pg i next)} read or made") fuel
