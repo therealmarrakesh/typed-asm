@@ -10,6 +10,10 @@ testDriver = "tests"
 name = "TypedAsm"
 srcDir = "core"
 globs = ["TypedAsm.*"]
+# Built to machine code as well, which is what then runs when a program is
+# laid out and checked. Left to Lean's interpreter both take ten times as
+# long.
+precompileModules = true
 
 # Examples live in examples/<Name>/, one folder each:
 #
