@@ -37,7 +37,7 @@ stored in it, before its address is kept in `rbx`. -/
 def pg : Prog :=
   { code := progCode (Asm.table base code)
     kinds := kindsOf kinds
-    pubs := [⟨instrAddr code 13, .r12, node, some 1⟩] }
+    pubs := [⟨Asm.addr code base .linked, .r12, node, some 1⟩] }
 
 /-- The labels: the start; and the two loops, where `rbx` is a link. That
 memory was handed back is asked of each `mmap` before it is used. -/

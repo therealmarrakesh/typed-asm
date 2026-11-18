@@ -73,7 +73,7 @@ namespace Alloc
 
 /-- Labels mark where control can arrive from elsewhere. -/
 inductive Label
-  | start | next | print | done
+  | start | next | linked | print | done
   deriving DecidableEq, Hashable
 
 def code : List (Asm Label) := [
@@ -92,6 +92,7 @@ def code : List (Asm Label) := [
   .jcc .s .print,
   .ins (.mov .w64 (.rm_r (.reg .r12) .rax)),
   .ins (.mov .w64 (.rm_r (.mem (.sib (some .r12) none 0)) .rbx)),
+  .label .linked,
   .ins (.mov .w64 (.rm_r (.reg .rbx) .rax)),
   .ins (.alu .xor .w32 (.rm_r (.reg .rax) .rax)),
   .ins (.alu .xor .w32 (.rm_r (.reg .rdi) .rdi)),
