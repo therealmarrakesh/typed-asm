@@ -40,8 +40,9 @@ example : saysDetail (explain pgLend (lendLabels 8 16 3 4) 80)
 -- the factorial without its laws: what the machine computed, in the
 -- program's terms, against what the label says it returns
 example : saysDetail (explain (pgFac [] 120) (facLabels facOfArg) 80)
-    ("rax holds (fn0(((rdi at the label) + -1), 0) * (rdi at the label)), " ++
-      "left so by `imul rax, rdi` at 0x4000a5; wanted there: fn0((rdi at the label), 0)") = true
+    ("rax holds (fn0(rdi at the label walked from 0x40008b - 1, 0)) * " ++
+      "(rdi at the label walked from 0x40008b), left so by `imul rax, rdi` at 0x4000a5; " ++
+      "wanted there: fn0(rdi at the label walked from 0x40008b, 0)") = true
     := by decide +kernel
 
 -- a write of nine bytes where eight are known: each register of the call

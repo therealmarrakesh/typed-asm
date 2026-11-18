@@ -32,6 +32,6 @@ def labels : List U.Label :=
 
 /-! ## The check, and what it shows -/
 
-asm_checked code start .start stack 2 program pg labels labels fuel 30 exits (· == 0)
+asm_checked code start .start stack 2 program pg labels labels exits (· == 0)
 
 end Buffer

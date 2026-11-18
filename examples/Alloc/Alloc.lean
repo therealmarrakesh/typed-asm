@@ -48,6 +48,6 @@ def labels : List U.Label :=
 
 /-! ## The check, and what it shows -/
 
-asm_checked code start .start stack 0 program pg labels labels kinds kinds fuel 60
+asm_checked code start .start stack 0 program pg labels labels kinds kinds
 
 end Alloc

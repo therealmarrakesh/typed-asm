@@ -39,7 +39,7 @@ stack. -/
 def labels : List U.Label := [⟨entry, inProgram 0⟩]
 
 /-- **The check.** -/
-theorem checked : wholeOk code .start 0 pg labels 12 = true := by decide +kernel
+theorem checked : wholeOk code .start 0 pg labels (needFuel pg labels []) = true := by decide +kernel
 
 theorem saidOk : saidCheck (denBlocks (blocksOf code .start)) said = true := by decide +kernel
 

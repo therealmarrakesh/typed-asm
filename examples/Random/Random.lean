@@ -36,7 +36,7 @@ def labels : List U.Label := [⟨entry, inProgram 0⟩]
 
 /-! ## The check, and what it shows -/
 
-asm_checked code start .start stack 0 program pg labels labels blocks blocks fuel 30
+asm_checked code start .start stack 0 program pg labels labels blocks blocks
   exits (fun c => c == 0 || c == 1)
 
 end Random

@@ -108,7 +108,7 @@ def labels : List U.Label :=
 
 /-! ## The check, and what it shows -/
 
-asm_checked code start .start stack 11 program pg labels labels fuel 80 exits (· == 120)
+asm_checked code start .start stack 11 program pg labels labels exits (· == 120)
   laws lawsHold
 
 end Fact

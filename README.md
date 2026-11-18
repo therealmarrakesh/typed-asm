@@ -101,13 +101,16 @@ end with 120. A function is typed once, for every caller its label allows:
 `examples/Double` one that takes a page and gives it back;
 `examples/Dispatch` calls through a table of pointers to functions.
 
-A program that is refused is told why in its own terms (`explainText pg
-labels fuel`): which instruction; what it reads or writes, and where; what
-the machine could do there if the program ran; what a register holds and
-which earlier instruction left it so; and, where a label or a return is
-reached in a context it does not allow, each thing wanted that is not so.
-The code a call returns to is looked into in the same way. It is worked
-out from the parts the check is made of, and nothing rests on it.
+A program that is refused is told why by the command that checks it, in
+the program's terms: which instruction, by its number and as it is written;
+what it reads or writes, and where; what the machine could do there if the
+program ran; what a register holds and which earlier instruction left it
+so; where a label or a return is reached in a context it does not allow,
+each thing wanted that is not so; and where a loop has no label, that, and
+where the loop starts. The code a call returns to is looked into in the
+same way. It is worked out from the parts the check is made of, and nothing
+rests on it. How far the check goes is worked out from the program: there
+is no number of steps for an author to give.
 
 What is not there:
 

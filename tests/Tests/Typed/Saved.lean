@@ -1,4 +1,6 @@
 import Tests.Typed.ArgsStack
+import TypedAsm.U.Checked
+import LengthsProgram
 
 /-!
 # The checker's tests: a label inside a function that has pushed
@@ -97,5 +99,28 @@ example : wholeOk kept .start 1 pgKept (keptLabels .any) 40 = false := by decide
 
 -- the label saying the slot holds another number: not what is there, refused
 example : wholeOk kept .start 1 pgKept (keptLabels (.val 8)) 40 = false := by decide +kernel
+
+/-! ## What the command says of a program it refuses -/
+
+-- of a program that checks, nothing
+example : wholeWhy kept .start 1 [] (blocksOf kept .start) pgKept (keptLabels (.val 7))
+    (needFuel pgKept (keptLabels (.val 7)) []) = none := by decide +kernel
+
+-- of one whose labels are refused, the refusals
+example : (wholeWhy kept .start 1 [] (blocksOf kept .start) pgKept (keptLabels .any)
+    (needFuel pgKept (keptLabels .any) [])).isSome = true := by decide +kernel
+
+-- of one with no label where it starts, that
+example : (wholeWhy kept .start 1 [] (blocksOf kept .start) pgKept [] 40).map
+    (·.startsWith "no label is at") = some true := by decide +kernel
+
+-- of one with no label on its loop, that the loop is to have one
+example : (tidy [] (explain { code := progCode (Asm.table Lengths.base Lengths.code) }
+    [⟨Lengths.entry, inProgram 4⟩] 27)).map (·.why) = [againSay] := by decide +kernel
+
+-- a loop that goes round a number of times that is written out needs none: it is walked
+-- each time round
+example : explain pgKept [⟨Asm.addr kept (Asm.base kept) .start, inProgram 1⟩] 20 = [] := by
+  decide +kernel
 
 end Tests.Saved

@@ -172,7 +172,7 @@ def inFunction (regs : List (Reg × Val) := []) (known : List (Val × TyS) := []
 
 /-- How many arguments the program was handed, its own name among them:
 the value held where the stack pointer is when it starts. -/
-def argCountV : Val := .bvar 0 16
+def argCountV : Val := .bvar 0 18
 
 /-- **A label in the program's own code, outside any function**, the
 program having `n` slots of stack: the stack held whole, with the count of
@@ -188,12 +188,48 @@ def inProgram (n : Nat) (pushed : List Pushed := []) (regs : List (Reg × Val) :
       ((entryCtx (stackRoom n)).regs.set .rsp
         (.add (.bvar 0 17) (litNat (stackRoom n - pushedBytes pushed)))) regs
     held := (.bvar 0 17, ⟨litNat (stackRoom n + 8),
-        (litNat (stackRoom n), .bvar 0 16) :: pushedSlots (litNat (stackRoom n)) 0 pushed⟩) ::
+        (litNat (stackRoom n), .bvar 0 18) :: pushedSlots (litNat (stackRoom n)) 0 pushed⟩) ::
       held
     known := (entryCtx (stackRoom n)).known ++ known }
 
 /-- What a program starts with is that label with nothing said. -/
 theorem inProgram_entry (n : Nat) : inProgram n = entryCtx (stackRoom n) := rfl
+
+mutual
+
+/-- How deep code wanting contexts is nested in a type. -/
+def TyS.depth : TyS → Nat
+  | .ptr S _ _ => S.depth
+  | .nullable τ => τ.depth
+  | .orErr τ => τ.depth
+  | .arr _ τ => τ.depth
+  | .code _ _ _ known _ => known.depth + 1
+  | _ => 0
+
+def ShapeS.depth : ShapeS → Nat
+  | .mk _ vals => vals.depth
+
+def ValsS.depth : ValsS → Nat
+  | .nil => 0
+  | .cons _ τ rest => max τ.depth rest.depth
+
+def FactsS.depth : FactsS → Nat
+  | .nil => 0
+  | .cons _ τ rest => max τ.depth rest.depth
+
+end
+
+/-- The deepest of some facts' types. -/
+def factsDepth (fs : List (Val × TyS)) : Nat := fs.foldl (fun d f => max d f.2.depth) 0
+
+/-- **How far the check of a program need go**: no walk from a label that
+ends or reaches a label passes an instruction twice, so none is longer than
+the program; and one type is compared with another no deeper than code is
+nested in the types the program, its labels and its kinds say. -/
+def needFuel (pg : Prog) (labels : List Label) (ks : List (Nat × ShapeS)) : Nat :=
+  pg.code.length + 2 +
+    labels.foldl (fun d l => max d (factsDepth l.pat.known)) (factsDepth pg.statics) +
+    ks.foldl (fun d k => max d k.2.depth) 0
 
 /-- Things known, one after another, from a list. -/
 def factsOf : List (Val × TyS) → FactsS

@@ -40,6 +40,6 @@ def labels : List U.Label := [⟨entry, inProgram 0⟩]
 
 /-! ## The check, and what it shows -/
 
-asm_checked code start .start stack 0 program pg labels labels blocks blocks fuel 120
+asm_checked code start .start stack 0 program pg labels labels blocks blocks
 
 end Own

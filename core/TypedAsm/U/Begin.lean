@@ -154,14 +154,14 @@ def entryCtx (room : Nat) : CtxS where
     .add (.bvar 0 17) (litNat room), .bvar 0 5, .bvar 0 6, .bvar 0 7,
     .bvar 0 8, .bvar 0 9, .bvar 0 10, .bvar 0 11, .bvar 0 12, .bvar 0 13, .bvar 0 14, .bvar 0 15⟩
   flags := .bvar 0
-  held := [(.bvar 0 17, ⟨litNat (room + 8), [(litNat room, .bvar 0 16)]⟩)]
-  known := [(.add (.add (.bvar 0 17) (litNat room)) (.lit 8), .arr (.bvar 0 16) (.str (.lit 0)))]
+  held := [(.bvar 0 17, ⟨litNat (room + 8), [(litNat room, .bvar 0 18)]⟩)]
+  known := [(.add (.add (.bvar 0 17) (litNat room)) (.lit 8), .arr (.bvar 0 18) (.str (.lit 0)))]
   rest := .none
 
 /-- The member of that family a state is, the count being `c` and the
 stack's region at `base`. -/
 def Fam.ofStart (s : State) (c base : BitVec 64) : Fam where
-  vals := fun i => if i = 16 then c else if i = 17 then base else (Fam.ofState s).vals i
+  vals := fun i => if i = 18 then c else if i = 17 then base else (Fam.ofState s).vals i
   flags := s.flags
   rest := []
 
