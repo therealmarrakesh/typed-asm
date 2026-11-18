@@ -160,16 +160,23 @@ are; where it is left out, each segment is one block of plain bytes.
 states of the functions its author defines are so (`LawsHold pg.fns
 pg.laws`); it is needed only where `pg` states any.
 
+How far the check goes from a label is worked out from the program: as far
+as the program is long, which is as far as any way through it goes that
+passes no instruction twice. A loop with no label that goes round a number
+of times that is written out is gone round that many times, and may take
+more: `steps n` allows `n` more.
+
 Where the check fails, the error says why, in the program's terms
 (`wholeWhy`): what of the program as a whole is not as the check asks, or
 each instruction or label that is refused and what is not so there. -/
 syntax "asm_checked " ident &" start " term:max &" stack " term:max &" program " term:max
   &" labels " term:max (&" blocks " term:max)? (&" kinds " term:max)?
-  (&" exits " term:max)? (&" writes " term:max &" said " term:max)? (&" laws " term:max)? : command
+  (&" steps " term:max)? (&" exits " term:max)? (&" writes " term:max &" said " term:max)?
+  (&" laws " term:max)? : command
 
 macro_rules
   | `(asm_checked $code start $l stack $n program $pg labels $ls $[blocks $bs?]? $[kinds $ks?]?
-      $[exits $q?]? $[writes $r? said $sd?]? $[laws $lw?]?) => do
+      $[steps $st?]? $[exits $q?]? $[writes $r? said $sd?]? $[laws $lw?]?) => do
     let checked := mkIdent `checked
     let startEq := mkIdent `start_eq
     let safeIn := mkIdent `safe_in
@@ -190,7 +197,9 @@ macro_rules
     let lw ← match lw? with
       | some lw => pure lw
       | none => `((LawsHold.nil _))
-    let k ← `((needFuel $pg $ls $ks))
+    let k ← match st? with
+      | some st => `(($st + needFuel $pg $ls $ks))
+      | none => `((needFuel $pg $ls $ks))
     let mut cmds : Array (TSyntax `command) := #[]
     cmds := cmds.push (← `(/-- **The check**: the labels' code is typed, and whatever the
       arguments, the state the program is loaded into starts as its entry asks. -/

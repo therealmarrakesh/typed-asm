@@ -207,7 +207,7 @@ def pubAt (pg : Prog) (k : Nat) (a : BitVec 64) (Γ : CtxS) : Option CtxS :=
   | none => none
 
 /-- The same, told whether the instruction there is a system call. -/
-def pubAtI (pg : Prog) (k : Nat) (isSys : Bool) (a : BitVec 64) (Γ : CtxS) : Option CtxS :=
+def pubAtI0 (pg : Prog) (k : Nat) (isSys : Bool) (a : BitVec 64) (Γ : CtxS) : Option CtxS :=
   match pubOnly pg k a Γ with
   | some Γ' => if isSys then some (splitFor Γ' k) else some Γ'
   | none => none
@@ -304,10 +304,10 @@ theorem seek_spec {ix : Index} {hint : Nat} {a : BitVec 64}
 theorem Prog.index_mem (pg : Prog) : ∀ e ∈ pg.index.arr, e ∈ pg.code :=
   fun _ he => List.mem_toArray.mp he
 
-theorem pubAtI_sound {ρ : Env} {pg : Prog} (hk : KindsOk Ψ pg.kinds) {k : Nat} {a : BitVec 64}
-    {isSys : Bool} {Γ Γ' : CtxS} (h : pubAtI pg k isSys a Γ = some Γ') (hu : Γ.under k = true) :
+theorem pubAtI0_sound {ρ : Env} {pg : Prog} (hk : KindsOk Ψ pg.kinds) {k : Nat} {a : BitVec 64}
+    {isSys : Bool} {Γ Γ' : CtxS} (h : pubAtI0 pg k isSys a Γ = some Γ') (hu : Γ.under k = true) :
     Γ'.under k = true ∧ Publishes fetch sys Ψ (Γ.den ρ) (Γ'.den ρ) := by
-  unfold pubAtI at h
+  unfold pubAtI0 at h
   split at h
   · next Γp hp =>
     obtain ⟨hup, hpub⟩ := pubOnly_sound (fetch := fetch) (sys := sys) (ρ := ρ) hk hp hu
@@ -317,6 +317,142 @@ theorem pubAtI_sound {ρ : Env} {pg : Prog} (hk : KindsOk Ψ pg.kinds) {k : Nat}
         hpub.trans fun Ψ' _ => Publishes.of_regards (splitFor_sound ρ Γp hup).2⟩
     · cases h; exact ⟨hup, hpub⟩
   · cases h
+
+/-! ## Sums of the low halves
+
+An addition or subtraction of the low halves of two values gives the low
+half of the sum, with nothing above it. Where what is known shows the sum
+of the whole values has nothing above its low half, that is the sum. -/
+
+theorem add_res32 (a b : BitVec 32) : (addCarry a b false).1 = a + b := by
+  apply BitVec.eq_of_toNat_eq
+  have := a.isLt; have := b.isLt
+  simp [addCarry, BitVec.toNat_add, BitVec.toNat_setWidth]
+
+theorem sub_res32 (a b : BitVec 32) : (subBorrow a b false).1 = a - b := by
+  apply BitVec.eq_of_toNat_eq
+  have := a.isLt; have := b.isLt
+  simp [subBorrow, BitVec.toNat_sub, BitVec.toNat_setWidth]
+  omega
+
+theorem add32_small (f : Flags) (a b : BitVec 64) (h : (a + b).toNat < 4294967296) :
+    FOp.eval (.alu .add .w32) f a b = a + b := by
+  show BitVec.setWidth 64 (addCarry (BitVec.setWidth 32 a) (BitVec.setWidth 32 b) false).1 = _
+  rw [add_res32]
+  apply BitVec.eq_of_toNat_eq
+  have := a.isLt; have := b.isLt
+  simp only [BitVec.toNat_add, BitVec.toNat_setWidth] at h ⊢
+  omega
+
+theorem sub32_small (f : Flags) (a b : BitVec 64) (h : (a - b).toNat < 4294967296) :
+    FOp.eval (.alu .sub .w32) f a b = a - b := by
+  show BitVec.setWidth 64 (subBorrow (BitVec.setWidth 32 a) (BitVec.setWidth 32 b) false).1 = _
+  rw [sub_res32]
+  apply BitVec.eq_of_toNat_eq
+  have := a.isLt; have := b.isLt
+  simp only [BitVec.toNat_sub, BitVec.toNat_setWidth] at h ⊢
+  omega
+
+/-- Whether two terms are the same value: as they are written; or the one
+is a sum or difference of low halves and the other the sum or difference
+itself, which what is known shows to have nothing above its low half. -/
+def same32 (K : List (Val × TyS)) (a b : Val) : Bool :=
+  a.same b ||
+    match a with
+    | .fop (.alu .add .w32) _ x y =>
+      b.same (.add x y) && rangeHolds K (.add x y) 0 0xFFFFFFFF
+    | .fop (.alu .sub .w32) _ x y =>
+      b.same (x.less y) && rangeHolds K (x.less y) 0 0xFFFFFFFF
+    | _ => false
+
+theorem same32_den {ρ : Env} {K : List (Val × TyS)} {Ψ' : MemTy} {n : Nat}
+    (hg : ∀ g ∈ K, HasTy fetch sys Ψ' n (g.2.den ρ) (g.1.den ρ)) {a b : Val}
+    (h : same32 K a b = true) : a.den ρ = b.den ρ := by
+  unfold same32 at h
+  rcases Bool.or_eq_true _ _ |>.mp h with h | h
+  · exact Val.same_den ρ h
+  · split at h
+    · next fl x y h =>
+      rw [Bool.and_eq_true] at h
+      have hr := rangeHolds_has h.2 hg
+      rw [Val.same_den ρ h.1]
+      show FOp.eval (.alu .add .w32) (fl.den ρ) (x.den ρ) (y.den ρ) = x.den ρ + y.den ρ
+      refine add32_small _ _ _ ?_
+      have hle : x.den ρ + y.den ρ - 0 ≤ (0xFFFFFFFF : BitVec 64) - 0 := hr
+      rw [show x.den ρ + y.den ρ - 0 = x.den ρ + y.den ρ by simp, BitVec.le_def] at hle
+      have : ((0xFFFFFFFF : BitVec 64) - 0).toNat = 4294967295 := by decide
+      omega
+    · next fl x y h =>
+      rw [Bool.and_eq_true] at h
+      have hr := rangeHolds_has h.2 hg
+      rw [Val.same_den ρ h.1, Val.less_den]
+      show FOp.eval (.alu .sub .w32) (fl.den ρ) (x.den ρ) (y.den ρ) = x.den ρ - y.den ρ
+      refine sub32_small _ _ _ ?_
+      have hle : (x.less y).den ρ - 0 ≤ (0xFFFFFFFF : BitVec 64) - 0 := hr
+      rw [Val.less_den, show x.den ρ - y.den ρ - 0 = x.den ρ - y.den ρ by simp,
+        BitVec.le_def] at hle
+      have : ((0xFFFFFFFF : BitVec 64) - 0).toNat = 4294967295 := by decide
+      omega
+    · cases h
+
+/-- A sum or difference of low halves, as the sum or difference itself. -/
+def Val.whole : Val → Val
+  | .fop (.alu .add .w32) _ x y => .add x y
+  | .fop (.alu .sub .w32) _ x y => x.less y
+  | v => v
+
+/-- The same, where what is known shows it to be the sum; else the term. -/
+def Val.wholeIf (K : List (Val × TyS)) (v : Val) : Val :=
+  if same32 K v v.whole then v.whole else v
+
+/-- **A context with each register's sum of low halves taken as the sum**,
+where the context may be regarded so: where what is known shows the sum to
+have nothing above its low half. Else the context. -/
+def narrowFor (Γ : CtxS) (k : Nat) : CtxS :=
+  if Γ.regs.map (Val.wholeIf Γ.known) == Γ.regs then Γ
+  else if ({ Γ with regs := Γ.regs.map (Val.wholeIf Γ.known) } : CtxS).under k &&
+      regardWith same32 noEnt Γ { Γ with regs := Γ.regs.map (Val.wholeIf Γ.known) } then
+    { Γ with regs := Γ.regs.map (Val.wholeIf Γ.known) }
+  else Γ
+
+theorem narrowFor_sound (ρ : Env) (Γ : CtxS) {k : Nat} (hu : Γ.under k = true) :
+    (narrowFor Γ k).under k = true ∧
+      Regards fetch sys Ψ (Γ.den ρ) ((narrowFor Γ k).den ρ) := by
+  unfold narrowFor
+  split
+  · exact ⟨hu, Regards.refl _⟩
+  · split
+    · next h =>
+      rw [Bool.and_eq_true] at h
+      exact ⟨h.1, regardWith_sound noEnt_sound ρ (fun _ _ hg _ _ hs => same32_den hg hs) h.2⟩
+    · exact ⟨hu, Regards.refl _⟩
+
+theorem narrowFor_regards (ρ : Env) (Γ : CtxS) (k : Nat) :
+    Regards fetch sys Ψ (Γ.den ρ) ((narrowFor Γ k).den ρ) := by
+  unfold narrowFor
+  split
+  · exact Regards.refl _
+  · split
+    · next h =>
+      rw [Bool.and_eq_true] at h
+      exact regardWith_sound noEnt_sound ρ (fun _ _ hg _ _ hs => same32_den hg hs) h.2
+    · exact Regards.refl _
+
+/-- **The context made ready at an address**: what the program publishes
+there published; at a system call, a region that memory is to be given back
+out of taken as its parts; and each sum of low halves that is seen to be
+the sum, taken as it. -/
+def pubAtI (pg : Prog) (k : Nat) (isSys : Bool) (a : BitVec 64) (Γ : CtxS) : Option CtxS :=
+  (pubAtI0 pg k isSys a Γ).map (narrowFor · k)
+
+theorem pubAtI_sound {ρ : Env} {pg : Prog} (hk : KindsOk Ψ pg.kinds) {k : Nat} {a : BitVec 64}
+    {isSys : Bool} {Γ Γ' : CtxS} (h : pubAtI pg k isSys a Γ = some Γ') (hu : Γ.under k = true) :
+    Γ'.under k = true ∧ Publishes fetch sys Ψ (Γ.den ρ) (Γ'.den ρ) := by
+  obtain ⟨Γ₁, h₁, rfl⟩ := Option.map_eq_some_iff.mp h
+  obtain ⟨hu₁, hp₁⟩ := pubAtI0_sound (fetch := fetch) (sys := sys) (ρ := ρ) hk h₁ hu
+  obtain ⟨hu₂, hr₂⟩ := narrowFor_sound (fetch := fetch) (sys := sys) (Ψ := Ψ) ρ Γ₁ hu₁
+  exact ⟨hu₂, hp₁.trans fun Ψ' _ =>
+    Publishes.of_regards (narrowFor_sound (fetch := fetch) (sys := sys) (Ψ := Ψ') ρ Γ₁ hu₁).2⟩
 
 theorem pubAt_sound {ρ : Env} {pg : Prog} (hk : KindsOk Ψ pg.kinds) {k : Nat} {a : BitVec 64}
     {Γ Γ' : CtxS} (h : pubAt pg k a Γ = some Γ') (hu : Γ.under k = true) :

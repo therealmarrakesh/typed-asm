@@ -203,15 +203,48 @@ theorem lawApplies_den {ρ : Env} {Ψ' : MemTy} {n : Nat}
   rw [← open_den]
   exact rangeHolds_has (hpre p hp) hg
 
+/-- Whether two terms are seen to be the same value by the arithmetic of
+what is known: their difference is seen to be nought. It is asked only
+where a range is known of some term they are made of: else nothing could
+show it. So a value a comparison has pinned to a number is that number
+wherever it stands. -/
+def sameKnown (K : List (Val × TyS)) (a b : Val) : Bool :=
+  (K.any fun g =>
+    match g.2 with
+    | .range _ _ => touches ((a.less b).lin.ms.map (·.2)) g
+    | _ => false) &&
+    rangeHolds K (a.less b) 0 0
+
+theorem sameKnown_den {ρ : Env} {Ψ' : MemTy} {n : Nat} {K : List (Val × TyS)}
+    (hg : ∀ g ∈ K, HasTy fetch sys Ψ' n (g.2.den ρ) (g.1.den ρ)) {a b : Val}
+    (h : sameKnown K a b = true) : a.den ρ = b.den ρ := by
+  unfold sameKnown at h
+  rw [Bool.and_eq_true] at h
+  have hr : (a.less b).den ρ - 0 ≤ (0 : BitVec 64) - 0 := rangeHolds_has h.2 hg
+  rw [Val.less_den] at hr
+  have hle : (a.den ρ - b.den ρ - 0).toNat ≤ ((0 : BitVec 64) - 0).toNat := BitVec.le_def.mp hr
+  have h0 : ((0 : BitVec 64) - 0).toNat = 0 := by decide
+  have h1 : a.den ρ - b.den ρ - 0 = a.den ρ - b.den ρ := by simp
+  rw [h0, h1] at hle
+  have hz : a.den ρ - b.den ρ = 0 := BitVec.eq_of_toNat_eq (by
+    have : (0 : BitVec 64).toNat = 0 := rfl
+    omega)
+  have e : a.den ρ = a.den ρ - b.den ρ + b.den ρ := by
+    rw [BitVec.sub_add_cancel]
+  rw [e, hz]
+  simp
+
 /-- **Whether two terms are the same value**, by the functions and the laws
 of a program and what is known: as terms; or once every function of numbers
-is computed; or by a law, read either way. -/
+is computed; or by a law, read either way; or by the arithmetic of what is
+known. -/
 def sameBy (fns : Nat → BitVec 64 → BitVec 64 → BitVec 64) (laws : List LawS)
     (K : List (Val × TyS)) (a b : Val) : Bool :=
   a.same b || (a.evalApps fns).same (b.evalApps fns) ||
-    laws.any fun l =>
+    (laws.any fun l =>
       lawApplies K l (a.evalApps fns) (b.evalApps fns) ||
-        lawApplies K l (b.evalApps fns) (a.evalApps fns)
+        lawApplies K l (b.evalApps fns) (a.evalApps fns)) ||
+    sameKnown K a b
 
 theorem sameBy_den {ρ : Env} {Ψ' : MemTy} {n : Nat}
     {fns : Nat → BitVec 64 → BitVec 64 → BitVec 64} (hfn : ρ.fn = fns) {laws : List LawS}
@@ -219,7 +252,9 @@ theorem sameBy_den {ρ : Env} {Ψ' : MemTy} {n : Nat}
     (hg : ∀ g ∈ K, HasTy fetch sys Ψ' n (g.2.den ρ) (g.1.den ρ)) {a b : Val}
     (h : sameBy fns laws K a b = true) : a.den ρ = b.den ρ := by
   simp only [sameBy, Bool.or_eq_true, List.any_eq_true] at h
-  rcases h with (h | h) | ⟨l, hlm, h | h⟩
+  rcases h with ((h | h) | ⟨l, hlm, h | h⟩) | h
+  rotate_right
+  · exact sameKnown_den hg h
   · exact Val.same_den ρ h
   · rw [← Val.evalApps_den hfn a, ← Val.evalApps_den hfn b]
     exact Val.same_den ρ h

@@ -118,8 +118,8 @@ example : (wholeWhy kept .start 1 [] (blocksOf kept .start) pgKept [] 40).map
 example : (tidy [] (explain { code := progCode (Asm.table Lengths.base Lengths.code) }
     [⟨Lengths.entry, inProgram 4⟩] 27)).map (·.why) = [againSay] := by decide +kernel
 
--- a loop that goes round a number of times that is written out needs none: it is walked
--- each time round
+-- a loop that goes round a number of times that is written out needs none, where the check
+-- is let go far enough: it is walked each time round
 example : explain pgKept [⟨Asm.addr kept (Asm.base kept) .start, inProgram 1⟩] 20 = [] := by
   decide +kernel
 

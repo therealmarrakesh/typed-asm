@@ -266,6 +266,15 @@ def learnedFacts (justify : Nat → BitVec 64 → CtxS → Bool) (kj : Nat) (Γ 
   ((askedCode Γ Δ).filter fun x => justify kj x.1 (x.2.1.addKnown (carried Γ))).map
     fun x => x.2.2
 
+/-- **The context reached, made ready to be compared**: its regions that
+lie end to end taken as one, and each sum of low halves that is seen to be
+the sum, taken as it. -/
+def ready (Γ : CtxS) (k : Nat) : CtxS := narrowFor (joinAll Γ.held.length Γ) k
+
+theorem ready_regards (ρ : Env) (Γ : CtxS) (k : Nat) :
+    Regards fetch sys Ψ (Γ.den ρ) ((ready Γ k).den ρ) :=
+  (joinAll_regards ρ Γ.held.length Γ).trans (narrowFor_regards ρ _ k)
+
 /-- The context reached, its values named, with what it has learnt of
 addresses that are code: regarded as the member of the family found, where
 it may be. What was learnt is handed in, so that it is worked out once: it
@@ -286,11 +295,11 @@ unless it may then be regarded as the member found, which is given with it.
 def closeCtx (sm : List (Val × TyS) → Val → Val → Bool) (ent : Nat → TyS → TyS → Bool)
     (justify : Nat → BitVec 64 → CtxS → Bool) (P Γ : CtxS) (k : Nat) :
     Option (CtxS × OpenL) :=
-  if (joinAll Γ.held.length Γ).under k then
-    match nameSlots (joinAll Γ.held.length Γ) (wantedCode P (joinAll Γ.held.length Γ)) k with
+  if (ready Γ k).under k then
+    match nameSlots (ready Γ k) (wantedCode P (ready Γ k)) k with
     | some Γ' =>
-      closeWith sm (ent (k + (wantedCode P (joinAll Γ.held.length Γ)).length)) P Γ'
-        (learnedFacts justify (k + (wantedCode P (joinAll Γ.held.length Γ)).length) Γ'
+      closeWith sm (ent (k + (wantedCode P (ready Γ k)).length)) P Γ'
+        (learnedFacts justify (k + (wantedCode P (ready Γ k)).length) Γ'
           (P.open (matchOpen P Γ').opening))
     | none => none
   else none
@@ -333,8 +342,8 @@ theorem closeCtx_sound {n : Nat} {fns : Nat → BitVec 64 → BitVec 64 → BitV
   unfold closeCtx at h
   split at h
   · next hu =>
-    cases hn : nameSlots (joinAll Γ.held.length Γ)
-        (wantedCode P (joinAll Γ.held.length Γ)) k with
+    cases hn : nameSlots (ready Γ k)
+        (wantedCode P (ready Γ k)) k with
     | none => rw [hn] at h; cases h
     | some Γ₁ =>
       rw [hn] at h
@@ -343,10 +352,10 @@ theorem closeCtx_sound {n : Nat} {fns : Nat → BitVec 64 → BitVec 64 → BitV
       · next hc =>
         cases h
         simp only [Bool.and_eq_true] at hc
-        refine hreg (joinAll_regards ρ Γ.held.length Γ) ?_
+        refine hreg (ready_regards ρ Γ k) ?_
         refine nameSlots_ok Q hname _ _ Γ₁ k hn hu ρ fun ρ' hag => ?_
         refine hlearn ((learnedFacts justify
-            (k + (wantedCode P (joinAll Γ.held.length Γ)).length) Γ₁
+            (k + (wantedCode P (ready Γ k)).length) Γ₁
             (P.open (matchOpen P Γ₁).opening)).map fun f => (f.1.den ρ', f.2.den ρ')) ?_ ?_
         · intro f hf k' hk' Ψ' he hwf hΓk
           obtain ⟨g, hg, rfl⟩ := List.mem_map.mp hf
@@ -374,10 +383,10 @@ theorem closeCtx_sound {n : Nat} {fns : Nat → BitVec 64 → BitVec 64 → BitV
           exact ((hΓk (c₀.1.den ρ', c₀.2.den ρ')
             (List.mem_map.mpr ⟨c₀, hmem, rfl⟩)).ext he').mono (Nat.le_of_lt hjlt)
         · have e : CtxS.den ρ' (Γ₁.addKnown (learnedFacts justify
-                (k + (wantedCode P (joinAll Γ.held.length Γ)).length) Γ₁
+                (k + (wantedCode P (ready Γ k)).length) Γ₁
                 (P.open (matchOpen P Γ₁).opening)))
               = { Γ₁.den ρ' with known :=
-                  ((learnedFacts justify (k + (wantedCode P (joinAll Γ.held.length Γ)).length) Γ₁
+                  ((learnedFacts justify (k + (wantedCode P (ready Γ k)).length) Γ₁
                     (P.open (matchOpen P Γ₁).opening)).map fun f => (f.1.den ρ', f.2.den ρ'))
                     ++ (Γ₁.den ρ').known } :=
             ctx_ext rfl rfl rfl (List.map_append)

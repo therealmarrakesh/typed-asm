@@ -251,13 +251,13 @@ def closeWhy (nm : Names) (sm : List (Val × TyS) → Val → Val → Bool)
     (ent : Nat → TyS → TyS → Bool)
     (justify : Nat → BitVec 64 → CtxS → Bool) (whyJ : Nat → BitVec 64 → CtxS → List Refusal)
     (path : List Was) (P Γ : CtxS) (k : Nat) : List String × List Refusal :=
-  if !(joinAll Γ.held.length Γ).under k then
+  if !(ready Γ k).under k then
     (["the context reached mentions a name it may not"], [])
   else
-    match nameSlots (joinAll Γ.held.length Γ) (wantedCode P (joinAll Γ.held.length Γ)) k with
+    match nameSlots (ready Γ k) (wantedCode P (ready Γ k)) k with
     | none => (["a value the family names lies outside what is held, or is not placed"], [])
     | some Γ' =>
-      let kn := k + (wantedCode P (joinAll Γ.held.length Γ)).length
+      let kn := k + (wantedCode P (ready Γ k)).length
       let o := (matchOpen P Γ').opening
       let fixed := (matchOpen P Γ').bs.map (·.1)
       -- what the label wants, with each value nothing fixes shown as that
@@ -387,7 +387,9 @@ def Walk.faults (pg : Prog) (ent : Nat → TyS → TyS → Bool)
               "time round",
               s!"the first instruction of this loop is {whereSay pg low}"]⟩]
         else
-          [⟨from_, a, s!"is {fuel} instructions on " ++ farSay, []⟩]
+          [⟨from_, a, s!"is {fuel} instructions on " ++ farSay,
+            ["a loop passed on the way that has no label is gone round as many times as it " ++
+              "says: give it a label, or allow more with `steps n`"]⟩]
       else
         let w := stepWhy nm pg path Γ k a
         [⟨from_, a, w.1, w.2⟩]

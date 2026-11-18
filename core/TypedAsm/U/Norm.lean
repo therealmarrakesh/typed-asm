@@ -166,7 +166,7 @@ def mkAlu (op : AluOp) (w : Width) (fl : FlagsT) (a b : Val) : Val :=
       | .sub, .w64 =>
         match yb with
         | some y => .add a (.lit (-y))
-        | none => .fop (.alu op w) fl a b
+        | none => .add a (.un (.neg .w64) b)
       | _, _ => .fop (.alu op w) fl a b
 
 theorem mkAlu_den (ρ : Env) (op : AluOp) (w : Width) (fl : FlagsT) (a b : Val) :
@@ -196,7 +196,12 @@ theorem mkAlu_den (ρ : Env) (op : AluOp) (w : Width) (fl : FlagsT) (a b : Val) 
           · next y hy =>
             show a.den ρ + -y = _
             rw [alu_sub64, Val.lit?_den hy]
-          · rfl
+          · show a.den ρ + Un.eval (.neg .w64) (b.den ρ) = _
+            rw [alu_sub64]
+            congr 1
+            show (subBorrow 0 ((b.den ρ).setWidth 64) false).1.setWidth 64 = _
+            rw [sub_res64, BitVec.setWidth_eq]
+            simp
         · rfl
 
 /-- A choice between two whole values is the one or the other. -/

@@ -56,9 +56,9 @@ theorem ValsS.den_toList (ρ : Env) : (vs : ValsS) →
     simp only [ValsS.den, ValsS.toList, List.map_cons, ValsS.den_toList ρ rest]
 
 /-- Whether a thing is so of a value, as far as the blocks said show: that
-it is the address of a byte of one of them, of a shape or a kind; that it
-is nought, where it may be; that it lies in a range; and, as far as `j`
-shows, that it is code wanting a family. -/
+it is the address of a byte of one of them, of a shape or a kind, or of a
+byte of the text of one; that it is nought, where it may be; that it lies
+in a range; and, as far as `j` shows, that it is code wanting a family. -/
 def tyHolds (j : BitVec 64 → CtxS → Bool) (bs : List (BitVec 64 × LayoutS)) :
     TyS → BitVec 64 → Bool
   | .any, _ => true
@@ -73,6 +73,7 @@ def tyHolds (j : BitVec 64 → CtxS → Bool) (bs : List (BitVec 64 × LayoutS))
       b.2.shape == S && (!w || b.2.writable) && v == b.1 + BitVec.ofNat 64 off
   | .ref tag w off, v => bs.any fun b =>
       b.2.tag == some tag && (!w || b.2.writable) && v == b.1 + BitVec.ofNat 64 off
+  | .str (.lit c), v => staticOk (denBlocks bs) (.lit v, .str (.lit c))
   | _, _ => false
 
 theorem tyHolds_hasTy {j : BitVec 64 → CtxS → Bool} {bs : List (BitVec 64 × LayoutS)}
@@ -85,6 +86,15 @@ theorem tyHolds_hasTy {j : BitVec 64 → CtxS → Bool} {bs : List (BitVec 64 ×
     (τ : TyS) → (v : BitVec 64) → tyHolds j bs τ v = true →
     HasTy fetch sys (MemTy.ofList (denBlocks bs) kinds) n (τ.den {}) v
   | .any, _, _ => HasTy.any _
+  | .str (.lit c), v, h => by
+    simp only [tyHolds, staticOk, List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq,
+      Bool.or_eq_true, beq_iff_eq] at h
+    obtain ⟨b, hb, ⟨hv, hlt⟩, hmore⟩ := h
+    simp only [TyS.den, Val.den, HasTy]
+    refine ⟨b.1, b.2, _, MemTy.ofList_of_mem _ hnd b hb, hlt, fun hc0 => ?_, hv⟩
+    rcases hmore with hmore | hmore
+    · exact absurd hmore hc0
+    · exact hmore
   | .range lo hi, v, h => hasTy_range.mpr (of_decide_eq_true h)
   | .nullable τ, v, h => by
     simp only [tyHolds, Bool.or_eq_true, beq_iff_eq] at h
@@ -115,7 +125,14 @@ theorem tyHolds_hasTy {j : BitVec 64 → CtxS → Bool} {bs : List (BitVec 64 ×
     · rw [hw] at hw'; cases hw'
     · exact hw
   | .orErr _, _, h => nomatch h
-  | .str _, _, h => nomatch h
+  | .str (.var _), _, h => nomatch h
+  | .str (.bvar _ _), _, h => nomatch h
+  | .str (.slot _), _, h => nomatch h
+  | .str (.un _ _), _, h => nomatch h
+  | .str (.bin _ _ _), _, h => nomatch h
+  | .str (.tri _ _ _ _), _, h => nomatch h
+  | .str (.fop _ _ _ _), _, h => nomatch h
+  | .str (.app _ _ _), _, h => nomatch h
   | .atom _, _, h => nomatch h
   | .arr (.lit c) τ, v, h => by
     simp only [tyHolds, List.any_eq_true, List.all_eq_true, List.mem_range,

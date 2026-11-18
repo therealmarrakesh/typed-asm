@@ -40,14 +40,20 @@ def exitsDesc (Q : BitVec 32 → Prop) : SysDesc :=
 
 /-- **Whether a context at a system call is seen to end the program only
 with a status as wanted**: the call number is written out; and where it is
-an exit, the status is written out and is as wanted. -/
+an exit, the status is written out and is as wanted, or is seen by what is
+known to lie among a few numbers each of which is as wanted. -/
 def preExits (q : BitVec 32 → Bool) (Γ : CtxS) : Bool :=
   match Γ.regs.rax.lit? with
   | some nr =>
     if nr = 60 ∨ nr = 231 then
       match Γ.regs.rdi.lit? with
       | some v => q (v.setWidth 32)
-      | none => false
+      | none =>
+        match Γ.within Γ.regs.rdi with
+        | some (lo, hi) =>
+          decide (hi < 4294967296) && decide (hi - lo < 4096) &&
+            (List.range (hi - lo + 1)).all fun i => q (BitVec.ofNat 32 (lo + i))
+        | none => false
     else true
   | none => false
 
@@ -69,7 +75,25 @@ theorem preExits_sound {Q : BitVec 32 → Prop} {q : BitVec 32 → Bool} (hq : �
         show Q ((s.getReg .rdi).setWidth 32)
         rw [hrdi]
         exact hq _ h
-      · cases h
+      · split at h
+        · next lo hi hwi =>
+          simp only [Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true, List.mem_range] at h
+          obtain ⟨⟨hhi, _⟩, hall⟩ := h
+          have hb := CtxS.within_den (ρ := ρ) hwi hw.known
+          have hv : (Γ.regs.rdi.den ρ) = s.getReg .rdi := (hw.val .rdi).symm
+          rw [hv] at hb
+          have hc' := linux_exit_status (by rw [hrax]; exact hex) hc
+          rw [hc']
+          show Q ((s.getReg .rdi).setWidth 32)
+          have e : (s.getReg .rdi).setWidth 32
+              = BitVec.ofNat 32 (lo + ((s.getReg .rdi).toNat - lo)) := by
+            apply BitVec.eq_of_toNat_eq
+            rw [BitVec.toNat_setWidth, BitVec.toNat_ofNat]
+            congr 1
+            omega
+          rw [e]
+          exact hq _ (hall _ (by omega))
+        · cases h
     · next hne =>
       have := linux_exit_only hc
       rw [hrax] at this

@@ -224,10 +224,12 @@ end
 /-- The deepest of some facts' types. -/
 def factsDepth (fs : List (Val × TyS)) : Nat := fs.foldl (fun d f => max d f.2.depth) 0
 
-/-- **How far the check of a program need go**: no walk from a label that
-ends or reaches a label passes an instruction twice, so none is longer than
-the program; and one type is compared with another no deeper than code is
-nested in the types the program, its labels and its kinds say. -/
+/-- **How far the check of a program goes, unless told to go further**: a
+walk from a label that passes no instruction twice is no longer than the
+program; and one type is compared with another no deeper than code is
+nested in the types the program, its labels and its kinds say. A loop with
+no label, gone round a number of times that is written out, is passed more
+than once, and may need more. -/
 def needFuel (pg : Prog) (labels : List Label) (ks : List (Nat × ShapeS)) : Nat :=
   pg.code.length + 2 +
     labels.foldl (fun d l => max d (factsDepth l.pat.known)) (factsDepth pg.statics) +
