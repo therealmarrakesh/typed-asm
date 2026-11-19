@@ -142,4 +142,18 @@ def labels : List U.Label :=
 asm_checked code start .start stack 6 program pg labels labels
   exits (fun c => c == 0 || c == 1)
 
+/-- The labels, the room left in the buffer said at the loop to be the whole
+of it, however far the pointer has gone. -/
+def labelsAll : List U.Label :=
+  [⟨entry, inProgram 6⟩,
+   ⟨Asm.addr code base .read_full, inFunction (room := 24) (takes := [(.was .rdi, .was .rsi)])⟩,
+   ⟨Asm.addr code base .rf, inFunction (room := 24)
+     (pushed := [.saved .rbx, .saved .r12, .saved .r13])
+     (takes := [(.named 0, .named 1)])
+     (regs := [(.rbx, .named 0 + .was .r13), (.r12, .named 1)])
+     (known := [(.was .r13, .upTo (.named 1) false)])⟩]
+
+-- a `read` of that many from there may store past the buffer. Refused
+#guard !wholeOkWith code .start 6 [] (blocksOf code .start) pg labelsAll (needFuel pg labelsAll [])
+
 end Tests.Written.ReadFull

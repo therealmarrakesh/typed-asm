@@ -90,4 +90,14 @@ def labels : List U.Label :=
 
 asm_checked code start .start stack 5 program pg labels labels
 
+/-- The labels, `put` said to take thirty-one bytes. -/
+def labelsShort : List U.Label :=
+  [⟨entry, inProgram 5⟩,
+   ⟨Asm.addr code base .loop, inProgram 5 (pushed := [.bytes 32])⟩,
+   ⟨Asm.addr code base .put, inFunction (takes := [(.was .rdi, 31)])⟩,
+   ⟨Asm.addr code base .get, inFunction (takes := [(.was .rdi, 32)])⟩]
+
+-- the last of the sixteen bytes it may store into is the thirty-second. Refused
+#guard !wholeOkWith code .start 5 [] (blocksOf code .start) pg labelsShort (needFuel pg labelsShort [])
+
 end Tests.Written.Ring

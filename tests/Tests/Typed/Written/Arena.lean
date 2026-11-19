@@ -133,4 +133,18 @@ def labels : List U.Label :=
 
 asm_checked code start .start stack 1 program pg labels labels exits (fun c => c == 0 || c == 1)
 
+/-- The labels, the rest `carve` gives back said to be as large as the whole
+arena, not less the piece carved off. -/
+def labelsWhole : List U.Label :=
+  [⟨entry, inProgram 1⟩,
+   ⟨Asm.addr code base .carve,
+     inFunction (uses := [(.was .rdi, .was .rsi)])
+       (results := [(.rax, 0)]) (gives := [(.was .rdi, .was .rsi)])
+       (orReturns := [returnsWith (results := [(.rax, .was .rdi)])
+         (gives := [(.was .rdi, .was .rdx),
+                    (.add (.was .rdi) (.was .rdx), .was .rsi)])])⟩]
+
+-- Refused
+#guard !wholeOkWith code .start 1 [] (blocksOf code .start) pg labelsWhole (needFuel pg labelsWhole [])
+
 end Tests.Written.Arena

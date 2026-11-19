@@ -66,4 +66,17 @@ def labels : List U.Label :=
 
 asm_checked code start .start stack 0 program pg labels labels blocks blocks
 
+/-- The labels, the inner loop's index said to be at most the count of pairs
+and not below it. -/
+def labelsLoose : List U.Label :=
+  [⟨entry, inProgram 0⟩,
+   ⟨Asm.addr code base .outer,
+     inProgram 0 (regs := [(.rdi, .lit arrAddr)]) (known := [(.was .rcx, .range 1 7)])⟩,
+   ⟨Asm.addr code base .inner,
+     inProgram 0 (regs := [(.rdi, .lit arrAddr)])
+       (known := [(.was .rcx, .range 1 7), (.was .rdx, .upTo (.was .rcx) false)])⟩]
+
+-- the second of a pair may then be one past the last of the eight. Refused
+#guard !wholeOkWith code .start 0 [] blocks pg labelsLoose (needFuel pg labelsLoose [])
+
 end Tests.Written.Bubble

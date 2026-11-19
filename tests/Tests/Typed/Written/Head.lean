@@ -124,4 +124,10 @@ def labels : List U.Label :=
 asm_checked code start .start stack 8 program pg labels labels
   exits (fun c => c == 0 || c == 1)
 
+/-- The same program, said to end only with nought. -/
+def pgNought : Prog := { pg with pre := preExits (· == 0) }
+
+-- it ends with one where a `read` or a `write` fails. Refused
+#guard !wholeOkWith code .start 8 [] (blocksOf code .start) pgNought labels (needFuel pgNought labels [])
+
 end Tests.Written.Head

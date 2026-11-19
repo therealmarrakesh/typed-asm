@@ -98,4 +98,14 @@ def labels : List U.Label :=
 asm_checked code start .start stack 1 program pg labels labels
   exits (fun c => c == 0 || c == 1 || c == 2)
 
+/-- The labels, with nothing said of what the second argument points to. -/
+def labelsOne : List U.Label :=
+  [⟨entry, inProgram 1⟩,
+   ⟨Asm.addr code base .strcmp, inFunction
+      (known := [(.was .rdi, .str (.lit 0))])
+      (returns := [(.given .rax, .range 0 1)])⟩]
+
+-- the byte read through `rsi` is then of no memory the code is known to have. Refused
+#guard !wholeOkWith code .start 1 [] (blocksOf code .start) pg labelsOne (needFuel pg labelsOne [])
+
 end Tests.Written.Strcmp

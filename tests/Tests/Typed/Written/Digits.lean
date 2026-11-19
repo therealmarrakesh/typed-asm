@@ -95,5 +95,18 @@ def labels : List U.Label :=
 asm_checked code start .start stack 4 program pg labels labels exits (· == 0)
   writes (fun _ _ => false) said [] each digitOrLine
 
+/-- The labels, the digits stored said to be bytes from 48 to 58. -/
+def labelsColon : List U.Label :=
+  [⟨entry, inProgram 4⟩,
+   ⟨Asm.addr code base .digit, inProgram 4 (pushed := [.bytes 32])
+      (regs := [(.r8, 10)]) (known := [(.was .rcx, .upTo (.lit 31) false)])
+      (rows := [bytesAt (stackAt 4 [.bytes 32] (.was .rcx))
+        (.add (.lit 31) (-(Val.was .rcx))) (.range 48 58),
+        bytesAt (stackAt 4 [.bytes 32] 31) 1 (.range 10 10)])⟩]
+
+-- a byte of 58 is no digit, and the program is to write only digits and the
+-- end of a line. Refused
+#guard !wholeOkWith code .start 4 [] (blocksOf code .start) pg labelsColon (needFuel pg labelsColon [])
+
 end Tests.Written.Digits
 

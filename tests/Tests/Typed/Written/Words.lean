@@ -106,4 +106,17 @@ def labels : List U.Label :=
 
 asm_checked code start .start stack 8 program pg labels labels exits (fun c => decide (c < 256))
 
+/-- The labels, the count a `read` handed back said to be at most so much. -/
+def labelsMost (most : BitVec 64) : List U.Label :=
+  [⟨entry, inProgram 8⟩,
+   ⟨Asm.addr code base .chunk, inProgram 8 (pushed := [.bytes 64])⟩,
+   ⟨Asm.addr code base .byte, inProgram 8 (pushed := [.bytes 64])
+      (known := [(.was .rax, .upTo (.lit most) false), (.was .rcx, .upTo (.was .rax) false)])⟩]
+
+-- at most seventy-two: the bytes read would be of the buffer or of the eight
+-- after it, the count of arguments, which the program has too
+#guard wholeOkWith code .start 8 [] (blocksOf code .start) pg (labelsMost 72) (needFuel pg (labelsMost 72) [])
+-- at most seventy-three: a byte past those. Refused
+#guard !wholeOkWith code .start 8 [] (blocksOf code .start) pg (labelsMost 73) (needFuel pg (labelsMost 73) [])
+
 end Tests.Written.Words

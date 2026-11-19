@@ -70,4 +70,11 @@ def labels : List U.Label :=
 
 asm_checked code start .start stack 0 program pg labels labels
 
+/-- The labels, with nothing said at the loop of what `rsi` points to. -/
+def labelsBare : List U.Label :=
+  [⟨entry, inProgram 0⟩, ⟨Asm.addr code base .digit, inProgram 0⟩]
+
+-- the byte read through `rsi` is then of no memory the code is known to have. Refused
+#guard !wholeOkWith code .start 0 [] (blocksOf code .start) pg labelsBare (needFuel pg labelsBare [])
+
 end Tests.Written.Atoi

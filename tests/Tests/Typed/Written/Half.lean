@@ -49,4 +49,11 @@ def labels : List U.Label := [⟨entry, inProgram 1⟩]
 
 asm_checked code start .start stack 1 program pg labels labels exits (· == 5)
 
+/-- The same program, said to end with seven: as it would if the four bytes
+stored last had reached the upper half of the eight. -/
+def pgSeven : Prog := { pg with pre := preExits (· == 7) }
+
+-- Refused
+#guard !wholeOkWith code .start 1 [] (blocksOf code .start) pgSeven labels (needFuel pgSeven labels [])
+
 end Tests.Written.Half

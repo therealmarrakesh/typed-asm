@@ -95,4 +95,16 @@ def labels : List U.Label :=
 
 asm_checked code start .start stack 1 program pg labels labels exits (fun c => c == 0 || c == 1)
 
+/-- The labels, the function said to hand back two pages where it asks the
+kernel for one. -/
+def labelsTwo : List U.Label :=
+  [⟨entry, inProgram 1⟩,
+   ⟨Asm.addr code base .alloc,
+     inFunction (results := [(.rax, 0)])
+       (orReturns := [returnsWith (gives := [(.given .rax, 8192)])
+         (returns := [(.given .rax, .range 1 (-1))])])⟩]
+
+-- Refused
+#guard !wholeOkWith code .start 1 [] (blocksOf code .start) pg labelsTwo (needFuel pg labelsTwo [])
+
 end Tests.Written.OrNull

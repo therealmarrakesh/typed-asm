@@ -105,4 +105,23 @@ def labels : List U.Label :=
 
 asm_checked code start .start stack 33 program pg labels labels
 
+/-- The labels, `push` said to be entered with a top of up to thirty-two. -/
+def labelsOver : List U.Label :=
+  [⟨entry, inProgram 33⟩,
+   ⟨Asm.addr code base .pushLoop, inProgram 33 (pushed := [.bytes 248, .val top])
+     (known := [(top, .range 0 31)])⟩,
+   ⟨Asm.addr code base .popLoop, inProgram 33 (pushed := [.bytes 248, .val top])
+     (known := [(top, .range 0 31)])⟩,
+   ⟨Asm.addr code base .push,
+     inFunction (takes := [(.was .rdi, 256)]) (holds := [(.was .rdi, [(0, top)])])
+       (known := [(top, .range 0 32)])
+       (leaves := [(.was .rdi, [(0, .made 0)])]) (returns := [(.made 0, .range 0 31)])⟩,
+   ⟨Asm.addr code base .pop,
+     inFunction (takes := [(.was .rdi, 256)]) (holds := [(.was .rdi, [(0, top)])])
+       (known := [(top, .range 0 31)])
+       (leaves := [(.was .rdi, [(0, .made 0)])]) (returns := [(.made 0, .range 0 31)])⟩]
+
+-- a thirty-third value would be stored past the memory it takes. Refused
+#guard !wholeOkWith code .start 33 [] (blocksOf code .start) pg labelsOver (needFuel pg labelsOver [])
+
 end Tests.Written.Stack
