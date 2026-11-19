@@ -149,4 +149,16 @@ theorem Disjoint.prefix_left {a b : BitVec 64} {n n' m : Nat} (h : Disjoint a n 
   rw [show a + BitVec.ofNat 64 0 = a by simp] at this
   exact this.symm
 
+/-- A part of a range that is apart from another is apart from it. -/
+theorem Disjoint.part_left {a b : BitVec 64} {n m o n' : Nat} (h : Disjoint a n b m)
+    (ho : o + n' ≤ n) (hn : n < 2 ^ 64) (hm : m < 2 ^ 64) :
+    Disjoint (a + BitVec.ofNat 64 o) n' b m :=
+  (h.symm.sub_right ho hm hn).symm
+
+/-- Parts of two ranges that are apart are apart. -/
+theorem Disjoint.parts {a b : BitVec 64} {n m o n' p m' : Nat} (h : Disjoint a n b m)
+    (ho : o + n' ≤ n) (hp : p + m' ≤ m) (hn : n < 2 ^ 64) (hm : m < 2 ^ 64) :
+    Disjoint (a + BitVec.ofNat 64 o) n' (b + BitVec.ofNat 64 p) m' :=
+  (h.part_left ho hn hm).sub_right hp (by omega) hm
+
 end TypedAsm

@@ -18,6 +18,7 @@ import Tests.Typed.Written.Filled
 import Tests.Typed.Written.RecList
 import Tests.Typed.Written.CatOnce
 import Tests.Typed.Written.CatPieces
+import Tests.Typed.Written.Middle
 import Tests.Typed.Written.RecTree
 
 /-!
@@ -40,7 +41,9 @@ of low halves bounded only by a relation between their operands; and a
 function that fills memory it is lent, its caller knowing what it left; and
 a function that goes down a list by calling itself, the stack it needs said
 by how long the list is, and one that goes down a tree, by how deep; and a
-program that writes what it read, proved to
+store into the middle of a row of values, which leaves those before it and
+those after it as they were said to be; and a program that writes what it
+read, proved to
 write nothing else, at once or in pieces as the kernel takes them. Each is
 typed as it is compiled.
 -/

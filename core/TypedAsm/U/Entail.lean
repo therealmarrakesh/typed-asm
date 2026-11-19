@@ -44,17 +44,6 @@ variable {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
 
 /-! ## Parts of ranges that are apart -/
 
-theorem _root_.TypedAsm.Disjoint.part_left {a b : BitVec 64} {n m o n' : Nat} (h : Disjoint a n b m)
-    (ho : o + n' ≤ n) (hn : n < 2 ^ 64) (hm : m < 2 ^ 64) :
-    Disjoint (a + BitVec.ofNat 64 o) n' b m :=
-  (h.symm.sub_right ho hm hn).symm
-
-/-- Parts of two ranges that are apart are apart. -/
-theorem _root_.TypedAsm.Disjoint.parts {a b : BitVec 64} {n m o n' p m' : Nat} (h : Disjoint a n b m)
-    (ho : o + n' ≤ n) (hp : p + m' ≤ m) (hn : n < 2 ^ 64) (hm : m < 2 ^ 64) :
-    Disjoint (a + BitVec.ofNat 64 o) n' (b + BitVec.ofNat 64 p) m' :=
-  (h.part_left ho hn hm).sub_right hp (by omega) hm
-
 /-- Parts of one range, one ending before the other begins, are apart. -/
 theorem disjoint_same {b : BitVec 64} {o₁ n₁ o₂ n₂ N : Nat} (hN : N < 2 ^ 64)
     (h₁ : o₁ + n₁ ≤ N) (h₂ : o₂ + n₂ ≤ N) (h : o₁ + n₁ ≤ o₂ ∨ o₂ + n₂ ≤ o₁) :

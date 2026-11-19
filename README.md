@@ -162,9 +162,13 @@ What is not there:
   bytes `e` takes, whatever the number. A function's type may say what
   rows it leaves when it returns (`returnRows`), so its caller knows what
   it put in memory it was lent; and a row wanted follows from rows one
-  after another that cover it, each of a kind that fits. What is said of a
-  row is let go by a store elsewhere than the region the row is in, and by
-  a system call that stores or maps memory; and it says of each value its
+  after another that cover it, each of a kind that fits. A store over some
+  of a row's values leaves those before them and those after them each a
+  row, wherever in the row it is known to be, and leaves the row whole
+  where the value stored is of its kind; a store into other memory the code
+  holds leaves it as it was. What is said of a row is let go by a store
+  that is not seen to start at one of its values, and by a system call
+  that stores or maps memory; and it says of each value its
   own type, not how the values stand to one another: that a row is sorted
   is not said.
 - A program may be proved to write only what it read: the world keeps what

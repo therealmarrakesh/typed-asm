@@ -1050,7 +1050,7 @@ theorem findHeld2_spec {ρ : Env} {Ψ' : MemTy} {m : Nat} {G : List (Val × TyS)
 def RowS.width (r : RowS) : Nat := if r.byte then 1 else 8
 
 /-- **What a row is once bytes are stored in the region `j`, so far in**:
-as it was, where the store keeps clear of it; with a value more at its end
+as it was, where the row is in another region or the store keeps clear of it; with a value more at its end
 or at its start, where the store puts one of its type there; and nothing,
 where it is not seen to be so. -/
 def rowAfter (ent : TyS → TyS → Bool) (Γ : CtxS) (j : Nat) (ow : Val) (n : Nat) (v wa : Val)
@@ -1072,7 +1072,7 @@ def rowAfter (ent : TyS → TyS → Bool) (Γ : CtxS) (j : Nat) (ow : Val) (n : 
             some { r with addr := wa, count := .add r.count (.lit 1) }
           else some r
         else none
-      else none
+      else some r
     | none => none
   else none
 
@@ -1146,10 +1146,197 @@ theorem rowAfter_sound {ρ : Env} {ent : TyS → TyS → Bool} (he : EntSound fe
             · cases h
               exact rowKept hw hjd hrd hn hfit hrow hra' hwid' (.inr hp) _
           · cases h
-      · cases h
+      · next hjj =>
+        cases h
+        rw [sumNat_replicate, Nat.add_zero] at hin
+        rw [hwa]
+        exact rowElsewhere hw hjd (CtxS.held_den ρ Γ hl) hjj hrd hn hfit hin hra hwid' _
     · cases h
   · cases h
 
+/-- **What is left of a row once bytes are stored over some of its values,
+in the region `j`**: the row as it was, where the store puts a value of its
+type in the place of one; else the values before those stored over, and the
+values after, each a row. Nothing where the store is not seen to start at
+one of the row's values. -/
+def rowSplit (ent : TyS → TyS → Bool) (Γ : CtxS) (j : Nat) (n : Nat) (v wa : Val)
+    (r : RowS) : List RowS :=
+  if decide (r.width ≤ r.stride) then
+    match findHeld2 Γ.known r.addr (List.replicate r.stride r.count) 0 Γ.held with
+    | some (j', _, _, _) =>
+      if j' = j then
+        match idxOf r.stride (Lin.addMul (-1) r.addr.lin wa.lin) with
+        | some P =>
+          if inCount Γ.known P r.count then
+            if decide (n = r.width) && factFrom ent Γ.known (cellVal r.byte v, r.ty) then [r]
+            else
+              let at_ := idxLin r.stride (Lin.addMul (-1) r.addr.lin wa.lin)
+              let m := (n + r.stride - 1) / r.stride
+              let left := Lin.addMul (-1) at_ r.count.lin
+              ({ r with count := at_.val } ::
+                if decide (m ≤ 1) || inCount Γ.known ⟨P.ms, P.k + ((m - 1 : Nat) : Int)⟩ r.count then
+                  [{ r with addr := wa.plus (.lit (BitVec.ofNat 64 (r.stride * m)))
+                            count := (⟨left.ms, left.k - BitVec.ofNat 64 m⟩ : Lin (BitVec 64)).val }]
+                else []).filter fun r' => r'.count != .lit 0
+          else []
+        | none => []
+      else []
+    | none => []
+  else []
+
+theorem rowSplit_sound {ρ : Env} {ent : TyS → TyS → Bool} (he : EntSound fetch sys ent)
+    {Γ : CtxS} {j : Nat} {ow v wa : Val} {n : Nat} {r r' : RowS}
+    (h : r' ∈ rowSplit ent Γ j n v wa r) (hr : r ∈ Γ.rows) {base : Val} {S : HeldS}
+    (hj : Γ.held[j]? = some (base, S))
+    (hwa : wa.den ρ = base.den ρ + BitVec.ofNat 64 (ow.nat ρ)) (hn : n ≤ 8)
+    {k : Nat} {Ψ' : MemTy} {s : State} (hw : WellTyped fetch sys Ψ' k (Γ.den ρ) s)
+    (hfit : ow.nat ρ + n ≤ S.size.nat ρ) :
+    ∀ i, i < (r'.den ρ).count.toNat → HasTy fetch sys Ψ' k (r'.den ρ).ty
+      (cellAt (storeN s n (wa.den ρ) (v.den ρ)) (r'.den ρ).byte
+        ((r'.den ρ).addr + BitVec.ofNat 64 ((r'.den ρ).stride * i))) := by
+  have hg := knownS hw.known
+  have hrd : r.den ρ ∈ (Γ.den ρ).rows := List.mem_map.mpr ⟨r, hr, rfl⟩
+  have hjd := CtxS.held_den ρ Γ hj
+  have hsz : (S.den ρ).size < 2 ^ 64 :=
+    hw.held.size_lt (base.den ρ, S.den ρ) (List.mem_of_getElem? hjd)
+  unfold rowSplit at h
+  split at h
+  rotate_left
+  · cases h
+  next hwid =>
+  have hwid' : (if (r.den ρ).byte then 1 else 8) ≤ (r.den ρ).stride := of_decide_eq_true hwid
+  have hst : 0 < r.stride := by
+    have : 0 < (if (r.den ρ).byte then 1 else 8) := by split <;> omega
+    exact Nat.lt_of_lt_of_le this hwid'
+  split at h
+  rotate_left
+  · cases h
+  next j' b' S' orr hfind =>
+  obtain ⟨hl, hin, hra⟩ := findHeld2_spec (ρ := ρ) Γ.held hfind hg
+  split at h
+  rotate_left
+  · cases h
+  next hjj =>
+  subst hjj
+  have hbs : (b', S') = (base, S) := Option.some.inj (hl.symm.trans hj)
+  cases hbs
+  rw [sumNat_replicate, Nat.add_zero] at hin
+  have hra' : (r.den ρ).addr = base.den ρ + BitVec.ofNat 64 (orr.nat ρ) := hra
+  have hrow : orr.nat ρ + (r.den ρ).stride * (r.den ρ).count.toNat ≤ (S.den ρ).size := hin
+  split at h
+  rotate_left
+  · cases h
+  next P hP =>
+  split at h
+  rotate_left
+  · cases h
+  next hidx =>
+  obtain ⟨i0, hi, hd⟩ := idxOf_den ρ hP
+  have hlt := inCount_lt (ρ := ρ) hidx hg
+  have e := Lin.addMul_den (Val.den ρ) (-1) r.addr.lin wa.lin
+  rw [Val.lin_den, Val.lin_den, hd] at e
+  have ha : wa.den ρ = (r.den ρ).addr + BitVec.ofNat 64 ((r.den ρ).stride * i0) := by
+    show wa.den ρ = r.addr.den ρ + BitVec.ofNat 64 (r.stride * i0)
+    rw [e]
+    grind
+  have hi' : i0 < (r.den ρ).count.toNat := by
+    show i0 < (r.count.den ρ).toNat
+    rw [hi] at hlt
+    simp only [natOf] at hlt
+    omega
+  have hle : (r.den ρ).stride * i0 ≤ (r.den ρ).stride * (r.den ρ).count.toNat :=
+    Nat.mul_le_mul_left _ (Nat.le_of_lt hi')
+  have hfit' : ow.nat ρ + n ≤ (S.den ρ).size := hfit
+  have how : ow.nat ρ = orr.nat ρ + (r.den ρ).stride * i0 := by
+    have e2 := hwa.symm.trans (ha.trans (by rw [hra']))
+    generalize (r.den ρ).stride * i0 = t at hle e2 ⊢
+    generalize (r.den ρ).stride * (r.den ρ).count.toNat = T at hle hrow
+    bv_omega
+  have hat : base.den ρ + BitVec.ofNat 64 (ow.nat ρ)
+      = (r.den ρ).addr + BitVec.ofNat 64 ((r.den ρ).stride * i0) := hwa.symm.trans ha
+  rw [hwa]
+  split at h
+  · next hc =>
+    rw [List.mem_singleton.mp h]
+    simp only [Bool.and_eq_true, decide_eq_true_eq] at hc
+    have hv := factFrom_hasTy he ρ hc.2 Ψ' k hw.known
+    rw [cellVal_den] at hv
+    exact rowOverwritten hw hjd hrd hrow hra' hwid' hat hi' hc.1 hv
+  · have hiv : (idxLin r.stride (Lin.addMul (-1) r.addr.lin wa.lin)).val.den ρ
+        = BitVec.ofNat 64 i0 := by
+      rw [idxLin_den ρ hP, hi, Int.toNat_natCast]
+    have hcl : (r.den ρ).count.toNat < 2 ^ 64 := (r.den ρ).count.isLt
+    rcases List.mem_cons.mp (List.mem_filter.mp h).1 with rfl | hup
+    · intro i hlti
+      have hlti' : i < i0 := by
+        have : i < (BitVec.ofNat 64 i0).toNat := by rw [← hiv]; exact hlti
+        rw [BitVec.toNat_ofNat] at this
+        exact Nat.lt_of_lt_of_le this (Nat.mod_le _ _)
+      have := rowPiece hw hjd hrd (a := 0) (m := i0) hn hfit' hrow hra' hwid' (by omega)
+        (.inl (by rw [Nat.zero_add]; omega)) (v.den ρ) i hlti'
+      rw [Nat.zero_add] at this
+      exact this
+    · have hmn : n ≤ r.stride * ((n + r.stride - 1) / r.stride) := by
+        have := Nat.div_add_mod (n + r.stride - 1) r.stride
+        have := Nat.mod_lt (n + r.stride - 1) hst
+        omega
+      have hm8 : (n + r.stride - 1) / r.stride ≤ n :=
+        Nat.lt_succ_iff.mp ((Nat.div_lt_iff_lt_mul hst).mpr (by
+          have := Nat.le_mul_of_pos_right n hst
+          rw [Nat.succ_mul]
+          omega))
+      generalize (n + r.stride - 1) / r.stride = m at hup hmn hm8
+      split at hup
+      rotate_left
+      · cases hup
+      next hcond =>
+      rw [List.mem_singleton.mp hup]
+      have hi'' : i0 < (r.count.den ρ).toNat := hi'
+      have hupb : i0 + m ≤ (r.count.den ρ).toNat := by
+        rcases Bool.or_eq_true_iff.mp hcond with h1 | h2
+        · have := of_decide_eq_true h1
+          omega
+        · have h3 := inCount_lt (ρ := ρ) h2 hg
+          simp only [Lin.den, natOf] at h3 hi
+          omega
+      have hcv : ((⟨(Lin.addMul (-1) (idxLin r.stride (Lin.addMul (-1) r.addr.lin wa.lin))
+            r.count.lin).ms,
+          (Lin.addMul (-1) (idxLin r.stride (Lin.addMul (-1) r.addr.lin wa.lin)) r.count.lin).k
+            - BitVec.ofNat 64 m⟩ : Lin (BitVec 64)).val.den ρ)
+          = r.count.den ρ - BitVec.ofNat 64 i0 - BitVec.ofNat 64 m := by
+        rw [Lin.val_den]
+        have e3 := Lin.addMul_den (Val.den ρ) (-1)
+          (idxLin r.stride (Lin.addMul (-1) r.addr.lin wa.lin)) r.count.lin
+        rw [← Lin.val_den ρ (idxLin r.stride (Lin.addMul (-1) r.addr.lin wa.lin)), hiv,
+          Val.lin_den] at e3
+        simp only [Lin.den] at e3 ⊢
+        grind
+      have hct : (r.count.den ρ - BitVec.ofNat 64 i0 - BitVec.ofNat 64 m).toNat
+          = (r.count.den ρ).toNat - i0 - m := by
+        have := (r.count.den ρ).isLt
+        bv_omega
+      intro i hlti
+      have hlti' : i < (r.den ρ).count.toNat - i0 - m := by
+        show i < (r.count.den ρ).toNat - i0 - m
+        rw [← hct, ← hcv]
+        exact hlti
+      have hstm : (r.den ρ).stride * (i0 + m) = (r.den ρ).stride * i0 + r.stride * m :=
+        Nat.mul_add ..
+      have := rowPiece hw hjd hrd (a := i0 + m) (m := (r.den ρ).count.toNat - i0 - m) hn hfit'
+        hrow hra' hwid' (by have : i0 + m ≤ (r.den ρ).count.toNat := hupb; omega)
+        (.inr (by rw [hstm]; omega)) (v.den ρ) i hlti'
+      have eaddr : (wa.plus (.lit (BitVec.ofNat 64 (r.stride * m)))).den ρ
+            + BitVec.ofNat 64 (r.stride * i)
+          = r.addr.den ρ + BitVec.ofNat 64 (r.stride * (i0 + m + i)) := by
+        rw [Val.plus_den, ha]
+        show r.addr.den ρ + BitVec.ofNat 64 (r.stride * i0) + BitVec.ofNat 64 (r.stride * m)
+          + BitVec.ofNat 64 (r.stride * i) = _
+        rw [BitVec.add_assoc, BitVec.add_assoc, ← BitVec.ofNat_add, ← BitVec.ofNat_add,
+          Nat.mul_add, Nat.mul_add, Nat.add_assoc]
+      show HasTy fetch sys Ψ' k (r.ty.den ρ) (cellAt (storeN s n _ (v.den ρ)) r.byte
+        ((wa.plus (.lit (BitVec.ofNat 64 (r.stride * m)))).den ρ + BitVec.ofNat 64 (r.stride * i)))
+      rw [eaddr]
+      exact this
 /-- **The row a store makes**: of one value, the one stored, of the least
 and the most the context shows it to be; where it shows anything. So the
 bytes a program stores one by one are each known as they are stored, and
@@ -1219,12 +1406,17 @@ theorem newRow_sound {ρ : Env} {Γ : CtxS} {wa v : Val} {n : Nat} {k : Nat} {Ψ
   · cases hr'
 
 /-- **What is so of rows once `n` bytes at an address are stored**: of each
-row the context has, what `rowAfter` leaves; nothing where the bytes are
-not found in a region held. -/
+row the context has, what `rowAfter` leaves, or where the store is over
+some of its values what `rowSplit` does; nothing where the bytes are not
+found in a region held. -/
 def rowsKept (ent : TyS → TyS → Bool) (Γ : CtxS) (wa : Val) (n : Nat) (v : Val) : List RowS :=
   if n ≤ 8 then
     match findHeld2 Γ.known wa [] n Γ.held with
-    | some (j, _, _, ow) => Γ.rows.filterMap (rowAfter ent Γ j ow n v wa) ++ newRow Γ wa n v
+    | some (j, _, _, ow) =>
+      (Γ.rows.flatMap fun r =>
+        match rowAfter ent Γ j ow n v wa r with
+        | some r' => [r']
+        | none => rowSplit ent Γ j n v wa r) ++ newRow Γ wa n v
     | none => []
   else []
 
@@ -1243,9 +1435,13 @@ theorem rowsKept_sound {ρ : Env} {ent : TyS → TyS → Bool} (he : EntSound fe
     · next j b S ow hfind =>
       obtain ⟨hl, hin, ha⟩ := findHeld2_spec (ρ := ρ) Γ.held hfind (knownS hw.known)
       rcases List.mem_append.mp hr' with hr' | hr'
-      · obtain ⟨r0, hr0, hra⟩ := List.mem_filterMap.mp hr'
+      · obtain ⟨r0, hr0, hra⟩ := List.mem_flatMap.mp hr'
         simp only [sumNat, Nat.zero_add] at hin
-        exact rowAfter_sound he hra hr0 hl ha hn hw hin
+        split at hra
+        · next hsome =>
+          rw [List.mem_singleton.mp hra]
+          exact rowAfter_sound he hsome hr0 hl ha hn hw hin
+        · exact rowSplit_sound he hra hr0 hl ha hn hw hin
       · exact newRow_sound hw _ (List.mem_map.mpr ⟨_, hr', rfl⟩)
     · cases hr'
   · cases hr'
