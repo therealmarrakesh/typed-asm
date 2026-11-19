@@ -1,6 +1,6 @@
 import TypedAsm.U.Exact
 import TypedAsm.U.Held
-import TypedAsm.Linux
+import TypedAsm.Looks
 import TypedAsm.Asm
 
 /-!
@@ -379,5 +379,54 @@ theorem fetch_of_table {L : Type} [IsLabel L] (base : BitVec 64) (code : List (A
     ∀ (a : BitVec 64) (i : Instr) (len : BitVec 64),
       Asm.fetch base code a = some (i, len) → P i := fun a i len hf =>
   h (a.toNat, i, len) (Lookup.first_mem hf)
+
+/-- Whether an instruction has nothing to do with a register: it is not one
+of those its description computes with, writes, or addresses memory by. -/
+def _root_.TypedAsm.Instr.ignores (i : Instr) (r : Reg) : Bool :=
+  match i.sem with
+  | some σ => !σ.regs.contains r
+  | none => true
+
+/-- **One step does the same whatever a register its instruction has
+nothing to do with holds**, and leaves it holding that: a register that is
+not one of a system call's either. -/
+theorem step_setReg {fetch : Fetch} {s s' : State} {r : Reg}
+    (h : TypedAsm.step fetch linux s = .next s')
+    (hl : ∀ i len, fetch s.rip = some (i, len) → i.ignores r = true)
+    (hr : r ∉ sysRegs) (v : BitVec 64) :
+    TypedAsm.step fetch linux (s.setReg r v) = .next (s'.setReg r v) := by
+  unfold TypedAsm.step at h ⊢
+  show (match fetch s.rip with
+    | none => Result.stuck
+    | some (i, len) => exec linux i (({ s with rip := s.rip + len } : State).setReg r v)) = _
+  cases hf : fetch s.rip with
+  | none => rw [hf] at h; cases h
+  | some p =>
+    obtain ⟨i, len⟩ := p
+    rw [hf] at h
+    simp only at h ⊢
+    have hli := hl i len hf
+    unfold Instr.ignores at hli
+    cases hσ : i.sem with
+    | some σ =>
+      rw [hσ] at hli
+      have hr' : r ∉ σ.regs := by simpa using hli
+      exact exec_setReg hσ h hr' v
+    | none =>
+      rcases sem_none hσ with rfl | rfl
+      · exact linux_setReg h hr v
+      · cases h
+
+/-- **A run is the same run whatever a register holds that no instruction
+it can fetch has anything to do with**: each state it reaches, with that
+value in the register. -/
+theorem run_setReg {fetch : Fetch} {r : Reg}
+    (hl : ∀ a i len, fetch a = some (i, len) → i.ignores r = true)
+    (hr : r ∉ sysRegs) (v : BitVec 64) {s s' : State}
+    (h : TypedAsm.Steps fetch linux s s') :
+    TypedAsm.Steps fetch linux (s.setReg r v) (s'.setReg r v) := by
+  induction h with
+  | refl => exact .refl _
+  | step hstep _ ih => exact .step (step_setReg hstep (fun i len => hl _ i len) hr v) ih
 
 end TypedAsm.U

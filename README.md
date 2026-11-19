@@ -36,6 +36,57 @@ What follows from that:
   or make most programs' proofs easier to write. That some program would
   like it is not enough.
 
+## Proving things about a program
+
+A program here is a Lean term and the machine is a Lean function, so a
+statement about a program is an ordinary proposition, proved by the
+ordinary means: induction, rewriting, Lean's own automation. What the
+library adds is the general facts about the machine such proofs need, each
+proved once, for every instruction:
+
+- an instruction changes only the registers its description says it
+  writes (`exec_getReg`), only the bytes of memory it writes (`exec_mem`),
+  the flags only if it sets them (`exec_flags`), and never what memory may
+  be read or written (`exec_perm`);
+- an instruction does the same whatever a register it has nothing to do
+  with holds, and leaves that register holding it (`exec_setReg`);
+- a system call that returns changes no register but `rax`, `rcx` and `r11`
+  (`linux_keeps`), and does not look at a register that is not one of its
+  own (`linux_setReg`);
+- and, by induction on a run, the same of a whole run (`run_getReg`,
+  `run_setReg`).
+
+All of them follow from one statement of what the machine does with an
+instruction, exactly (`exec_exact`): it goes on just where what the
+instruction reads may be read, what it writes may be written, and it does
+not fault for a reason of its own; and then to the state its description
+gives.
+
+With those, that a program never uses a register is a few lines. This is
+the program of `examples/Sum` and `r15`, from
+`tests/Tests/Proved/Unused.lean`:
+
+```lean
+theorem leaves_r15 : ∀ e ∈ Asm.table Sum.base Sum.code, e.2.1.leaves .r15 = true := by
+  decide
+
+theorem never_written {s : State} (h : Steps Sum.fetch linux Sum.start s) :
+    s.getReg .r15 = Sum.start.getReg .r15 :=
+  run_getReg (fetch_of_table Sum.base Sum.code leaves_r15) (by decide) (by decide) (by decide) h
+
+theorem ignores_r15 : ∀ e ∈ Asm.table Sum.base Sum.code, e.2.1.ignores .r15 = true := by
+  decide
+
+theorem never_read (v : BitVec 64) {s : State} (h : Steps Sum.fetch linux Sum.start s) :
+    Steps Sum.fetch linux (Sum.start.setReg .r15 v) (s.setReg .r15 v) :=
+  run_setReg (fetch_of_table Sum.base Sum.code ignores_r15) (by decide) v h
+```
+
+The first of each pair is a fact about the program as written, which Lean
+decides by looking at its instructions. The second is the fact about every
+run, by the general statement. Nothing runs the program, and the type
+checker has no part in it.
+
 ## Status
 
 What exists and is checked today:
