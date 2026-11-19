@@ -605,7 +605,6 @@ def set (m : Memory) (a : BitVec 64) (v : BitVec 8) : Memory :=
 
 theorem get_set (m : Memory) (a x : BitVec 64) (v : BitVec 8) :
     (m.set a v).get x = if x = a then v else m.get x := by
-  have hne : x ≠ a → ¬ a.toNat = x.toNat := fun h e => h (BitVec.eq_of_toNat_eq e.symm)
   unfold set
   split
   · next hz =>
@@ -613,13 +612,13 @@ theorem get_set (m : Memory) (a x : BitVec 64) (v : BitVec 8) :
     by_cases h : x = a
     · subst h
       simp [hz]
-    · simp [h, hne h]
+    · simp [h, show ¬ a = x from fun e => h e.symm]
   · next hz =>
     simp only [get, Std.TreeMap.getD_insert]
     by_cases h : x = a
     · subst h
       simp [hz]
-    · simp [h, hne h]
+    · simp [h, show ¬ a = x from fun e => h e.symm]
 
 /-- Write a list of bytes at consecutive addresses. -/
 def setBytes (m : Memory) (a : BitVec 64) : List (BitVec 8) → Memory
