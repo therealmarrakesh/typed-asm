@@ -232,11 +232,6 @@ def gave (path : List Was) (Γ : CtxS) (r : Reg) : String :=
 def regSay (path : List Was) (Γ : CtxS) (r : Reg) (nm : Names := []) : String :=
   s!"{r.name64} holds {(Γ.regs.get r).say nm}, {gave path Γ r}"
 
-/-- The registers an address is made of. -/
-def memRegs : Mem → List Reg
-  | .sib b i _ => b.toList ++ (i.map fun x => x.1.toReg).toList
-  | .rip _ => []
-
 /-- A place a walk stopped short, and why. -/
 structure Refusal where
   /-- The label the walk started from. -/

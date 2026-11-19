@@ -1491,5 +1491,138 @@ theorem linux_frame (s : State) : (linux s).All (Frame s) := by
   clear h
   exact Frame.of_eq rfl rfl
 
+namespace Linux
+
+/-- **What a call that returns leaves of the registers**: all but `rax`,
+which has its answer, and `rcx` and `r11`, which the kernel uses. -/
+def Keeps (s t : State) : Prop :=
+  ∀ r, r ≠ .rax → r ≠ .rcx → r ≠ .r11 → t.getReg r = s.getReg r
+
+theorem ret_keeps (s : State) (v : BitVec 64) : Keeps s (ret s v) := by
+  intro r h1 h2 h3
+  show (((s.setReg .rax v).setReg .rcx s.rip).setReg .r11 (s.world.saved 0)).getReg r = _
+  rw [State.getReg_setReg_other _ _ _ _ h3, State.getReg_setReg_other _ _ _ _ h2,
+    State.getReg_setReg_other _ _ _ _ h1]
+
+theorem OnlyWorld.keeps {s t : State} (h : OnlyWorld s t) : Keeps s t := by
+  obtain ⟨v, w, rfl⟩ := h
+  exact ret_keeps { s with world := w } v
+
+theorem Fills.keeps {s t : State} {buf : BitVec 64} {room : Nat} (h : Fills s buf room t) :
+    Keeps s t := by
+  rcases h with h | ⟨data, v, w, -, -, rfl⟩
+  · exact h.keeps
+  · exact ret_keeps { s.storeBytes buf data with world := w } v
+
+theorem mmap_keeps (s : State) : Keeps s (mmap s) := by
+  simp only [mmap]
+  repeat' split
+  all_goals exact ret_keeps _ _
+
+theorem munmap_keeps (s : State) : Keeps s (munmap s) := by
+  simp only [munmap]
+  split <;> exact ret_keeps _ _
+
+end Linux
+
+/-- **A system call that returns changes no register but `rax`, `rcx` and
+`r11`.** -/
+theorem linux_keeps (s : State) : (linux s).All (Linux.Keeps s) := by
+  unfold linux
+  by_cases h : s.getReg .rax = 60
+  · rw [h]
+    simp only [↓reduceIte]
+    trivial
+  simp only [h, ↓reduceIte]
+  clear h
+  by_cases h : s.getReg .rax = 231
+  · rw [h]
+    simp only [↓reduceIte]
+    trivial
+  simp only [h, ↓reduceIte]
+  clear h
+  by_cases h : s.getReg .rax = 1
+  · rw [h]
+    simp only [↓reduceIte]
+    exact (Linux.write_only s).keeps
+  simp only [h, ↓reduceIte]
+  clear h
+  by_cases h : s.getReg .rax = 0
+  · rw [h]
+    simp only [↓reduceIte]
+    exact (Linux.read_fills s).keeps
+  simp only [h, ↓reduceIte]
+  clear h
+  by_cases h : s.getReg .rax = 9
+  · rw [h]
+    simp only [↓reduceIte]
+    split
+    · exact Linux.mmap_keeps s
+    · trivial
+  simp only [h, ↓reduceIte]
+  clear h
+  by_cases h : s.getReg .rax = 11
+  · rw [h]
+    simp only [↓reduceIte]
+    exact Linux.munmap_keeps s
+  simp only [h, ↓reduceIte]
+  clear h
+  by_cases h : s.getReg .rax = 3
+  · rw [h]
+    simp only [↓reduceIte]
+    exact (Linux.close_only s).keeps
+  simp only [h, ↓reduceIte]
+  clear h
+  by_cases h : s.getReg .rax = 5
+  · rw [h]
+    simp only [↓reduceIte]
+    exact (Linux.fstat_fills s).keeps
+  simp only [h, ↓reduceIte]
+  clear h
+  by_cases h : s.getReg .rax = 8
+  · rw [h]
+    simp only [↓reduceIte]
+    exact (Linux.lseek_only s).keeps
+  simp only [h, ↓reduceIte]
+  clear h
+  by_cases h : s.getReg .rax = 228
+  · rw [h]
+    simp only [↓reduceIte]
+    exact (Linux.clockGettime_fills s).keeps
+  simp only [h, ↓reduceIte]
+  clear h
+  by_cases h : s.getReg .rax = 257
+  · rw [h]
+    simp only [↓reduceIte]
+    exact (Linux.openat_only s).keeps
+  simp only [h, ↓reduceIte]
+  clear h
+  by_cases h : s.getReg .rax = 74
+  · rw [h]
+    simp only [↓reduceIte]
+    exact (Linux.fsync_only s).keeps
+  simp only [h, ↓reduceIte]
+  clear h
+  by_cases h : s.getReg .rax = 75
+  · rw [h]
+    simp only [↓reduceIte]
+    exact (Linux.fsync_only s).keeps
+  simp only [h, ↓reduceIte]
+  clear h
+  by_cases h : s.getReg .rax = 39
+  · rw [h]
+    simp only [↓reduceIte]
+    exact (Linux.getpid_only s).keeps
+  simp only [h, ↓reduceIte]
+  clear h
+  by_cases h : s.getReg .rax = 318
+  · rw [h]
+    simp only [↓reduceIte]
+    exact (Linux.getrandom_fills s).keeps
+  simp only [h, ↓reduceIte]
+  clear h
+  exact Linux.ret_keeps s _
+
+
 end TypedAsm
 

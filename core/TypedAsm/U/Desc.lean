@@ -60,6 +60,11 @@ def rmMem : RM → Option Mem
   | .reg _ => none
   | .mem m => some m
 
+/-- The registers a memory operand's address is made of. -/
+def memRegs : Mem → List Reg
+  | .sib base index _ => base.toList ++ (index.map (·.1.toReg)).toList
+  | .rip _ => []
+
 /-- The source of a two-operand form: its register, used after the
 destination's; the bytes of memory; or its immediate. -/
 def srcRegs : Operands → List Reg
