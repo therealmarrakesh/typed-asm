@@ -205,3 +205,45 @@ What is not there:
   `exit`; a parent process sees its low eight bits.
 - The examples are written as constructor terms; there is no notation for
   instructions or labels.
+
+## Working on the repository
+
+Three tools in `tools/` are for anyone changing the code. They need Lean
+(through `lake`), Python 3 and Bash, on Linux.
+
+**A command with limits: `tools/run.py`.** Lean, asked to work out something
+it cannot, may take all the memory there is. Run it through this and it
+cannot:
+
+```
+python3 tools/run.py 120 lake build TypedAsm
+RUN_CAP_GB=5 python3 tools/run.py 60 lake env lean tests/Tests/Typed/Numbers.lean
+```
+
+The first argument is a time limit in seconds; the rest is the command. If
+the time runs out, or the command and everything it started holds more than
+16 GB of memory (`RUN_CAP_GB` sets another figure), all of it is killed.
+The command's output is printed, then a line with the time taken, the most
+memory used and how it ended.
+
+**After an edit: `tools/build-in-order.sh`.** Builds the files of the type
+system one at a time, in the order they import one another, each under
+limits, and stops at the first that fails, showing its first errors. It
+prints warnings as it meets them and ends with `DONE`.
+
+```
+bash tools/build-in-order.sh
+CTX=30 bash tools/build-in-order.sh     # more lines after each error
+```
+
+**Before a commit: `tools/verify.sh`.** Builds the core and every example
+one at a time, then the tests of the type checker, the full build, and the
+recorded results against the assembler and a real processor (`lake test`).
+It ends with `ALL-GREEN` only if everything built, every suite passed, and
+nothing in the type system, the tests or the examples gave a warning.
+Otherwise it says what failed and ends with `NOT-GREEN`. It takes about
+five minutes.
+
+```
+bash tools/verify.sh
+```
