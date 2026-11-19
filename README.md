@@ -6,6 +6,36 @@ and typing rules for registers, the stack, and memory. Authors write assembly
 as Lean terms, generate instruction sequences with Lean functions and macros,
 and state and prove properties of those programs in Lean.
 
+## What the type system is for
+
+The type system, and the checker that decides it, have a narrow job.
+
+- **Safety.** A program that is typed never gets stuck and never faults.
+  That is the theorem the type system exists to give.
+- **The proof work every program would otherwise repeat.** Stepping through
+  instructions, keeping track of what each register and each piece of
+  memory holds, calls and returns, whether an index is within bounds: the
+  checker does this once, for all programs, and an author writes labels.
+- **A general way for any program to state a claim and have it checked.** A
+  label says what holds at a point, and the checker shows it from what is
+  known there or refuses the program. The claim is the program's own, and so
+  are the facts it rests on: an author who wants a function to be known to
+  return a factorial defines the factorial and proves what is needed of it
+  in the program's own file, and the checker only carries it through the
+  code.
+
+What follows from that:
+
+- **No program's specification lives in the type system.** Nothing is part
+  of what every state must satisfy in order to serve one program's property.
+  A program is responsible for proving the facts of its own domain.
+- **A claim is about the state at one point.** A property of a whole run,
+  such as that everything read is written, once and in order, is not
+  something the type system keeps track of.
+- **It is not extended for its own sake.** An addition has to serve safety,
+  or make most programs' proofs easier to write. That some program would
+  like it is not enough.
+
 ## Status
 
 What exists and is checked today:
