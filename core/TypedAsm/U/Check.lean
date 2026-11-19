@@ -27,12 +27,12 @@ structure RowS where
   ty : TyS
   /-- Where it is said to be bytes of the last `read`: how far into what
   that stored its first byte is. -/
-  fed : Option Nat := none
+  fed : Option Val := none
   deriving DecidableEq
 
 /-- The row it stands for. -/
 def RowS.den (ρ : Env) (r : RowS) : RowOf Ty :=
-  ⟨r.addr.den ρ, r.count.den ρ, r.stride, r.byte, r.ty.den ρ, r.fed.map (BitVec.ofNat 64)⟩
+  ⟨r.addr.den ρ, r.count.den ρ, r.stride, r.byte, r.ty.den ρ, r.fed.map (Val.den ρ)⟩
 
 /-- A context, as terms. -/
 structure CtxS where

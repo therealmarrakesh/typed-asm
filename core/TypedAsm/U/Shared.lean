@@ -320,21 +320,30 @@ theorem Writes.shared {Γ : Ctx} {p a : BitVec 64} {τ : Ty} {Sh : Shape} {off o
         TypedAsm.State.load64_store64_same]
       exact hcons Ψ' j hw.known)
 
+theorem storeN_world (s : State) (n : Nat) (a v : BitVec 64) : (storeN s n a v).world = s.world := by
+  unfold storeN
+  split <;> rfl
+
+/-- **A row is as it says, in a state**: each of its values of its type,
+and, where it is said to be bytes of the last `read`, those. -/
+def RowHolds (fetch : Fetch) (sys : Syscall) (Ψ : MemTy) (n : Nat) (s : State) (r : RowOf Ty) :
+    Prop :=
+  (∀ i, i < r.count.toNat →
+    HasTy fetch sys Ψ n r.ty (cellAt s r.byte (r.addr + BitVec.ofNat 64 (r.stride * i)))) ∧
+  ∀ off, r.fed = some off → FedRow s r off
+
 /-- **A store, with what is then so of rows**: the bytes written as a
 context that says nothing of rows provides them, and of memory as the store
-leaves it, each value of each row said being as the row says. -/
+leaves it, each row said being as it says. -/
 theorem Writes.rows {Γ Γw : Ctx} {a v : BitVec 64} {n : Nat} (R : List (RowOf Ty))
     (h : Writes fetch sys Ψ { Γ with rows := [] } a n v Γw)
     (hR : ∀ k, ∀ Ψ' : MemTy, Ψ.Ext Ψ' → Ψ'.WF → ∀ s : State, WellTyped fetch sys Ψ' k Γ s →
-      ∀ r ∈ R, ∀ i, i < r.count.toNat →
-        HasTy fetch sys Ψ' k r.ty
-          (cellAt (storeN s n a v) r.byte (r.addr + BitVec.ofNat 64 (r.stride * i))))
-    (hF : ∀ r ∈ R, r.fed = none) :
+      ∀ r ∈ R, RowHolds fetch sys Ψ' k (storeN s n a v) r) :
     Writes fetch sys Ψ Γ a n v { Γw with rows := R } :=
   ⟨h.1, h.2.1, fun k Ψ' he hwf s hw =>
     ⟨(h.2.2 k Ψ' he hwf s (WellTyped.dropRows hw)).1,
-      (h.2.2 k Ψ' he hwf s (WellTyped.dropRows hw)).2.setRows R (hR k Ψ' he hwf s hw)
-        (fun r hr off ho => by rw [hF r hr] at ho; cases ho)⟩⟩
+      (h.2.2 k Ψ' he hwf s (WellTyped.dropRows hw)).2.setRows R
+        (fun r hr => (hR k Ψ' he hwf s hw r hr).1) (fun r hr => (hR k Ψ' he hwf s hw r hr).2)⟩⟩
 
 /-- **A row's values are as they were after a store in the region the row
 is in that keeps clear of it**: the store wholly below the row, or wholly
@@ -364,18 +373,17 @@ theorem rowKept {Ψ' : MemTy} {k : Nat} {Γ : Ctx} {s : State}
   rw [cellAt_storeN_out s n _ v _ r.byte hn hd]
   exact hw.rows r hr i hi
 
-/-- **A row's values are as they were after a store in another region than
-the one the row is in**: the regions held are apart. -/
-theorem rowElsewhere {Ψ' : MemTy} {k : Nat} {Γ : Ctx} {s : State}
+/-- **A store in another region than the one a row is in keeps clear of
+each of the row's values**: the regions held are apart. -/
+theorem rowElsewhere_apart {Ψ' : MemTy} {k : Nat} {Γ : Ctx} {s : State}
     (hw : WellTyped fetch sys Ψ' k Γ s) {j j' : Nat} {base base' : BitVec 64} {S S' : Held}
     (hj : Γ.held[j]? = some (base, S)) (hj' : Γ.held[j']? = some (base', S')) (hne : j' ≠ j)
-    {r : RowOf Ty} (hr : r ∈ Γ.rows) {ow orr n : Nat}
-    (hn : n ≤ 8) (hwfit : ow + n ≤ S.size) (hrow : orr + r.stride * r.count.toNat ≤ S'.size)
-    (hra : r.addr = base' + BitVec.ofNat 64 orr) (hwid : (if r.byte then 1 else 8) ≤ r.stride)
-    (v : BitVec 64) :
-    ∀ i, i < r.count.toNat → HasTy fetch sys Ψ' k r.ty
-      (cellAt (storeN s n (base + BitVec.ofNat 64 ow) v) r.byte
-        (r.addr + BitVec.ofNat 64 (r.stride * i))) := by
+    {r : RowOf Ty} {ow orr n : Nat}
+    (hwfit : ow + n ≤ S.size) (hrow : orr + r.stride * r.count.toNat ≤ S'.size)
+    (hra : r.addr = base' + BitVec.ofNat 64 orr) (hwid : (if r.byte then 1 else 8) ≤ r.stride) :
+    ∀ i, i < r.count.toNat →
+      Disjoint (base + BitVec.ofNat 64 ow) n (r.addr + BitVec.ofNat 64 (r.stride * i))
+        (if r.byte then 1 else 8) := by
   intro i hi
   have hsz : S.size < 2 ^ 64 := hw.held.size_lt (base, S) (List.mem_of_getElem? hj)
   have hsz' : S'.size < 2 ^ 64 := hw.held.size_lt (base', S') (List.mem_of_getElem? hj')
@@ -392,12 +400,53 @@ theorem rowElsewhere {Ψ' : MemTy} {k : Nat} {Γ : Ctx} {s : State}
       exact this
   have hstep : r.stride * i + r.stride ≤ r.stride * r.count.toNat := by
     rw [← Nat.mul_succ]; exact Nat.mul_le_mul_left _ hi
-  have hd : Disjoint (base + BitVec.ofNat 64 ow) n (r.addr + BitVec.ofNat 64 (r.stride * i))
-      (if r.byte then 1 else 8) := by
-    rw [hra, BitVec.add_assoc, ← BitVec.ofNat_add]
-    exact hap.parts hwfit (by omega) hsz hsz'
-  rw [cellAt_storeN_out s n _ v _ r.byte hn hd]
+  rw [hra, BitVec.add_assoc, ← BitVec.ofNat_add]
+  exact hap.parts hwfit (by omega) hsz hsz'
+
+/-- **A row's values are as they were after a store in another region than
+the one the row is in.** -/
+theorem rowElsewhere {Ψ' : MemTy} {k : Nat} {Γ : Ctx} {s : State}
+    (hw : WellTyped fetch sys Ψ' k Γ s) {j j' : Nat} {base base' : BitVec 64} {S S' : Held}
+    (hj : Γ.held[j]? = some (base, S)) (hj' : Γ.held[j']? = some (base', S')) (hne : j' ≠ j)
+    {r : RowOf Ty} (hr : r ∈ Γ.rows) {ow orr n : Nat}
+    (hn : n ≤ 8) (hwfit : ow + n ≤ S.size) (hrow : orr + r.stride * r.count.toNat ≤ S'.size)
+    (hra : r.addr = base' + BitVec.ofNat 64 orr) (hwid : (if r.byte then 1 else 8) ≤ r.stride)
+    (v : BitVec 64) :
+    ∀ i, i < r.count.toNat → HasTy fetch sys Ψ' k r.ty
+      (cellAt (storeN s n (base + BitVec.ofNat 64 ow) v) r.byte
+        (r.addr + BitVec.ofNat 64 (r.stride * i))) := by
+  intro i hi
+  rw [cellAt_storeN_out s n _ v _ r.byte hn (rowElsewhere_apart hw hj hj' hne hwfit hrow hra hwid i hi)]
   exact hw.rows r hr i hi
+
+/-- **A store in the region a row is in keeps clear of each of some of the
+row's values, one after another**, where it is wholly below them or wholly
+above. -/
+theorem rowPiece_apart {Ψ' : MemTy} {k : Nat} {Γ : Ctx} {s : State}
+    (hw : WellTyped fetch sys Ψ' k Γ s) {j : Nat} {base : BitVec 64} {S : Held}
+    (hj : Γ.held[j]? = some (base, S)) {r : RowOf Ty} {ow orr n a m : Nat}
+    (hwfit : ow + n ≤ S.size) (hrow : orr + r.stride * r.count.toNat ≤ S.size)
+    (hra : r.addr = base + BitVec.ofNat 64 orr) (hwid : (if r.byte then 1 else 8) ≤ r.stride)
+    (ham : a + m ≤ r.count.toNat)
+    (hclear : orr + r.stride * (a + m) ≤ ow ∨ ow + n ≤ orr + r.stride * a) :
+    ∀ i, i < m →
+      Disjoint (base + BitVec.ofNat 64 ow) n (r.addr + BitVec.ofNat 64 (r.stride * (a + i)))
+        (if r.byte then 1 else 8) := by
+  intro i hi
+  have hsz : S.size < 2 ^ 64 := hw.held.size_lt (base, S) (List.mem_of_getElem? hj)
+  have h1 : r.stride * (a + i) + r.stride ≤ r.stride * (a + m) := by
+    rw [← Nat.mul_succ]; exact Nat.mul_le_mul_left _ (by omega)
+  have h2 : r.stride * (a + m) ≤ r.stride * r.count.toNat := Nat.mul_le_mul_left _ ham
+  have h3 : r.stride * a ≤ r.stride * (a + i) := Nat.mul_le_mul_left _ (by omega)
+  rw [hra]
+  have hw8 : (if r.byte then 1 else 8) ≤ 8 := by split <;> omega
+  generalize r.stride * (a + i) = t at h1 h3 ⊢
+  generalize r.stride * (a + m) = T1 at h1 h2 hclear
+  generalize r.stride * a = t0 at h3 hclear
+  generalize r.stride * r.count.toNat = T at h2 hrow
+  generalize (if r.byte = true then 1 else 8) = wd at hwid hw8 ⊢
+  generalize r.stride = st at h1 hwid
+  refine ⟨fun _ => ?_, fun _ => ?_⟩ <;> bv_omega
 
 /-- **Some of a row's values, one after another, are as they were after a
 store in the region the row is in that keeps clear of them**: the store
@@ -413,24 +462,54 @@ theorem rowPiece {Ψ' : MemTy} {k : Nat} {Γ : Ctx} {s : State}
       (cellAt (storeN s n (base + BitVec.ofNat 64 ow) v) r.byte
         (r.addr + BitVec.ofNat 64 (r.stride * (a + i)))) := by
   intro i hi
-  have hsz : S.size < 2 ^ 64 := hw.held.size_lt (base, S) (List.mem_of_getElem? hj)
-  have h1 : r.stride * (a + i) + r.stride ≤ r.stride * (a + m) := by
-    rw [← Nat.mul_succ]; exact Nat.mul_le_mul_left _ (by omega)
-  have h2 : r.stride * (a + m) ≤ r.stride * r.count.toNat := Nat.mul_le_mul_left _ ham
-  have h3 : r.stride * a ≤ r.stride * (a + i) := Nat.mul_le_mul_left _ (by omega)
-  have hd : Disjoint (base + BitVec.ofNat 64 ow) n (r.addr + BitVec.ofNat 64 (r.stride * (a + i)))
-      (if r.byte then 1 else 8) := by
-    rw [hra]
-    have hw8 : (if r.byte then 1 else 8) ≤ 8 := by split <;> omega
-    generalize r.stride * (a + i) = t at h1 h3 ⊢
-    generalize r.stride * (a + m) = T1 at h1 h2 hclear
-    generalize r.stride * a = t0 at h3 hclear
-    generalize r.stride * r.count.toNat = T at h2 hrow
-    generalize (if r.byte = true then 1 else 8) = wd at hwid hw8 ⊢
-    generalize r.stride = st at h1 hwid
-    refine ⟨fun _ => ?_, fun _ => ?_⟩ <;> bv_omega
-  rw [cellAt_storeN_out s n _ v _ r.byte hn hd]
+  rw [cellAt_storeN_out s n _ v _ r.byte hn (rowPiece_apart hw hj hwfit hrow hra hwid ham hclear i hi)]
   exact hw.rows r hr (a + i) (by omega)
+
+/-- **Some of the bytes of a row that is bytes of the last `read`, one
+after another, are bytes of it from that much further in after a store in
+the region the row is in that keeps clear of them.** -/
+theorem fedPiece {Ψ' : MemTy} {k : Nat} {Γ : Ctx} {s : State}
+    (hw : WellTyped fetch sys Ψ' k Γ s) {j : Nat} {base : BitVec 64} {S : Held}
+    (hj : Γ.held[j]? = some (base, S)) {r : RowOf Ty} (hr : r ∈ Γ.rows) {ow orr n a : Nat}
+    (hn : n ≤ 8) (hwfit : ow + n ≤ S.size) (hrow : orr + r.stride * r.count.toNat ≤ S.size)
+    (hra : r.addr = base + BitVec.ofNat 64 orr) {r' : RowOf Ty} (hb : r'.byte = r.byte)
+    (hst : r'.stride = r.stride) (hA : r'.addr = r.addr + BitVec.ofNat 64 (r.stride * a))
+    (ham : a + r'.count.toNat ≤ r.count.toNat)
+    (hclear : orr + r.stride * (a + r'.count.toNat) ≤ ow ∨ ow + n ≤ orr + r.stride * a)
+    (v : BitVec 64) {off : BitVec 64} (ho : r.fed = some off) :
+    FedRow (storeN s n (base + BitVec.ofNat 64 ow) v) r' (off + BitVec.ofNat 64 a) := by
+  have hf := hw.fed r hr off ho
+  have hby : r.byte = true := hf.1
+  have hs1 : r.stride = 1 := hf.2.1
+  refine hf.part (congrArg World.reads (storeN_world s n _ v)) hb hst
+    (by rw [hA, hs1, Nat.one_mul]) ham fun i hi => ?_
+  have hd := rowPiece_apart hw hj hwfit hrow hra (by rw [hby, hs1]; decide) ham hclear i hi
+  rw [hs1, Nat.one_mul, hby] at hd
+  exact storeN_mem_out s n _ v _ hn (hd.1 (by decide))
+
+/-- **A row that is bytes of the last `read` is so still after a store in
+another region than the one the row is in.** -/
+theorem fedElsewhere {Ψ' : MemTy} {k : Nat} {Γ : Ctx} {s : State}
+    (hw : WellTyped fetch sys Ψ' k Γ s) {j j' : Nat} {base base' : BitVec 64} {S S' : Held}
+    (hj : Γ.held[j]? = some (base, S)) (hj' : Γ.held[j']? = some (base', S')) (hne : j' ≠ j)
+    {r : RowOf Ty} (hr : r ∈ Γ.rows) {ow orr n : Nat}
+    (hn : n ≤ 8) (hwfit : ow + n ≤ S.size) (hrow : orr + r.stride * r.count.toNat ≤ S'.size)
+    (hra : r.addr = base' + BitVec.ofNat 64 orr) (v : BitVec 64) {off : BitVec 64}
+    (ho : r.fed = some off) :
+    FedRow (storeN s n (base + BitVec.ofNat 64 ow) v) r off := by
+  have hf := hw.fed r hr off ho
+  have hby : r.byte = true := hf.1
+  have hs1 : r.stride = 1 := hf.2.1
+  have hm : ∀ i, i < r.count.toNat →
+      (storeN s n (base + BitVec.ofNat 64 ow) v).mem (r.addr + BitVec.ofNat 64 (0 + i))
+        = s.mem (r.addr + BitVec.ofNat 64 (0 + i)) := fun i hi => by
+    have hd := rowElsewhere_apart hw hj hj' hne hwfit hrow hra (by rw [hby, hs1]; decide) i hi
+    rw [hs1, Nat.one_mul, hby] at hd
+    rw [Nat.zero_add]
+    exact storeN_mem_out s n _ v _ hn (hd.1 (by decide))
+  have := hf.part (r' := r) (a := 0) (congrArg World.reads (storeN_world s n _ v)) rfl rfl
+    (by simp) (by omega) hm
+  rwa [show off + BitVec.ofNat 64 0 = off by simp] at this
 
 /-- **A row with one value more at its end**, where a store of a value of
 its type puts one there. -/

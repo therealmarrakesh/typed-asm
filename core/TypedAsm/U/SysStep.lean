@@ -328,7 +328,7 @@ theorem readsHeld_sound {D : SysDesc} (hD : Describes sys D) {ρ : Env} {plain :
       ∃ x y, t = next ∧
         (Δ = CtxS.den (ρ.setSys k x y) (Γe.addKnown [(.var k, .orErr (.range 0 0))]) ∨
           Δ = CtxS.den (ρ.setSys k x y)
-            { Γh with rows := [⟨Γ.regs.get b, .var k, 1, true, .any, some 0⟩] }) ∧
+            { Γh with rows := [⟨Γ.regs.get b, .var k, 1, true, .any, some (.lit 0)⟩] }) ∧
         Linux.Answered (roomVal (Γ.den ρ).val room) x := by
   simp only [fillsHeld] at h
   split at h
@@ -460,7 +460,7 @@ def sysReads (Γ : CtxS) (k : Nat) (next : BitVec 64) : Option (CtxS × CtxS) :=
     | some (.fills b room true) =>
       (fillsHeld true Γ k next b room).map fun r =>
         (r.1.addKnown [(.var k, .orErr (.range 0 0))],
-          { r.2 with rows := [⟨Γ.regs.get b, .var k, 1, true, .any, some 0⟩] })
+          { r.2 with rows := [⟨Γ.regs.get b, .var k, 1, true, .any, some (.lit 0)⟩] })
     | _ => none
   | none => none
 

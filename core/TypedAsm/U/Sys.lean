@@ -239,7 +239,8 @@ theorem Steps.reads {D : SysDesc} (hD : Describes sys D) {Γ Γh : Ctx} {next : 
       · show (0 : BitVec 64).toNat + (BitVec.ofNat 64 data.length).toNat ≤ data.length
         rw [hl]
         exact Nat.le_of_eq (Nat.zero_add _)
-      · show (Linux.give s (Γ.val b) data (BitVec.ofNat 64 data.length) w).loadBytes (Γ.val b)
+      · refine ⟨?_, by omega⟩
+        show (Linux.give s (Γ.val b) data (BitVec.ofNat 64 data.length) w).loadBytes (Γ.val b)
             (BitVec.ofNat 64 data.length).toNat
           = (data.drop (0 : BitVec 64).toNat).take (BitVec.ofNat 64 data.length).toNat
         rw [hl, Linux.give_loadBytes s _ data _ w (by omega) (Nat.le_refl _)]

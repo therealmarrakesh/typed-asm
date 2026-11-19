@@ -4,21 +4,52 @@ namespace TypedAsm.U
 open TypedAsm
 variable {fetch : Fetch} {sys : Syscall} {Ψ : MemTy}
 
-/-- Whether a count of whole numbers is fewer than what a term stands for,
-by the ranges known: each way things may be. -/
+/-- Whether a sum of whole multiples has none below nought, so that it is
+not below nought itself. -/
+def Lin.nonneg (P : Lin Int) : Bool := decide (0 ≤ P.k) && P.ms.all fun p => decide (0 ≤ p.1)
+
+theorem multDen_nonneg (ρ : Env) : (l : Multiples Int) → (l.all fun p => decide (0 ≤ p.1)) = true →
+    0 ≤ multDen (natOf ρ) l
+  | [], _ => Int.le_refl 0
+  | p :: ps, h => by
+    simp only [List.all_cons, Bool.and_eq_true, decide_eq_true_eq] at h
+    exact Int.add_nonneg (Int.mul_nonneg h.1 (Int.natCast_nonneg _)) (multDen_nonneg ρ ps h.2)
+
+/-- Whether a sum of whole multiples is not below nought: as it is written,
+or by what is known. -/
+def notBelow (cs : List (Lin Int)) (P : Lin Int) : Bool :=
+  P.nonneg || entails (cs.length + 1) cs (P.scale (-1))
+
+theorem notBelow_ge {ρ : Env} {cs : List (Lin Int)} {P : Lin Int} (h : notBelow cs P = true)
+    (hall : AllLe (natOf ρ) cs) : 0 ≤ P.den (natOf ρ) := by
+  rcases Bool.or_eq_true_iff.mp h with hn | he
+  · simp only [Lin.nonneg, Bool.and_eq_true, decide_eq_true_eq] at hn
+    exact Int.add_nonneg (multDen_nonneg ρ P.ms hn.2) hn.1
+  · have a := entails_le he hall
+    rw [Lin.scale_den] at a
+    omega
+
+/-- Whether a count of whole numbers is not below nought and is fewer than
+what a term stands for, by the ranges known: each way things may be. -/
 def inCount (G : List (Val × TyS)) (P : Lin Int) (c : Val) : Bool :=
   byKnown G (c :: P.ms.map (·.2)) fun cs =>
-    entails (cs.length + 1) cs (Lin.addMul (-1) c.alone ⟨P.ms, P.k + 1⟩)
+    entails (cs.length + 1) cs (Lin.addMul (-1) c.alone ⟨P.ms, P.k + 1⟩) && notBelow cs P
 
 theorem inCount_lt {ρ : Env} {Ψ' : MemTy} {n : Nat} {G : List (Val × TyS)} {P : Lin Int} {c : Val}
     (h : inCount G P c = true)
     (hg : ∀ g ∈ G, HasTy fetch sys Ψ' n (g.2.den ρ) (g.1.den ρ)) :
     P.den (natOf ρ) < natOf ρ c := by
   refine byKnown_of h hg fun cs hc hall => ?_
-  have a := entails_le hc hall
+  have a := entails_le (Bool.and_eq_true_iff.mp hc).1 hall
   rw [Lin.addMul_den, Val.alone_den] at a
   simp only [Lin.den] at a ⊢
   omega
+
+theorem inCount_ge {ρ : Env} {Ψ' : MemTy} {n : Nat} {G : List (Val × TyS)} {P : Lin Int} {c : Val}
+    (h : inCount G P c = true)
+    (hg : ∀ g ∈ G, HasTy fetch sys Ψ' n (g.2.den ρ) (g.1.den ρ)) :
+    0 ≤ P.den (natOf ρ) := by
+  exact byKnown_of h hg fun _ hc hall => notBelow_ge (Bool.and_eq_true_iff.mp hc).2 hall
 
 /-- The fact a context has that an address is one of a row of values, so
 many along and fewer than there are: the first such. -/
@@ -52,7 +83,7 @@ theorem findArr_spec {ρ : Env} {Ψ' : MemTy} {n : Nat} {G : List (Val × TyS)} 
       · next P hP =>
         split at h
         · next hin =>
-          obtain ⟨i, hi, hd⟩ := idxOf_den ρ hP
+          obtain ⟨i, hi, hd⟩ := idxOf_den ρ hP (inCount_ge (ρ := ρ) hin hg)
           have hlt := inCount_lt (ρ := ρ) hin hg
           have e := Lin.addMul_den (Val.den ρ) (-1) q.lin a.lin
           rw [Val.lin_den, Val.lin_den, hd] at e
@@ -69,23 +100,30 @@ theorem findArr_spec {ρ : Env} {Ψ' : MemTy} {n : Nat} {G : List (Val × TyS)} 
       · exact tail h
     | _ => exact tail h
 
-/-- Whether so many along, and so many more each `m` on from the last, are
-all fewer than what a term stands for, by the ranges known: each way
-things may be. -/
+/-- Whether so many along is not below nought, and it and so many more
+each `m` on from the last are all fewer than what a term stands for, by the
+ranges known: each way things may be. -/
 def suffixOk (G : List (Val × TyS)) (m : Nat) (Pj : Lin Int) (c c' : Val) : Bool :=
   byKnown G (c :: c' :: Pj.ms.map (·.2)) fun cs =>
     entails (cs.length + 1) cs
-      (Lin.addMul (-1) c.alone (Lin.addMul (m : Int) c'.alone ⟨Pj.ms, Pj.k + 1 - (m : Int)⟩))
+      (Lin.addMul (-1) c.alone (Lin.addMul (m : Int) c'.alone ⟨Pj.ms, Pj.k + 1 - (m : Int)⟩)) &&
+      notBelow cs Pj
 
 theorem suffixOk_le {ρ : Env} {Ψ' : MemTy} {n : Nat} {G : List (Val × TyS)} {m : Nat}
     {Pj : Lin Int} {c c' : Val} (h : suffixOk G m Pj c c' = true)
     (hg : ∀ g ∈ G, HasTy fetch sys Ψ' n (g.2.den ρ) (g.1.den ρ)) :
     Pj.den (natOf ρ) + (m : Int) * natOf ρ c' + 1 - (m : Int) ≤ natOf ρ c := by
   refine byKnown_of h hg fun cs hc hall => ?_
-  have a := entails_le hc hall
+  have a := entails_le (Bool.and_eq_true_iff.mp hc).1 hall
   rw [Lin.addMul_den, Lin.addMul_den, Val.alone_den, Val.alone_den] at a
   simp only [Lin.den] at a ⊢
   omega
+
+theorem suffixOk_ge {ρ : Env} {Ψ' : MemTy} {n : Nat} {G : List (Val × TyS)} {m : Nat}
+    {Pj : Lin Int} {c c' : Val} (h : suffixOk G m Pj c c' = true)
+    (hg : ∀ g ∈ G, HasTy fetch sys Ψ' n (g.2.den ρ) (g.1.den ρ)) :
+    0 ≤ Pj.den (natOf ρ) :=
+  byKnown_of h hg fun _ hc hall => notBelow_ge (Bool.and_eq_true_iff.mp hc).2 hall
 
 /-- Whether a thing wanted is that a value is the address of a row, and a
 row is known that it is the rest of: one starting so many before it, of at
@@ -120,7 +158,7 @@ theorem arrFrom_hasTy {ρ : Env} {Ψ' : MemTy} {n : Nat} {G : List (Val × TyS)}
       obtain ⟨⟨rfl, hst⟩, hrest⟩ := hrest
       split at hrest
       · next Pj hPj =>
-        obtain ⟨j, hj, hd⟩ := idxOf_den ρ hPj
+        obtain ⟨j, hj, hd⟩ := idxOf_den ρ hPj (suffixOk_ge (ρ := ρ) hrest hg)
         have hle := suffixOk_le (ρ := ρ) hrest hg
         have e := Lin.addMul_den (Val.den ρ) (-1) p.lin v.lin
         rw [Val.lin_den, Val.lin_den, hd] at e

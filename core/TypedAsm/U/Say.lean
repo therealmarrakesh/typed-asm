@@ -297,7 +297,7 @@ def cellsAt (addr count : Val) (τ : TyS) : RowS := ⟨addr, count, 8, false, τ
 
 /-- So many bytes from an address said to be what the last `read` stored,
 from its first. -/
-def readAt (addr count : Val) : RowS := ⟨addr, count, 1, true, .any, some 0⟩
+def readAt (addr count : Val) : RowS := ⟨addr, count, 1, true, .any, some (.lit 0)⟩
 
 /-- How many arguments the program was handed, its own name among them:
 the value held where the stack pointer is when it starts. -/

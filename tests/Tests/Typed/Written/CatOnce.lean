@@ -83,6 +83,18 @@ def typed (more : List (Asm L)) : Bool :=
 #guard !typed [.ins (.store8 (.sib (some .rsp) none 0) .rax)]
 -- as many offered from one byte further in. Refused
 #guard !typed [.ins (.alu .add .w64 (.rm_i (.reg .rsi) 1))]
+-- a byte stored over the first, and the rest written: they are still what
+-- was read, from one byte in
+#guard typed [.ins (.store8 (.sib (some .rsp) none 0) .rax),
+  .ins (.alu .add .w64 (.rm_i (.reg .rsi) 1)), .ins (.alu .sub .w64 (.rm_i (.reg .rdx) 1))]
+-- a byte stored over the last, wherever that is, and those before it written
+#guard typed [.ins (.store8 (.sib (some .rsp) (some (.rdx, .s1)) (-1)) .rax),
+  .ins (.alu .sub .w64 (.rm_i (.reg .rdx) 1))]
+-- a byte stored over the last, and all written. Refused
+#guard !typed [.ins (.store8 (.sib (some .rsp) (some (.rdx, .s1)) (-1)) .rax)]
+-- a byte stored over the second, and the rest from the first written. Refused
+#guard !typed [.ins (.store8 (.sib (some .rsp) none 1) .rax),
+  .ins (.alu .add .w64 (.rm_i (.reg .rsi) 1)), .ins (.alu .sub .w64 (.rm_i (.reg .rdx) 1))]
 
 def pg : Prog := { code := progCode (Asm.table base code), pre := preEcho (· == 0) }
 

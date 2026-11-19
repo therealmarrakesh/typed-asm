@@ -177,9 +177,13 @@ What is not there:
   stretch of them (`asm_checked … exits q echoes`). A `write` is known to
   answer no more than it was offered, so a loop that writes what is left
   from where the last `write` stopped is typed too, its label saying the
-  buffer is still what was read (`readAt`). A store into the buffer, or
-  another `read`, ends that. It is not yet said of bytes the program has
-  changed on the way (made upper case, say).
+  buffer is still what was read (`readAt`). A store elsewhere leaves that
+  as it was, and a store over some of those bytes leaves the bytes before
+  them and the bytes after them still said to be what was read, each from
+  as far in as it is; another `read` ends it. It is not yet said of bytes
+  the program has changed on the way (made upper case, say); and the
+  theorem is that nothing is written but what was read, not that all that
+  was read is written, once and in order, to standard output.
 - There are no signals in the model. An exit status is the value handed to
   `exit`; a parent process sees its low eight bits.
 - The examples are written as constructor terms; there is no notation for

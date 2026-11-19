@@ -414,19 +414,6 @@ def Echoes (s : State) : Prop :=
   ∃ chunk off, s.world.reads.head? = some chunk ∧ off + s.offered.length ≤ chunk.length ∧
     s.offered = (chunk.drop off).take s.offered.length
 
-/-- So many bytes from so far past an address are those of as many, or
-more, from the address, with the first so many left out. -/
-theorem loadBytes_within (s : State) (a : BitVec 64) {d n m : Nat} (h : d + n ≤ m) :
-    s.loadBytes (a + BitVec.ofNat 64 d) n = ((s.loadBytes a m).drop d).take n := by
-  apply List.ext_getElem
-  · simp only [State.loadBytes, List.length_map, List.length_range, List.length_take,
-      List.length_drop]
-    omega
-  · intro i h1 h2
-    simp only [State.loadBytes, List.getElem_map, List.getElem_range, List.getElem_take,
-      List.getElem_drop]
-    rw [BitVec.add_assoc, ← BitVec.ofNat_add]
-
 /-- **Whether a context at a system call is seen to offer, if the call is a
 `write`, a stretch of what the last `read` stored**: a row said to be bytes
 of it has, from as far past its start as the address offered is, as many
@@ -452,9 +439,9 @@ theorem preFed_holds {Γ : CtxS} {ρ : Env} (h : preFed Γ = true) {n : Nat} {Ψ
       rw [Bool.and_eq_true] at hc
       obtain ⟨hfed, hsum⟩ := hc
       obtain ⟨o, ho⟩ := Option.isSome_iff_exists.mp hfed
-      obtain ⟨-, -, chunk, hhead, hle, hload⟩ :=
-        hw.fed (g.den ρ) (List.mem_map.mpr ⟨g, hg, rfl⟩) (BitVec.ofNat 64 o)
-          (show g.fed.map (BitVec.ofNat 64) = _ by rw [ho]; rfl)
+      obtain ⟨-, -, chunk, hhead, hle, hload, -⟩ :=
+        hw.fed (g.den ρ) (List.mem_map.mpr ⟨g, hg, rfl⟩) (o.den ρ)
+          (show g.fed.map (Val.den ρ) = _ by rw [ho]; rfl)
       have hrdx : s.getReg .rdx = Γ.regs.rdx.den ρ := hw.val .rdx
       have hrsi : s.getReg .rsi
           = g.addr.den ρ + BitVec.ofNat 64 ((offTerm Γ.regs.rsi g.addr).den ρ).toNat := by
@@ -467,7 +454,7 @@ theorem preFed_holds {Γ : CtxS} {ρ : Env} (h : preFed Γ = true) {n : Nat} {Ψ
         simpa [sumNat, Val.nat] using this
       generalize ((offTerm Γ.regs.rsi g.addr).den ρ).toNat = d at hrsi hn
       have hoff : s.offered
-          = (chunk.drop ((BitVec.ofNat 64 o).toNat + d)).take (s.getReg .rdx).toNat := by
+          = (chunk.drop ((o.den ρ).toNat + d)).take (s.getReg .rdx).toNat := by
         show s.loadBytes (s.getReg .rsi) (s.getReg .rdx).toNat = _
         rw [hrsi, loadBytes_within s _ hn]
         show ((s.loadBytes (g.den ρ).addr (g.den ρ).count.toNat).drop d).take _ = _
@@ -479,9 +466,9 @@ theorem preFed_holds {Γ : CtxS} {ρ : Env} (h : preFed Γ = true) {n : Nat} {Ψ
         exact Nat.min_eq_left this
       have hlen : s.offered.length = (s.getReg .rdx).toNat := by
         simp [State.offered, State.loadBytes]
-      refine ⟨chunk, (BitVec.ofNat 64 o).toNat + d, hhead, ?_, ?_⟩
+      refine ⟨chunk, (o.den ρ).toNat + d, hhead, ?_, ?_⟩
       · rw [hlen]
-        have : (BitVec.ofNat 64 o).toNat + (g.den ρ).count.toNat ≤ chunk.length := hle
+        have : (o.den ρ).toNat + (g.den ρ).count.toNat ≤ chunk.length := hle
         have hn' : d + (s.getReg .rdx).toNat ≤ (g.den ρ).count.toNat := hn
         omega
       · rw [hlen]; exact hoff

@@ -11,20 +11,21 @@ theorem ofNat_times (s n : Nat) : BitVec.ofNat 64 (s * n) = BitVec.ofNat 64 s * 
   BitVec.ofNat_mul ..
 
 /-- Multiples of a stride, as so many strides each, counted in whole
-numbers: nothing unless each is so many strides. -/
+numbers, a multiple past half of all there are read as below nought:
+nothing unless each is so many strides. -/
 def idxMs (s : Nat) : Multiples (BitVec 64) → Option (Multiples Int)
   | [] => some []
   | p :: ps =>
-    if p.1 = BitVec.ofNat 64 s * (p.1 / BitVec.ofNat 64 s) then
-      (idxMs s ps).map fun r => (((p.1 / BitVec.ofNat 64 s).toNat : Int), p.2) :: r
+    if p.1.toInt = s * (p.1.toInt / s) then
+      (idxMs s ps).map fun r => (p.1.toInt / s, p.2) :: r
     else none
 
 theorem idxMs_den (ρ : Env) (s : Nat) : (l : Multiples (BitVec 64)) → {r : Multiples Int} →
     idxMs s l = some r →
-    ∃ i : Nat, multDen (natOf ρ) r = i ∧ multDen (Val.den ρ) l = BitVec.ofNat 64 (s * i)
+    multDen (Val.den ρ) l = BitVec.ofInt 64 (s * multDen (natOf ρ) r)
   | [], r, h => by
     cases h
-    exact ⟨0, rfl, by simp [multDen]⟩
+    simp [multDen]
   | p :: ps, r, h => by
     simp only [idxMs] at h
     split at h
@@ -34,27 +35,28 @@ theorem idxMs_den (ρ : Env) (s : Nat) : (l : Multiples (BitVec 64)) → {r : Mu
       | some r' =>
         rw [hr] at h
         cases h
-        obtain ⟨i, hi, hd⟩ := idxMs_den ρ s ps hr
-        refine ⟨(p.1 / BitVec.ofNat 64 s).toNat * (p.2.den ρ).toNat + i, ?_, ?_⟩
-        · show ((p.1 / BitVec.ofNat 64 s).toNat : Int) * natOf ρ p.2 + multDen (natOf ρ) r' = _
-          rw [hi]
-          simp only [natOf]
-          omega
-        · show p.1 * p.2.den ρ + multDen (Val.den ρ) ps = _
-          rw [hd, Nat.mul_add, BitVec.ofNat_add,
-            ofNat_times s ((p.1 / BitVec.ofNat 64 s).toNat * _), ofNat_mul_toNat,
-            ← BitVec.mul_assoc, ← h8, ofNat_times]
+        have ih := idxMs_den ρ s ps hr
+        show p.1 * p.2.den ρ + multDen (Val.den ρ) ps
+          = BitVec.ofInt 64 (s * (p.1.toInt / s * natOf ρ p.2 + multDen (natOf ρ) r'))
+        have e : (s : Int) * (p.1.toInt / s * natOf ρ p.2 + multDen (natOf ρ) r')
+            = p.1.toInt * ((p.2.den ρ).toNat : Int) + s * multDen (natOf ρ) r' := by
+          rw [Int.mul_add, ← Int.mul_assoc, ← h8]
+          rfl
+        rw [e, BitVec.ofInt_add, BitVec.ofInt_mul, BitVec.ofInt_toInt, BitVec.ofInt_natCast,
+          BitVec.ofNat_toNat, BitVec.setWidth_eq, ih]
     · cases h
 
 /-- **How many strides along an address is**, where taking one address from
-another leaves only whole strides: the count, in whole numbers. -/
+another leaves only whole strides: the count, in whole numbers, which may
+be below nought. -/
 def idxOf (s : Nat) (D : Lin (BitVec 64)) : Option (Lin Int) :=
-  if D.k = BitVec.ofNat 64 s * (D.k / BitVec.ofNat 64 s) then
-    (idxMs s D.ms).map fun r => ⟨r, ((D.k / BitVec.ofNat 64 s).toNat : Int)⟩
+  if D.k.toInt = s * (D.k.toInt / s) then
+    (idxMs s D.ms).map fun r => ⟨r, D.k.toInt / s⟩
   else none
 
-theorem idxOf_den (ρ : Env) {s : Nat} {D : Lin (BitVec 64)} {P : Lin Int} (h : idxOf s D = some P) :
-    ∃ i : Nat, P.den (natOf ρ) = i ∧ D.den (Val.den ρ) = BitVec.ofNat 64 (s * i) := by
+theorem idxOf_int (ρ : Env) {s : Nat} {D : Lin (BitVec 64)} {P : Lin Int}
+    (h : idxOf s D = some P) :
+    D.den (Val.den ρ) = BitVec.ofInt 64 (s * P.den (natOf ρ)) := by
   unfold idxOf at h
   split at h
   · next h8 =>
@@ -63,15 +65,16 @@ theorem idxOf_den (ρ : Env) {s : Nat} {D : Lin (BitVec 64)} {P : Lin Int} (h : 
     | some r =>
       rw [hr] at h
       cases h
-      obtain ⟨i, hi, hd⟩ := idxMs_den ρ s D.ms hr
-      refine ⟨i + (D.k / BitVec.ofNat 64 s).toNat, ?_, ?_⟩
-      · show multDen (natOf ρ) r + ((D.k / BitVec.ofNat 64 s).toNat : Int) = _
-        rw [hi]
-        omega
-      · show multDen (Val.den ρ) D.ms + D.k = _
-        rw [hd, Nat.mul_add, BitVec.ofNat_add, ofNat_times s (D.k / BitVec.ofNat 64 s).toNat,
-          BitVec.ofNat_toNat, BitVec.setWidth_eq, ← h8]
+      show multDen (Val.den ρ) D.ms + D.k
+        = BitVec.ofInt 64 (s * (multDen (natOf ρ) r + D.k.toInt / s))
+      rw [Int.mul_add, ← h8, BitVec.ofInt_add, BitVec.ofInt_toInt, idxMs_den ρ s D.ms hr]
   · cases h
+
+theorem idxOf_den (ρ : Env) {s : Nat} {D : Lin (BitVec 64)} {P : Lin Int}
+    (h : idxOf s D = some P) (h0 : 0 ≤ P.den (natOf ρ)) :
+    ∃ i : Nat, P.den (natOf ρ) = i ∧ D.den (Val.den ρ) = BitVec.ofNat 64 (s * i) := by
+  refine ⟨(P.den (natOf ρ)).toNat, (Int.toNat_of_nonneg h0).symm, ?_⟩
+  rw [idxOf_int ρ h, ← BitVec.ofInt_natCast, Int.natCast_mul, Int.toNat_of_nonneg h0]
 
 /-- A term times a written-out number, bit by bit of the number's lowest
 so many. -/
@@ -154,12 +157,12 @@ theorem Lin.val_den (ρ : Env) (L : Lin (BitVec 64)) : L.val.den ρ = L.den (Val
 
 /-- A sum of multiples of a stride, as so many strides. -/
 def idxLin (s : Nat) (D : Lin (BitVec 64)) : Lin (BitVec 64) :=
-  ⟨D.ms.map fun p => (p.1 / BitVec.ofNat 64 s, p.2), D.k / BitVec.ofNat 64 s⟩
+  ⟨D.ms.map fun p => (BitVec.ofInt 64 (p.1.toInt / s), p.2), BitVec.ofInt 64 (D.k.toInt / s)⟩
 
 theorem idxMs_val (ρ : Env) (s : Nat) : (l : Multiples (BitVec 64)) → {r : Multiples Int} →
     idxMs s l = some r →
-    multDen (Val.den ρ) (l.map fun p => (p.1 / BitVec.ofNat 64 s, p.2))
-      = BitVec.ofNat 64 (multDen (natOf ρ) r).toNat
+    multDen (Val.den ρ) (l.map fun p => (BitVec.ofInt 64 (p.1.toInt / s), p.2))
+      = BitVec.ofInt 64 (multDen (natOf ρ) r)
   | [], r, h => by
     cases h
     simp [multDen]
@@ -172,21 +175,15 @@ theorem idxMs_val (ρ : Env) (s : Nat) : (l : Multiples (BitVec 64)) → {r : Mu
         rw [hr] at h
         cases h
         have ih := idxMs_val ρ s ps hr
-        obtain ⟨i, hi, -⟩ := idxMs_den ρ s ps hr
-        show p.1 / BitVec.ofNat 64 s * p.2.den ρ + multDen (Val.den ρ) (ps.map _) = BitVec.ofNat 64
-          (((p.1 / BitVec.ofNat 64 s).toNat : Int) * natOf ρ p.2 + multDen (natOf ρ) r').toNat
-        rw [ih, hi]
-        have e : (((p.1 / BitVec.ofNat 64 s).toNat : Int) * natOf ρ p.2 + (i : Int)).toNat
-            = (p.1 / BitVec.ofNat 64 s).toNat * (p.2.den ρ).toNat + i := by
-          simp only [natOf]
-          omega
-        rw [e, BitVec.ofNat_add, ofNat_mul_toNat]
-        simp
+        show BitVec.ofInt 64 (p.1.toInt / s) * p.2.den ρ + multDen (Val.den ρ) (ps.map _)
+          = BitVec.ofInt 64 (p.1.toInt / s * ((p.2.den ρ).toNat : Int) + multDen (natOf ρ) r')
+        rw [ih, BitVec.ofInt_add, BitVec.ofInt_mul, BitVec.ofInt_natCast, BitVec.ofNat_toNat,
+          BitVec.setWidth_eq]
     · cases h
 
 /-- **How many strides along, as a term**: it stands for the count. -/
 theorem idxLin_den (ρ : Env) {s : Nat} {D : Lin (BitVec 64)} {P : Lin Int} (h : idxOf s D = some P) :
-    (idxLin s D).val.den ρ = BitVec.ofNat 64 (P.den (natOf ρ)).toNat := by
+    (idxLin s D).val.den ρ = BitVec.ofInt 64 (P.den (natOf ρ)) := by
   unfold idxOf at h
   split at h
   · cases hr : idxMs s D.ms with
@@ -194,14 +191,10 @@ theorem idxLin_den (ρ : Env) {s : Nat} {D : Lin (BitVec 64)} {P : Lin Int} (h :
     | some r =>
       rw [hr] at h
       cases h
-      obtain ⟨i, hi, -⟩ := idxMs_den ρ s D.ms hr
       rw [Lin.val_den]
-      show multDen (Val.den ρ) (D.ms.map _) + D.k / BitVec.ofNat 64 s
-        = BitVec.ofNat 64 (multDen (natOf ρ) r + ((D.k / BitVec.ofNat 64 s).toNat : Int)).toNat
-      rw [idxMs_val ρ s D.ms hr, hi]
-      have e : ((i : Int) + ((D.k / BitVec.ofNat 64 s).toNat : Int)).toNat
-          = i + (D.k / BitVec.ofNat 64 s).toNat := by omega
-      rw [e, BitVec.ofNat_add, BitVec.ofNat_toNat, BitVec.setWidth_eq, Int.toNat_natCast]
+      show multDen (Val.den ρ) (D.ms.map _) + BitVec.ofInt 64 (D.k.toInt / s)
+        = BitVec.ofInt 64 (multDen (natOf ρ) r + D.k.toInt / s)
+      rw [idxMs_val ρ s D.ms hr, BitVec.ofInt_add]
   · cases h
 
 end TypedAsm.U

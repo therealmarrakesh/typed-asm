@@ -712,7 +712,8 @@ def CtxS.bmax (Γ : CtxS) : Nat :=
   max (max (allRegs.foldl (fun m r => max m ((Γ.regs.get r).bmax 0)) 0) (Γ.flags.bmax 0))
     (max (max (heldBmax 0 Γ.held)
         (Γ.known.foldl (fun m f => max m (max (f.1.bmax 0) (f.2.bmax 0))) 0))
-      (Γ.rows.foldl (fun m r => max m (max (max (r.addr.bmax 0) (r.count.bmax 0)) (r.ty.bmax 0))) 0))
+      (Γ.rows.foldl (fun m r => max m (max (max (max (r.addr.bmax 0) (r.count.bmax 0)) (r.ty.bmax 0))
+        ((r.fed.map (·.bmax 0)).getD 0))) 0))
 
 /-- How many names a member of the family takes when given names of its
 own: one for each value, and one at least, since its flags and whatever

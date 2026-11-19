@@ -210,11 +210,13 @@ structure HeldOk (Ψ : MemTy) (Γ : Ctx) (s : State) : Prop where
 
 /-- **A row is bytes of the last `read`**, from so far into what that
 stored: bytes one after another, no more of them than it stored from
-there, and in memory what the world keeps of them. -/
+there, and in memory what the world keeps of them; which are fewer than
+there are addresses. -/
 def FedRow {τ : Type} (s : State) (r : RowOf τ) (off : BitVec 64) : Prop :=
   r.byte = true ∧ r.stride = 1 ∧ ∃ chunk, s.world.reads.head? = some chunk ∧
     off.toNat + r.count.toNat ≤ chunk.length ∧
-    s.loadBytes r.addr r.count.toNat = (chunk.drop off.toNat).take r.count.toNat
+    s.loadBytes r.addr r.count.toNat = (chunk.drop off.toNat).take r.count.toNat ∧
+    chunk.length < 2 ^ 64
 
 /-- `Matches H Ψ Γ s`: the state `s` matches the context `Γ`, where `H τ v`
 says what it means for `τ` to be known of the value `v`. -/
