@@ -16,10 +16,9 @@ import Tests.Typed.Written.Bounds
 import Tests.Typed.Written.Related
 import Tests.Typed.Written.Filled
 import Tests.Typed.Written.RecList
-import Tests.Typed.Written.CatOnce
-import Tests.Typed.Written.CatPieces
 import Tests.Typed.Written.Middle
 import Tests.Typed.Written.RecTree
+import Tests.Typed.Written.Wrote
 
 /-!
 # Programs written as an author would, each needing something of the type checker
@@ -42,8 +41,7 @@ function that fills memory it is lent, its caller knowing what it left; and
 a function that goes down a list by calling itself, the stack it needs said
 by how long the list is, and one that goes down a tree, by how deep; and a
 store into the middle of a row of values, which leaves those before it and
-those after it as they were said to be; and a program that writes what it
-read, proved to
-write nothing else, at once or in pieces as the kernel takes them. Each is
+those after it as they were said to be; and what a `write` answers used as
+an index. Each is
 typed as it is compiled.
 -/

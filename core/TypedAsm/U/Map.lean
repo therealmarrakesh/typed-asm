@@ -87,10 +87,6 @@ theorem WellTyped.mapZero {a : BitVec 64} {size : Nat}
       have hr' : r ∈ Γ.rows := hr
       rw [hrows] at hr'
       cases hr'
-    fed := fun r hr => by
-      have hr' : r ∈ Γ.rows := hr
-      rw [hrows] at hr'
-      cases hr'
     complete := fun x hx => by
       rw [State.perm_mapZero s hal hsz4 hfit] at hx
       split at hx
@@ -144,12 +140,12 @@ theorem Steps.map {D : SysDesc} (hD : Describes sys D) {Γ : Ctx} {next : BitVec
   rcases hmaps with ⟨v, w, hv, rfl⟩ | ⟨a, w, hal, hpos, hfit, hun, rfl⟩
   · refine ⟨_, hst, Γ.afterSys v (w.saved 0) next, ⟨hrip, v, _, .inl ⟨hv, rfl⟩⟩, ?_⟩
     rw [← hrip]
-    exact hw.ret v w (.inr hrows)
+    exact hw.ret v w
   · refine ⟨_, hst, _, ⟨hrip, a, w.saved 0, .inr ⟨hal, hpos, hfit, rfl⟩⟩, ?_⟩
     have hT : addrTop = 0x7ffffffff000 := rfl
     have h4 : pages (Γ.val .rsi) % 4096 = 0 := Nat.mul_mod_left _ _
     have hH := hw.mapZero_held hwf hal h4 hfit (by omega) hun hrows
     rw [← hrip]
-    exact hH.ret a w (.inr hrows)
+    exact hH.ret a w
 
 end TypedAsm.U

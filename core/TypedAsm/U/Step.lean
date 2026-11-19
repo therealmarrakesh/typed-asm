@@ -1051,9 +1051,8 @@ def RowS.width (r : RowS) : Nat := if r.byte then 1 else 8
 
 /-- **What a row is once bytes are stored in the region `j`, so far in**:
 as it was, where the row is in another region or the store keeps clear of it; with a value more at its end
-or at its start, where the store puts one of its type there and the row is
-not said to be bytes of the last `read`; and nothing, where it is not seen
-to be so. -/
+or at its start, where the store puts one of its type there; and nothing,
+where it is not seen to be so. -/
 def rowAfter (ent : TyS → TyS → Bool) (Γ : CtxS) (j : Nat) (ow : Val) (n : Nat) (v wa : Val)
     (r : RowS) : Option RowS :=
   if decide (r.width ≤ r.stride) then
@@ -1063,13 +1062,13 @@ def rowAfter (ent : TyS → TyS → Bool) (Γ : CtxS) (j : Nat) (ow : Val) (n : 
         if sumLe Γ.known (orr :: List.replicate r.stride r.count) 0 [ow] 0 then
           if decide (n = r.width) &&
               sumLe Γ.known [ow] 0 (orr :: List.replicate r.stride r.count) 0 &&
-              factFrom ent Γ.known (cellVal r.byte v, r.ty) && r.fed.isNone then
+              factFrom ent Γ.known (cellVal r.byte v, r.ty) then
             some { r with count := .add r.count (.lit 1) }
           else some r
         else if sumLe Γ.known [ow] n [orr] 0 then
           if decide (n = r.width) && sumLe Γ.known [ow] r.stride [orr] 0 &&
               sumLe Γ.known [orr] 0 [ow] r.stride &&
-              factFrom ent Γ.known (cellVal r.byte v, r.ty) && r.fed.isNone then
+              factFrom ent Γ.known (cellVal r.byte v, r.ty) then
             some { r with addr := wa, count := .add r.count (.lit 1) }
           else some r
         else none
@@ -1114,7 +1113,7 @@ theorem rowAfter_sound {ρ : Env} {ent : TyS → TyS → Bool} (he : EntSound fe
           · next hc =>
             cases h
             simp only [Bool.and_eq_true, decide_eq_true_eq] at hc
-            obtain ⟨⟨⟨hnw, hback⟩, hf⟩, -⟩ := hc
+            obtain ⟨⟨hnw, hback⟩, hf⟩ := hc
             have hb := sumLe_den hback hg
             simp only [sumNat, sumNat_replicate, Nat.add_zero] at hb
             have hv := factFrom_hasTy he ρ hf Ψ' k hw.known
@@ -1132,7 +1131,7 @@ theorem rowAfter_sound {ρ : Env} {ent : TyS → TyS → Bool} (he : EntSound fe
             · next hc =>
               cases h
               simp only [Bool.and_eq_true, decide_eq_true_eq] at hc
-              obtain ⟨⟨⟨⟨hnw, h1⟩, h2⟩, hf⟩, -⟩ := hc
+              obtain ⟨⟨⟨hnw, h1⟩, h2⟩, hf⟩ := hc
               have h1' := sumLe_den h1 hg
               have h2' := sumLe_den h2 hg
               simp only [sumNat, Nat.add_zero] at h1' h2'
@@ -1155,84 +1154,10 @@ theorem rowAfter_sound {ρ : Env} {ent : TyS → TyS → Bool} (he : EntSound fe
     · cases h
   · cases h
 
-/-- **And a row said to be bytes of the last `read` that `rowAfter` leaves
-is so still.** -/
-theorem rowAfter_fed {ρ : Env} {ent : TyS → TyS → Bool}
-    {Γ : CtxS} {j : Nat} {ow v wa : Val} {n : Nat} {r r' : RowS}
-    (h : rowAfter ent Γ j ow n v wa r = some r') (hr : r ∈ Γ.rows) {base : Val} {S : HeldS}
-    (hj : Γ.held[j]? = some (base, S))
-    (hwa : wa.den ρ = base.den ρ + BitVec.ofNat 64 (ow.nat ρ)) (hn : n ≤ 8)
-    {k : Nat} {Ψ' : MemTy} {s : State} (hw : WellTyped fetch sys Ψ' k (Γ.den ρ) s)
-    (hfit : ow.nat ρ + n ≤ S.size.nat ρ) :
-    ∀ off, (r'.den ρ).fed = some off →
-      FedRow (storeN s n (wa.den ρ) (v.den ρ)) (r'.den ρ) off := by
-  intro off ho
-  have hg := knownS hw.known
-  have hrd : r.den ρ ∈ (Γ.den ρ).rows := List.mem_map.mpr ⟨r, hr, rfl⟩
-  have hjd := CtxS.held_den ρ Γ hj
-  have hnot : r.fed.isNone = true → (r.den ρ).fed = some off → False := fun hnf ho' => by
-    have ho'' : r.fed.map (Val.den ρ) = some off := ho'
-    rw [Option.isNone_iff_eq_none.mp hnf] at ho''
-    cases ho''
-  unfold rowAfter at h
-  split at h
-  rotate_left
-  · cases h
-  split at h
-  rotate_left
-  · cases h
-  next j' b' S' orr hfind =>
-  obtain ⟨hl, hin, hra⟩ := findHeld2_spec (ρ := ρ) Γ.held hfind hg
-  rw [sumNat_replicate, Nat.add_zero] at hin
-  rw [hwa]
-  split at h
-  · next hjj =>
-    subst hjj
-    have hbs : (b', S') = (base, S) := Option.some.inj (hl.symm.trans hj)
-    cases hbs
-    have hra' : (r.den ρ).addr = base.den ρ + BitVec.ofNat 64 (orr.nat ρ) := hra
-    have hrow : orr.nat ρ + (r.den ρ).stride * (r.den ρ).count.toNat ≤ (S.den ρ).size := hin
-    have keep : (orr.nat ρ + (r.den ρ).stride * (r.den ρ).count.toNat ≤ ow.nat ρ
-          ∨ ow.nat ρ + n ≤ orr.nat ρ) → (r.den ρ).fed = some off →
-        FedRow (storeN s n (base.den ρ + BitVec.ofNat 64 (ow.nat ρ)) (v.den ρ)) (r.den ρ) off :=
-      fun hc ho' => by
-        have := fedPiece hw hjd hrd (a := 0) hn hfit hrow hra' (r' := r.den ρ) rfl rfl
-          (by simp) (by omega)
-          (hc.elim (fun h => .inl (by rw [Nat.zero_add]; exact h))
-            (fun h => .inr (by rw [Nat.mul_zero, Nat.add_zero]; exact h))) (v.den ρ) ho'
-        rwa [show off + BitVec.ofNat 64 0 = off by simp] at this
-    split at h
-    · next hpast =>
-      have hp := sumLe_den hpast hg
-      simp only [sumNat, sumNat_replicate, Nat.add_zero] at hp
-      split at h
-      · next hc =>
-        cases h
-        simp only [Bool.and_eq_true] at hc
-        exact (hnot hc.2 ho).elim
-      · cases h
-        exact keep (.inl (show orr.nat ρ + r.stride * r.count.nat ρ ≤ ow.nat ρ by omega)) ho
-    · split at h
-      · next hbelow =>
-        have hp := sumLe_den hbelow hg
-        simp only [sumNat, Nat.add_zero] at hp
-        split at h
-        · next hc =>
-          cases h
-          simp only [Bool.and_eq_true] at hc
-          exact (hnot hc.2 ho).elim
-        · cases h
-          exact keep (.inr hp) ho
-      · cases h
-  · next hjj =>
-    cases h
-    exact fedElsewhere hw hjd (CtxS.held_den ρ Γ hl) hjj hrd hn hfit hin hra _ ho
-
 /-- **What is left of a row once bytes are stored over some of its values,
 in the region `j`**: the row as it was, where the store puts a value of its
-type in the place of one and the row is not said to be bytes of the last
-`read`; else the values before those stored over, and the values after,
-each a row, and bytes of the last `read` still where the row was. Nothing where the store is not seen to start at
+type in the place of one; else the values before those stored over, and the
+values after, each a row. Nothing where the store is not seen to start at
 one of the row's values. -/
 def rowSplit (ent : TyS → TyS → Bool) (Γ : CtxS) (j : Nat) (n : Nat) (v wa : Val)
     (r : RowS) : List RowS :=
@@ -1243,8 +1168,7 @@ def rowSplit (ent : TyS → TyS → Bool) (Γ : CtxS) (j : Nat) (n : Nat) (v wa 
         match idxOf r.stride (Lin.addMul (-1) r.addr.lin wa.lin) with
         | some P =>
           if inCount Γ.known P r.count then
-            if decide (n = r.width) && factFrom ent Γ.known (cellVal r.byte v, r.ty) &&
-                r.fed.isNone then [r]
+            if decide (n = r.width) && factFrom ent Γ.known (cellVal r.byte v, r.ty) then [r]
             else
               let at_ := idxLin r.stride (Lin.addMul (-1) r.addr.lin wa.lin)
               let m := (n + r.stride - 1) / r.stride
@@ -1252,9 +1176,7 @@ def rowSplit (ent : TyS → TyS → Bool) (Γ : CtxS) (j : Nat) (n : Nat) (v wa 
               ({ r with count := at_.val } ::
                 if decide (m ≤ 1) || inCount Γ.known ⟨P.ms, P.k + ((m - 1 : Nat) : Int)⟩ r.count then
                   [{ r with addr := wa.plus (.lit (BitVec.ofNat 64 (r.stride * m)))
-                            count := (⟨left.ms, left.k - BitVec.ofNat 64 m⟩ : Lin (BitVec 64)).val
-                            fed := r.fed.map fun o =>
-                              (o.plus at_.val).plus (.lit (BitVec.ofNat 64 m)) }]
+                            count := (⟨left.ms, left.k - BitVec.ofNat 64 m⟩ : Lin (BitVec 64)).val }]
                 else []).filter fun r' => r'.count != .lit 0
           else []
         | none => []
@@ -1269,7 +1191,9 @@ theorem rowSplit_sound {ρ : Env} {ent : TyS → TyS → Bool} (he : EntSound fe
     (hwa : wa.den ρ = base.den ρ + BitVec.ofNat 64 (ow.nat ρ)) (hn : n ≤ 8)
     {k : Nat} {Ψ' : MemTy} {s : State} (hw : WellTyped fetch sys Ψ' k (Γ.den ρ) s)
     (hfit : ow.nat ρ + n ≤ S.size.nat ρ) :
-    RowHolds fetch sys Ψ' k (storeN s n (wa.den ρ) (v.den ρ)) (r'.den ρ) := by
+    ∀ i, i < (r'.den ρ).count.toNat → HasTy fetch sys Ψ' k (r'.den ρ).ty
+      (cellAt (storeN s n (wa.den ρ) (v.den ρ)) (r'.den ρ).byte
+        ((r'.den ρ).addr + BitVec.ofNat 64 ((r'.den ρ).stride * i))) := by
   have hg := knownS hw.known
   have hrd : r.den ρ ∈ (Γ.den ρ).rows := List.mem_map.mpr ⟨r, hr, rfl⟩
   have hjd := CtxS.held_den ρ Γ hj
@@ -1335,44 +1259,23 @@ theorem rowSplit_sound {ρ : Env} {ent : TyS → TyS → Bool} (he : EntSound fe
   · next hc =>
     rw [List.mem_singleton.mp h]
     simp only [Bool.and_eq_true, decide_eq_true_eq] at hc
-    have hv := factFrom_hasTy he ρ hc.1.2 Ψ' k hw.known
+    have hv := factFrom_hasTy he ρ hc.2 Ψ' k hw.known
     rw [cellVal_den] at hv
-    refine ⟨rowOverwritten hw hjd hrd hrow hra' hwid' hat hi' hc.1.1 hv, fun off ho => ?_⟩
-    have ho' : r.fed.map (Val.den ρ) = some off := ho
-    rw [Option.isNone_iff_eq_none.mp hc.2] at ho'
-    cases ho'
+    exact rowOverwritten hw hjd hrd hrow hra' hwid' hat hi' hc.1 hv
   · have hiv : (idxLin r.stride (Lin.addMul (-1) r.addr.lin wa.lin)).val.den ρ
         = BitVec.ofNat 64 i0 := by
       rw [idxLin_den ρ hP, hi, BitVec.ofInt_natCast]
     have hcl : (r.den ρ).count.toNat < 2 ^ 64 := (r.den ρ).count.isLt
     rcases List.mem_cons.mp (List.mem_filter.mp h).1 with rfl | hup
-    · have hlc : (BitVec.ofNat 64 i0).toNat = i0 := by
-        rw [BitVec.toNat_ofNat]
-        exact Nat.mod_eq_of_lt (by omega)
-      refine ⟨fun i hlti => ?_, fun off ho => ?_⟩
-      · have hlti' : i < i0 := by
-          rw [← hlc, ← hiv]
-          exact hlti
-        have := rowPiece hw hjd hrd (a := 0) (m := i0) hn hfit' hrow hra' hwid' (by omega)
-          (.inl (by rw [Nat.zero_add]; omega)) (v.den ρ) i hlti'
-        rw [Nat.zero_add] at this
-        exact this
-      · have ho' : (r.den ρ).fed = some off := ho
-        have := fedPiece hw hjd hrd (a := 0) hn hfit' hrow hra'
-          (r' := RowS.den ρ
-            { r with count := (idxLin r.stride (Lin.addMul (-1) r.addr.lin wa.lin)).val })
-          rfl rfl
-          (by show r.addr.den ρ = r.addr.den ρ + BitVec.ofNat 64 (r.stride * 0); simp)
-          (by
-            show 0 + ((idxLin r.stride (Lin.addMul (-1) r.addr.lin wa.lin)).val.den ρ).toNat ≤ _
-            rw [hiv, hlc]
-            omega)
-          (.inl (by
-            show orr.nat ρ + (r.den ρ).stride
-              * (0 + ((idxLin r.stride (Lin.addMul (-1) r.addr.lin wa.lin)).val.den ρ).toNat) ≤ _
-            rw [hiv, hlc, Nat.zero_add]
-            omega)) (v.den ρ) ho'
-        rwa [show off + BitVec.ofNat 64 0 = off by simp] at this
+    · intro i hlti
+      have hlti' : i < i0 := by
+        have : i < (BitVec.ofNat 64 i0).toNat := by rw [← hiv]; exact hlti
+        rw [BitVec.toNat_ofNat] at this
+        exact Nat.lt_of_lt_of_le this (Nat.mod_le _ _)
+      have := rowPiece hw hjd hrd (a := 0) (m := i0) hn hfit' hrow hra' hwid' (by omega)
+        (.inl (by rw [Nat.zero_add]; omega)) (v.den ρ) i hlti'
+      rw [Nat.zero_add] at this
+      exact this
     · have hmn : n ≤ r.stride * ((n + r.stride - 1) / r.stride) := by
         have := Nat.div_add_mod (n + r.stride - 1) r.stride
         have := Nat.mod_lt (n + r.stride - 1) hst
@@ -1412,46 +1315,13 @@ theorem rowSplit_sound {ρ : Env} {ent : TyS → TyS → Bool} (he : EntSound fe
           = (r.count.den ρ).toNat - i0 - m := by
         have := (r.count.den ρ).isLt
         bv_omega
-      have hstm : (r.den ρ).stride * (i0 + m) = (r.den ρ).stride * i0 + r.stride * m :=
-        Nat.mul_add ..
-      refine ⟨fun i hlti => ?_, fun off ho => ?_⟩
-      rotate_left
-      · have ho' : (r.fed.map fun o =>
-            (o.plus (idxLin r.stride (Lin.addMul (-1) r.addr.lin wa.lin)).val).plus
-              (.lit (BitVec.ofNat 64 m))).map (Val.den ρ) = some off := ho
-        cases hfe : r.fed with
-        | none => rw [hfe] at ho'; cases ho'
-        | some o =>
-          rw [hfe] at ho'
-          have eoff : ((o.plus (idxLin r.stride (Lin.addMul (-1) r.addr.lin wa.lin)).val).plus
-              (.lit (BitVec.ofNat 64 m))).den ρ = off := Option.some.inj ho'
-          have e2 : ((o.plus (idxLin r.stride (Lin.addMul (-1) r.addr.lin wa.lin)).val).plus
-              (.lit (BitVec.ofNat 64 m))).den ρ = o.den ρ + BitVec.ofNat 64 (i0 + m) := by
-            rw [Val.plus_den, Val.plus_den, hiv]
-            show o.den ρ + BitVec.ofNat 64 i0 + BitVec.ofNat 64 m = _
-            rw [BitVec.add_assoc, ← BitVec.ofNat_add]
-          rw [← eoff, e2]
-          refine fedPiece hw hjd hrd (a := i0 + m) hn hfit' hrow hra' (by rfl) (by rfl) ?_ ?_
-            (.inr (by rw [hstm]; omega)) (v.den ρ)
-            (show (r.den ρ).fed = some (o.den ρ) by
-              show r.fed.map (Val.den ρ) = _
-              rw [hfe]
-              rfl)
-          · show (wa.plus (.lit (BitVec.ofNat 64 (r.stride * m)))).den ρ
-              = r.addr.den ρ + BitVec.ofNat 64 (r.stride * (i0 + m))
-            rw [Val.plus_den, ha]
-            show r.addr.den ρ + BitVec.ofNat 64 (r.stride * i0) + BitVec.ofNat 64 (r.stride * m) = _
-            rw [BitVec.add_assoc, ← BitVec.ofNat_add, ← Nat.mul_add]
-          · have : i0 + m + (r.count.den ρ - BitVec.ofNat 64 i0 - BitVec.ofNat 64 m).toNat
-                ≤ (r.count.den ρ).toNat := by
-              rw [hct]
-              omega
-            rw [← hcv] at this
-            exact this
+      intro i hlti
       have hlti' : i < (r.den ρ).count.toNat - i0 - m := by
         show i < (r.count.den ρ).toNat - i0 - m
         rw [← hct, ← hcv]
         exact hlti
+      have hstm : (r.den ρ).stride * (i0 + m) = (r.den ρ).stride * i0 + r.stride * m :=
+        Nat.mul_add ..
       have := rowPiece hw hjd hrd (a := i0 + m) (m := (r.den ρ).count.toNat - i0 - m) hn hfit'
         hrow hra' hwid' (by have : i0 + m ≤ (r.den ρ).count.toNat := hupb; omega)
         (.inr (by rw [hstm]; omega)) (v.den ρ) i hlti'
@@ -1476,7 +1346,7 @@ def newRow (Γ : CtxS) (wa : Val) (n : Nat) (v : Val) : List RowS :=
     match Γ.within (cellVal (decide (n = 1)) v) with
     | some (lo, hi) =>
       if hi < 18446744073709551616 ∧ (0 < lo ∨ hi < 18446744073709551615) then
-        [⟨wa, .lit 1, n, decide (n = 1), .range (BitVec.ofNat 64 lo) (BitVec.ofNat 64 hi), none⟩]
+        [⟨wa, .lit 1, n, decide (n = 1), .range (BitVec.ofNat 64 lo) (BitVec.ofNat 64 hi)⟩]
       else []
     | none => []
   else []
@@ -1535,21 +1405,10 @@ theorem newRow_sound {ρ : Env} {Γ : CtxS} {wa v : Val} {n : Nat} {k : Nat} {Ψ
     · cases hr'
   · cases hr'
 
-theorem newRow_fed {Γ : CtxS} {wa v : Val} {n : Nat} : ∀ r ∈ newRow Γ wa n v, r.fed = none := by
-  intro r hr
-  unfold newRow at hr
-  split at hr
-  · split at hr
-    · split at hr
-      · rw [List.mem_singleton.mp hr]
-      · cases hr
-    · cases hr
-  · cases hr
-
 /-- **What is so of rows once `n` bytes at an address are stored**: of each
 row the context has, what `rowAfter` leaves, or where the store is over
-some of its values what `rowSplit` does; and the row the store makes.
-Nothing where the bytes are not found in a region held. -/
+some of its values what `rowSplit` does; nothing where the bytes are not
+found in a region held. -/
 def rowsAfter (ent : TyS → TyS → Bool) (Γ : CtxS) (wa : Val) (n : Nat) (v : Val) : List RowS :=
   if n ≤ 8 then
     match findHeld2 Γ.known wa [] n Γ.held with
@@ -1564,8 +1423,9 @@ def rowsAfter (ent : TyS → TyS → Bool) (Γ : CtxS) (wa : Val) (n : Nat) (v :
 theorem rowsAfter_sound {ρ : Env} {ent : TyS → TyS → Bool} (he : EntSound fetch sys ent)
     {Γ : CtxS} {wa v : Val} {n : Nat} {k : Nat} {Ψ' : MemTy} {s : State}
     (hw : WellTyped fetch sys Ψ' k (Γ.den ρ) s) :
-    ∀ r ∈ (rowsAfter ent Γ wa n v).map (RowS.den ρ),
-      RowHolds fetch sys Ψ' k (storeN s n (wa.den ρ) (v.den ρ)) r := by
+    ∀ r ∈ (rowsAfter ent Γ wa n v).map (RowS.den ρ), ∀ i, i < r.count.toNat →
+      HasTy fetch sys Ψ' k r.ty
+        (cellAt (storeN s n (wa.den ρ) (v.den ρ)) r.byte (r.addr + BitVec.ofNat 64 (r.stride * i))) := by
   intro r hr
   obtain ⟨r', hr', rfl⟩ := List.mem_map.mp hr
   unfold rowsAfter at hr'
@@ -1580,13 +1440,9 @@ theorem rowsAfter_sound {ρ : Env} {ent : TyS → TyS → Bool} (he : EntSound f
         split at hra
         · next hsome =>
           rw [List.mem_singleton.mp hra]
-          exact ⟨rowAfter_sound he hsome hr0 hl ha hn hw hin,
-            rowAfter_fed hsome hr0 hl ha hn hw hin⟩
+          exact rowAfter_sound he hsome hr0 hl ha hn hw hin
         · exact rowSplit_sound he hra hr0 hl ha hn hw hin
-      · refine ⟨newRow_sound hw _ (List.mem_map.mpr ⟨_, hr', rfl⟩), fun off ho => ?_⟩
-        have ho' : r'.fed.map (Val.den ρ) = some off := ho
-        rw [newRow_fed r' hr'] at ho'
-        cases ho'
+      · exact newRow_sound hw _ (List.mem_map.mpr ⟨_, hr', rfl⟩)
     · cases hr'
   · cases hr'
 
@@ -1655,7 +1511,7 @@ theorem readRows_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
           have hτu : r.ty.under k = true := by
             have hu' := hu
             simp only [CtxS.under, Bool.and_eq_true, List.all_eq_true] at hu'
-            exact (hu'.2 r hmem).1.2
+            exact (hu'.2 r hmem).2
           refine Reads.withKnown fun k' Ψ' hg0 => ?_
           have hg := knownS hg0
           obtain ⟨i, hi, hd⟩ := idxOf_den ρ hP (inCount_ge (ρ := ρ) hidx hg)
@@ -1801,7 +1657,7 @@ theorem stepHeld_sound {ρ : Env} {kinds : Nat → Option ShapeS} (hk : KindsOk 
             rw [(fill_den s next hΓ hx).1 _ hstore,
               show (eaS Γ.regs next m).den (ρ.setVal k x) = eaOf (Γ.den ρ).val next m from by
                 rw [← hval]; exact eaS_den (ρ.setVal k x) _ next m] at hRm
-            exact Writes.rows _ hW (fun k' Ψ' _ _ st hw => hRm k' Ψ' st hw)
+            exact Writes.rows _ hW fun k' Ψ' _ _ st hw => hRm k' Ψ' st hw
         · rintro x Γr ⟨rfl, hx⟩ Ψ' n hk
           have hΓ : Γ.den (ρ.setVal k x) = Γ.den ρ := CtxS.den_setVal ρ k x Γ hu
           have hfill := fill_den s next hΓ hx

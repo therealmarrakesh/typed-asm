@@ -353,8 +353,7 @@ end
 def CtxS.under (k : Nat) (Γ : CtxS) : Bool :=
   (Γ.regs.map (·.under k) == allTrue) && Γ.flags.under k && heldUnder k Γ.held &&
   (Γ.known.all fun f => f.1.under k && f.2.under k) && Γ.rest.under k &&
-  (Γ.rows.all fun r => r.addr.under k && r.count.under k && r.ty.under k &&
-    r.fed.all (·.under k))
+  (Γ.rows.all fun r => r.addr.under k && r.count.under k && r.ty.under k)
 
 /-- **A context that mentions only names below `k` stands for the same in
 any two settings that agree below `k`.** -/
@@ -375,15 +374,8 @@ theorem CtxS.den_under {k : Nat} {ρ₁ ρ₂ : Env} (hs : Env.SameBelow k ρ₁
   · show Γ.rows.map _ = Γ.rows.map _
     refine List.map_congr_left fun r hr' => ?_
     have h3 := hrows r hr'
-    have h4 : r.fed.map (Val.den ρ₁) = r.fed.map (Val.den ρ₂) := by
-      cases hfe : r.fed with
-      | none => rfl
-      | some o =>
-        have := h3.2
-        rw [hfe] at this
-        exact congrArg some (Val.den_under hs o (by simpa using this))
-    show RowOf.mk _ _ _ _ _ _ = RowOf.mk _ _ _ _ _ _
-    rw [Val.den_under hs _ h3.1.1.1, Val.den_under hs _ h3.1.1.2, TyS.den_under hs _ h3.1.2, h4]
+    show RowOf.mk _ _ _ _ _ = RowOf.mk _ _ _ _ _
+    rw [Val.den_under hs _ h3.1.1, Val.den_under hs _ h3.1.2, TyS.den_under hs _ h3.2]
 
 /-! ## The case of one name more -/
 

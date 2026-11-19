@@ -177,56 +177,6 @@ theorem cellAt_congr {s s' : State} (h : ∀ a, s'.mem a = s.mem a) (b : Bool) (
     cellAt s' b a = cellAt s b a := by
   simp only [cellAt, State.load64, State.load32, State.load16, State.load8, h]
 
-/-- A row is bytes of the last `read` still, in a state whose memory is the
-same and whose world has stored the same by reading. -/
-theorem FedRow.congr {τ : Type} {s s' : State} (h : ∀ a, s'.mem a = s.mem a)
-    (hw : s'.world.reads = s.world.reads) {r : RowOf τ} {off : BitVec 64}
-    (hf : FedRow s r off) : FedRow s' r off := by
-  obtain ⟨hb, hst, chunk, hc, hle, hl, hlen⟩ := hf
-  refine ⟨hb, hst, chunk, by rw [hw]; exact hc, hle, ?_, hlen⟩
-  rw [← hl]
-  simp only [State.loadBytes, h]
-
-/-- So many bytes from so far past an address are those of as many, or
-more, from the address, with the first so many left out. -/
-theorem loadBytes_within (s : State) (a : BitVec 64) {d n m : Nat} (h : d + n ≤ m) :
-    s.loadBytes (a + BitVec.ofNat 64 d) n = ((s.loadBytes a m).drop d).take n := by
-  apply List.ext_getElem
-  · simp only [State.loadBytes, List.length_map, List.length_range, List.length_take,
-      List.length_drop]
-    omega
-  · intro i h1 h2
-    simp only [State.loadBytes, List.getElem_map, List.getElem_range, List.getElem_take,
-      List.getElem_drop]
-    rw [BitVec.add_assoc, ← BitVec.ofNat_add]
-
-/-- **Some of the bytes of a row that is bytes of the last `read`, one after
-another, are bytes of it from that much further in**, in a state whose
-memory has them as they were and whose world has stored the same by
-reading. -/
-theorem FedRow.part {τ : Type} {s s' : State} {r r' : RowOf τ} {off : BitVec 64}
-    (hf : FedRow s r off) (hw : s'.world.reads = s.world.reads) {a : Nat}
-    (hb : r'.byte = r.byte) (hst : r'.stride = r.stride)
-    (ha : r'.addr = r.addr + BitVec.ofNat 64 a) (hc : a + r'.count.toNat ≤ r.count.toNat)
-    (hm : ∀ i, i < r'.count.toNat →
-      s'.mem (r.addr + BitVec.ofNat 64 (a + i)) = s.mem (r.addr + BitVec.ofNat 64 (a + i))) :
-    FedRow s' r' (off + BitVec.ofNat 64 a) := by
-  obtain ⟨hbyte, hstride, chunk, hhead, hle, hload, hlen⟩ := hf
-  have e : (off + BitVec.ofNat 64 a).toNat = off.toNat + a := by
-    have := r.count.isLt
-    bv_omega
-  refine ⟨hb.trans hbyte, hst.trans hstride, chunk, by rw [hw]; exact hhead, by omega, ?_, hlen⟩
-  have h1 : s'.loadBytes r'.addr r'.count.toNat
-      = s.loadBytes (r.addr + BitVec.ofNat 64 a) r'.count.toNat := by
-    rw [ha]
-    simp only [State.loadBytes]
-    refine List.map_congr_left fun i hi => ?_
-    rw [BitVec.add_assoc, ← BitVec.ofNat_add]
-    exact hm i (List.mem_range.mp hi)
-  rw [h1, loadBytes_within s _ hc, hload, List.drop_take, List.drop_drop, List.take_take, e]
-  congr 1
-  exact Nat.min_eq_left (by omega)
-
 /-- Matching a context carries over to any weaker notion of what is known. -/
 theorem Matches.imp {H H' : Ty → BitVec 64 → Prop} {Γ : Ctx} {s : State}
     (h : Matches H Ψ Γ s) (himp : ∀ τ v, H τ v → H' τ v) : Matches H' Ψ Γ s :=
@@ -239,7 +189,6 @@ theorem Matches.imp {H H' : Ty → BitVec 64 → Prop} {Γ : Ctx} {s : State}
     said := h.said
     held := h.held
     rows := fun r hr i hi => himp _ _ (h.rows r hr i hi)
-    fed := h.fed
     complete := h.complete }
 
 /-- A state well typed at a step count is well typed at every smaller one. -/

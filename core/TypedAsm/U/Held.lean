@@ -37,8 +37,7 @@ theorem writeHeld {s' : State} {k : Nat} {a : BitVec 64} {S S' : Held} {lo cnt :
     (hvals : ∀ p ∈ S'.vals, (p ∈ S.vals ∧ (p.1 + 8 ≤ lo ∨ lo + cnt ≤ p.1)) ∨
       s'.load64 (a + BitVec.ofNat 64 p.1) = p.2)
     (hrows : ∀ r ∈ Γ.rows, ∀ i, i < r.count.toNat →
-      HasTy fetch sys Ψ n r.ty (cellAt s' r.byte (r.addr + BitVec.ofNat 64 (r.stride * i))))
-    (hfed : ∀ r ∈ Γ.rows, ∀ off, r.fed = some off → FedRow s' r off) :
+      HasTy fetch sys Ψ n r.ty (cellAt s' r.byte (r.addr + BitVec.ofNat 64 (r.stride * i)))) :
     WellTyped fetch sys Ψ n { Γ with held := Γ.held.set k (a, S') } s' := by
   obtain ⟨hklt, hkeq⟩ := List.getElem?_eq_some_iff.mp hk
   have hin : (a, S) ∈ Γ.held := hkeq ▸ List.getElem_mem hklt
@@ -98,7 +97,6 @@ theorem writeHeld {s' : State} {k : Nat} {a : BitVec 64} {S S' : Held} {lo cnt :
         hsz (hΨ.size_lt b l hl) (by omega) (by omega) (by omega) (by omega)).1 (by decide))]
       exact h.said b l bs hl hs j hj
     rows := hrows
-    fed := hfed
     complete := fun x hx => by
       rcases h.complete x (by rw [← hperm]; exact hx) with ⟨c, hc, hlt⟩ | hr
       · obtain ⟨m, hm, rfl⟩ := List.mem_iff_getElem.mp hc
@@ -258,7 +256,6 @@ theorem Writes.held {Γ : Ctx} {k : Nat} {b : BitVec 64} {S : Held} {o n : Nat} 
     (storeN_perm _ _ _ _) (fun y hy => storeN_load64_out _ _ _ _ _ hn hy)
     (fun x hx => storeN_mem_out _ _ _ _ _ hn hx) ?_
     (by rw [hrows]; exact fun r hr => nomatch hr)
-    (by rw [hrows]; exact fun r hr => nomatch hr)
   · unfold heldPut; split <;> rfl
   · intro p hp
     have hsize : (heldPut S o n v).size = S.size := by unfold heldPut; split <;> rfl
@@ -307,7 +304,6 @@ theorem Writes.heldTo {Γ : Ctx} {k : Nat} {b : BitVec 64} {S S' : Held} {o n : 
     (storeN_perm _ _ _ _) (fun y hy => storeN_load64_out _ _ _ _ _ hn hy)
     (fun x hx => storeN_mem_out _ _ _ _ _ hn hx) ?_
     (by rw [hrows]; exact fun r hr => nomatch hr)
-    (by rw [hrows]; exact fun r hr => nomatch hr)
   · intro p hp
     rw [hS']
     rcases hvals p hp with ⟨hp', _⟩ | ⟨h8, rfl⟩ | ⟨_, c, w, d, rfl, hcw, _, _⟩
@@ -353,7 +349,6 @@ theorem Writes.heldIn {Γ : Ctx} {k : Nat} {b : BitVec 64} {S : Held} {o o' L n 
     (storeN_regs _ _ _ _) (storeN_flags _ _ _ _)
     (storeN_perm _ _ _ _) (fun y hy => storeN_load64_out _ _ _ _ _ hn hy)
     (fun x hx => storeN_mem_out _ _ _ _ _ hn hx) ?_
-    (by rw [hrows]; exact fun r hr => nomatch hr)
     (by rw [hrows]; exact fun r hr => nomatch hr)
   · intro p hp
     simp only [ShapeOf.clear, List.mem_filter] at hp

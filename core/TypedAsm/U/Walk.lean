@@ -506,7 +506,7 @@ def dropRowsFor (isSys : Bool) : Prep := fun Γ _ =>
       (match Γ.regs.rax.lit? with
        | some nr =>
          (match linuxKind nr with
-          | some (.fills _ _ _) => true
+          | some (.fills _ _) => true
           | some .map => true
           | _ => false)
        | none => false) then { Γ with rows := [] }
@@ -626,24 +626,14 @@ def walkFrom (pg : Prog) (ix : Index) (stops : BitVec 64 → Bool) :
                     (walkFrom pg ix stops tl false fuel (k + 2) (a + len) Γo)
                 else .stop a Γ
               | none =>
-                match sysReads Γ k (a + len) with
+                match sysFills pg.kinds Γ k (a + len) with
                 | some (Γe, Γh) =>
-                  if Γe.sharpen.under (k + 2) &&
-                      (Γh.addKnown [(.var k, ansTy Γ)]).sharpen.under (k + 2) then
-                    .sys2 k
-                      (walkFrom pg ix stops tl false fuel (k + 2) (a + len) Γe.sharpen)
-                      (walkFrom pg ix stops tl false fuel (k + 2) (a + len)
-                        (Γh.addKnown [(.var k, ansTy Γ)]).sharpen)
+                  if (Γh.addKnown [(.var k, ansTy Γ)]).sharpen.under (k + 2) &&
+                      regardS noEnt Γe Γh then
+                    .sys k (walkFrom pg ix stops tl false fuel (k + 2) (a + len)
+                      (Γh.addKnown [(.var k, ansTy Γ)]).sharpen)
                   else .stop a Γ
-                | none =>
-                  match sysFills pg.kinds Γ k (a + len) with
-                  | some (Γe, Γh) =>
-                    if (Γh.addKnown [(.var k, ansTy Γ)]).sharpen.under (k + 2) &&
-                        regardS noEnt Γe Γh then
-                      .sys k (walkFrom pg ix stops tl false fuel (k + 2) (a + len)
-                        (Γh.addKnown [(.var k, ansTy Γ)]).sharpen)
-                    else .stop a Γ
-                  | none => .stop a Γ
+                | none => .stop a Γ
       else
         match stepHeld pg.kinds Γ k (a + len) i with
         | none => .stop a Γ
@@ -837,57 +827,31 @@ theorem walkFrom_sound {D : SysDesc} (hD : Describes sys D) (hkind : D.kind = li
                   exact ⟨hb.1, fun _ => hb.2⟩
                 · subst hW; exact ⟨h, fun hm => nomatch hm⟩
               · split at hW
-                · next Γe Γh hrd =>
+                · next Γe Γh hfill =>
                   split at hW
                   · next hchk =>
                     subst hW
                     rw [Bool.and_eq_true] at hchk
-                    have ihe := fun x y => Ok.regard (CtxS.sharpen_regards (ρ.setSys k x y) _)
+                    have ih := fun x y => Ok.regard (CtxS.sharpen_regards (ρ.setSys k x y) _)
                       (walkFrom_sound hD hkind pg hpre stops hcode hk ix hix tl false fuel
-                        (k + 2) (e + len) _ (ρ.setSys k x y) hchk.1 (h x y).1).1
-                    have iho := fun x y => Ok.regard (CtxS.sharpen_regards (ρ.setSys k x y) _)
-                      (walkFrom_sound hD hkind pg hpre stops hcode hk ix hix tl false fuel
-                        (k + 2) (e + len) _ (ρ.setSys k x y) hchk.2 (h x y).2).1
+                        (k + 2) (e + len) _ (ρ.setSys k x y) hchk.1 (h x y)).1
                     have hb := both fun m hm => by
-                      refine Ok.step hf (sysReads_sound hD hkind hrd hu hpreΓ) ?_
+                      refine Ok.step hf (sysFills_sound hD hkind hk hfill hu hpreΓ) ?_
                       rintro t Δ ⟨x, y, rfl, hcase, hans⟩
-                      rcases hcase with rfl | rfl
-                      · exact ((ihe x y).mono hm).arrives
-                      · refine Arrives.learn [((Val.var k).den (ρ.setSys k x y),
-                          (ansTy Γ).den (ρ.setSys k x y))] ?_ (((iho x y).mono hm).arrives)
+                      have hl : Arrives fetch sys Ψ m (e + len) (Γh.den (ρ.setSys k x y)) := by
+                        refine Arrives.learn [((Val.var k).den (ρ.setSys k x y),
+                          (ansTy Γ).den (ρ.setSys k x y))] ?_ (((ih x y).mono hm).arrives)
                         intro f hf' k' _ Ψ' _ _
                         rw [List.mem_singleton.mp hf']
                         show HasTy fetch sys Ψ' k' _ ((ρ.setSys k x y).val k)
                         rw [Env.setSys_k]
                         exact hans Ψ' k'
+                      rcases hcase with rfl | rfl
+                      · exact Arrives.regard (regardS_sound noEnt_sound (ρ.setSys k x y) hchk.2) hl
+                      · exact hl
                     exact ⟨hb.1, fun _ => hb.2⟩
                   · subst hW; exact ⟨h, fun hm => nomatch hm⟩
-                · split at hW
-                  · next Γe Γh hfill =>
-                    split at hW
-                    · next hchk =>
-                      subst hW
-                      rw [Bool.and_eq_true] at hchk
-                      have ih := fun x y => Ok.regard (CtxS.sharpen_regards (ρ.setSys k x y) _)
-                        (walkFrom_sound hD hkind pg hpre stops hcode hk ix hix tl false fuel
-                          (k + 2) (e + len) _ (ρ.setSys k x y) hchk.1 (h x y)).1
-                      have hb := both fun m hm => by
-                        refine Ok.step hf (sysFills_sound hD hkind hk hfill hu hpreΓ) ?_
-                        rintro t Δ ⟨x, y, rfl, hcase, hans⟩
-                        have hl : Arrives fetch sys Ψ m (e + len) (Γh.den (ρ.setSys k x y)) := by
-                          refine Arrives.learn [((Val.var k).den (ρ.setSys k x y),
-                            (ansTy Γ).den (ρ.setSys k x y))] ?_ (((ih x y).mono hm).arrives)
-                          intro f hf' k' _ Ψ' _ _
-                          rw [List.mem_singleton.mp hf']
-                          show HasTy fetch sys Ψ' k' _ ((ρ.setSys k x y).val k)
-                          rw [Env.setSys_k]
-                          exact hans Ψ' k'
-                        rcases hcase with rfl | rfl
-                        · exact Arrives.regard (regardS_sound noEnt_sound (ρ.setSys k x y) hchk.2) hl
-                        · exact hl
-                      exact ⟨hb.1, fun _ => hb.2⟩
-                    · subst hW; exact ⟨h, fun hm => nomatch hm⟩
-                  · subst hW; exact ⟨h, fun hm => nomatch hm⟩
+                · subst hW; exact ⟨h, fun hm => nomatch hm⟩
       · split at hW
         · subst hW; exact ⟨h, fun hm => nomatch hm⟩
         · next Γ' t hstep =>

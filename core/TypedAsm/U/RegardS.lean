@@ -742,12 +742,7 @@ def regardWith (sm : List (Val × TyS) → Val → Val → Bool) (ent : TyS → 
      | some P => apartS Γ.known P && coverS Γ.held P
      | none => false) &&
     Δ.known.all (factFrom ent Γ.known) && Δ.rest == Γ.rest &&
-    Δ.rows.all (rowFrom (sm Γ.known) Γ.known Γ.rows) &&
-    Δ.rows.all fun r => r.fed.isNone || Γ.rows.any fun g =>
-      (match g.fed, r.fed with
-       | some a, some b => sm Γ.known a b
-       | _, _ => false) && g.byte == r.byte && g.stride == r.stride &&
-        sm Γ.known g.addr r.addr && sm Γ.known g.count r.count
+    Δ.rows.all (rowFrom (sm Γ.known) Γ.known Γ.rows)
 
 theorem regardWith_sound {sm : List (Val × TyS) → Val → Val → Bool} {ent : TyS → TyS → Bool}
     (he : EntSound fetch sys ent) (ρ : Env) {Γ Δ : CtxS}
@@ -757,7 +752,7 @@ theorem regardWith_sound {sm : List (Val × TyS) → Val → Val → Bool} {ent 
     (h : regardWith sm ent Γ Δ = true) :
     Regards fetch sys Ψ (Γ.den ρ) (Δ.den ρ) := by
   simp only [regardWith, Bool.and_eq_true, List.all_eq_true, beq_iff_eq] at h
-  obtain ⟨⟨⟨⟨⟨⟨hr, hf⟩, hh⟩, hk⟩, hrest⟩, hrows⟩, hnofed⟩ := h
+  obtain ⟨⟨⟨⟨⟨hr, hf⟩, hh⟩, hk⟩, hrest⟩, hrows⟩ := h
   cases hP : partsS sm Γ.known Γ.held Δ.held with
   | none => rw [hP] at hh; cases hh
   | some P =>
@@ -791,29 +786,6 @@ theorem regardWith_sound {sm : List (Val × TyS) → Val → Val → Bool} {ent 
             (cellAt s' x.byte (x.addr.den ρ + BitVec.ofNat 64 (x.stride * i)))
           rw [he, ← hb, ← hst]
           exact HasTy.sub (followsS_sub ρ _ _ _ (List.all_eq_true.mp htys g hgr)) hty)
-        (fun k' Ψ'' s' hw' r hr' off ho => by
-          obtain ⟨x, hx, rfl⟩ := List.mem_map.mp (show r ∈ Δ.rows.map (RowS.den ρ) from hr')
-          have ho' : x.fed.map (Val.den ρ) = some off := ho
-          rcases Bool.or_eq_true_iff.mp (hnofed x hx) with hn | hany
-          · have hn' : x.fed = none := by simpa using hn
-            rw [hn'] at ho'
-            cases ho'
-          · obtain ⟨g, hgm, hc⟩ := List.any_eq_true.mp hany
-            simp only [Bool.and_eq_true, beq_iff_eq] at hc
-            obtain ⟨⟨⟨⟨hfe, hb⟩, hst⟩, ha⟩, hcn⟩ := hc
-            have hsm' := hsm Ψ'' k' (knownS hw'.known)
-            have hF := hw'.fed (g.den ρ) (List.mem_map.mpr ⟨g, hgm, rfl⟩) off (by
-              show g.fed.map (Val.den ρ) = some off
-              split at hfe
-              · next a b hga hxb =>
-                rw [hxb] at ho'
-                rw [hga, ← ho']
-                exact congrArg some (hsm' _ _ hfe)
-              · cases hfe)
-            show FedRow s' (RowOf.mk (x.addr.den ρ) (x.count.den ρ) x.stride x.byte (x.ty.den ρ)
-              (x.fed.map (Val.den ρ))) off
-            rw [← hsm' _ _ ha, ← hsm' _ _ hcn, ← hst, ← hb]
-            exact hF)
         k Ψ' hext hwf s hw
     · funext r
       exact (hsm Ψ' k hg _ _ (hr r (mem_allRegs r))).symm

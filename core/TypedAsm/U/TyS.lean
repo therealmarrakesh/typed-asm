@@ -141,7 +141,7 @@ def FactsS.den (ρ : Env) : FactsS → List (BitVec 64 × Ty)
 
 def RowsS.den (ρ : Env) : RowsS → List (RowOf Ty)
   | .nil => []
-  | .cons a c st b τ rest => ⟨a.den ρ, c.den ρ, st, b, τ.den ρ, none⟩ :: rest.den ρ
+  | .cons a c st b τ rest => ⟨a.den ρ, c.den ρ, st, b, τ.den ρ⟩ :: rest.den ρ
 
 end
 

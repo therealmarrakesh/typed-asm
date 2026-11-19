@@ -239,9 +239,7 @@ def readBy (d : Fate) (s : State) : State :=
         let chunk := data.take room
         let left := data.drop room
         give s buf chunk (BitVec.ofNat 64 chunk.length)
-          { s.world with
-            input := if left.isEmpty then rest else .bytes left :: rest
-            reads := chunk :: s.world.reads }
+          { s.world with input := if left.isEmpty then rest else .bytes left :: rest }
   | some (.file i pos r w app) =>
     if !r then ret s (-9)
     else if 0 < count ∧ room = 0 then ret s (-14)
@@ -254,8 +252,7 @@ def readBy (d : Fate) (s : State) : State :=
         | _ =>
           let data := (f.read pos (taken d room)).take room
           give s buf data (BitVec.ofNat 64 data.length)
-            { s.world.setFd fd (.file i (pos + data.length) r w app) with
-              reads := data :: s.world.reads }
+            (s.world.setFd fd (.file i (pos + data.length) r w app))
   | _ => ret s (-9)
 
 /-- `read(fd, buf, count)`, with the kernel doing what the world says. A
@@ -621,28 +618,27 @@ the outside world and the registers a call always changes, or does that and
 also stores bytes in a buffer it was handed. Each fact a call must satisfy
 is proved once for each of the two. -/
 
-/-- `t` is `s` after a call that touched nothing of the program's, and
-stored nothing by reading. -/
+/-- `t` is `s` after a call that touched nothing of the program's. -/
 def OnlyWorld (s t : State) : Prop :=
-  ∃ v w, w.reads = s.world.reads ∧ t = ret { s with world := w } v
+  ∃ v w, t = ret { s with world := w } v
 
 namespace OnlyWorld
 
 variable {t : State}
 
 theorem same (s : State) (v : BitVec 64) : OnlyWorld s (ret s v) :=
-  ⟨v, s.world, rfl, rfl⟩
+  ⟨v, s.world, rfl⟩
 
-theorem intro (s : State) (v : BitVec 64) (w : World) (h : w.reads = s.world.reads) :
+theorem intro (s : State) (v : BitVec 64) (w : World) :
     OnlyWorld s (ret { s with world := w } v) :=
-  ⟨v, w, h, rfl⟩
+  ⟨v, w, rfl⟩
 
 theorem rip (hf : OnlyWorld s t) : t.rip = s.rip := by
-  obtain ⟨v, w, -, rfl⟩ := hf
+  obtain ⟨v, w, rfl⟩ := hf
   rfl
 
 theorem frame (hf : OnlyWorld s t) : Frame s t := by
-  obtain ⟨v, w, -, rfl⟩ := hf
+  obtain ⟨v, w, rfl⟩ := hf
   exact Frame.of_eq rfl rfl
 
 end OnlyWorld
@@ -650,16 +646,16 @@ end OnlyWorld
 /-- `t` is `s` after a call that at most stored up to `room` bytes at `buf`,
 all of them in writable memory. -/
 def Fills (s : State) (buf : BitVec 64) (room : Nat) (t : State) : Prop :=
-  (∃ v w, t = ret { s with world := w } v) ∨
+  OnlyWorld s t ∨
     ∃ data v w, data.length ≤ room ∧ s.canWrite buf data.length = true ∧ t = give s buf data v w
 
 theorem Fills.same (s : State) (buf : BitVec 64) (room : Nat) (v : BitVec 64) :
     Fills s buf room (ret s v) :=
-  .inl ⟨v, s.world, rfl⟩
+  .inl (.same s v)
 
 theorem Fills.only (s : State) (buf : BitVec 64) (room : Nat) (v : BitVec 64) (w : World) :
     Fills s buf room (ret { s with world := w } v) :=
-  .inl ⟨v, w, rfl⟩
+  .inl (.intro s v w)
 
 theorem canWrite_le {a : BitVec 64} {m k : Nat} (h : s.canWrite a m = true) (hle : k ≤ m) :
     s.canWrite a k = true := by
@@ -676,14 +672,14 @@ namespace Fills
 variable {t : State} {r : Reg} {room : Nat}
 
 theorem rip {buf : BitVec 64} (hf : Fills s buf room t) : t.rip = s.rip := by
-  rcases hf with ⟨v, w, rfl⟩ | ⟨data, v, w, -, -, rfl⟩
-  · rfl
+  rcases hf with hf | ⟨data, v, w, -, -, rfl⟩
+  · exact hf.rip
   · rfl
 
 /-- Only bytes of the buffer change, and those were writable. -/
 theorem frame {buf : BitVec 64} (hf : Fills s buf room t) (hroom : room ≤ 2 ^ 64) : Frame s t := by
-  rcases hf with ⟨v, w, rfl⟩ | ⟨data, v, w, hlen, hw, rfl⟩
-  · exact Frame.of_eq rfl rfl
+  rcases hf with hf | ⟨data, v, w, hlen, hw, rfl⟩
+  · exact hf.frame
   · refine .of_perm rfl (fun x hx => ?_)
     show (s.storeBytes buf data).mem x = s.mem x
     rw [State.mem_storeBytes s _ x _ (by omega)]
@@ -706,7 +702,7 @@ plain return. -/
 local macro "only_world" : tactic =>
   `(tactic| repeat' (first
     | (with_reducible exact OnlyWorld.same _ _)
-    | (exact OnlyWorld.intro _ _ _ rfl)
+    | (with_reducible exact OnlyWorld.intro _ _ _)
     | split))
 
 /-- Settles a call that fills a buffer: every way it can end is a plain
@@ -896,82 +892,6 @@ theorem read_fills (s : State) : Fills s (s.getReg .rsi) (s.getReg .rdx).toNat (
   · exact (readBy_fills (nextFate s).1 (nextFate s).2).ofWorld
   · exact readBy_fills _ s
 
-/-- `t` is `s` after a call that stored nothing, and answered nought or an
-error number; or stored at `buf`, in memory found writable, no more than
-`room` bytes, which the world then keeps as the last read, and answered how
-many. -/
-def Logged (s : State) (buf : BitVec 64) (room : Nat) (t : State) : Prop :=
-  (∃ v w, (v = 0 ∨ SysErr v) ∧ t = ret { s with world := w } v) ∨
-    ∃ data w, data.length ≤ room ∧ s.canWrite buf data.length = true ∧
-      data.length ≤ 0x7ffff000 ∧ w.reads.head? = some data ∧
-      t = give s buf data (BitVec.ofNat 64 data.length) w
-
-theorem Logged.ofWorld {buf : BitVec 64} {room : Nat} {t : State} {w₀ : World}
-    (h : Logged { s with world := w₀ } buf room t) : Logged s buf room t := by
-  rcases h with ⟨v, w, hv, rfl⟩ | ⟨data, w, hr, hc, hl, hh, rfl⟩
-  · exact .inl ⟨v, w, hv, rfl⟩
-  · exact .inr ⟨data, w, hr, hc, hl, hh, rfl⟩
-
-theorem Logged.same {buf : BitVec 64} {room : Nat} {v : BitVec 64} (h : v = 0 ∨ SysErr v) :
-    Logged s buf room (ret s v) :=
-  .inl ⟨v, s.world, h, rfl⟩
-
-theorem Logged.only {buf : BitVec 64} {room : Nat} {v : BitVec 64} {w : World}
-    (h : v = 0 ∨ SysErr v) : Logged s buf room (ret { s with world := w } v) :=
-  .inl ⟨v, w, h, rfl⟩
-
-theorem Logged.give {buf : BitVec 64} {room : Nat} {data : List (BitVec 8)} {w : World}
-    (hr : data.length ≤ room) (hc : s.canWrite buf data.length = true)
-    (hl : data.length ≤ 0x7ffff000) (hh : w.reads.head? = some data) :
-    Logged s buf room (give s buf data (BitVec.ofNat 64 data.length) w) :=
-  .inr ⟨data, w, hr, hc, hl, hh, rfl⟩
-
-theorem readBy_logged (d : Fate) (s : State) :
-    Logged s (s.getReg .rsi) (s.getReg .rdx).toNat (readBy d s) := by
-  have hroom : writableRun s (s.getReg .rsi) (min (s.getReg .rdx).toNat 0x7ffff000) ≤ 0x7ffff000 :=
-    Nat.le_trans (writableRun_le _ _ _) (Nat.min_le_right _ _)
-  have hrdx : writableRun s (s.getReg .rsi) (min (s.getReg .rdx).toNat 0x7ffff000)
-      ≤ (s.getReg .rdx).toNat :=
-    Nat.le_trans (writableRun_le _ _ _) (Nat.min_le_left _ _)
-  simp only [readBy]
-  repeat' (first
-    | ((with_reducible refine Logged.same ?_);
-        first | exact .inr (by decide) | exact .inr (Errno.code_err _) | exact .inl rfl)
-    | ((with_reducible refine Logged.only ?_);
-        first | exact .inr (by decide) | exact .inr (Errno.code_err _) | exact .inl rfl)
-    | exact Logged.give (Nat.le_trans (List.length_take_le _ _) hrdx)
-        (canWrite_le (canWrite_writableRun _ _ _) (List.length_take_le _ _))
-        (Nat.le_trans (List.length_take_le _ _) hroom) rfl
-    | split)
-
-/-- The bytes a call stored are the bytes then found where it stored them. -/
-theorem give_loadBytes (s : State) (buf : BitVec 64) (data : List (BitVec 8)) (v : BitVec 64)
-    (w : World) (hlen : data.length < 2 ^ 64) {m : Nat} (hm : m ≤ data.length) :
-    (give s buf data v w).loadBytes buf m = data.take m := by
-  apply List.ext_getElem
-  · simp only [State.loadBytes, List.length_map, List.length_range, List.length_take]
-    omega
-  · intro i h1 h2
-    simp only [State.loadBytes, List.length_map, List.length_range] at h1
-    simp only [State.loadBytes, List.getElem_map, List.getElem_range, List.getElem_take]
-    show (s.storeBytes buf data).mem (buf + BitVec.ofNat 64 i) = _
-    rw [State.mem_storeBytes s buf _ data (by omega)]
-    have e : (buf + BitVec.ofNat 64 i - buf).toNat = i := by
-      have hi : i < 2 ^ 64 := by omega
-      rw [BitVec.toNat_sub, BitVec.toNat_add, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hi]
-      have := buf.isLt
-      omega
-    rw [e, List.getElem?_eq_getElem (by omega)]
-    rfl
-
-/-- **What `read` stores, the world keeps as the last read.** -/
-theorem read_logged (s : State) :
-    Logged s (s.getReg .rsi) (s.getReg .rdx).toNat (read s) := by
-  simp only [read]
-  split
-  · exact (readBy_logged (nextFate s).1 (nextFate s).2).ofWorld
-  · exact readBy_logged _ s
-
 theorem fstat_fills (s : State) : Fills s (s.getReg .rsi) 144 (fstat s) := by
   simp only [fstat]
   fills
@@ -1148,7 +1068,8 @@ theorem Answered.of_stored {buf : BitVec 64} {count : Nat} {t : State} (hc : cou
     rw [hrax, BitVec.toNat_ofNat, Nat.mod_eq_of_lt (by omega)]
     exact hlen
 
-/-- **A `write` answers an error number, or no more than it was offered.** -/
+/-- What `write` answers is an error number, or no more than it was
+offered. -/
 theorem writeBy_answered (d : Fate) (s : State) :
     Answered (s.getReg .rdx).toNat ((writeBy d s).getReg .rax) := by
   have hn : (BitVec.ofNat 64 (taken d (readableRun s (s.getReg .rsi)
@@ -1459,9 +1380,9 @@ class LikeLinuxNW (sys : Syscall) : Prop where
 
 instance {sys : Syscall} [LikeLinux sys] : LikeLinuxNW sys := ⟨fun _ h => LikeLinux.next h⟩
 
-instance {sys : Syscall} [LikeLinuxNW sys] (Q : State → Prop) :
-    LikeLinuxNW (sys.writesIf Q) :=
-  ⟨fun hne h => (Syscall.writesIf_eq (fun e => absurd e hne)).trans (LikeLinuxNW.next hne h)⟩
+instance {sys : Syscall} [LikeLinuxNW sys] (R : BitVec 64 → List (BitVec 8) → Prop) :
+    LikeLinuxNW (sys.writesOnly R) :=
+  ⟨fun hne h => (Syscall.writesOnly_eq (fun e => absurd e hne)).trans (LikeLinuxNW.next hne h)⟩
 
 variable {sys : Syscall} [LikeLinuxNW sys]
 

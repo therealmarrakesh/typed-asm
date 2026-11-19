@@ -171,8 +171,6 @@ structure World where
   input : List ReadEvent := []
   /-- The bytes of each `write` so far, most recent first. -/
   writes : List (List (BitVec 8)) := []
-  /-- The bytes each `read` so far has stored, most recent first. -/
-  reads : List (List (BitVec 8)) := []
   /-- Where the kernel would put the memory of each request for some, by the
   number of the request, or `none` to refuse it. Nothing is assumed about
   the choice; the model of `mmap` refuses a place that is not free. -/

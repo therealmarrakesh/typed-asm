@@ -137,8 +137,9 @@ inductive L
 /-- A number stored, all eight bytes of it, so far past `rdi`. -/
 def st (o : BitVec 32) (v : BitVec 32) : List (Asm L) :=
   [.ins (.mov .w64 (.rm_i (.mem (.sib (some .rdi) none o)) v))]
-/-- The program, reading the value so far past the one it stored over. -/
-def codeOf (d : BitVec 32) : List (Asm L) := [
+/-- The program, reading the value so far past the one it stored over; and,
+where that is asked, not storing over the first. -/
+def codeOf (d : BitVec 32) (notFirst : Bool := false) : List (Asm L) := [
   .label .start,
   .ins (.alu .sub .w64 (.rm_i (.reg .rsp) 32)),
   .ins (.mov .w64 (.rm_r (.reg .rdi) .rsp)),
@@ -147,7 +148,8 @@ def codeOf (d : BitVec 32) : List (Asm L) := [
   .ins .syscall,
   .ins (.alu .and .w32 (.rm_i (.reg .rax) 3)),
   .ins (.alu .cmp .w64 (.rm_i (.reg .rax) 3)),
-  .jcc .e .done,
+  .jcc .e .done] ++
+  (if notFirst then [.ins (.test .w64 (.reg .rax) (.reg .rax)), .jcc .e .done] else []) ++ [
   .ins (.mov .w64 (.rm_i (.mem (.sib (some .rsp) (some (.rax, .s8)) 0)) 200)),
   .ins (.mov .w64 (.r_m .rax (.sib (some .rsp) (some (.rax, .s8)) d))),
   .ref (.lea .w64 .rbx (.rip 0)) .table,
@@ -172,9 +174,10 @@ def labelsOf (c : List (Asm L)) : List U.Label :=
      inFunction (takes := [(.was .rdi, 32)])
        (returnRows := [cellsAt (.was .rdi) (.lit 4) (.range 0 7)])⟩]
 
-def typed (d : BitVec 32) : Bool :=
-  wholeOkWith (codeOf d) .start 6 [] (blocksOn (codeOf d)) (pgOf (codeOf d)) (labelsOf (codeOf d))
-    (needFuel (pgOf (codeOf d)) (labelsOf (codeOf d)) [])
+def typed (d : BitVec 32) (notFirst : Bool := false) : Bool :=
+  wholeOkWith (codeOf d notFirst) .start 6 [] (blocksOn (codeOf d notFirst))
+    (pgOf (codeOf d notFirst)) (labelsOf (codeOf d notFirst))
+    (needFuel (pgOf (codeOf d notFirst)) (labelsOf (codeOf d notFirst)) [])
 
 #guard typed 8
 -- the value stored itself: two hundred, past the table. Refused
@@ -183,6 +186,9 @@ def typed (d : BitVec 32) : Bool :=
 #guard !typed 16
 -- the value before: there may be none. Refused
 #guard !typed (-8)
+-- the value before, where the one stored over is not the first: its place is
+-- that of the one stored over with one taken away
+#guard typed (-8) true
 
 end Place
 
